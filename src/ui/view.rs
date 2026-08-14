@@ -152,24 +152,39 @@ impl TimelineView {
 
             let branch = crate::ui::status::StatusWidgets::get_git_branch(ctx.workspace);
 
-            // Aura-Themed minicode Logo (Chevron › + Brackets {} + Glowing Lightning ⚡)
+            // 3D Isometric Block (Retro-Futuristic) minicode Wordmark
             lines.push(Line::from(String::new()));
+            lines.push(Line::from(vec![Span::styled(
+                "   ___ ___                           _     ",
+                Style::default().fg(theme.brand_accent),
+            )]));
+
             lines.push(Line::from(vec![
-                Span::styled("  ▗▄▄  ", Style::default().fg(theme.brand_accent)),
-                Span::styled("▄▄▖   ", Style::default().fg(theme.success)),
                 Span::styled(
-                    "minicode v0.0.2",
+                    "  |   Y   | _   ___  _   ___  ___  _| | ___ ",
+                    Style::default().fg(theme.brand_accent),
+                ),
+                Span::styled(
+                    "  v0.0.2",
                     Style::default()
-                        .fg(theme.brand_accent)
+                        .fg(theme.success)
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));
 
+            lines.push(Line::from(vec![Span::styled(
+                "  |.      || | |   || | |  _|| . || . || -_|",
+                Style::default().fg(theme.highlight),
+            )]));
+
+            lines.push(Line::from(vec![Span::styled(
+                "  |. \\_/  ||_| |_|_||_| |___||___||___||___|",
+                Style::default().fg(theme.success),
+            )]));
+
+            lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
-                Span::styled(" ›", Style::default().fg(theme.brand_accent)),
-                Span::styled("▐  ", Style::default().fg(theme.brand_accent)),
-                Span::styled("▞▀", Style::default().fg(theme.info)),
-                Span::styled("  ▌   ", Style::default().fg(theme.success)),
+                Span::styled("  ", Style::default()),
                 Span::styled(
                     format!("{} | {}", ctx.provider, ctx.model),
                     Style::default().fg(theme.warning),
@@ -177,26 +192,16 @@ impl TimelineView {
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("  ▐ ", Style::default().fg(theme.brand_accent)),
-                Span::styled("▞▀▚", Style::default().fg(theme.info)),
-                Span::styled("  ▌", Style::default().fg(theme.success)),
-                Span::styled("}  ", Style::default().fg(theme.success)),
+                Span::styled("  ", Style::default()),
                 Span::styled(display_path, Style::default().fg(theme.info)),
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("  ▐  ", Style::default().fg(theme.brand_accent)),
-                Span::styled("▝▀", Style::default().fg(theme.info)),
-                Span::styled("  ▌   ", Style::default().fg(theme.success)),
+                Span::styled("  ", Style::default()),
                 Span::styled(
                     format!("git: {}", branch),
                     Style::default().fg(theme.success),
                 ),
-            ]));
-
-            lines.push(Line::from(vec![
-                Span::styled("  ▝▀▀  ", Style::default().fg(theme.brand_accent)),
-                Span::styled("▀▀▘   ", Style::default().fg(theme.success)),
             ]));
             lines.push(Line::from(String::new()));
         }
