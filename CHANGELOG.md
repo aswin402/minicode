@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.3] — 2026-08-14
+
+### 🚀 Added
+- **3D Retro-Futuristic Isometric Wordmark (`src/ui/view.rs`)**:
+  - Implemented crisp 3D isometric block ASCII typography for the `minicode` hero intro banner in full Aura Theme colors.
+  - Multi-tier color shading: Top highlights in Aura Purple (`#a277ff`), mid face in Pink (`#f694ff`), and base shadow in Mint Green (`#61ffca`).
+- **Dynamic Git & Workspace Discovery (`src/ui/status.rs`, `src/ui/view.rs`)**:
+  - Dynamic git branch detection returning `Option<String>` that gracefully displays active branch only when running inside an initialized git repository.
+  - Dynamic `$HOME` path shortening (`~/...`) in both the welcome intro screen and bottom status bar.
+
+### 🧹 Refactored & Polished
+- **Zero-Hardcoding Enforcement**:
+  - Replaced static version string literals with compile-time dynamic `env!("CARGO_PKG_VERSION")` and Clap's `#[command(version)]` attribute.
+  - Modularized `TimelineContext` struct cleanly bundling theme, runtime timer, and workspace metadata without exceeding function argument limits.
+  - Aligned repository attribution headers for OpenRouter API requests.
+
+---
+
 ## [0.0.2] — 2026-08-14
 
 ### 🚀 Added
