@@ -36,6 +36,15 @@ pub struct TimelineView {
     pub auto_scroll: bool,
 }
 
+pub struct TimelineContext<'a> {
+    pub theme: &'a Theme,
+    pub is_working: bool,
+    pub working_secs: u64,
+    pub workspace: &'a std::path::Path,
+    pub provider: &'a str,
+    pub model: &'a str,
+}
+
 impl TimelineView {
     pub fn new() -> Self {
         Self {
@@ -108,67 +117,77 @@ impl TimelineView {
         self.entries.push(TimelineEntry::SystemStatus(status));
     }
 
-    fn extract_cmd_display(name: &str, args: &str) -> String {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args) {
-            if let Some(cmd) = parsed.get("command").and_then(|c| c.as_str()) {
+    fn extract_cmd_display(name: &str, args_json: &str) -> String {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(args_json) {
+            if let Some(cmd) = val.get("command").and_then(|c| c.as_str()) {
                 return cmd.to_string();
             }
-            if let Some(path) = parsed.get("path").and_then(|p| p.as_str()) {
+            if let Some(path) = val.get("path").and_then(|p| p.as_str()) {
                 return path.to_string();
             }
-            if let Some(q) = parsed.get("query").and_then(|q| q.as_str()) {
-                return q.to_string();
+            if let Some(query) = val.get("query").and_then(|q| q.as_str()) {
+                return format!("query: {}", query);
             }
-            if let Some(url) = parsed.get("url").and_then(|u| u.as_str()) {
+            if let Some(url) = val.get("url").and_then(|u| u.as_str()) {
                 return url.to_string();
             }
         }
-        format!("{}({})", name, args)
+        format!("{}({})", name, args_json)
     }
 
-    pub fn render(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        theme: &Theme,
-        is_working: bool,
-        working_secs: u64,
-    ) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &TimelineContext) {
+        let theme = ctx.theme;
         let mut lines: Vec<Line> = Vec::new();
 
         if self.entries.is_empty() {
+            let display_path = if let Some(ref home) = dirs::home_dir() {
+                if let Ok(rel) = ctx.workspace.strip_prefix(home) {
+                    format!("~/{}", rel.display())
+                } else {
+                    ctx.workspace.display().to_string()
+                }
+            } else {
+                ctx.workspace.display().to_string()
+            };
+
+            let branch = crate::ui::status::StatusWidgets::get_git_branch(ctx.workspace);
+
+            // Aura-Themed Pixel Art Logo + Clean Metadata (Matching minimal Image 2)
+            lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
+                Span::styled("   ▄▄    ", Style::default().fg(theme.brand_accent)),
                 Span::styled(
-                    "• minicode ",
+                    "minicode v0.0.2",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
+            ]));
+
+            lines.push(Line::from(vec![
+                Span::styled("  ▄██    ", Style::default().fg(theme.brand_accent)),
                 Span::styled(
-                    "— Fast, Minimalist AI Coding Agent in Pure Rust",
-                    Style::default().fg(theme.muted),
+                    format!("{} | {}", ctx.provider, ctx.model),
+                    Style::default().fg(theme.warning),
                 ),
             ]));
-            lines.push(Line::from(String::new()));
+
+            lines.push(Line::from(vec![
+                Span::styled(" ▄███▄   ", Style::default().fg(theme.highlight)),
+                Span::styled(display_path, Style::default().fg(theme.info)),
+            ]));
+
+            lines.push(Line::from(vec![
+                Span::styled("   ███▄  ", Style::default().fg(theme.success)),
+                Span::styled(
+                    format!("git: {}", branch),
+                    Style::default().fg(theme.success),
+                ),
+            ]));
+
             lines.push(Line::from(vec![Span::styled(
-                "  Type a prompt or task below to begin pair programming.",
-                Style::default().fg(theme.muted),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                "  Examples:",
-                Style::default().fg(theme.warning),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                "    • Implement {feature}",
-                Style::default().fg(theme.text_primary),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                "    • Inspect src/main.rs and add unit tests",
-                Style::default().fg(theme.text_primary),
-            )]));
-            lines.push(Line::from(vec![Span::styled(
-                "    • Search codebase for tree-sitter AST queries",
-                Style::default().fg(theme.text_primary),
+                "    ▀█▀  ",
+                Style::default().fg(theme.info),
             )]));
             lines.push(Line::from(String::new()));
         }
@@ -298,7 +317,7 @@ impl TimelineView {
         }
 
         // Live working status spinner at bottom if running
-        if is_working {
+        if ctx.is_working {
             lines.push(Line::from(vec![
                 Span::styled(
                     "• Working ",
@@ -307,7 +326,7 @@ impl TimelineView {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("({}s • esc to interrupt)", working_secs),
+                    format!("({}s • esc to interrupt)", ctx.working_secs),
                     Style::default().fg(theme.muted),
                 ),
             ]));

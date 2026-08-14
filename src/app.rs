@@ -4,7 +4,7 @@ use crate::agent::AgentLoop;
 use crate::config::Config;
 use crate::error::Result;
 use crate::session::undo::rollback_turn;
-use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineView};
+use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineContext, TimelineView};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -108,8 +108,15 @@ impl<'a> App<'a> {
                     ])
                     .split(frame.area());
 
-                self.timeline
-                    .render(frame, chunks[0], &self.theme, self.is_working, working_secs);
+                let timeline_ctx = TimelineContext {
+                    theme: &self.theme,
+                    is_working: self.is_working,
+                    working_secs,
+                    workspace: &self.workspace_root,
+                    provider: &self.config.provider.default,
+                    model: &self.config.provider.model,
+                };
+                self.timeline.render(frame, chunks[0], &timeline_ctx);
 
                 if has_slash_hint {
                     self.input_dock

@@ -10,4 +10,4 @@ pub use input::InputDock;
 pub use modal::ModalState;
 pub use status::StatusWidgets;
 pub use theme::Theme;
-pub use view::TimelineView;
+pub use view::{TimelineContext, TimelineView};
