@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.2] — 2026-08-14
+
+### 🚀 Added
+- **Dynamic Live Model Fetcher (`src/agent/models.rs`)**:
+  - Automatically queries live provider API endpoints (OpenRouter `/api/v1/models`, Gemini `v1beta/models`, OpenAI-compatible `<base_url>/models`) to dynamically list all available models with zero hardcoding.
+  - Automatically identifies free-tier models (`[FREE]`) and context window limits (`(Xk ctx)`).
+  - Implemented local disk caching at `~/.config/minicode/models_cache.json` for instant UI loading and offline resilience.
+- **In-TUI Interactive Modal System (`src/ui/modal.rs`)**:
+  - Added floating Aura modal dialogs for switching providers and models mid-session (`/model`).
+  - Added live fuzzy search filter in the model selector allowing developers to filter models as they type.
+  - Full keyboard navigation with `↑`/`↓` arrows, `Enter` to select, and `Esc` to go back or close.
+- **In-TUI Slash Command Recommendations & Arrow Navigation (`src/ui/input.rs`)**:
+  - Real-time slash command recommendation popups (`/model`, `/provider`, `/undo`, `/clear`, `/help`, `/exit`) matching the reference UI design.
+  - **`↑`/`↓` Arrow Navigation**: Interactive arrow key navigation across autocomplete recommendation rows with active `› ` indicator and elevated background styling.
+  - **Instant Execution**: Pressing `Tab` or `Enter` immediately autocompletes or launches the highlighted slash command.
+- **Enhanced Configuration Wizard (`src/ui/configure.rs`)**:
+  - Hierarchical navigation with explicit back options (`[0] ◄ Back`, `b`, `Esc`) at every stage.
+  - **Custom Provider Onboarding**: Support for adding custom OpenAI-compatible endpoints (vLLM, LM Studio, Ollama, LocalAI, etc.) with custom base URLs and live connection tests.
+- **Safety Rollback Engine (`/undo`)**:
+  - Seamless `/undo` command restoring previous turn backups directly inside the interactive TUI.
+
+### 🛠️ Fixed
+- Removed `tui_textarea` default cursor line underline from the input dock.
+- Removed text underline from slash command recommendation highlights.
+- Fixed UI event loop blocking during agent inference by introducing a non-blocking background Tokio actor task.
+
+---
+
 ## [0.0.1] — 2026-08-14
 
 ### 🚀 Added
