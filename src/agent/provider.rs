@@ -482,7 +482,7 @@ impl Provider for OpenAiCompatibleProvider {
         // OpenRouter custom attribution headers
         if self.provider_name == "openrouter" {
             req_builder = req_builder
-                .header("HTTP-Referer", "https://github.com/minicode-agent/minicode")
+                .header("HTTP-Referer", "https://github.com/aswin402/minicode")
                 .header("X-Title", "minicode");
         }
 
