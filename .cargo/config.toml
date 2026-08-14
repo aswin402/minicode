@@ -1,0 +1,7 @@
+[build]
+# Limit parallel compilation jobs to conserve CPU and RAM
+jobs = 2
+
+[target.'cfg(target_os = "linux")']
+# Limit the number of threads used by the linker to reduce peak RAM usage on Linux
+rustflags = ["-C", "link-arg=-Wl,--threads=2"]

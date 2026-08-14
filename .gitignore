@@ -1,0 +1,20 @@
+# Rust build artifacts
+target/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# minicode session and backup data
+.minicode/
+
+# Log files
+*.log
+logs/
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -1,0 +1,210 @@
+#![allow(dead_code)]
+
+use crate::agent::types::AgentEvent;
+use crate::error::{Result, SessionError};
+use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMetadata {
+    pub id: String,
+    pub created_at: String,
+    pub workspace: String,
+    pub path: String,
+}
+
+pub struct SessionStore {
+    sessions_dir: PathBuf,
+}
+
+impl SessionStore {
+    pub fn new() -> Self {
+        let sessions_dir = if let Some(config_dir) = dirs::config_dir() {
+            config_dir.join("minicode").join("sessions")
+        } else {
+            PathBuf::from(".minicode").join("sessions")
+        };
+
+        std::fs::create_dir_all(&sessions_dir).ok();
+        Self { sessions_dir }
+    }
+
+    pub fn with_dir(dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&dir).ok();
+        Self { sessions_dir: dir }
+    }
+
+    /// Generates a new session ID and initializes the JSONL session file.
+    pub fn create_session(&self, workspace: &Path) -> Result<String> {
+        let session_id = format!(
+            "{}-{}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
+
+        let session_path = self.session_file_path(&session_id);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&session_path)?;
+
+        let meta = SessionMetadata {
+            id: session_id.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            workspace: workspace.display().to_string(),
+            path: session_path.display().to_string(),
+        };
+
+        let meta_line = serde_json::to_string(&serde_json::json!({
+            "session_meta": meta
+        }))?;
+        writeln!(file, "{}", meta_line)?;
+
+        tracing::info!(session_id = %session_id, "Initialized new session store");
+        Ok(session_id)
+    }
+
+    /// Appends an AgentEvent to the session's JSONL file in O(1) time.
+    pub fn append_event(&self, session_id: &str, event: &AgentEvent) -> Result<()> {
+        let session_path = self.session_file_path(session_id);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&session_path)?;
+
+        let line = serde_json::to_string(event)?;
+        writeln!(file, "{}", line)?;
+        Ok(())
+    }
+
+    /// Reads all events from a session's JSONL file.
+    pub fn load_session(&self, session_id: &str) -> Result<Vec<AgentEvent>> {
+        let session_path = self.session_file_path(session_id);
+        if !session_path.exists() {
+            return Err(SessionError::NotFound {
+                id: session_id.to_string(),
+                path: session_path.display().to_string(),
+            }
+            .into());
+        }
+
+        let file = std::fs::File::open(&session_path)?;
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+
+        for (idx, line_res) in reader.lines().enumerate() {
+            let line = line_res?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("{\"session_meta\":") {
+                continue;
+            }
+
+            match serde_json::from_str::<AgentEvent>(trimmed) {
+                Ok(event) => events.push(event),
+                Err(e) => {
+                    tracing::warn!(
+                        session = session_id,
+                        line = idx + 1,
+                        error = %e,
+                        "Skipping corrupted line in session JSONL"
+                    );
+                }
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Returns the session ID of the most recent session.
+    pub fn get_last_session_id(&self) -> Option<String> {
+        let mut sessions = self.list_sessions().ok()?;
+        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        sessions.first().map(|s| s.id.clone())
+    }
+
+    /// Lists all sessions found in the sessions directory.
+    pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
+        let mut sessions = Vec::new();
+        if !self.sessions_dir.exists() {
+            return Ok(sessions);
+        }
+
+        for entry in std::fs::read_dir(&self.sessions_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let mut reader = BufReader::new(file);
+                    let mut first_line = String::new();
+                    if reader.read_line(&mut first_line).is_ok() {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first_line) {
+                            if let Some(meta_val) = val.get("session_meta") {
+                                if let Ok(meta) =
+                                    serde_json::from_value::<SessionMetadata>(meta_val.clone())
+                                {
+                                    sessions.push(meta);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback metadata if first line wasn't session_meta
+                let id = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                sessions.push(SessionMetadata {
+                    id,
+                    created_at: String::new(),
+                    workspace: String::new(),
+                    path: path.display().to_string(),
+                });
+            }
+        }
+
+        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(sessions)
+    }
+
+    fn session_file_path(&self, session_id: &str) -> PathBuf {
+        self.sessions_dir.join(format!("{}.jsonl", session_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_store_lifecycle() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_store_test_{}", uuid::Uuid::new_v4()));
+        let store = SessionStore::with_dir(temp_dir.clone());
+
+        let session_id = store.create_session(&temp_dir).unwrap();
+        assert!(!session_id.is_empty());
+
+        let event = AgentEvent::TurnStart {
+            turn_id: 1,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: "gemini-2.5-pro".to_string(),
+            context_tokens: 500,
+        };
+        store.append_event(&session_id, &event).unwrap();
+
+        let loaded = store.load_session(&session_id).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], event);
+
+        let last_id = store.get_last_session_id();
+        assert_eq!(last_id, Some(session_id));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+}

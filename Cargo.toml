@@ -1,0 +1,79 @@
+[package]
+name = "minicode"
+version = "0.1.0"
+edition = "2021"
+description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
+authors = ["Aswin"]
+
+[workspace]
+
+[dependencies]
+# CLI & Configuration
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+dirs = "5.0"
+dotenvy = "0.15"
+
+# Async Runtime & Networking (Pure Rust TLS — zero C OpenSSL dependency)
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json", "stream"] }
+reqwest-eventsource = "0.6"
+
+# TUI & Terminal Rendering
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tui-textarea = "0.7"
+colored = "2.1"
+indicatif = "0.17"
+terminal-colorsaurus = "0.4"
+
+# Markdown, Highlighting & Diffs
+pulldown-cmark = "0.12"
+syntect = "5.2"
+similar = { version = "2.6", features = ["inline"] }
+
+# Code Search & File Traversal (walkdir intentionally excluded — use ignore crate)
+ignore = "0.4"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+regex = "1.10"
+glob = "0.3"
+
+# AST Parsing & Graph Engineering (ALL tree-sitter crates MUST share same ABI version)
+tree-sitter = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+petgraph = "0.6"
+
+# Token Counting & Context Engineering
+tiktoken-rs = "0.6"
+
+# Web, HTML Extraction & Browser Automation
+scraper = "0.20"
+url = "2.5"
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+
+# Session Persistence & Security
+# (JSONL via serde_json — no additional crate needed)
+landlock = "0.4"
+
+# Utilities & Error Handling
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+chrono = "0.4"
+uuid = { version = "1.10", features = ["v4"] }
+
+[features]
+default = []
+browser = ["dep:chromiumoxide"]

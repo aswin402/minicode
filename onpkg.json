@@ -1,0 +1,75 @@
+{
+  "agent_instructions": {
+    "active_skills": [
+      "rust.md"
+    ],
+    "docs_directory": "onpkg_docs/"
+  },
+  "architecture": {
+    "entrypoint": "src/main.rs"
+  },
+  "packages": {
+    "added_by_agent": [
+      "tokio",
+      "ratatui",
+      "crossterm",
+      "tui-textarea",
+      "reqwest",
+      "eventsource-stream",
+      "serde",
+      "serde_json",
+      "toml",
+      "tree-sitter",
+      "tree-sitter-rust",
+      "tree-sitter-python",
+      "tree-sitter-javascript",
+      "tree-sitter-typescript",
+      "petgraph",
+      "ignore",
+      "grep-regex",
+      "grep-searcher",
+      "pulldown-cmark",
+      "syntect",
+      "similar",
+      "scraper",
+      "thiserror",
+      "tracing",
+      "colored"
+    ],
+    "core": [
+      "anyhow",
+      "clap"
+    ]
+  },
+  "project": {
+    "name": "minicode",
+    "package_manager": "cargo",
+    "runtime": "rust",
+    "stack": "rust-cli"
+  },
+  "scripts": {
+    "build": "cargo build --release",
+    "check": "cargo check",
+    "dev": "cargo run",
+    "test": "cargo test"
+  },
+  "sources": {
+    "directories": [
+      "src",
+      "onpkg_docs"
+    ],
+    "file_patterns": [
+      "*.md",
+      "*.rs",
+      "*.toml",
+      "*.json"
+    ],
+    "files": [
+      "Cargo.toml",
+      "README.md",
+      "AGENTS.md",
+      "onpkg.json",
+      "src/main.rs"
+    ]
+  }
+}

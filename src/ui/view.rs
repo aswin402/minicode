@@ -1,0 +1,435 @@
+#![allow(dead_code)]
+
+use crate::ui::theme::Theme;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+#[derive(Debug, Clone)]
+pub enum TimelineEntry {
+    UserPrompt(String),
+    AssistantMarkdown(String),
+    ToolStart {
+        name: String,
+        command_or_path: String,
+    },
+    ToolApproved {
+        name: String,
+        command_or_path: String,
+    },
+    ToolFinished {
+        name: String,
+        command_or_path: String,
+        success: bool,
+        output: String,
+        duration_ms: Option<u64>,
+    },
+    SystemStatus(String),
+    TurnSeparator,
+}
+
+pub struct TimelineView {
+    pub entries: Vec<TimelineEntry>,
+    pub scroll_offset: u16,
+    pub auto_scroll: bool,
+}
+
+impl TimelineView {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            scroll_offset: 0,
+            auto_scroll: true,
+        }
+    }
+
+    pub fn add_user_message(&mut self, prompt: String) {
+        if !self.entries.is_empty() {
+            self.entries.push(TimelineEntry::TurnSeparator);
+        }
+        self.entries.push(TimelineEntry::UserPrompt(prompt));
+    }
+
+    pub fn append_assistant_delta(&mut self, delta: &str) {
+        if let Some(TimelineEntry::AssistantMarkdown(ref mut text)) = self.entries.last_mut() {
+            text.push_str(delta);
+        } else {
+            self.entries
+                .push(TimelineEntry::AssistantMarkdown(delta.to_string()));
+        }
+    }
+
+    pub fn add_tool_call(&mut self, name: String, args: String) {
+        let display_cmd = Self::extract_cmd_display(&name, &args);
+        self.entries.push(TimelineEntry::ToolStart {
+            name: name.clone(),
+            command_or_path: display_cmd.clone(),
+        });
+        self.entries.push(TimelineEntry::ToolApproved {
+            name,
+            command_or_path: display_cmd,
+        });
+    }
+
+    pub fn finish_tool_call(
+        &mut self,
+        name: &str,
+        success: bool,
+        output: String,
+        duration_ms: u64,
+    ) {
+        // Find corresponding tool start
+        let mut display_cmd = String::new();
+        for entry in self.entries.iter().rev() {
+            if let TimelineEntry::ToolStart {
+                command_or_path,
+                name: n,
+            } = entry
+            {
+                if n == name {
+                    display_cmd = command_or_path.clone();
+                    break;
+                }
+            }
+        }
+
+        self.entries.push(TimelineEntry::ToolFinished {
+            name: name.to_string(),
+            command_or_path: display_cmd,
+            success,
+            output,
+            duration_ms: Some(duration_ms),
+        });
+    }
+
+    pub fn add_status(&mut self, status: String) {
+        self.entries.push(TimelineEntry::SystemStatus(status));
+    }
+
+    fn extract_cmd_display(name: &str, args: &str) -> String {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args) {
+            if let Some(cmd) = parsed.get("command").and_then(|c| c.as_str()) {
+                return cmd.to_string();
+            }
+            if let Some(path) = parsed.get("path").and_then(|p| p.as_str()) {
+                return path.to_string();
+            }
+            if let Some(q) = parsed.get("query").and_then(|q| q.as_str()) {
+                return q.to_string();
+            }
+            if let Some(url) = parsed.get("url").and_then(|u| u.as_str()) {
+                return url.to_string();
+            }
+        }
+        format!("{}({})", name, args)
+    }
+
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        is_working: bool,
+        working_secs: u64,
+    ) {
+        let mut lines: Vec<Line> = Vec::new();
+
+        if self.entries.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "• minicode ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "— Fast, Minimalist AI Coding Agent in Pure Rust",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from(vec![Span::styled(
+                "  Type a prompt or task below to begin pair programming.",
+                Style::default().fg(theme.muted),
+            )]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Examples:",
+                Style::default().fg(theme.warning),
+            )]));
+            lines.push(Line::from(vec![Span::styled(
+                "    • Implement {feature}",
+                Style::default().fg(theme.text_primary),
+            )]));
+            lines.push(Line::from(vec![Span::styled(
+                "    • Inspect src/main.rs and add unit tests",
+                Style::default().fg(theme.text_primary),
+            )]));
+            lines.push(Line::from(vec![Span::styled(
+                "    • Search codebase for tree-sitter AST queries",
+                Style::default().fg(theme.text_primary),
+            )]));
+            lines.push(Line::from(String::new()));
+        }
+
+        for entry in &self.entries {
+            match entry {
+                TimelineEntry::TurnSeparator => {
+                    lines.push(Line::from(String::new()));
+                    lines.push(Line::from(vec![Span::styled(
+                        "─".repeat(area.width.saturating_sub(2) as usize),
+                        Style::default().fg(theme.border),
+                    )]));
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::UserPrompt(prompt) => {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "› ",
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            prompt,
+                            Style::default()
+                                .fg(theme.text_primary)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::AssistantMarkdown(text) => {
+                    let parsed_lines = Self::render_markdown(text, theme);
+                    lines.extend(parsed_lines);
+                }
+                TimelineEntry::ToolStart {
+                    command_or_path, ..
+                } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("• Running ", Style::default().fg(theme.muted)),
+                        Span::styled(command_or_path, Style::default().fg(theme.text_primary)),
+                    ]));
+                }
+                TimelineEntry::ToolApproved {
+                    command_or_path, ..
+                } => {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "✔ ",
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "You approved minicode to run ",
+                            Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(command_or_path, Style::default().fg(theme.text_primary)),
+                        Span::styled(" this time", Style::default().fg(theme.muted)),
+                    ]));
+                }
+                TimelineEntry::ToolFinished {
+                    command_or_path,
+                    output,
+                    success,
+                    ..
+                } => {
+                    let verb = if *success { "Ran" } else { "Failed" };
+                    let verb_color = if *success {
+                        theme.muted
+                    } else {
+                        theme.destructive
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("• {} ", verb), Style::default().fg(verb_color)),
+                        Span::styled(command_or_path, Style::default().fg(theme.warning)),
+                    ]));
+
+                    let trimmed = output.trim();
+                    if trimmed.is_empty() {
+                        lines.push(Line::from(vec![Span::styled(
+                            "  └ (no output)",
+                            Style::default().fg(theme.muted),
+                        )]));
+                    } else {
+                        let mut first = true;
+                        for out_line in trimmed.lines().take(12) {
+                            let prefix = if first { "  └ " } else { "    " };
+                            first = false;
+
+                            // Colorize diff lines or test outputs
+                            let line_color = if out_line.starts_with('+') {
+                                theme.success
+                            } else if out_line.starts_with('-') {
+                                theme.destructive
+                            } else if out_line.starts_with("##")
+                                || out_line.starts_with("test result:")
+                            {
+                                theme.info
+                            } else {
+                                theme.muted
+                            };
+
+                            lines.push(Line::from(vec![
+                                Span::styled(prefix, Style::default().fg(theme.muted)),
+                                Span::styled(out_line, Style::default().fg(line_color)),
+                            ]));
+                        }
+                        if trimmed.lines().count() > 12 {
+                            let remaining = trimmed.lines().count() - 12;
+                            lines.push(Line::from(vec![Span::styled(
+                                format!("    ... +{} lines (output folded)", remaining),
+                                Style::default().fg(theme.border),
+                            )]));
+                        }
+                    }
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::SystemStatus(status) => {
+                    lines.push(Line::from(vec![
+                        Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                        Span::styled(status, Style::default().fg(theme.text_primary)),
+                    ]));
+                }
+            }
+        }
+
+        // Live working status spinner at bottom if running
+        if is_working {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "• Working ",
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({}s • esc to interrupt)", working_secs),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+
+        let total_lines = lines.len() as u16;
+        let viewport_height = area.height;
+        let scroll = if self.auto_scroll && total_lines > viewport_height {
+            total_lines.saturating_sub(viewport_height)
+        } else {
+            self.scroll_offset
+        };
+
+        let block = Block::default()
+            .borders(Borders::NONE)
+            .style(Style::default().bg(theme.bg_primary));
+
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0));
+
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Renders assistant Markdown text into highlighted Ratatui lines
+    fn render_markdown<'a>(text: &'a str, theme: &'a Theme) -> Vec<Line<'a>> {
+        let mut lines = Vec::new();
+
+        for raw_line in text.lines() {
+            let line = raw_line.trim_end();
+
+            if let Some(rest) = line.strip_prefix("### ") {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "### ",
+                        Style::default()
+                            .fg(theme.highlight)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        rest,
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("## ") {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "## ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        rest,
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("# ") {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "# ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        rest,
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("• ") {
+                lines.push(Line::from(vec![
+                    Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("* ") {
+                lines.push(Line::from(vec![
+                    Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("- ") {
+                lines.push(Line::from(vec![
+                    Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("  - ") {
+                lines.push(Line::from(vec![
+                    Span::styled("    - ", Style::default().fg(theme.muted)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("  * ") {
+                lines.push(Line::from(vec![
+                    Span::styled("    - ", Style::default().fg(theme.muted)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if let Some(rest) = line.strip_prefix("  • ") {
+                lines.push(Line::from(vec![
+                    Span::styled("    - ", Style::default().fg(theme.muted)),
+                    Span::styled(rest, Style::default().fg(theme.text_primary)),
+                ]));
+            } else if line.starts_with("```") {
+                lines.push(Line::from(vec![Span::styled(
+                    line,
+                    Style::default().fg(theme.muted),
+                )]));
+            } else if line.is_empty() {
+                lines.push(Line::from(String::new()));
+            } else {
+                lines.push(Line::from(vec![Span::styled(
+                    line,
+                    Style::default().fg(theme.text_primary),
+                )]));
+            }
+        }
+
+        lines
+    }
+}
