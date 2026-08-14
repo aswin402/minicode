@@ -70,9 +70,10 @@ impl<'a> InputDock<'a> {
     /// Autocompletes active slash command when Tab is pressed
     pub fn autocomplete_slash(&mut self) -> bool {
         if let Some(cmd) = self.matching_slash_command() {
-            self.textarea = TextArea::new(vec![cmd.name.to_string()]);
-            self.textarea
-                .set_placeholder_text("Implement {feature} or ask a question...");
+            let mut ta = TextArea::new(vec![cmd.name.to_string()]);
+            ta.set_placeholder_text("Implement {feature} or ask a question...");
+            ta.set_cursor_line_style(Style::default());
+            self.textarea = ta;
             true
         } else {
             false
@@ -98,9 +99,10 @@ impl<'a> InputDock<'a> {
                 let text = self.textarea.lines().join("\n");
                 let trimmed = text.trim().to_string();
                 if !trimmed.is_empty() {
-                    self.textarea = TextArea::default();
-                    self.textarea
-                        .set_placeholder_text("Implement {feature} or ask a question...");
+                    let mut ta = TextArea::default();
+                    ta.set_placeholder_text("Implement {feature} or ask a question...");
+                    ta.set_cursor_line_style(Style::default());
+                    self.textarea = ta;
                     Some(trimmed)
                 } else {
                     None
@@ -133,6 +135,8 @@ impl<'a> InputDock<'a> {
                 .fg(theme.brand_accent)
                 .bg(theme.brand_accent),
         );
+        // Explicitly disable underline on cursor line
+        cloned.set_cursor_line_style(Style::default());
 
         let block = Block::default()
             .borders(Borders::ALL)
