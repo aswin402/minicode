@@ -152,10 +152,11 @@ impl TimelineView {
 
             let branch = crate::ui::status::StatusWidgets::get_git_branch(ctx.workspace);
 
-            // Aura-Themed Pixel Art Logo + Clean Metadata (Matching minimal Image 2)
+            // Aura-Themed minicode Logo (Chevron › + Brackets {} + Glowing Lightning ⚡)
             lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
-                Span::styled("   ▄▄    ", Style::default().fg(theme.brand_accent)),
+                Span::styled("  ▗▄▄  ", Style::default().fg(theme.brand_accent)),
+                Span::styled("▄▄▖   ", Style::default().fg(theme.success)),
                 Span::styled(
                     "minicode v0.0.2",
                     Style::default()
@@ -165,7 +166,10 @@ impl TimelineView {
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("  ▄██    ", Style::default().fg(theme.brand_accent)),
+                Span::styled(" ›", Style::default().fg(theme.brand_accent)),
+                Span::styled("▐  ", Style::default().fg(theme.brand_accent)),
+                Span::styled("▞▀", Style::default().fg(theme.info)),
+                Span::styled("  ▌   ", Style::default().fg(theme.success)),
                 Span::styled(
                     format!("{} | {}", ctx.provider, ctx.model),
                     Style::default().fg(theme.warning),
@@ -173,22 +177,27 @@ impl TimelineView {
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled(" ▄███▄   ", Style::default().fg(theme.highlight)),
+                Span::styled("  ▐ ", Style::default().fg(theme.brand_accent)),
+                Span::styled("▞▀▚", Style::default().fg(theme.info)),
+                Span::styled("  ▌", Style::default().fg(theme.success)),
+                Span::styled("}  ", Style::default().fg(theme.success)),
                 Span::styled(display_path, Style::default().fg(theme.info)),
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("   ███▄  ", Style::default().fg(theme.success)),
+                Span::styled("  ▐  ", Style::default().fg(theme.brand_accent)),
+                Span::styled("▝▀", Style::default().fg(theme.info)),
+                Span::styled("  ▌   ", Style::default().fg(theme.success)),
                 Span::styled(
                     format!("git: {}", branch),
                     Style::default().fg(theme.success),
                 ),
             ]));
 
-            lines.push(Line::from(vec![Span::styled(
-                "    ▀█▀  ",
-                Style::default().fg(theme.info),
-            )]));
+            lines.push(Line::from(vec![
+                Span::styled("  ▝▀▀  ", Style::default().fg(theme.brand_accent)),
+                Span::styled("▀▀▘   ", Style::default().fg(theme.success)),
+            ]));
             lines.push(Line::from(String::new()));
         }
 
