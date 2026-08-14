@@ -22,7 +22,7 @@ use ui::ConfigMenu;
 #[derive(Parser, Debug)]
 #[command(
     name = "minicode",
-    version = "0.0.2",
+    version,
     about = "Fast, minimalist Rust-native TUI + CLI coding agent for humans and AI agents"
 )]
 struct Cli {

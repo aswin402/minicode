@@ -9,7 +9,7 @@ use std::path::Path;
 pub struct StatusWidgets;
 
 impl StatusWidgets {
-    pub fn get_git_branch(workspace: &Path) -> String {
+    pub fn get_git_branch(workspace: &Path) -> Option<String> {
         let output = std::process::Command::new("git")
             .arg("rev-parse")
             .arg("--abbrev-ref")
@@ -21,11 +21,11 @@ impl StatusWidgets {
             if out.status.success() {
                 let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !branch.is_empty() {
-                    return branch;
+                    return Some(branch);
                 }
             }
         }
-        "main".to_string()
+        None
     }
 
     pub fn render_bottom_bar(
@@ -46,9 +46,7 @@ impl StatusWidgets {
             workspace.display().to_string()
         };
 
-        let branch = Self::get_git_branch(workspace);
-
-        let footer_line = Line::from(vec![
+        let mut footer_spans = vec![
             Span::styled(" ", Style::default()),
             Span::styled(
                 model,
@@ -58,10 +56,17 @@ impl StatusWidgets {
             ),
             Span::styled(" · ", Style::default().fg(theme.muted)),
             Span::styled(display_path, Style::default().fg(theme.info)),
-            Span::styled(" · ", Style::default().fg(theme.muted)),
-            Span::styled(branch, Style::default().fg(theme.success)),
-            Span::styled(" [default]", Style::default().fg(theme.muted)),
-        ]);
+        ];
+
+        if let Some(branch) = Self::get_git_branch(workspace) {
+            footer_spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+            footer_spans.push(Span::styled(
+                format!("git:{}", branch),
+                Style::default().fg(theme.success),
+            ));
+        }
+
+        let footer_line = Line::from(footer_spans);
 
         let block = Block::default()
             .borders(Borders::NONE)
