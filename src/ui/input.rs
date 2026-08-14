@@ -1,7 +1,7 @@
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -41,6 +41,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
 
 pub struct InputDock<'a> {
     pub textarea: TextArea<'a>,
+    pub slash_selected_index: usize,
 }
 
 impl<'a> InputDock<'a> {
@@ -48,32 +49,48 @@ impl<'a> InputDock<'a> {
         let mut textarea = TextArea::default();
         textarea.set_placeholder_text("Implement {feature} or ask a question...");
         textarea.set_cursor_line_style(Style::default());
-        Self { textarea }
+        Self {
+            textarea,
+            slash_selected_index: 0,
+        }
     }
 
     /// Returns matching slash command candidates if user is typing a slash command
-    pub fn matching_slash_command(&self) -> Option<&'static SlashCommand> {
+    pub fn matching_slash_commands(&self) -> Vec<&'static SlashCommand> {
         let lines = self.textarea.lines();
         if let Some(first_line) = lines.first() {
             let trimmed = first_line.trim();
             if trimmed.starts_with('/') && !trimmed.contains(' ') {
-                for cmd in SLASH_COMMANDS {
-                    if cmd.name.starts_with(trimmed) {
-                        return Some(cmd);
-                    }
-                }
+                return SLASH_COMMANDS
+                    .iter()
+                    .filter(|cmd| cmd.name.starts_with(trimmed))
+                    .collect();
             }
         }
-        None
+        Vec::new()
     }
 
-    /// Autocompletes active slash command when Tab is pressed
+    /// Returns the currently selected slash command candidate
+    pub fn selected_slash_command(&self) -> Option<&'static SlashCommand> {
+        let matches = self.matching_slash_commands();
+        if matches.is_empty() {
+            None
+        } else {
+            let idx = self
+                .slash_selected_index
+                .min(matches.len().saturating_sub(1));
+            Some(matches[idx])
+        }
+    }
+
+    /// Autocompletes active slash command when Tab or Enter is pressed on recommendation
     pub fn autocomplete_slash(&mut self) -> bool {
-        if let Some(cmd) = self.matching_slash_command() {
+        if let Some(cmd) = self.selected_slash_command() {
             let mut ta = TextArea::new(vec![cmd.name.to_string()]);
             ta.set_placeholder_text("Implement {feature} or ask a question...");
             ta.set_cursor_line_style(Style::default());
             self.textarea = ta;
+            self.slash_selected_index = 0;
             true
         } else {
             false
@@ -84,6 +101,23 @@ impl<'a> InputDock<'a> {
         // Only process KeyPress / KeyRepeat events (ignore KeyRelease)
         if key.kind == KeyEventKind::Release {
             return None;
+        }
+
+        let matching = self.matching_slash_commands();
+        let has_recommendations = !matching.is_empty();
+
+        // Handle Up/Down arrow navigation across recommendations
+        if has_recommendations {
+            if key.code == KeyCode::Up {
+                self.slash_selected_index = self.slash_selected_index.saturating_sub(1);
+                return None;
+            }
+            if key.code == KeyCode::Down {
+                if self.slash_selected_index + 1 < matching.len() {
+                    self.slash_selected_index += 1;
+                }
+                return None;
+            }
         }
 
         // Handle Tab for autocomplete
@@ -98,12 +132,27 @@ impl<'a> InputDock<'a> {
             {
                 let text = self.textarea.lines().join("\n");
                 let trimmed = text.trim().to_string();
-                if !trimmed.is_empty() {
+
+                // If user typed an exact or prefix slash command with recommendations open,
+                // resolve to the highlighted slash command
+                let final_prompt =
+                    if has_recommendations && trimmed.starts_with('/') && !trimmed.contains(' ') {
+                        if let Some(cmd) = self.selected_slash_command() {
+                            cmd.name.to_string()
+                        } else {
+                            trimmed
+                        }
+                    } else {
+                        trimmed
+                    };
+
+                if !final_prompt.is_empty() {
                     let mut ta = TextArea::default();
                     ta.set_placeholder_text("Implement {feature} or ask a question...");
                     ta.set_cursor_line_style(Style::default());
                     self.textarea = ta;
-                    Some(trimmed)
+                    self.slash_selected_index = 0;
+                    Some(final_prompt)
                 } else {
                     None
                 }
@@ -122,6 +171,10 @@ impl<'a> InputDock<'a> {
             }
             _ => {
                 self.textarea.input(key);
+                let new_matches = self.matching_slash_commands();
+                if self.slash_selected_index >= new_matches.len() {
+                    self.slash_selected_index = new_matches.len().saturating_sub(1);
+                }
                 None
             }
         }
@@ -148,23 +201,53 @@ impl<'a> InputDock<'a> {
         frame.render_widget(&cloned, area);
     }
 
-    /// Renders the slash command autocomplete suggestion line (matching screenshot)
+    /// Renders the slash command autocomplete suggestion rows (with Up/Down arrow selection)
     pub fn render_autocomplete_hint(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if let Some(cmd) = self.matching_slash_command() {
-            let line = Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    cmd.name,
-                    Style::default()
-                        .fg(theme.success)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(cmd.description, Style::default().fg(theme.muted)),
-            ]);
-
-            let p = Paragraph::new(line).style(Style::default().bg(theme.bg_primary));
-            frame.render_widget(p, area);
+        let matches = self.matching_slash_commands();
+        if matches.is_empty() {
+            return;
         }
+
+        let max_display = (area.height as usize).min(matches.len());
+        let selected_idx = self
+            .slash_selected_index
+            .min(matches.len().saturating_sub(1));
+
+        let mut lines = Vec::new();
+        for (i, cmd) in matches.iter().take(max_display).enumerate() {
+            let is_selected = i == selected_idx;
+            let prefix = if is_selected { " › " } else { "   " };
+
+            let cmd_style = if is_selected {
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(theme.success)
+            };
+
+            let desc_style = if is_selected {
+                Style::default().fg(theme.text_primary)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+
+            let row_style = if is_selected {
+                Style::default().bg(theme.bg_elevated)
+            } else {
+                Style::default().bg(theme.bg_primary)
+            };
+
+            let mut line = Line::from(vec![
+                Span::styled(prefix, Style::default().fg(theme.brand_accent)),
+                Span::styled(format!("{:<12}", cmd.name), cmd_style),
+                Span::styled(cmd.description, desc_style),
+            ]);
+            line.style = row_style;
+            lines.push(line);
+        }
+
+        let p = Paragraph::new(lines).style(Style::default().bg(theme.bg_primary));
+        frame.render_widget(p, area);
     }
 }

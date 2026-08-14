@@ -89,15 +89,20 @@ impl<'a> App<'a> {
                     .style(Style::default().bg(self.theme.bg_primary));
                 frame.render_widget(background_block, frame.area());
 
-                // Reserve 1 line for autocomplete suggestion if user is typing a slash command
-                let has_slash_hint = self.input_dock.matching_slash_command().is_some();
-                let hint_height = if has_slash_hint { 1 } else { 0 };
+                // Reserve dynamic height for autocomplete suggestions if user is typing a slash command
+                let matching_cmds = self.input_dock.matching_slash_commands();
+                let has_slash_hint = !matching_cmds.is_empty();
+                let hint_height = if has_slash_hint {
+                    matching_cmds.len().min(4) as u16
+                } else {
+                    0
+                };
 
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Min(4),              // Streaming Timeline
-                        Constraint::Length(hint_height), // Autocomplete hint row
+                        Constraint::Length(hint_height), // Autocomplete hint rows
                         Constraint::Length(3),           // Input Dock
                         Constraint::Length(1),           // Minimal Bottom Status Line
                     ])
