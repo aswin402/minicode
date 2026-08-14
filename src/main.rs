@@ -22,7 +22,7 @@ use ui::ConfigMenu;
 #[derive(Parser, Debug)]
 #[command(
     name = "minicode",
-    version = "0.1.0",
+    version = "0.0.1",
     about = "Fast, minimalist Rust-native TUI + CLI coding agent for humans and AI agents"
 )]
 struct Cli {
@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Dispatch configure command immediately if requested
     if let Some(Commands::Configure) = cli.command {
-        ConfigMenu::run_interactive(&workspace_canonical)?;
+        ConfigMenu::run_interactive(&workspace_canonical).await?;
         return Ok(());
     }
 

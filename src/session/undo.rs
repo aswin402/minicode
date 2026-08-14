@@ -44,6 +44,44 @@ impl UndoEngine {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct UndoResult {
+    pub turn_id: usize,
+    pub restored_count: usize,
+    pub deleted_count: usize,
+    pub files: Vec<String>,
+}
+
+/// Convenience function to rollback changes made in the latest recorded turn
+pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
+    let backup_manager = BackupManager::new(workspace_root);
+    if let Some(turn_id) = backup_manager.latest_turn_id() {
+        let files = UndoEngine::rollback_turn(&backup_manager, turn_id)?;
+        let mut restored = 0;
+        let mut deleted = 0;
+        for f in &files {
+            if f.starts_with("(deleted)") {
+                deleted += 1;
+            } else {
+                restored += 1;
+            }
+        }
+        Ok(UndoResult {
+            turn_id,
+            restored_count: restored,
+            deleted_count: deleted,
+            files,
+        })
+    } else {
+        Ok(UndoResult {
+            turn_id: 0,
+            restored_count: 0,
+            deleted_count: 0,
+            files: vec![],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

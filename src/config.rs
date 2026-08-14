@@ -86,6 +86,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub auto_approve: bool,
 
+    #[serde(default = "default_approval_policy")]
+    pub approval_policy: String,
+
     #[serde(default = "default_timeout_secs")]
     pub timeout: u64,
 
@@ -100,11 +103,16 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             auto_approve: false,
+            approval_policy: default_approval_policy(),
             timeout: default_timeout_secs(),
             map_tokens: default_map_tokens(),
             warning_threshold: default_warning_threshold(),
         }
     }
+}
+
+fn default_approval_policy() -> String {
+    "strict".to_string()
 }
 
 fn default_timeout_secs() -> u64 {

@@ -1,9 +1,11 @@
+use crate::agent::models::ModelFetcher;
 use crate::agent::types::AgentEvent;
 use crate::agent::AgentLoop;
 use crate::config::Config;
 use crate::error::Result;
-use crate::ui::{InputDock, StatusWidgets, Theme, TimelineView};
-use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use crate::session::undo::rollback_turn;
+use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineView};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -25,6 +27,8 @@ pub struct App<'a> {
     theme: Theme,
     timeline: TimelineView,
     input_dock: InputDock<'a>,
+    modal: ModalState,
+    model_fetcher: ModelFetcher,
     is_working: bool,
     work_start: Option<Instant>,
 }
@@ -38,6 +42,8 @@ impl<'a> App<'a> {
             theme,
             timeline: TimelineView::new(),
             input_dock: InputDock::new(),
+            modal: ModalState::None,
+            model_fetcher: ModelFetcher::new(),
             is_working: false,
             work_start: None,
         }
@@ -83,27 +89,42 @@ impl<'a> App<'a> {
                     .style(Style::default().bg(self.theme.bg_primary));
                 frame.render_widget(background_block, frame.area());
 
+                // Reserve 1 line for autocomplete suggestion if user is typing a slash command
+                let has_slash_hint = self.input_dock.matching_slash_command().is_some();
+                let hint_height = if has_slash_hint { 1 } else { 0 };
+
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Min(4),    // Streaming Timeline
-                        Constraint::Length(3), // Input Dock (Elevated bar)
-                        Constraint::Length(1), // Minimal Bottom Status Line
+                        Constraint::Min(4),              // Streaming Timeline
+                        Constraint::Length(hint_height), // Autocomplete hint row
+                        Constraint::Length(3),           // Input Dock
+                        Constraint::Length(1),           // Minimal Bottom Status Line
                     ])
                     .split(frame.area());
 
                 self.timeline
                     .render(frame, chunks[0], &self.theme, self.is_working, working_secs);
 
-                self.input_dock.render(frame, chunks[1], &self.theme);
+                if has_slash_hint {
+                    self.input_dock
+                        .render_autocomplete_hint(frame, chunks[1], &self.theme);
+                }
+
+                self.input_dock.render(frame, chunks[2], &self.theme);
 
                 StatusWidgets::render_bottom_bar(
                     frame,
-                    chunks[2],
+                    chunks[3],
                     &self.theme,
                     &self.workspace_root,
                     &self.config.provider.model,
                 );
+
+                // Render Modal Overlay if active
+                if self.modal.is_active() {
+                    self.modal.render(frame, frame.area(), &self.theme);
+                }
             })?;
 
             tokio::select! {
@@ -144,6 +165,16 @@ impl<'a> App<'a> {
                 // Handle user keyboard events from terminal
                 Some(Ok(event)) = event_stream.next() => {
                     if let Event::Key(key_event) = event {
+                        if key_event.kind == KeyEventKind::Release {
+                            continue;
+                        }
+
+                        // Modal is active — intercept keyboard navigation
+                        if self.modal.is_active() {
+                            self.handle_modal_key(key_event).await;
+                            continue;
+                        }
+
                         // Check for Ctrl+C or Esc to interrupt or exit
                         if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
                             if self.is_working {
@@ -177,6 +208,34 @@ impl<'a> App<'a> {
                                 continue;
                             }
 
+                            if prompt == "/help" {
+                                self.modal = ModalState::Help;
+                                continue;
+                            }
+
+                            if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
+                                self.modal = ModalState::new_provider_select();
+                                continue;
+                            }
+
+                            if prompt == "/undo" {
+                                match rollback_turn(&self.workspace_root) {
+                                    Ok(res) if res.restored_count > 0 || res.deleted_count > 0 => {
+                                        self.timeline.add_status(format!(
+                                            "✔ Reverted turn #{}: restored {} file(s), deleted {} file(s)",
+                                            res.turn_id, res.restored_count, res.deleted_count
+                                        ));
+                                    }
+                                    Ok(_) => {
+                                        self.timeline.add_status("ℹ No changes found to undo in previous turn".to_string());
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!("✗ Undo failed: {}", e));
+                                    }
+                                }
+                                continue;
+                            }
+
                             self.timeline.add_user_message(prompt.clone());
                             self.is_working = true;
                             self.work_start = Some(Instant::now());
@@ -196,5 +255,112 @@ impl<'a> App<'a> {
         terminal.show_cursor()?;
 
         Ok(())
+    }
+
+    /// Handles keyboard interaction within in-TUI modal dialogs
+    async fn handle_modal_key(&mut self, key: crossterm::event::KeyEvent) {
+        match &mut self.modal {
+            ModalState::None => {}
+            ModalState::ProviderSelect {
+                providers,
+                selected_index,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < providers.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let provider = providers[*selected_index].clone();
+                    let env_var = match provider.as_str() {
+                        "openrouter" => "OPENROUTER_API_KEY",
+                        "gemini" => "GEMINI_API_KEY",
+                        "openai" => "OPENAI_API_KEY",
+                        "deepseek" => "DEEPSEEK_API_KEY",
+                        "groq" => "GROQ_API_KEY",
+                        "together" => "TOGETHER_API_KEY",
+                        "ollama" => "OLLAMA_API_KEY",
+                        _ => "API_KEY",
+                    };
+                    let api_key = std::env::var(env_var).unwrap_or_default();
+
+                    // Switch modal to loading models state
+                    let models_res = self
+                        .model_fetcher
+                        .fetch_models(&provider, &api_key, None)
+                        .await;
+                    let models = models_res.unwrap_or_default();
+
+                    if models.is_empty() {
+                        self.timeline.add_status(format!(
+                            "ℹ No live models list found for {}. Keeping current model: {}",
+                            provider, self.config.provider.model
+                        ));
+                        self.config.provider.default = provider;
+                        self.modal = ModalState::None;
+                    } else {
+                        self.modal = ModalState::new_model_select(provider, models);
+                    }
+                }
+                _ => {}
+            },
+            ModalState::ModelSelect {
+                provider,
+                models,
+                filtered_indices,
+                selected_index,
+                filter,
+                ..
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::new_provider_select();
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < filtered_indices.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    self.modal.update_filter();
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    self.modal.update_filter();
+                }
+                KeyCode::Enter => {
+                    if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
+                        let real_idx = filtered_indices[*selected_index];
+                        let selected_model = models[real_idx].id.clone();
+                        self.config.provider.default = provider.clone();
+                        self.config.provider.model = selected_model.clone();
+
+                        self.timeline.add_status(format!(
+                            "✔ Switched active provider to '{}' and model to '{}'",
+                            provider, selected_model
+                        ));
+                    }
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::Help => {
+                if key.code == KeyCode::Esc
+                    || key.code == KeyCode::Enter
+                    || key.code == KeyCode::Char('q')
+                {
+                    self.modal = ModalState::None;
+                }
+            }
+        }
     }
 }

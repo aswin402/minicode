@@ -599,38 +599,66 @@ impl Provider for OpenAiCompatibleProvider {
 
 /// Provider factory that initializes the appropriate provider based on name and config
 pub fn create_provider(provider_name: &str, api_key: &str) -> Result<Box<dyn Provider>> {
+    create_provider_with_base_url(provider_name, api_key, None)
+}
+
+/// Provider factory that supports custom base URLs for OpenAI-compatible endpoints
+pub fn create_provider_with_base_url(
+    provider_name: &str,
+    api_key: &str,
+    custom_base_url: Option<&str>,
+) -> Result<Box<dyn Provider>> {
     match provider_name.to_lowercase().as_str() {
         "gemini" | "google" => Ok(Box::new(GeminiProvider::new(api_key))),
         "openrouter" => Ok(Box::new(OpenAiCompatibleProvider::openrouter(api_key))),
-        "openai" => Ok(Box::new(OpenAiCompatibleProvider::openai(api_key))),
+        "openai" => {
+            if let Some(url) = custom_base_url {
+                Ok(Box::new(OpenAiCompatibleProvider::new(
+                    "openai", api_key, url, "gpt-4o",
+                )))
+            } else {
+                Ok(Box::new(OpenAiCompatibleProvider::openai(api_key)))
+            }
+        }
         "deepseek" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "deepseek",
             api_key,
-            "https://api.deepseek.com/v1",
+            custom_base_url.unwrap_or("https://api.deepseek.com/v1"),
             "deepseek-coder",
         ))),
         "groq" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "groq",
             api_key,
-            "https://api.groq.com/openai/v1",
+            custom_base_url.unwrap_or("https://api.groq.com/openai/v1"),
             "llama-3.3-70b-versatile",
         ))),
         "together" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "together",
             api_key,
-            "https://api.together.xyz/v1",
+            custom_base_url.unwrap_or("https://api.together.xyz/v1"),
             "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         ))),
         "ollama" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "ollama",
             "",
-            "http://localhost:11434/v1",
+            custom_base_url.unwrap_or("http://localhost:11434/v1"),
             "qwen2.5-coder",
         ))),
-        other => Err(ProviderError::UnsupportedModel {
-            model: other.to_string(),
-            provider: provider_name.to_string(),
+        custom_name => {
+            if let Some(url) = custom_base_url {
+                Ok(Box::new(OpenAiCompatibleProvider::new(
+                    custom_name,
+                    api_key,
+                    url,
+                    "default-model",
+                )))
+            } else {
+                Err(ProviderError::UnsupportedModel {
+                    model: custom_name.to_string(),
+                    provider: provider_name.to_string(),
+                }
+                .into())
+            }
         }
-        .into()),
     }
 }

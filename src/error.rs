@@ -36,6 +36,12 @@ pub enum MinicodeError {
     Serialization(#[from] serde_json::Error),
 }
 
+impl From<reqwest::Error> for MinicodeError {
+    fn from(err: reqwest::Error) -> Self {
+        MinicodeError::Provider(ProviderError::Http(err))
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Failed to read config file at {path}: {source}")]

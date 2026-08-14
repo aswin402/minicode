@@ -107,6 +107,31 @@ impl BackupManager {
         Ok(manifest)
     }
 
+    /// Returns the most recent turn ID with an existing backup manifest
+    pub fn latest_turn_id(&self) -> Option<usize> {
+        if !self.backup_root.exists() {
+            return None;
+        }
+
+        let mut turn_ids: Vec<usize> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.backup_root) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        if let Ok(id) = entry.file_name().to_string_lossy().parse::<usize>() {
+                            if entry.path().join("manifest.json").exists() {
+                                turn_ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        turn_ids.sort();
+        turn_ids.last().copied()
+    }
+
     /// Prunes backup folders older than `max_turns` to prevent disk bloat.
     pub fn prune_old_backups(&self, max_turns: usize) -> Result<()> {
         if !self.backup_root.exists() {
