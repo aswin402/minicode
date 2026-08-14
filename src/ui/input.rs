@@ -221,7 +221,7 @@ impl<'a> InputDock<'a> {
             let cmd_style = if is_selected {
                 Style::default()
                     .fg(theme.success)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.success)
             };
