@@ -4,6 +4,9 @@ version = "0.0.3"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
+repository = "https://github.com/aswin402/minicode"
+homepage = "https://github.com/aswin402/minicode"
+license = "MIT OR Apache-2.0"
 
 [workspace]
 

@@ -18,12 +18,32 @@ use error::Result;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use ui::ConfigMenu;
+fn get_version_banner() -> &'static str {
+    let banner = format!(
+        "\n\x1b[38;2;162;119;255m   ___ ___                           _     \x1b[0m\n\
+         \x1b[38;2;162;119;255m  |   Y   | _   ___  _   ___  ___  _| | ___ \x1b[0m\n\
+         \x1b[38;2;246;148;255m  |.      || | |   || | |  _|| . || . || -_|\x1b[0m\n\
+         \x1b[38;2;97;255;202m  |. \\_/  ||_| |_|_||_| |___||___||___||___|\x1b[0m\n\n\
+         \x1b[1m\x1b[38;2;162;119;255m• {} v{}\x1b[0m — {}\n\
+         \x1b[38;2;130;226;255m• Repository\x1b[0m : {}\n\
+         \x1b[38;2;255;202;133m• Author    \x1b[0m : {}\n\
+         \x1b[38;2;97;255;202m• Runtime   \x1b[0m : Pure Rust (Tokio Async Engine)\n\
+         \x1b[38;2;162;119;255m• License   \x1b[0m : {}\n",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_DESCRIPTION"),
+        env!("CARGO_PKG_REPOSITORY"),
+        env!("CARGO_PKG_AUTHORS"),
+        env!("CARGO_PKG_LICENSE"),
+    );
+    Box::leak(banner.into_boxed_str())
+}
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "minicode",
-    version,
-    about = "Fast, minimalist Rust-native TUI + CLI coding agent for humans and AI agents"
+    name = env!("CARGO_PKG_NAME"),
+    version = get_version_banner(),
+    about = env!("CARGO_PKG_DESCRIPTION")
 )]
 struct Cli {
     #[command(subcommand)]
