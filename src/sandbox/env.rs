@@ -1,51 +1,6 @@
+use crate::constants::{BLOCKED_PREFIXES, SECRET_PATTERNS, WHITELIST_ENV_VARS};
 use std::path::Path;
 use std::process::Command;
-
-const WHITELIST_ENV_VARS: &[&str] = &[
-    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "EDITOR", "TMPDIR", "PWD",
-];
-
-const SECRET_PATTERNS: &[&str] = &[
-    "KEY",
-    "SECRET",
-    "TOKEN",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "AUTH",
-    "BEARER",
-    "PRIVATE",
-    "SIGNING",
-    "CERTIFICATE",
-    "DATABASE_URL",
-    "CONN_STR",
-    "DSN",
-    "SSH_AUTH_SOCK",
-    "KUBECONFIG",
-    "DOCKER_HOST",
-];
-
-const BLOCKED_PREFIXES: &[&str] = &[
-    "AWS_",
-    "GITHUB_",
-    "OPENAI_",
-    "GEMINI_",
-    "ANTHROPIC_",
-    "DEEPSEEK_",
-    "MISTRAL_",
-    "GROQ_",
-    "COHERE_",
-    "OLLAMA_",
-    "CLERK_",
-    "SUPABASE_",
-    "FIREBASE_",
-    "SENTRY_",
-    "VERCEL_",
-    "NETLIFY_",
-    "HEROKU_",
-    "DIGITALOCEAN_",
-    "CLOUDFLARE_",
-];
 
 /// Builds a sanitized `std::process::Command` that clears all inherited variables
 /// and selectively restores only safe environment variables.

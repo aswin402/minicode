@@ -1,4 +1,4 @@
-use crate::constants::MAX_SEARCH_RESULTS;
+use crate::constants::{MAX_REGEX_QUERY_LEN, MAX_SEARCH_RESULTS};
 use crate::error::{Result, ToolError};
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -13,6 +13,18 @@ pub fn grep_search(
     is_regex: bool,
     file_pattern: Option<&str>,
 ) -> Result<String> {
+    if query.len() > MAX_REGEX_QUERY_LEN {
+        return Err(ToolError::InvalidArguments {
+            name: "grep_search".to_string(),
+            reason: format!(
+                "Search query exceeds maximum length of {} characters (received {})",
+                MAX_REGEX_QUERY_LEN,
+                query.len()
+            ),
+        }
+        .into());
+    }
+
     let regex = if is_regex {
         Regex::new(query).map_err(|e| ToolError::InvalidArguments {
             name: "grep_search".to_string(),
@@ -135,6 +147,19 @@ mod tests {
 
         let res = grep_search(&temp_dir, "Target query", false, None).unwrap();
         assert!(res.contains("sample.txt:2: Target query match here"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_grep_search_rejects_oversized_query() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_grep_len_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let long_query = "a".repeat(MAX_REGEX_QUERY_LEN + 1);
+        let res = grep_search(&temp_dir, &long_query, false, None);
+        assert!(res.is_err());
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

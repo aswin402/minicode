@@ -3,7 +3,7 @@ use crate::constants::{
     JSONRPC_PARSE_ERROR, JSONRPC_SERVER_ERROR, JSONRPC_VERSION, MCP_PROTOCOL_VERSION,
 };
 use crate::context::graph::CodeGraph;
-use crate::tools::{exec, fs, search};
+use crate::tools::{exec, fs, parse_u64_param, search};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -253,7 +253,19 @@ impl MinicodeMcpServer {
             }
 
             "tools/call" => {
-                let params = req.params.unwrap_or_default();
+                let Some(params) = req.params.as_ref().and_then(|p| p.as_object()) else {
+                    return Some(JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: JSONRPC_INVALID_PARAMS,
+                            message: "Missing or non-object 'params' field in tools/call request"
+                                .into(),
+                            data: None,
+                        }),
+                    });
+                };
                 let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
                     return Some(JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -267,6 +279,19 @@ impl MinicodeMcpServer {
                     });
                 };
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+                if !arguments.is_object() {
+                    return Some(JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: JSONRPC_INVALID_PARAMS,
+                            message: "'arguments' field in tools/call params must be an object"
+                                .into(),
+                            data: None,
+                        }),
+                    });
+                }
 
                 let result = self.execute_tool(name, &arguments).await;
                 match result {
@@ -320,14 +345,10 @@ impl MinicodeMcpServer {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter 'path'".to_string())?;
-                let start_line = args
-                    .get("start_line")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| usize::try_from(v).ok());
-                let end_line = args
-                    .get("end_line")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| usize::try_from(v).ok());
+                let start_line =
+                    parse_u64_param(args.get("start_line")).and_then(|v| usize::try_from(v).ok());
+                let end_line =
+                    parse_u64_param(args.get("end_line")).and_then(|v| usize::try_from(v).ok());
                 fs::read_file(&self.workspace_root, path, start_line, end_line)
                     .map_err(|e| e.to_string())
             }
@@ -364,7 +385,7 @@ impl MinicodeMcpServer {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter 'command'".to_string())?;
                 tracing::info!(command = %command, "MCP client invoking exec_cmd");
-                let timeout = args.get("timeout_secs").and_then(|v| v.as_u64());
+                let timeout = parse_u64_param(args.get("timeout_secs"));
                 exec::exec_cmd(&self.workspace_root, command, timeout)
                     .await
                     .map_err(|e| e.to_string())
@@ -383,9 +404,7 @@ impl MinicodeMcpServer {
                     .map_err(|e| e.to_string())
             }
             "repo_map" => {
-                let max_tokens = args
-                    .get("max_tokens")
-                    .and_then(|v| v.as_u64())
+                let max_tokens = parse_u64_param(args.get("max_tokens"))
                     .and_then(|v| usize::try_from(v).ok())
                     .unwrap_or(DEFAULT_MAP_TOKENS);
                 let mut graph = CodeGraph::new();
@@ -413,7 +432,7 @@ impl MinicodeMcpServer {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter 'name'".to_string())?;
-                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
                 let mut index = crate::context::index::SymbolIndex::new();
                 index
                     .build_index(&self.workspace_root)
@@ -480,5 +499,21 @@ mod tests {
         };
         let resp = server.handle_request(req).await;
         assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_server_rejects_invalid_params_shape() {
+        let server = MinicodeMcpServer::new(Path::new("."));
+        // params is an array instead of object
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(3)),
+            method: "tools/call".to_string(),
+            params: Some(json!(["invalid", "array"])),
+        };
+        let resp = server.handle_request(req).await.unwrap();
+        assert!(resp.error.is_some());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, JSONRPC_INVALID_PARAMS);
     }
 }

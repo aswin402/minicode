@@ -311,6 +311,10 @@ export interface UserProfile {
     name: string;
 }
 
+export class AccountManager {
+    account_id: string;
+}
+
 export function formatProfile(user: UserProfile): string {
     return user.name;
 }
@@ -330,6 +334,9 @@ export function formatProfile(user: UserProfile): string {
         assert!(ts_symbols
             .iter()
             .any(|s| s.name == "UserProfile" && s.kind == "interface"));
+        assert!(ts_symbols
+            .iter()
+            .any(|s| s.name == "AccountManager" && s.kind == "class"));
         assert!(ts_symbols
             .iter()
             .any(|s| s.name == "formatProfile" && s.kind == "function"));

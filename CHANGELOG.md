@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.6] — 2026-08-15
+
+### ⚡ Performance & Indexing Optimization
+- **$O(V \times I)$ Graph Edge Construction (`src/context/graph.rs`)**:
+  - Replaced $O(V \times S)$ quadratic full-corpus substring searches with a single-pass `HashSet` identifier lookup, avoiding massive CPU stalls on large repositories.
+- **Robertson-Spärck Jones BM25 Scoring (`src/context/index.rs`)**:
+  - Implemented the standard BM25 formula incorporating document frequency (IDF), document length normalization ($k_1 = 1.2, b = 0.75$), type definition boosts (+3.0 for struct/class/interface/trait/enum, +2.0 for functions), and test/mock file down-ranking (*0.5).
+- **$O(\log N + K)$ Prefix Range Lookups (`src/context/index.rs`)**:
+  - Replaced linear `HashMap` scan with `BTreeMap` range queries (`.range(prefix..prefix_end)`).
+  - Preserved single-character domain variables/identifiers (e.g. `x`, `y`, `e`).
+- **Zero-Allocation Observation Masking (`src/context/compressor.rs`)**:
+  - Optimized `mask_observation` to stream head and tail lines with iterators (`.take()`, `.skip()`) without collecting the full output into a temporary `Vec<&str>`.
+
+### 🛠️ Tool Registry & Protocol Alignment
+- **Tool Suite Synchronization (`src/tools/mod.rs`, `src/mcp/server.rs`)**:
+  - Synchronized `repo_map` into `ToolRegistry::get_tool_schemas()` and `dispatch_tool` (totaling 17 built-in LLM tools and 8 MCP protocol endpoints).
+  - Added `parse_u64_param` helper across built-in and MCP tool dispatchers to robustly parse both JSON integers and stringified numbers.
+- **JSON-RPC Protocol Hardening (`src/mcp/server.rs`)**:
+  - Added strict object shape validation for `params` and `arguments` in `tools/call`.
+- **Search ReDoS Guard (`src/tools/search.rs`)**:
+  - Added `MAX_REGEX_QUERY_LEN` protection (1024 characters) against oversized regex patterns.
+
+### 📦 Centralized Constants & Architecture Cleanliness
+- **Constants Centralization (`src/constants.rs`, `src/sandbox/env.rs`, `src/session/`, `src/context/skills.rs`)**:
+  - Consolidated Blast Radius risk thresholds, BM25 tuning parameters, directory names (`SESSIONS_DIR_NAME`, `BACKUPS_DIR_NAME`, `SKILL_MD_FILE`, `SKILLS_DIR_NAME`, `MCP_TOOL_PREFIX`), and sandbox environment sanitization arrays (`WHITELIST_ENV_VARS`, `SECRET_PATTERNS`, `BLOCKED_PREFIXES`).
+  - Added `#[must_use]` on `build_system_prompt` (`src/agent/prompt.rs`).
+
+---
+
 ## [0.0.5] — 2026-08-15
 
 ### 🧠 AST Code Intelligence & Symbol Extraction

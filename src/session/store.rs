@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::agent::types::AgentEvent;
+use crate::constants::{CONFIG_DIR_NAME, SESSIONS_DIR_NAME, WORKSPACE_DIR_NAME};
 use crate::error::{Result, SessionError};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -22,9 +23,9 @@ pub struct SessionStore {
 impl SessionStore {
     pub fn new() -> Self {
         let sessions_dir = if let Some(config_dir) = dirs::config_dir() {
-            config_dir.join("minicode").join("sessions")
+            config_dir.join(CONFIG_DIR_NAME).join(SESSIONS_DIR_NAME)
         } else {
-            PathBuf::from(".minicode").join("sessions")
+            PathBuf::from(WORKSPACE_DIR_NAME).join(SESSIONS_DIR_NAME)
         };
 
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {

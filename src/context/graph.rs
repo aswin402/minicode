@@ -94,7 +94,7 @@ impl CodeGraph {
             }
         }
 
-        // 3. Build directed dependency edges based on cross-file symbol and import references
+        // 3. Build directed dependency edges based on cross-file symbol references (O(V * I) single-pass)
         for file in &source_files {
             let from_idx = match self.node_indices.get(file) {
                 Some(&idx) => idx,
@@ -102,11 +102,19 @@ impl CodeGraph {
             };
 
             if let Ok(content) = std::fs::read_to_string(file) {
-                for (sym_name, (target_file, _)) in &self.symbol_to_file {
-                    if target_file != file && content.contains(sym_name) {
-                        if let Some(&to_idx) = self.node_indices.get(target_file) {
-                            if !self.graph.contains_edge(from_idx, to_idx) {
-                                self.graph.add_edge(from_idx, to_idx, ());
+                // Extract unique word-boundary identifiers in a single pass
+                let identifiers: HashSet<&str> = content
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|w| w.len() >= 2)
+                    .collect();
+
+                for ident in identifiers {
+                    if let Some((target_file, _)) = self.symbol_to_file.get(ident) {
+                        if target_file != file {
+                            if let Some(&to_idx) = self.node_indices.get(target_file) {
+                                if !self.graph.contains_edge(from_idx, to_idx) {
+                                    self.graph.add_edge(from_idx, to_idx, ());
+                                }
                             }
                         }
                     }
@@ -255,7 +263,7 @@ impl CodeGraph {
         }
 
         while let Some((curr_node, depth)) = queue.pop_front() {
-            if depth >= 3 {
+            if depth >= crate::constants::BLAST_RADIUS_MAX_HOPS {
                 continue;
             }
             for pred in self
@@ -318,11 +326,18 @@ impl CodeGraph {
             .filter(|d| !test_coverage.contains(d))
             .count();
 
-        let risk_level = if in_cyclic_dependency || direct_count > 10 || transitive_count > 20 {
+        let risk_level = if in_cyclic_dependency
+            || direct_count > crate::constants::BLAST_RADIUS_CRITICAL_DIRECT
+            || transitive_count > crate::constants::BLAST_RADIUS_CRITICAL_TRANSITIVE
+        {
             "CRITICAL"
-        } else if non_test_direct_count > 5 || (!has_tests && non_test_direct_count > 2) {
+        } else if non_test_direct_count > crate::constants::BLAST_RADIUS_HIGH_DIRECT
+            || (!has_tests && non_test_direct_count > crate::constants::BLAST_RADIUS_HIGH_NO_TESTS)
+        {
             "HIGH"
-        } else if non_test_direct_count > 1 || transitive_count > 3 {
+        } else if non_test_direct_count > crate::constants::BLAST_RADIUS_MEDIUM_DIRECT
+            || transitive_count > crate::constants::BLAST_RADIUS_MEDIUM_TRANSITIVE
+        {
             "MEDIUM"
         } else {
             "LOW"

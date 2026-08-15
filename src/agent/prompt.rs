@@ -18,6 +18,7 @@ pub struct PromptBuilder;
 impl PromptBuilder {
     /// Assembles the complete system prompt including base instructions,
     /// repository rules (AGENTS.md), and workspace metadata.
+    #[must_use]
     pub fn build_system_prompt(workspace_dir: &Path, custom_instructions: Option<&str>) -> String {
         let mut prompt = String::from(DEFAULT_SYSTEM_PROMPT);
 

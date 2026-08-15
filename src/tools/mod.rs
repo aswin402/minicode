@@ -12,6 +12,14 @@ use serde_json::json;
 use std::path::Path;
 use std::time::Instant;
 
+/// Robust numeric parser that handles both JSON numbers and stringified integers
+pub fn parse_u64_param(value: Option<&serde_json::Value>) -> Option<u64> {
+    value.and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+    })
+}
+
 pub struct ToolRegistry;
 
 impl ToolRegistry {
@@ -292,6 +300,19 @@ impl ToolRegistry {
                     "required": ["name"]
                 }),
             },
+            ToolSchema {
+                name: "repo_map".to_string(),
+                description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "max_tokens": {
+                            "type": "integer",
+                            "description": "Optional token budget for the skeleton map (default: 1024)"
+                        }
+                    }
+                }),
+            },
         ]
     }
 
@@ -344,14 +365,10 @@ impl ToolRegistry {
                         reason: "Missing required argument 'path'".to_string(),
                     }
                 })?;
-                let start_line = args
-                    .get("start_line")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| usize::try_from(v).ok());
-                let end_line = args
-                    .get("end_line")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|v| usize::try_from(v).ok());
+                let start_line =
+                    parse_u64_param(args.get("start_line")).and_then(|v| usize::try_from(v).ok());
+                let end_line =
+                    parse_u64_param(args.get("end_line")).and_then(|v| usize::try_from(v).ok());
                 fs::read_file(workspace_root, path, start_line, end_line)
             }
             "write_file" => {
@@ -429,7 +446,7 @@ impl ToolRegistry {
                         name: "exec_cmd".to_string(),
                         reason: "Missing required argument 'command'".to_string(),
                     })?;
-                let timeout = args.get("timeout_secs").and_then(|v| v.as_u64());
+                let timeout = parse_u64_param(args.get("timeout_secs"));
                 exec::exec_cmd(workspace_root, cmd, timeout).await
             }
             "grep_search" => {
@@ -620,7 +637,7 @@ impl ToolRegistry {
                         reason: "Missing required argument 'name'".to_string(),
                     }
                 })?;
-                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
                 let mut index = crate::context::index::SymbolIndex::new();
                 index.build_index(workspace_root)?;
                 let matches = if name.contains(' ') {
@@ -634,6 +651,14 @@ impl ToolRegistry {
                     res
                 };
                 Ok(index.format_matches(&matches, workspace_root))
+            }
+            "repo_map" => {
+                let max_tokens = parse_u64_param(args.get("max_tokens"))
+                    .and_then(|v| usize::try_from(v).ok())
+                    .unwrap_or(crate::constants::DEFAULT_MAP_TOKENS);
+                let mut graph = crate::context::graph::CodeGraph::new();
+                graph.build_graph(workspace_root)?;
+                Ok(graph.format_repomap(workspace_root, &[], max_tokens))
             }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
@@ -650,7 +675,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 16);
+        assert_eq!(schemas.len(), 17);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -668,5 +693,20 @@ mod tests {
         assert!(names.contains(&"archive_plan"));
         assert!(names.contains(&"impact_analysis"));
         assert!(names.contains(&"locate_symbol"));
+        assert!(names.contains(&"repo_map"));
+    }
+
+    #[test]
+    fn test_parse_u64_param() {
+        let num_val = json!(42);
+        assert_eq!(parse_u64_param(Some(&num_val)), Some(42));
+
+        let str_val = json!("100");
+        assert_eq!(parse_u64_param(Some(&str_val)), Some(100));
+
+        let invalid_str = json!("abc");
+        assert_eq!(parse_u64_param(Some(&invalid_str)), None);
+
+        assert_eq!(parse_u64_param(None), None);
     }
 }

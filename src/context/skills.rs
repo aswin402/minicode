@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::constants::{AGENTS_MD_FILE, SKILLS_DIR_NAME, SKILL_MD_FILE};
 use crate::error::Result;
 use std::path::{Path, PathBuf};
 
@@ -19,7 +20,7 @@ impl SkillLoader {
         let mut skills = Vec::new();
 
         // 1. Check AGENTS.md in workspace root
-        let agents_md = workspace_root.join(crate::constants::AGENTS_MD_FILE);
+        let agents_md = workspace_root.join(AGENTS_MD_FILE);
         match std::fs::read_to_string(&agents_md) {
             Ok(content) => {
                 skills.push(Skill {
@@ -37,7 +38,7 @@ impl SkillLoader {
         }
 
         // 2. Check SKILL.md in workspace root
-        let skill_md = workspace_root.join("SKILL.md");
+        let skill_md = workspace_root.join(SKILL_MD_FILE);
         match std::fs::read_to_string(&skill_md) {
             Ok(content) => {
                 skills.push(Skill {
@@ -54,7 +55,7 @@ impl SkillLoader {
         }
 
         // 3. Scan .skills/ directory
-        let skills_dir = workspace_root.join(".skills");
+        let skills_dir = workspace_root.join(SKILLS_DIR_NAME);
         match std::fs::read_dir(&skills_dir) {
             Ok(entries) => {
                 for entry in entries.flatten() {

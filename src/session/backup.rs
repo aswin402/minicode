@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::constants::{BACKUPS_DIR_NAME, WORKSPACE_DIR_NAME};
 use crate::error::{Result, SessionError};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -25,7 +26,9 @@ pub struct BackupManager {
 impl BackupManager {
     pub fn new(workspace_root: &Path) -> Self {
         Self {
-            backup_root: workspace_root.join(".minicode").join("backups"),
+            backup_root: workspace_root
+                .join(WORKSPACE_DIR_NAME)
+                .join(BACKUPS_DIR_NAME),
         }
     }
 

@@ -156,3 +156,20 @@
 - [x] Protocol exposure in MCP server `tools/list` & `tools/call` in `src/mcp/server.rs`
 - [x] 46/46 unit tests passing with zero clippy warnings and clean formatting
 
+---
+
+## ✅ Phase 2 Post-Audit Fixes & Optimizations (COMPLETED)
+- [x] **C1 (P0)**: Inverted graph edge construction from O(V×S) full scan to O(V×I) single-pass `HashSet` identifier lookup in `src/context/graph.rs`
+- [x] **H1 (P1)**: Implemented standard Robertson-Spärck Jones BM25 formula (IDF, TF, document length normalization, k1/b tuning) in `src/context/index.rs`
+- [x] **H2 (P1)**: Replaced `HashMap` linear prefix scan with `BTreeMap` O(log N + K) range query in `src/context/index.rs`
+- [x] **M1 (P1)**: Verified and tested TypeScript AST class declaration grammar in `src/context/repomap.rs`
+- [x] **M2 (P2)**: Centralized Blast Radius risk thresholds into `src/constants.rs`
+- [x] **M3 (P1)**: Synchronized `repo_map` in `ToolRegistry::get_tool_schemas()` (17 built-in tools) and `dispatch_tool`
+- [x] **M4 (P2)**: Centralized sandbox environment whitelist, secret patterns, and blocked prefixes into `src/constants.rs`
+- [x] **L2 (P2)**: Optimized compressor `mask_observation` to stream head and tail lines without giant intermediate `Vec<&str>` allocations in `src/context/compressor.rs`
+- [x] **L3 & L9 (P2)**: Added `parse_u64_param` helper for robust string/number numeric parsing across `src/tools/mod.rs` and `src/mcp/server.rs`
+- [x] **L4 (P2)**: Added strict object shape validation for MCP `params` and `arguments` in `src/mcp/server.rs`
+- [x] **L5 (P2)**: Added `MAX_REGEX_QUERY_LEN` protection against ReDoS in `src/tools/search.rs`
+- [x] **L6, L7, L8, L10, L11 (P3)**: Added `MCP_TOOL_PREFIX`, directory constants in `store.rs`/`backup.rs`/`skills.rs`, single-char symbol preservation in `index.rs`, and `#[must_use]` on `build_system_prompt` in `prompt.rs`
+- [x] **Verification**: **50/50 unit tests passing, zero clippy warnings, clean formatting**
+

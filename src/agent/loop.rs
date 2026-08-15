@@ -3,7 +3,8 @@ use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS, FILE_MODIFYING_TOOLS, RETRY_BACKOFF_SECS,
+    DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX,
+    RETRY_BACKOFF_SECS,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -243,7 +244,7 @@ impl AgentLoop {
                     }
 
                     // Execute tool (MCP vs Built-in)
-                    let tool_result = if tool_call.name.starts_with("mcp__") {
+                    let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {
                         let start = std::time::Instant::now();
                         let res = self
                             .mcp_client

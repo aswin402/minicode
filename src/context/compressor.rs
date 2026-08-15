@@ -46,21 +46,23 @@ impl ContextCompressor {
     /// Masks observation outputs that exceed max lines (Observation Masking).
     /// Retains first 15 lines (head) and last 15 lines (tail) to preserve crucial context & errors.
     pub fn mask_observation(output: &str, max_lines: usize) -> String {
-        let lines: Vec<&str> = output.lines().collect();
-        if lines.len() <= max_lines {
+        let total_lines = output.lines().count();
+        if total_lines <= max_lines {
             return output.to_string();
         }
 
-        let head_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(lines.len() / 2);
-        let tail_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(lines.len() - head_count);
-        let truncated_count = lines.len() - (head_count + tail_count);
+        let head_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(total_lines / 2);
+        let tail_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(total_lines - head_count);
+        let truncated_count = total_lines - (head_count + tail_count);
 
-        let head = lines[..head_count].join("\n");
-        let tail = lines[lines.len() - tail_count..].join("\n");
+        let head: Vec<&str> = output.lines().take(head_count).collect();
+        let tail: Vec<&str> = output.lines().skip(total_lines - tail_count).collect();
 
         format!(
             "{}\n\n[... Truncated {} lines of verbose tool output ...]\n\n{}",
-            head, truncated_count, tail
+            head.join("\n"),
+            truncated_count,
+            tail.join("\n")
         )
     }
 
