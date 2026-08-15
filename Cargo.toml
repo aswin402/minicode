@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -35,6 +35,7 @@ tui-textarea = "0.7"
 colored = "2.1"
 indicatif = "0.17"
 terminal-colorsaurus = "0.4"
+anstyle-query = "1.1"
 
 # Markdown, Highlighting & Diffs
 pulldown-cmark = "0.12"
@@ -67,6 +68,9 @@ chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-
 # Session Persistence & Security
 # (JSONL via serde_json — no additional crate needed)
 landlock = "0.4"
+
+# Model Context Protocol (MCP) Support
+rmcp = { version = "3.1.2", features = ["client", "server", "macros", "schemars", "transport-child-process", "transport-io"] }
 
 # Utilities & Error Handling
 anyhow = "1.0"

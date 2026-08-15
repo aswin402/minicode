@@ -42,7 +42,24 @@ impl BackupManager {
         let turn_dir = self.backup_root.join(turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
 
-        let relative_path = file_path.strip_prefix(workspace_root).unwrap_or(file_path);
+        let canonical_ws =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+        let full_file = if file_path.is_absolute() {
+            std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf())
+        } else {
+            workspace_root.join(file_path)
+        };
+
+        let relative_path = full_file
+            .strip_prefix(&canonical_ws)
+            .or_else(|_| full_file.strip_prefix(workspace_root))
+            .map_err(|_| {
+                SessionError::WriteCheckpoint(format!(
+                    "Path '{}' escapes workspace boundary '{}'",
+                    file_path.display(),
+                    workspace_root.display()
+                ))
+            })?;
 
         let backup_dest = turn_dir.join(relative_path);
 
@@ -98,11 +115,13 @@ impl BackupManager {
             .join(turn_id.to_string())
             .join("manifest.json");
 
-        if !manifest_path.exists() {
-            return Err(SessionError::NoBackupAvailable { turn_id }.into());
-        }
-
-        let content = std::fs::read_to_string(&manifest_path)?;
+        let content = match std::fs::read_to_string(&manifest_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SessionError::NoBackupAvailable { turn_id }.into());
+            }
+            Err(e) => return Err(e.into()),
+        };
         let manifest: BackupManifest = serde_json::from_str(&content)?;
         Ok(manifest)
     }
@@ -153,11 +172,23 @@ impl BackupManager {
             let to_remove = turn_ids.len() - max_turns;
             for id in &turn_ids[..to_remove] {
                 let dir_to_delete = self.backup_root.join(id.to_string());
-                std::fs::remove_dir_all(&dir_to_delete).ok();
-                tracing::debug!(turn_id = id, "Pruned old backup directory");
+                if let Err(e) = std::fs::remove_dir_all(&dir_to_delete) {
+                    tracing::warn!(turn_id = id, path = %dir_to_delete.display(), error = %e, "Failed to prune old backup directory");
+                } else {
+                    tracing::debug!(turn_id = id, "Pruned old backup directory");
+                }
             }
         }
 
+        Ok(())
+    }
+
+    /// Removes the backup folder for a specific turn (e.g. after rollback)
+    pub fn remove_turn_backup(&self, turn_id: usize) -> Result<()> {
+        let turn_dir = self.backup_root.join(turn_id.to_string());
+        if turn_dir.exists() {
+            std::fs::remove_dir_all(&turn_dir)?;
+        }
         Ok(())
     }
 }
@@ -193,6 +224,26 @@ mod tests {
             test_file.display().to_string()
         );
 
-        std::fs::remove_dir_all(&temp_dir).ok();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_backup_rejects_path_escape() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_backup_test_esc_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let outside_dir =
+            std::env::temp_dir().join(format!("minicode_backup_outside_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let outside_file = outside_dir.join("outside.txt");
+        std::fs::write(&outside_file, "outside").unwrap();
+
+        let mgr = BackupManager::new(&temp_dir);
+        let result = mgr.create_checkpoint(&temp_dir, &outside_file, 1);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&outside_dir);
     }
 }

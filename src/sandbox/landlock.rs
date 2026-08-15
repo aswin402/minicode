@@ -18,21 +18,24 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
         .handle_access(AccessFs::from_all(ABI::V1))
         .is_err()
     {
-        tracing::debug!(
-            "Landlock not supported on this Linux kernel; proceeding with process sandboxing"
+        tracing::warn!(
+            "Landlock not supported on this Linux kernel; proceeding without Landlock kernel-level filesystem enforcement"
         );
         return Ok(());
     }
 
     let ruleset = if !allow_network {
-        Ruleset::default()
+        match Ruleset::default()
             .handle_access(AccessFs::from_all(ABI::V1))
             .and_then(|rs| rs.handle_access(AccessNet::ConnectTcp))
-            .unwrap_or_else(|_| {
-                Ruleset::default()
-                    .handle_access(AccessFs::from_all(ABI::V1))
-                    .unwrap()
-            })
+        {
+            Ok(rs) => rs,
+            Err(_) => Ruleset::default()
+                .handle_access(AccessFs::from_all(ABI::V1))
+                .map_err(|e| {
+                    SecurityError::Landlock(format!("Failed to configure FS ruleset: {}", e))
+                })?,
+        }
     } else {
         Ruleset::default()
             .handle_access(AccessFs::from_all(ABI::V1))
@@ -52,8 +55,18 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
             .map_err(|e| SecurityError::Landlock(format!("Failed to add workspace rule: {}", e)))?;
     }
 
-    // Allow read-only access to standard system directories (/usr, /lib, /etc, /bin, /tmp)
-    for sys_path in &["/usr", "/lib", "/lib64", "/etc", "/bin", "/tmp"] {
+    // Allow read/write access to /tmp for compilers, package managers, and lockfiles
+    let tmp_path = Path::new("/tmp");
+    if tmp_path.exists() {
+        if let Ok(fd) = PathFd::new(tmp_path) {
+            ruleset_created = ruleset_created
+                .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                .map_err(|e| SecurityError::Landlock(format!("Failed to add /tmp rule: {}", e)))?;
+        }
+    }
+
+    // Allow read-only access to standard system directories (/usr, /lib, /etc, /bin)
+    for sys_path in &["/usr", "/lib", "/lib64", "/etc", "/bin"] {
         let p = Path::new(sys_path);
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {

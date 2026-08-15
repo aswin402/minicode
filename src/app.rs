@@ -49,6 +49,36 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Hydrates past session events into the timeline view
+    pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
+        for event in events {
+            match event {
+                AgentEvent::TurnStart { .. } => {}
+                AgentEvent::StreamDelta { delta, .. } => {
+                    self.timeline.append_assistant_delta(delta);
+                }
+                AgentEvent::ToolCall { tool, args, .. } => {
+                    self.timeline.add_tool_call(tool.clone(), args.to_string());
+                }
+                AgentEvent::ToolResult {
+                    tool,
+                    success,
+                    output,
+                    duration_ms,
+                    ..
+                } => {
+                    self.timeline
+                        .finish_tool_call(tool, *success, output.clone(), *duration_ms);
+                }
+                AgentEvent::TurnEnd { .. } => {}
+                AgentEvent::Error { message, .. } => {
+                    self.timeline.add_status(format!("Error: {}", message));
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Runs the full-screen interactive Ratatui TUI session in Aura Theme styling.
     pub async fn run(&mut self, mut agent: AgentLoop) -> Result<()> {
         enable_raw_mode()?;
@@ -77,7 +107,8 @@ impl<'a> App<'a> {
             }
         });
 
-        let mut ticker = tokio::time::interval(Duration::from_millis(50));
+        let mut ticker =
+            tokio::time::interval(Duration::from_millis(crate::constants::TICK_RATE_MS));
 
         loop {
             let working_secs = self.work_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
@@ -93,7 +124,9 @@ impl<'a> App<'a> {
                 let matching_cmds = self.input_dock.matching_slash_commands();
                 let has_slash_hint = !matching_cmds.is_empty();
                 let hint_height = if has_slash_hint {
-                    matching_cmds.len().min(4) as u16
+                    matching_cmds
+                        .len()
+                        .min(crate::constants::MAX_AUTOCOMPLETE_ROWS) as u16
                 } else {
                     0
                 };
@@ -125,12 +158,21 @@ impl<'a> App<'a> {
 
                 self.input_dock.render(frame, chunks[2], &self.theme);
 
+                let active_mcp_count = self
+                    .config
+                    .mcp
+                    .servers
+                    .values()
+                    .filter(|s| s.enabled)
+                    .count();
+
                 StatusWidgets::render_bottom_bar(
                     frame,
                     chunks[3],
                     &self.theme,
                     &self.workspace_root,
                     &self.config.provider.model,
+                    active_mcp_count,
                 );
 
                 // Render Modal Overlay if active
@@ -201,11 +243,11 @@ impl<'a> App<'a> {
                         // Check PageUp / PageDown for timeline scrolling
                         if key_event.code == KeyCode::PageUp {
                             self.timeline.auto_scroll = false;
-                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_sub(4);
+                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_sub(crate::constants::PAGE_SCROLL_LINES);
                             continue;
                         }
                         if key_event.code == KeyCode::PageDown {
-                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_add(4);
+                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_add(crate::constants::PAGE_SCROLL_LINES);
                             continue;
                         }
 
@@ -290,24 +332,23 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Enter => {
                     let provider = providers[*selected_index].clone();
-                    let env_var = match provider.as_str() {
-                        "openrouter" => "OPENROUTER_API_KEY",
-                        "gemini" => "GEMINI_API_KEY",
-                        "openai" => "OPENAI_API_KEY",
-                        "deepseek" => "DEEPSEEK_API_KEY",
-                        "groq" => "GROQ_API_KEY",
-                        "together" => "TOGETHER_API_KEY",
-                        "ollama" => "OLLAMA_API_KEY",
-                        _ => "API_KEY",
-                    };
-                    let api_key = std::env::var(env_var).unwrap_or_default();
+                    let api_key = self.config.get_api_key(&provider).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, provider = %provider, "Failed to resolve API key for provider switch");
+                        String::new()
+                    });
 
                     // Switch modal to loading models state
                     let models_res = self
                         .model_fetcher
                         .fetch_models(&provider, &api_key, None)
                         .await;
-                    let models = models_res.unwrap_or_default();
+                    let models = match models_res {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!(error = %e, provider = %provider, "Failed to fetch live model list");
+                            Vec::new()
+                        }
+                    };
 
                     if models.is_empty() {
                         self.timeline.add_status(format!(

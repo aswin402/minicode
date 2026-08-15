@@ -1,6 +1,6 @@
 use crate::error::{Result, ToolError};
 use crate::sandbox::path::validate_path_in_workspace;
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
@@ -14,26 +14,26 @@ pub fn read_file(
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
-    if !target_path.exists() {
-        return Err(ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "File does not exist"),
-        }
-        .into());
-    }
-
     let content = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
         path: relative_path.to_string(),
         source: e,
     })?;
 
+    if content.is_empty() {
+        return Ok(String::new());
+    }
+
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
+
+    if total_lines == 0 {
+        return Ok(String::new());
+    }
 
     let start = start_line.unwrap_or(1).max(1);
     let end = end_line.unwrap_or(total_lines).min(total_lines);
 
-    if start > total_lines && total_lines > 0 {
+    if start > total_lines {
         return Err(ToolError::InvalidArguments {
             name: "read_file".to_string(),
             reason: format!(
@@ -65,20 +65,29 @@ pub fn read_file(
     Ok(output)
 }
 
-/// Atomically writes full content to a file, creating any missing parent directories.
+/// Atomically writes full content to a file via a temporary file, creating any missing parent directories.
 pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
     if let Some(parent) = target_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
+            path: relative_path.to_string(),
+            source: e,
+        })?;
     }
 
-    // Write atomically via temp file replace or direct open
+    let parent_dir = target_path.parent().unwrap_or(workspace_root);
+    let tmp_file_name = format!(
+        ".tmp_{}_{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let tmp_path = parent_dir.join(tmp_file_name);
+
     let mut file = OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
-        .open(&target_path)
+        .open(&tmp_path)
         .map_err(|e| ToolError::FileOp {
             path: relative_path.to_string(),
             source: e,
@@ -93,6 +102,16 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
     file.flush().map_err(|e| ToolError::FileOp {
         path: relative_path.to_string(),
         source: e,
+    })?;
+
+    drop(file);
+
+    std::fs::rename(&tmp_path, &target_path).map_err(|e| {
+        std::fs::remove_file(&tmp_path).ok();
+        ToolError::FileOp {
+            path: relative_path.to_string(),
+            source: e,
+        }
     })?;
 
     let line_count = content.lines().count();
@@ -116,14 +135,6 @@ pub fn patch_file(
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
-    if !target_path.exists() {
-        return Err(ToolError::FileOp {
-            path: relative_path.to_string(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "Target file does not exist"),
-        }
-        .into());
-    }
-
     let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
         path: relative_path.to_string(),
         source: e,
@@ -143,8 +154,11 @@ pub fn patch_file(
             .into());
         }
 
-        let new_content = original.replacen(search_block, replace_block, 1);
-        std::fs::write(&target_path, new_content)?;
+        let mut new_content = original.replacen(search_block, replace_block, 1);
+        if original.ends_with('\n') && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        write_file(workspace_root, relative_path, &new_content)?;
         return Ok(format!("Successfully patched {}", relative_path));
     }
 
@@ -152,7 +166,7 @@ pub fn patch_file(
     if let Some(new_content) =
         try_whitespace_normalized_replace(&original, search_block, replace_block)
     {
-        std::fs::write(&target_path, new_content)?;
+        write_file(workspace_root, relative_path, &new_content)?;
         return Ok(format!(
             "Successfully patched {} (whitespace-relaxed match)",
             relative_path
@@ -161,7 +175,7 @@ pub fn patch_file(
 
     // 3. Fuzzy match fallback using similar crate
     if let Some(new_content) = try_fuzzy_replace(&original, search_block, replace_block) {
-        std::fs::write(&target_path, new_content)?;
+        write_file(workspace_root, relative_path, &new_content)?;
         return Ok(format!(
             "Successfully patched {} (fuzzy matched)",
             relative_path
@@ -200,7 +214,11 @@ fn try_whitespace_normalized_replace(
             result_lines.extend_from_slice(&orig_lines[..i]);
             result_lines.push(replace);
             result_lines.extend_from_slice(&orig_lines[i + search_lines.len()..]);
-            return Some(result_lines.join("\n"));
+            let mut res = result_lines.join("\n");
+            if original.ends_with('\n') && !res.ends_with('\n') {
+                res.push('\n');
+            }
+            return Some(res);
         }
     }
 
@@ -208,23 +226,44 @@ fn try_whitespace_normalized_replace(
 }
 
 fn try_fuzzy_replace(original: &str, search: &str, replace: &str) -> Option<String> {
-    let diff = TextDiff::from_lines(original, search);
-    let mut matching_chunks = 0;
-    let mut total_chunks = 0;
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let search_lines: Vec<&str> = search.lines().collect();
 
-    for change in diff.iter_all_changes() {
-        total_chunks += 1;
-        if change.tag() == ChangeTag::Equal {
-            matching_chunks += 1;
+    if search_lines.is_empty() || search_lines.len() > orig_lines.len() {
+        return None;
+    }
+
+    let window_size = search_lines.len();
+    let search_str = search_lines.join("\n");
+    let mut best_ratio = 0.0;
+    let mut best_index = None;
+
+    for i in 0..=(orig_lines.len() - window_size) {
+        let window_str = orig_lines[i..i + window_size].join("\n");
+        let diff = TextDiff::from_lines(&window_str, &search_str);
+        let ratio = diff.ratio();
+
+        if ratio as f64 > best_ratio {
+            best_ratio = ratio as f64;
+            best_index = Some(i);
         }
     }
 
-    if total_chunks > 0 && (matching_chunks as f32 / total_chunks as f32) > 0.85 {
-        // High confidence match — fallback to line replace
-        try_whitespace_normalized_replace(original, search, replace)
-    } else {
-        None
+    if best_ratio >= crate::constants::FUZZY_MATCH_THRESHOLD {
+        if let Some(idx) = best_index {
+            let mut result_lines = Vec::new();
+            result_lines.extend_from_slice(&orig_lines[..idx]);
+            result_lines.push(replace);
+            result_lines.extend_from_slice(&orig_lines[idx + window_size..]);
+            let mut res = result_lines.join("\n");
+            if original.ends_with('\n') && !res.ends_with('\n') {
+                res.push('\n');
+            }
+            return Some(res);
+        }
     }
+
+    None
 }
 
 #[cfg(test)]
@@ -269,6 +308,46 @@ mod tests {
 
         let read = read_file(&temp_dir, rel_path, None, None).unwrap();
         assert!(read.contains("println!(\"new\");"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_read_empty_file() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_empty_fs_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let rel_path = "empty.txt";
+        write_file(&temp_dir, rel_path, "").unwrap();
+
+        let read = read_file(&temp_dir, rel_path, None, None).unwrap();
+        assert_eq!(read, "");
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_patch_file_fuzzy() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_fuzzy_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let rel_path = "fuzzy.rs";
+        let content =
+            "fn add(a: i32, b: i32) -> i32 {\n    let result = a + b;\n    return result;\n}\n";
+        write_file(&temp_dir, rel_path, content).unwrap();
+
+        patch_file(
+            &temp_dir,
+            rel_path,
+            "let result = a + b;\n    return result;",
+            "a + b",
+        )
+        .unwrap();
+
+        let read = read_file(&temp_dir, rel_path, None, None).unwrap();
+        assert!(read.contains("a + b"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

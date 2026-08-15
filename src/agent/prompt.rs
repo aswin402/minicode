@@ -1,3 +1,5 @@
+use crate::constants::{AGENTS_MD_FILE, MAX_AGENTS_MD_BYTES};
+use std::io::ErrorKind;
 use std::path::Path;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = r#"You are minicode, an ultra-fast, minimalist AI coding agent built in Rust.
@@ -24,13 +26,47 @@ impl PromptBuilder {
             workspace_dir.display()
         ));
 
+        // Inject 2-Tier Core Memory (<core_memory>)
+        let memory = crate::context::memory::CoreMemory::load(workspace_dir);
+        let memory_block = memory.to_prompt_block();
+        if !memory_block.is_empty() {
+            prompt.push_str("\n# Persistent Memory:\n");
+            prompt.push_str(&memory_block);
+            prompt.push('\n');
+        }
+
+        // Inject Active Working Memory (<working_memory>)
+        let working_memory = crate::context::working_memory::WorkingMemory::new(workspace_dir);
+        let wm_block = working_memory.to_prompt_block();
+        if !wm_block.is_empty() {
+            prompt.push_str("\n# Task Working Memory:\n");
+            prompt.push_str(&wm_block);
+            prompt.push('\n');
+        }
+
         // Inject AGENTS.md rules if present in the workspace
-        let agents_file = workspace_dir.join("AGENTS.md");
-        if agents_file.exists() {
-            if let Ok(content) = std::fs::read_to_string(&agents_file) {
+        let agents_file = workspace_dir.join(AGENTS_MD_FILE);
+        match std::fs::read_to_string(&agents_file) {
+            Ok(content) => {
+                let trimmed = if content.len() > MAX_AGENTS_MD_BYTES {
+                    tracing::warn!(
+                        size = content.len(),
+                        max = MAX_AGENTS_MD_BYTES,
+                        "AGENTS.md exceeds size limit; truncating"
+                    );
+                    let valid_end = content.floor_char_boundary(MAX_AGENTS_MD_BYTES);
+                    &content[..valid_end]
+                } else {
+                    &content
+                };
                 prompt.push_str("\n# Repository Guidelines (AGENTS.md):\n");
-                prompt.push_str(&content);
+                prompt.push_str(trimmed);
                 prompt.push('\n');
+            }
+            Err(e) => {
+                if e.kind() != ErrorKind::NotFound {
+                    tracing::warn!(path = %agents_file.display(), error = %e, "Failed to read AGENTS.md");
+                }
             }
         }
 

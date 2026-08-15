@@ -15,6 +15,9 @@ pub struct Config {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -183,86 +186,297 @@ fn default_log_file() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct McpServerConfig {
+    #[serde(default = "default_mcp_transport")]
+    pub transport: McpTransport,
+
+    #[serde(default)]
+    pub command: Option<String>,
+
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+
+    #[serde(default)]
+    pub url: Option<String>,
+
+    #[serde(default)]
+    pub env: Option<std::collections::HashMap<String, String>>,
+
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+}
+
+impl McpServerConfig {
+    pub fn validate(&self, server_name: &str) -> std::result::Result<(), String> {
+        match self.transport {
+            McpTransport::Stdio => {
+                if self.command.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' with stdio transport missing 'command'",
+                        server_name
+                    ));
+                }
+            }
+            McpTransport::Sse | McpTransport::Http => {
+                if self.url.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(format!(
+                        "MCP server '{}' with http/sse transport missing 'url'",
+                        server_name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio,
+    Sse,
+    Http,
+}
+
+fn default_mcp_transport() -> McpTransport {
+    McpTransport::Stdio
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct McpJsonFile {
+    #[serde(default, rename = "mcpServers")]
+    pub mcp_servers: std::collections::HashMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawProviderConfig {
+    pub default: Option<String>,
+    pub model: Option<String>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawAgentConfig {
+    pub auto_approve: Option<bool>,
+    pub approval_policy: Option<String>,
+    pub timeout: Option<u64>,
+    pub map_tokens: Option<usize>,
+    pub warning_threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawUiConfig {
+    pub plain: Option<bool>,
+    pub theme: Option<String>,
+    pub max_width: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawLoggingConfig {
+    pub level: Option<String>,
+    pub file: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawConfig {
+    #[serde(default)]
+    pub provider: RawProviderConfig,
+    #[serde(default)]
+    pub agent: RawAgentConfig,
+    #[serde(default)]
+    pub ui: RawUiConfig,
+    #[serde(default)]
+    pub logging: RawLoggingConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
 impl Config {
     /// Loads configuration respecting the hierarchy:
     /// 1. Project-local `.minicode/config.toml` (if present)
     /// 2. Global `~/.config/minicode/config.toml` (if present)
-    /// 3. Built-in defaults
-    /// 4. Environment variable overrides (MINICODE_*)
+    /// 3. Project-local `mcp.json` or `.minicode/mcp.json` (if present)
+    /// 4. Built-in defaults
+    /// 5. Environment variable overrides (MINICODE_*)
     pub fn load(workspace_dir: Option<&Path>, custom_config_path: Option<&Path>) -> Result<Self> {
         // Load .env if present
         if let Some(dir) = workspace_dir {
-            let env_file = dir.join(".env");
-            if env_file.exists() {
-                dotenvy::from_path(&env_file).ok();
+            let env_file = dir.join(crate::constants::ENV_FILE_NAME);
+            match dotenvy::from_path(&env_file) {
+                Ok(_) => {}
+                Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(path = %env_file.display(), error = %e, "Failed to parse workspace .env file");
+                }
             }
         }
-        dotenvy::dotenv().ok();
+        if let Err(e) = dotenvy::dotenv() {
+            if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
+            {
+                tracing::warn!(error = %e, "Failed to parse default .env file");
+            }
+        }
 
         let mut config = Config::default();
 
         // 1. Try custom config path if explicitly specified
         if let Some(path) = custom_config_path {
-            if path.exists() {
-                config = Self::load_from_file(path)?;
+            if let Some(raw) = Self::load_raw_from_file(path)? {
+                config.merge_raw(raw);
             }
         } else {
             // 2. Global config: ~/.config/minicode/config.toml
             if let Some(global_dir) = dirs::config_dir() {
-                let global_config = global_dir.join("minicode").join("config.toml");
-                if global_config.exists() {
-                    config = Self::load_from_file(&global_config)?;
+                let global_config = global_dir
+                    .join(crate::constants::CONFIG_DIR_NAME)
+                    .join(crate::constants::CONFIG_FILE_NAME);
+                if let Some(raw) = Self::load_raw_from_file(&global_config)? {
+                    config.merge_raw(raw);
                 }
             }
 
             // 3. Project-local config: <workspace>/.minicode/config.toml
             if let Some(dir) = workspace_dir {
-                let local_config = dir.join(".minicode").join("config.toml");
-                if local_config.exists() {
-                    let local = Self::load_from_file(&local_config)?;
-                    config.merge(local);
+                let local_config = dir
+                    .join(crate::constants::WORKSPACE_DIR_NAME)
+                    .join(crate::constants::CONFIG_FILE_NAME);
+                if let Some(raw) = Self::load_raw_from_file(&local_config)? {
+                    config.merge_raw(raw);
                 }
             }
         }
 
-        // 4. Apply environment variable overrides
+        // 4. Always load global and workspace MCP configs
+        if let Some(global_dir) = dirs::config_dir() {
+            config.load_mcp_json_if_exists(
+                &global_dir
+                    .join(crate::constants::CONFIG_DIR_NAME)
+                    .join(crate::constants::MCP_CONFIG_FILE),
+            );
+        }
+
+        if let Some(dir) = workspace_dir {
+            config.load_mcp_json_if_exists(
+                &dir.join(crate::constants::WORKSPACE_DIR_NAME)
+                    .join(crate::constants::MCP_CONFIG_FILE),
+            );
+            config.load_mcp_json_if_exists(&dir.join(crate::constants::MCP_CONFIG_FILE));
+        }
+
+        // 5. Apply environment variable overrides
         config.apply_env_overrides();
 
         Ok(config)
     }
 
-    fn load_from_file(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path).map_err(|e| ConfigError::FileRead {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-
-        let parsed: Config = toml::from_str(&content).map_err(ConfigError::TomlParse)?;
-        tracing::debug!(path = %path.display(), "Loaded configuration from file");
-        Ok(parsed)
+    fn load_mcp_json_if_exists(&mut self, path: &Path) {
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<McpJsonFile>(&content) {
+                Ok(parsed) => {
+                    for (name, server) in parsed.mcp_servers {
+                        if let Err(err) = server.validate(&name) {
+                            tracing::warn!(path = %path.display(), error = %err, "Invalid MCP server config; skipping");
+                            continue;
+                        }
+                        self.mcp.servers.insert(name, server);
+                    }
+                    for (name, server) in parsed.servers {
+                        if let Err(err) = server.validate(&name) {
+                            tracing::warn!(path = %path.display(), error = %err, "Invalid MCP server config; skipping");
+                            continue;
+                        }
+                        self.mcp.servers.insert(name, server);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to parse mcp.json");
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "Failed to read mcp.json");
+            }
+        }
     }
 
-    fn merge(&mut self, other: Config) {
-        if other.provider.default != default_provider_name() {
-            self.provider.default = other.provider.default;
+    fn load_raw_from_file(path: &Path) -> Result<Option<RawConfig>> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                let parsed: RawConfig = toml::from_str(&content).map_err(ConfigError::TomlParse)?;
+                tracing::debug!(path = %path.display(), "Loaded configuration from file");
+                Ok(Some(parsed))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(ConfigError::FileRead {
+                path: path.display().to_string(),
+                source: e,
+            }
+            .into()),
         }
-        if other.provider.model != default_model_name() {
-            self.provider.model = other.provider.model;
+    }
+
+    pub fn merge_raw(&mut self, other: RawConfig) {
+        if let Some(default) = other.provider.default {
+            self.provider.default = default;
         }
-        if other.agent.auto_approve {
-            self.agent.auto_approve = true;
+        if let Some(model) = other.provider.model {
+            self.provider.model = model;
         }
-        if other.agent.timeout != default_timeout_secs() {
-            self.agent.timeout = other.agent.timeout;
+        if let Some(temperature) = other.provider.temperature {
+            self.provider.temperature = temperature;
         }
-        if other.agent.map_tokens != default_map_tokens() {
-            self.agent.map_tokens = other.agent.map_tokens;
+        if let Some(max_tokens) = other.provider.max_tokens {
+            self.provider.max_tokens = max_tokens;
         }
-        if other.ui.plain {
-            self.ui.plain = true;
+        if let Some(auto_approve) = other.agent.auto_approve {
+            self.agent.auto_approve = auto_approve;
         }
-        if other.ui.theme != default_theme() {
-            self.ui.theme = other.ui.theme;
+        if let Some(approval_policy) = other.agent.approval_policy {
+            self.agent.approval_policy = approval_policy;
+        }
+        if let Some(timeout) = other.agent.timeout {
+            self.agent.timeout = timeout;
+        }
+        if let Some(map_tokens) = other.agent.map_tokens {
+            self.agent.map_tokens = map_tokens;
+        }
+        if let Some(warning_threshold) = other.agent.warning_threshold {
+            self.agent.warning_threshold = warning_threshold;
+        }
+        if let Some(plain) = other.ui.plain {
+            self.ui.plain = plain;
+        }
+        if let Some(theme) = other.ui.theme {
+            self.ui.theme = theme;
+        }
+        if let Some(max_width) = other.ui.max_width {
+            self.ui.max_width = max_width;
+        }
+        if let Some(level) = other.logging.level {
+            self.logging.level = level;
+        }
+        if let Some(file) = other.logging.file {
+            self.logging.file = file;
+        }
+        for (name, srv) in other.mcp.servers {
+            self.mcp.servers.insert(name, srv);
         }
     }
 
@@ -276,6 +490,24 @@ impl Config {
         if let Ok(auto_approve) = std::env::var("MINICODE_AUTO_APPROVE") {
             self.agent.auto_approve =
                 auto_approve == "1" || auto_approve.eq_ignore_ascii_case("true");
+        }
+        if let Ok(policy) = std::env::var("MINICODE_APPROVAL_POLICY") {
+            self.agent.approval_policy = policy;
+        }
+        if let Ok(temp_str) = std::env::var("MINICODE_TEMPERATURE") {
+            if let Ok(temp) = temp_str.parse::<f32>() {
+                self.provider.temperature = temp;
+            }
+        }
+        if let Ok(tokens_str) = std::env::var("MINICODE_MAX_TOKENS") {
+            if let Ok(tokens) = tokens_str.parse::<usize>() {
+                self.provider.max_tokens = tokens;
+            }
+        }
+        if let Ok(timeout_str) = std::env::var("MINICODE_TIMEOUT") {
+            if let Ok(timeout) = timeout_str.parse::<u64>() {
+                self.agent.timeout = timeout;
+            }
         }
         if let Ok(plain) = std::env::var("MINICODE_PLAIN") {
             self.ui.plain = plain == "1" || plain.eq_ignore_ascii_case("true");
@@ -328,7 +560,8 @@ impl Config {
                 Ok(String::new())
             }
             custom => {
-                let env_var = format!("{}_API_KEY", custom.to_uppercase());
+                let sanitized_custom = custom.to_uppercase().replace(['-', '.'], "_");
+                let env_var = format!("{}_API_KEY", sanitized_custom);
                 std::env::var(&env_var).map_err(|_| {
                     ConfigError::MissingApiKey {
                         provider: custom.to_string(),
@@ -382,5 +615,19 @@ mod tests {
         assert_eq!(config.agent.map_tokens, 2048);
         assert_eq!(config.ui.plain, true);
         assert_eq!(config.ui.theme, "dark");
+    }
+
+    #[test]
+    fn test_raw_config_merge_override_false() {
+        let mut config = Config::default();
+        config.agent.auto_approve = true;
+
+        let override_toml = r#"
+            [agent]
+            auto_approve = false
+        "#;
+        let raw: RawConfig = toml::from_str(override_toml).unwrap();
+        config.merge_raw(raw);
+        assert_eq!(config.agent.auto_approve, false);
     }
 }

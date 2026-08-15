@@ -1,9 +1,11 @@
 mod agent;
 mod app;
 mod config;
+mod constants;
 mod context;
 mod error;
 mod logging;
+mod mcp;
 mod sandbox;
 mod session;
 mod tools;
@@ -16,27 +18,31 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use error::Result;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use ui::ConfigMenu;
+
 fn get_version_banner() -> &'static str {
-    let banner = format!(
-        "\n\x1b[38;2;162;119;255m   ___ ___                           _     \x1b[0m\n\
-         \x1b[38;2;162;119;255m  |   Y   | _   ___  _   ___  ___  _| | ___ \x1b[0m\n\
-         \x1b[38;2;246;148;255m  |.      || | |   || | |  _|| . || . || -_|\x1b[0m\n\
-         \x1b[38;2;97;255;202m  |. \\_/  ||_| |_|_||_| |___||___||___||___|\x1b[0m\n\n\
-         \x1b[1m\x1b[38;2;162;119;255m• {} v{}\x1b[0m — {}\n\
-         \x1b[38;2;130;226;255m• Repository\x1b[0m : {}\n\
-         \x1b[38;2;255;202;133m• Author    \x1b[0m : {}\n\
-         \x1b[38;2;97;255;202m• Runtime   \x1b[0m : Pure Rust (Tokio Async Engine)\n\
-         \x1b[38;2;162;119;255m• License   \x1b[0m : {}\n",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-        env!("CARGO_PKG_DESCRIPTION"),
-        env!("CARGO_PKG_REPOSITORY"),
-        env!("CARGO_PKG_AUTHORS"),
-        env!("CARGO_PKG_LICENSE"),
-    );
-    Box::leak(banner.into_boxed_str())
+    static BANNER: OnceLock<String> = OnceLock::new();
+    BANNER.get_or_init(|| {
+        format!(
+            "\n\x1b[38;2;162;119;255m   ___ ___                           _     \x1b[0m\n\
+             \x1b[38;2;162;119;255m  |   Y   | _   ___  _   ___  ___  _| | ___ \x1b[0m\n\
+             \x1b[38;2;246;148;255m  |.      || | |   || | |  _|| . || . || -_|\x1b[0m\n\
+             \x1b[38;2;97;255;202m  |. \\_/  ||_| |_|_||_| |___||___||___||___|\x1b[0m\n\n\
+             \x1b[1m\x1b[38;2;162;119;255m• {} v{}\x1b[0m — {}\n\
+             \x1b[38;2;130;226;255m• Repository\x1b[0m : {}\n\
+             \x1b[38;2;255;202;133m• Author    \x1b[0m : {}\n\
+             \x1b[38;2;97;255;202m• Runtime   \x1b[0m : Pure Rust (Tokio Async Engine)\n\
+             \x1b[38;2;162;119;255m• License   \x1b[0m : {}\n",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_DESCRIPTION"),
+            env!("CARGO_PKG_REPOSITORY"),
+            env!("CARGO_PKG_AUTHORS"),
+            env!("CARGO_PKG_LICENSE"),
+        )
+    })
 }
 
 #[derive(Parser, Debug)]
@@ -112,10 +118,33 @@ enum Commands {
         /// Task description or prompt for the agent to execute
         task: String,
     },
+
+    /// Run minicode as a Model Context Protocol (MCP) server over stdio
+    Serve {
+        /// Workspace directory to expose to MCP clients (default: current directory)
+        #[arg(short = 'd', long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+/// Installs a panic hook to restore the terminal if the application crashes in TUI mode
+fn install_panic_hook() {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show,
+        );
+        original_hook(panic_info);
+    }));
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    install_panic_hook();
     let cli = Cli::parse();
 
     // 1. Resolve workspace root
@@ -171,12 +200,22 @@ async fn main() -> anyhow::Result<()> {
     if let Some(Commands::Run { task }) = cli.command {
         // Headless one-shot task mode
         run_headless_task(&workspace_canonical, &config, &task, cli.json_stream).await?;
+    } else if let Some(Commands::Serve { dir }) = cli.command {
+        // Run as MCP server over stdio
+        let target_dir = dir.unwrap_or(workspace_canonical);
+        mcp::MinicodeMcpServer::run_stdio(&target_dir).await?;
     } else if cli.json_stream {
         // Headless machine-readable streaming mode over stdio
         run_ndjson_agent(&workspace_canonical, &config).await?;
     } else {
         // Interactive mode (Aura TUI or Plain REPL)
-        run_interactive_mode(&workspace_canonical, &config).await?;
+        let resume_session_id = if cli.continue_session {
+            let store = session::store::SessionStore::new();
+            store.get_last_session_id()
+        } else {
+            cli.resume
+        };
+        run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref()).await?;
     }
 
     Ok(())
@@ -338,31 +377,52 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
 }
 
 /// Interactive mode entrypoint (Plain REPL or full-screen Aura Ratatui TUI)
-async fn run_interactive_mode(workspace: &Path, config: &Config) -> Result<()> {
-    let api_key = config
-        .get_api_key(&config.provider.default)
-        .unwrap_or_default();
-    let provider = match create_provider(&config.provider.default, &api_key) {
-        Ok(p) => p,
-        Err(_) => {
-            eprintln!(
-                "Note: API key for provider '{}' not found in environment or .env.",
-                config.provider.default
-            );
-            eprintln!("Run `minicode configure` or set OPENROUTER_API_KEY in .env.");
-            create_provider("gemini", "mock_key")?
-        }
-    };
-
+async fn run_interactive_mode(
+    workspace: &Path,
+    config: &Config,
+    resume_session_id: Option<&str>,
+) -> Result<()> {
+    let api_key = config.get_api_key(&config.provider.default)?;
+    let provider = create_provider(&config.provider.default, &api_key)?;
     let agent = AgentLoop::new(workspace, config.clone(), provider);
 
+    let past_events = if let Some(sid) = resume_session_id {
+        let store = session::store::SessionStore::new();
+        match store.load_session(sid) {
+            Ok(events) => {
+                tracing::info!(
+                    session_id = sid,
+                    count = events.len(),
+                    "Resumed previous session history"
+                );
+                events
+            }
+            Err(e) => {
+                tracing::warn!(session_id = sid, error = %e, "Failed to load previous session to resume");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     if config.ui.plain {
-        println!("minicode v0.1.0 (Plain Accessible REPL)");
+        println!(
+            "minicode v{} (Plain Accessible REPL)",
+            env!("CARGO_PKG_VERSION")
+        );
         println!("Workspace: {}", workspace.display());
         println!(
             "Model: {} ({})\n",
             config.provider.model, config.provider.default
         );
+        if let Some(sid) = resume_session_id {
+            println!(
+                "Resumed session: {} ({} events loaded)\n",
+                sid,
+                past_events.len()
+            );
+        }
         println!("Type a prompt to begin, or /exit to quit.\n");
 
         use std::io::{self, BufRead, Write};
@@ -447,6 +507,9 @@ async fn run_interactive_mode(workspace: &Path, config: &Config) -> Result<()> {
     } else {
         // Run the interactive Aura Ratatui TUI
         let mut app = App::new(workspace, config.clone());
+        if !past_events.is_empty() {
+            app.hydrate_session(&past_events);
+        }
         app.run(agent).await?;
     }
 

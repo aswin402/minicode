@@ -27,12 +27,16 @@ impl SessionStore {
             PathBuf::from(".minicode").join("sessions")
         };
 
-        std::fs::create_dir_all(&sessions_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+            tracing::warn!(path = %sessions_dir.display(), error = %e, "Failed to create sessions directory");
+        }
         Self { sessions_dir }
     }
 
     pub fn with_dir(dir: PathBuf) -> Self {
-        std::fs::create_dir_all(&dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(path = %dir.display(), error = %e, "Failed to create sessions directory");
+        }
         Self { sessions_dir: dir }
     }
 
@@ -62,6 +66,7 @@ impl SessionStore {
             "session_meta": meta
         }))?;
         writeln!(file, "{}", meta_line)?;
+        file.sync_all()?;
 
         tracing::info!(session_id = %session_id, "Initialized new session store");
         Ok(session_id)
@@ -77,6 +82,7 @@ impl SessionStore {
 
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
+        file.sync_all()?;
         Ok(())
     }
 
@@ -120,9 +126,16 @@ impl SessionStore {
 
     /// Returns the session ID of the most recent session.
     pub fn get_last_session_id(&self) -> Option<String> {
-        let mut sessions = self.list_sessions().ok()?;
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        sessions.first().map(|s| s.id.clone())
+        match self.list_sessions() {
+            Ok(mut sessions) => {
+                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                sessions.first().map(|s| s.id.clone())
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to list sessions for latest session lookup");
+                None
+            }
+        }
     }
 
     /// Lists all sessions found in the sessions directory.
@@ -205,6 +218,6 @@ mod tests {
         let last_id = store.get_last_session_id();
         assert_eq!(last_id, Some(session_id));
 
-        std::fs::remove_dir_all(&temp_dir).ok();
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

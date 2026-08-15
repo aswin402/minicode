@@ -76,10 +76,39 @@ impl Theme {
     }
 
     pub fn detect(preference: &str) -> Self {
+        let caps = detect_terminal_caps();
         match preference.to_lowercase().as_str() {
-            "soft" | "soft-dark" => Self::aura_soft_dark(),
+            "soft" | "soft-dark" if caps.supports_truecolor => Self::aura_soft_dark(),
             "256" | "ansi" => Self::ansi_256(),
-            _ => Self::aura_dark(),
+            "dark" | "aura" | "default" if caps.supports_truecolor => Self::aura_dark(),
+            _ => {
+                if caps.supports_truecolor {
+                    Self::aura_dark()
+                } else {
+                    Self::ansi_256()
+                }
+            }
         }
+    }
+}
+
+/// Probed terminal color and styling capabilities
+#[derive(Debug, Clone, Copy)]
+pub struct TerminalCaps {
+    pub supports_truecolor: bool,
+    pub supports_256_color: bool,
+    pub supports_ansi: bool,
+}
+
+/// Probes terminal capabilities using `anstyle-query`
+pub fn detect_terminal_caps() -> TerminalCaps {
+    let truecolor = anstyle_query::truecolor();
+    let term_color = anstyle_query::term_supports_color();
+    let ansi_color = anstyle_query::term_supports_ansi_color();
+
+    TerminalCaps {
+        supports_truecolor: truecolor,
+        supports_256_color: term_color || ansi_color,
+        supports_ansi: ansi_color,
     }
 }

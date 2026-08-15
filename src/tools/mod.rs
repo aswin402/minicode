@@ -1,3 +1,4 @@
+pub mod compactor;
 pub mod exec;
 pub mod fs;
 pub mod search;
@@ -5,7 +6,7 @@ pub mod web;
 
 use crate::agent::provider::ToolSchema;
 use crate::agent::types::ToolResult;
-use crate::error::ToolError;
+use crate::error::{Result, ToolError};
 use crate::session::backup::BackupManager;
 use serde_json::json;
 use std::path::Path;
@@ -14,7 +15,7 @@ use std::time::Instant;
 pub struct ToolRegistry;
 
 impl ToolRegistry {
-    /// Returns the schemas of all 6 high-precision coding primitives for the LLM.
+    /// Returns the schemas of all 14 built-in tools (primitives, core memory, working memory) for the LLM.
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
         vec![
             ToolSchema {
@@ -133,6 +134,132 @@ impl ToolRegistry {
                     "required": ["url"]
                 }),
             },
+            ToolSchema {
+                name: "remember_fact".to_string(),
+                description: "Save a persistent fact, convention, or developer preference to Core Memory (survives across sessions).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Unique identifier for this memory (e.g. 'code_style', 'architecture')"
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "The fact, convention, or preference to remember"
+                        },
+                        "is_global": {
+                            "type": "boolean",
+                            "description": "Whether to store globally across all projects (~/.config/minicode/memory.json) or locally (.minicode/memory.json). Default: false (local)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "enum": ["preference", "project_fact", "pattern"],
+                            "description": "Category of memory (default: 'project_fact')"
+                        }
+                    },
+                    "required": ["key", "value"]
+                }),
+            },
+            ToolSchema {
+                name: "update_fact".to_string(),
+                description: "Update an existing fact or preference in Core Memory.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Key of the memory to update"
+                        },
+                        "new_value": {
+                            "type": "string",
+                            "description": "The updated fact or preference text"
+                        }
+                    },
+                    "required": ["key", "new_value"]
+                }),
+            },
+            ToolSchema {
+                name: "forget_fact".to_string(),
+                description: "Remove a fact or preference from Core Memory.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Key of the memory to remove"
+                        }
+                    },
+                    "required": ["key"]
+                }),
+            },
+            ToolSchema {
+                name: "create_plan".to_string(),
+                description: "Initialize an active multi-step task plan in Working Memory (.minicode/plan/task_plan.md).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Short, descriptive title of the task"
+                        },
+                        "steps": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Ordered list of action steps to complete the task"
+                        }
+                    },
+                    "required": ["steps"]
+                }),
+            },
+            ToolSchema {
+                name: "read_plan".to_string(),
+                description: "Read the active task plan, progress tracker, and findings from Working Memory.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolSchema {
+                name: "log_finding".to_string(),
+                description: "Record an architectural discovery, symbol location, or observation into findings.md.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "finding": {
+                            "type": "string",
+                            "description": "The observation, discovery, or architectural note to record"
+                        }
+                    },
+                    "required": ["finding"]
+                }),
+            },
+            ToolSchema {
+                name: "update_progress".to_string(),
+                description: "Update the status of a specific task step in progress.md (e.g. 'Completed', 'Blocked', 'In Progress').".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "step": {
+                            "type": "string",
+                            "description": "The description of the step matching the task plan"
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": "The status (e.g. 'Completed', 'In Progress', 'Blocked')"
+                        }
+                    },
+                    "required": ["step"]
+                }),
+            },
+            ToolSchema {
+                name: "archive_plan".to_string(),
+                description: "Archive the completed task plan and clear the active Working Memory.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ]
     }
 
@@ -147,93 +274,8 @@ impl ToolRegistry {
     ) -> ToolResult {
         let start = Instant::now();
 
-        let result = match tool_name {
-            "read_file" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let start_line = args
-                    .get("start_line")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize);
-                let end_line = args
-                    .get("end_line")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as usize);
-                fs::read_file(workspace_root, path, start_line, end_line)
-            }
-            "write_file" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let content = args
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-
-                // Safety checkpoint before modifying
-                if let Some(mgr) = backup_manager {
-                    let target_path = workspace_root.join(path);
-                    mgr.create_checkpoint(workspace_root, &target_path, turn_id)
-                        .ok();
-                }
-
-                fs::write_file(workspace_root, path, content)
-            }
-            "patch_file" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let search = args
-                    .get("search_block")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let replace = args
-                    .get("replace_block")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-
-                // Safety checkpoint before patching
-                if let Some(mgr) = backup_manager {
-                    let target_path = workspace_root.join(path);
-                    mgr.create_checkpoint(workspace_root, &target_path, turn_id)
-                        .ok();
-                }
-
-                fs::patch_file(workspace_root, path, search, replace)
-            }
-            "exec_cmd" => {
-                let cmd = args
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let timeout = args.get("timeout_secs").and_then(|v| v.as_u64());
-                exec::exec_cmd(workspace_root, cmd, timeout).await
-            }
-            "grep_search" => {
-                let query = args
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let is_regex = args
-                    .get("is_regex")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let pattern = args.get("file_pattern").and_then(|v| v.as_str());
-                search::grep_search(workspace_root, query, is_regex, pattern)
-            }
-            "fetch_or_browse" => {
-                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-                web::fetch_or_browse(url).await
-            }
-            unknown => Err(ToolError::NotFound {
-                name: unknown.to_string(),
-            }
-            .into()),
-        };
+        let result =
+            Self::dispatch_tool(workspace_root, tool_name, args, backup_manager, turn_id).await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -254,6 +296,285 @@ impl ToolRegistry {
             },
         }
     }
+
+    async fn dispatch_tool(
+        workspace_root: &Path,
+        tool_name: &str,
+        args: &serde_json::Value,
+        backup_manager: Option<&BackupManager>,
+        turn_id: usize,
+    ) -> Result<String> {
+        match tool_name {
+            "read_file" => {
+                let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "read_file".to_string(),
+                        reason: "Missing required argument 'path'".to_string(),
+                    }
+                })?;
+                let start_line = args
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| usize::try_from(v).ok());
+                let end_line = args
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| usize::try_from(v).ok());
+                fs::read_file(workspace_root, path, start_line, end_line)
+            }
+            "write_file" => {
+                let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "write_file".to_string(),
+                        reason: "Missing required argument 'path'".to_string(),
+                    }
+                })?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "write_file".to_string(),
+                        reason: "Missing required argument 'content'".to_string(),
+                    })?;
+
+                let validated_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(path),
+                )?;
+
+                // Safety checkpoint before modifying
+                if let Some(mgr) = backup_manager {
+                    if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id)
+                    {
+                        tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before write_file");
+                    }
+                }
+
+                fs::write_file(workspace_root, path, content)
+            }
+            "patch_file" => {
+                let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "patch_file".to_string(),
+                        reason: "Missing required argument 'path'".to_string(),
+                    }
+                })?;
+                let search = args
+                    .get("search_block")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "patch_file".to_string(),
+                        reason: "Missing required argument 'search_block'".to_string(),
+                    })?;
+                let replace = args
+                    .get("replace_block")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "patch_file".to_string(),
+                        reason: "Missing required argument 'replace_block'".to_string(),
+                    })?;
+
+                let validated_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(path),
+                )?;
+
+                // Safety checkpoint before patching
+                if let Some(mgr) = backup_manager {
+                    if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id)
+                    {
+                        tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before patch_file");
+                    }
+                }
+
+                fs::patch_file(workspace_root, path, search, replace)
+            }
+            "exec_cmd" => {
+                let cmd = args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "exec_cmd".to_string(),
+                        reason: "Missing required argument 'command'".to_string(),
+                    })?;
+                let timeout = args.get("timeout_secs").and_then(|v| v.as_u64());
+                exec::exec_cmd(workspace_root, cmd, timeout).await
+            }
+            "grep_search" => {
+                let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "grep_search".to_string(),
+                        reason: "Missing required argument 'query'".to_string(),
+                    }
+                })?;
+                let is_regex = args
+                    .get("is_regex")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let pattern = args.get("file_pattern").and_then(|v| v.as_str());
+                search::grep_search(workspace_root, query, is_regex, pattern)
+            }
+            "fetch_or_browse" => {
+                let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "fetch_or_browse".to_string(),
+                        reason: "Missing required argument 'url'".to_string(),
+                    }
+                })?;
+                web::fetch_or_browse(url).await
+            }
+            "remember_fact" => {
+                let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "remember_fact".to_string(),
+                        reason: "Missing required argument 'key'".to_string(),
+                    }
+                })?;
+                let value = args.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "remember_fact".to_string(),
+                        reason: "Missing required argument 'value'".to_string(),
+                    }
+                })?;
+                let is_global = args
+                    .get("is_global")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let cat_str = args
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("project_fact");
+                let category = match cat_str {
+                    "preference" => crate::context::memory::MemoryCategory::Preference,
+                    "pattern" => crate::context::memory::MemoryCategory::Pattern,
+                    _ => crate::context::memory::MemoryCategory::ProjectFact,
+                };
+                let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
+                mem.remember(workspace_root, key, value, is_global, category)
+                    .map(|_| {
+                        format!(
+                            "✔ Remembered '{}' ({})",
+                            key,
+                            if is_global { "global" } else { "local" }
+                        )
+                    })
+            }
+            "update_fact" => {
+                let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "update_fact".to_string(),
+                        reason: "Missing required argument 'key'".to_string(),
+                    }
+                })?;
+                let new_value =
+                    args.get("new_value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "update_fact".to_string(),
+                            reason: "Missing required argument 'new_value'".to_string(),
+                        })?;
+                let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
+                mem.update(workspace_root, key, new_value).map(|updated| {
+                    if updated {
+                        format!("✔ Updated fact '{}'", key)
+                    } else {
+                        format!("ℹ Fact '{}' not found to update", key)
+                    }
+                })
+            }
+            "forget_fact" => {
+                let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "forget_fact".to_string(),
+                        reason: "Missing required argument 'key'".to_string(),
+                    }
+                })?;
+                let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
+                mem.forget(workspace_root, key).map(|forgotten| {
+                    if forgotten {
+                        format!("✔ Removed fact '{}' from memory", key)
+                    } else {
+                        format!("ℹ Fact '{}' not found in memory", key)
+                    }
+                })
+            }
+            "create_plan" => {
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Task Plan");
+                let steps: Vec<String> = args
+                    .get("steps")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "create_plan".to_string(),
+                        reason: "Missing required argument 'steps'".to_string(),
+                    })?;
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                wm.init_plan(title, &steps).map(|_| {
+                    format!(
+                        "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md",
+                        steps.len()
+                    )
+                })
+            }
+            "read_plan" => {
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                match wm.read_plan() {
+                    Ok(Some(plan)) => Ok(plan),
+                    Ok(None) => Ok("ℹ No active task plan found in .minicode/plan/".to_string()),
+                    Err(e) => Err(e),
+                }
+            }
+            "log_finding" => {
+                let finding = args
+                    .get("finding")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "log_finding".to_string(),
+                        reason: "Missing required argument 'finding'".to_string(),
+                    })?;
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                wm.append_finding(finding)
+                    .map(|_| "✔ Logged observation into .minicode/plan/findings.md".to_string())
+            }
+            "update_progress" => {
+                let step = args.get("step").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "update_progress".to_string(),
+                        reason: "Missing required argument 'step'".to_string(),
+                    }
+                })?;
+                let status = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Completed");
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                wm.update_progress(step, status)
+                    .map(|_| format!("✔ Updated step '{}' status to '{}'", step, status))
+            }
+            "archive_plan" => {
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                match wm.archive_plan() {
+                    Ok(Some(archive_path)) => Ok(format!(
+                        "✔ Archived completed task plan to {}",
+                        archive_path.display()
+                    )),
+                    Ok(None) => Ok("ℹ No active task plan to archive".to_string()),
+                    Err(e) => Err(e),
+                }
+            }
+            unknown => Err(ToolError::NotFound {
+                name: unknown.to_string(),
+            }
+            .into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,7 +584,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 6);
+        assert_eq!(schemas.len(), 14);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -271,5 +592,13 @@ mod tests {
         assert!(names.contains(&"exec_cmd"));
         assert!(names.contains(&"grep_search"));
         assert!(names.contains(&"fetch_or_browse"));
+        assert!(names.contains(&"remember_fact"));
+        assert!(names.contains(&"update_fact"));
+        assert!(names.contains(&"forget_fact"));
+        assert!(names.contains(&"create_plan"));
+        assert!(names.contains(&"read_plan"));
+        assert!(names.contains(&"log_finding"));
+        assert!(names.contains(&"update_progress"));
+        assert!(names.contains(&"archive_plan"));
     }
 }

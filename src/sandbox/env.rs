@@ -15,6 +15,36 @@ const SECRET_PATTERNS: &[&str] = &[
     "AUTH",
     "BEARER",
     "PRIVATE",
+    "SIGNING",
+    "CERTIFICATE",
+    "DATABASE_URL",
+    "CONN_STR",
+    "DSN",
+    "SSH_AUTH_SOCK",
+    "KUBECONFIG",
+    "DOCKER_HOST",
+];
+
+const BLOCKED_PREFIXES: &[&str] = &[
+    "AWS_",
+    "GITHUB_",
+    "OPENAI_",
+    "GEMINI_",
+    "ANTHROPIC_",
+    "DEEPSEEK_",
+    "MISTRAL_",
+    "GROQ_",
+    "COHERE_",
+    "OLLAMA_",
+    "CLERK_",
+    "SUPABASE_",
+    "FIREBASE_",
+    "SENTRY_",
+    "VERCEL_",
+    "NETLIFY_",
+    "HEROKU_",
+    "DIGITALOCEAN_",
+    "CLOUDFLARE_",
 ];
 
 /// Builds a sanitized `std::process::Command` that clears all inherited variables
@@ -35,18 +65,13 @@ pub fn build_sanitized_command(program: &str, workspace: &Path) -> Command {
     for (key, val) in std::env::vars() {
         let key_upper = key.to_uppercase();
         let is_sensitive = SECRET_PATTERNS.iter().any(|&pat| key_upper.contains(pat));
+        let has_blocked_prefix = BLOCKED_PREFIXES
+            .iter()
+            .any(|&pfx| key_upper.starts_with(pfx));
 
         // Only allow non-sensitive, non-duplicate variables
-        if !is_sensitive && !WHITELIST_ENV_VARS.contains(&key.as_str()) {
-            // Further protect against leaking provider keys or sensitive credentials
-            if !key_upper.starts_with("AWS_")
-                && !key_upper.starts_with("GITHUB_")
-                && !key_upper.starts_with("OPENAI_")
-                && !key_upper.starts_with("GEMINI_")
-                && !key_upper.starts_with("ANTHROPIC_")
-            {
-                cmd.env(key, val);
-            }
+        if !is_sensitive && !has_blocked_prefix && !WHITELIST_ENV_VARS.contains(&key.as_str()) {
+            cmd.env(key, val);
         }
     }
 

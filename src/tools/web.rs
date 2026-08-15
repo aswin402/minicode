@@ -12,8 +12,10 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
     }
 
     let client = reqwest::Client::builder()
-        .user_agent("minicode-agent/0.1 (Documentation Fetcher)")
-        .timeout(std::time::Duration::from_secs(15))
+        .user_agent(crate::constants::WEB_USER_AGENT)
+        .timeout(std::time::Duration::from_secs(
+            crate::constants::WEB_TIMEOUT_SECS,
+        ))
         .build()
         .map_err(|e| ToolError::CommandExec(format!("HTTP client error: {}", e)))?;
 
@@ -38,7 +40,13 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
     let document = Html::parse_document(&html_text);
 
     // Extract title
-    let title_selector = Selector::parse("title").ok();
+    let title_selector = match Selector::parse("title") {
+        Ok(sel) => Some(sel),
+        Err(e) => {
+            tracing::warn!(error = ?e, "Failed to parse title CSS selector");
+            None
+        }
+    };
     let page_title = title_selector
         .and_then(|sel| document.select(&sel).next())
         .map(|el| el.text().collect::<Vec<_>>().join(" "))
@@ -47,10 +55,22 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
     // Extract body text or article content
     let mut markdown = format!("# {}\n\n*Source: {}*\n\n", page_title.trim(), url);
 
-    let content_selector = Selector::parse("article, main, body").ok();
+    let content_selector = match Selector::parse("article, main, body") {
+        Ok(sel) => Some(sel),
+        Err(e) => {
+            tracing::warn!(error = ?e, "Failed to parse content CSS selector");
+            None
+        }
+    };
     if let Some(sel) = content_selector {
         if let Some(container) = document.select(&sel).next() {
-            let p_selector = Selector::parse("h1, h2, h3, h4, p, li, pre, code").ok();
+            let p_selector = match Selector::parse("h1, h2, h3, h4, p, li, pre") {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to parse content element CSS selector");
+                    None
+                }
+            };
             if let Some(p_sel) = p_selector {
                 for element in container.select(&p_sel) {
                     let tag = element.value().name();
@@ -78,10 +98,11 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
         }
     }
 
-    // Limit to 40KB
-    if markdown.len() > 40 * 1024 {
-        markdown.truncate(40 * 1024);
-        markdown.push_str("\n\n[... Content truncated: 40KB limit ...]");
+    // Limit to max body size
+    if markdown.len() > crate::constants::WEB_MAX_BODY_BYTES {
+        let valid_len = markdown.floor_char_boundary(crate::constants::WEB_MAX_BODY_BYTES);
+        markdown.truncate(valid_len);
+        markdown.push_str("\n\n[... Content truncated: max limit reached ...]");
     }
 
     Ok(markdown)

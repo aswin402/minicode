@@ -73,10 +73,6 @@ impl TimelineView {
     pub fn add_tool_call(&mut self, name: String, args: String) {
         let display_cmd = Self::extract_cmd_display(&name, &args);
         self.entries.push(TimelineEntry::ToolStart {
-            name: name.clone(),
-            command_or_path: display_cmd.clone(),
-        });
-        self.entries.push(TimelineEntry::ToolApproved {
             name,
             command_or_path: display_cmd,
         });
@@ -153,13 +149,13 @@ impl TimelineView {
             // 3D Isometric Block (Retro-Futuristic) minicode Wordmark
             lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![Span::styled(
-                "   ___ ___                           _     ",
+                crate::constants::ASCII_WORDMARK_LINES[0],
                 Style::default().fg(theme.brand_accent),
             )]));
 
             lines.push(Line::from(vec![
                 Span::styled(
-                    "  |   Y   | _   ___  _   ___  ___  _| | ___ ",
+                    crate::constants::ASCII_WORDMARK_LINES[1],
                     Style::default().fg(theme.brand_accent),
                 ),
                 Span::styled(
@@ -171,12 +167,12 @@ impl TimelineView {
             ]));
 
             lines.push(Line::from(vec![Span::styled(
-                "  |.      || | |   || | |  _|| . || . || -_|",
+                crate::constants::ASCII_WORDMARK_LINES[2],
                 Style::default().fg(theme.highlight),
             )]));
 
             lines.push(Line::from(vec![Span::styled(
-                "  |. \\_/  ||_| |_|_||_| |___||___||___||___|",
+                crate::constants::ASCII_WORDMARK_LINES[3],
                 Style::default().fg(theme.success),
             )]));
 
@@ -348,10 +344,11 @@ impl TimelineView {
 
         let total_lines = lines.len() as u16;
         let viewport_height = area.height;
-        let scroll = if self.auto_scroll && total_lines > viewport_height {
-            total_lines.saturating_sub(viewport_height)
+        let max_scroll = total_lines.saturating_sub(viewport_height);
+        let scroll = if self.auto_scroll {
+            max_scroll
         } else {
-            self.scroll_offset
+            self.scroll_offset.min(max_scroll)
         };
 
         let block = Block::default()

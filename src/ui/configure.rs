@@ -166,11 +166,14 @@ impl ConfigMenu {
             // Setup API key
             let current_key = std::env::var(env_var).unwrap_or_default();
             let key_display = if !current_key.is_empty() {
-                format!(
-                    "{}...{}",
-                    &current_key[..current_key.len().min(6)],
-                    &current_key[current_key.len().saturating_sub(4)..]
-                )
+                let chars: Vec<char> = current_key.chars().collect();
+                if chars.len() <= 10 {
+                    "********".to_string()
+                } else {
+                    let prefix: String = chars.iter().take(6).collect();
+                    let suffix: String = chars.iter().rev().take(4).rev().collect();
+                    format!("{}...{}", prefix, suffix)
+                }
             } else {
                 "None configured".to_string()
             };
@@ -533,11 +536,11 @@ impl ConfigMenu {
     }
 
     fn save_all(config: &Config, workspace: &Path) -> Result<()> {
-        // Save to ~/.config/minicode/minicode.toml
+        // Save to ~/.config/minicode/config.toml
         if let Some(config_dir) = dirs::config_dir() {
-            let app_dir = config_dir.join("minicode");
+            let app_dir = config_dir.join(crate::constants::CONFIG_DIR_NAME);
             std::fs::create_dir_all(&app_dir).ok();
-            let toml_path = app_dir.join("minicode.toml");
+            let toml_path = app_dir.join(crate::constants::CONFIG_FILE_NAME);
             if let Ok(content) = toml::to_string_pretty(config) {
                 std::fs::write(toml_path, content).ok();
             }

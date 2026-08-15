@@ -6,8 +6,8 @@ use tiktoken_rs::CoreBPE;
 
 pub struct ContextCompressor {
     bpe: CoreBPE,
-    warning_threshold: f32,
-    safety_margin: f32,
+    warning_threshold: f64,
+    safety_margin: f64,
 }
 
 impl ContextCompressor {
@@ -17,8 +17,8 @@ impl ContextCompressor {
 
         Ok(Self {
             bpe,
-            warning_threshold: 0.70,
-            safety_margin: 0.15,
+            warning_threshold: crate::constants::COMPRESSOR_WARNING_THRESHOLD,
+            safety_margin: crate::constants::COMPRESSOR_SAFETY_MARGIN,
         })
     }
 
@@ -51,8 +51,8 @@ impl ContextCompressor {
             return output.to_string();
         }
 
-        let head_count = 15.min(lines.len() / 2);
-        let tail_count = 15.min(lines.len() - head_count);
+        let head_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(lines.len() / 2);
+        let tail_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(lines.len() - head_count);
         let truncated_count = lines.len() - (head_count + tail_count);
 
         let head = lines[..head_count].join("\n");
@@ -68,7 +68,9 @@ impl ContextCompressor {
     /// Preserves system prompt + most recent 3 turns, compressing older tool results.
     pub fn compact_history(&self, messages: &mut [Message], max_window_tokens: usize) {
         let current_tokens = self.count_messages_tokens(messages);
-        let threshold = (max_window_tokens as f32 * self.warning_threshold) as usize;
+        let threshold = (max_window_tokens as f64
+            * (self.warning_threshold - self.safety_margin).max(0.0))
+            as usize;
 
         if current_tokens <= threshold || messages.len() <= 6 {
             return;

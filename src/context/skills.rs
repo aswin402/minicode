@@ -19,9 +19,9 @@ impl SkillLoader {
         let mut skills = Vec::new();
 
         // 1. Check AGENTS.md in workspace root
-        let agents_md = workspace_root.join("AGENTS.md");
-        if agents_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&agents_md) {
+        let agents_md = workspace_root.join(crate::constants::AGENTS_MD_FILE);
+        match std::fs::read_to_string(&agents_md) {
+            Ok(content) => {
                 skills.push(Skill {
                     name: "agents-rules".to_string(),
                     description: "Repository rules, architecture instructions, and conventions"
@@ -30,12 +30,16 @@ impl SkillLoader {
                     content,
                 });
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %agents_md.display(), error = %e, "Failed to read AGENTS.md");
+            }
         }
 
         // 2. Check SKILL.md in workspace root
         let skill_md = workspace_root.join("SKILL.md");
-        if skill_md.exists() {
-            if let Ok(content) = std::fs::read_to_string(&skill_md) {
+        match std::fs::read_to_string(&skill_md) {
+            Ok(content) => {
                 skills.push(Skill {
                     name: "root-skill".to_string(),
                     description: "Root skill instructions for current workspace".to_string(),
@@ -43,30 +47,43 @@ impl SkillLoader {
                     content,
                 });
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %skill_md.display(), error = %e, "Failed to read SKILL.md");
+            }
         }
 
         // 3. Scan .skills/ directory
         let skills_dir = workspace_root.join(".skills");
-        if skills_dir.exists() && skills_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(skills_dir) {
+        match std::fs::read_dir(&skills_dir) {
+            Ok(entries) => {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                        if let Ok(content) = std::fs::read_to_string(&path) {
-                            let name = path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            skills.push(Skill {
-                                name,
-                                description: "Workspace skill definition".to_string(),
-                                path,
-                                content,
-                            });
+                        match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                let name = path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string();
+                                skills.push(Skill {
+                                    name,
+                                    description: "Workspace skill definition".to_string(),
+                                    path,
+                                    content,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::warn!(path = %path.display(), error = %e, "Failed to read skill file");
+                            }
                         }
                     }
                 }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %skills_dir.display(), error = %e, "Failed to read .skills directory");
             }
         }
 
@@ -75,7 +92,13 @@ impl SkillLoader {
 
     /// Finds a specific skill by name.
     pub fn get_skill_by_name(workspace_root: &Path, name: &str) -> Option<Skill> {
-        let skills = Self::discover_skills(workspace_root).ok()?;
+        let skills = match Self::discover_skills(workspace_root) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to discover skills");
+                return None;
+            }
+        };
         skills
             .into_iter()
             .find(|s| s.name.eq_ignore_ascii_case(name))
@@ -92,13 +115,13 @@ mod tests {
             std::env::temp_dir().join(format!("minicode_skills_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        let agents_file = temp_dir.join("AGENTS.md");
+        let agents_file = temp_dir.join(crate::constants::AGENTS_MD_FILE);
         std::fs::write(&agents_file, "# Rules\n1. Always be fast.").unwrap();
 
         let skills = SkillLoader::discover_skills(&temp_dir).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "agents-rules");
 
-        std::fs::remove_dir_all(&temp_dir).ok();
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

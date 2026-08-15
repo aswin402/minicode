@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use thiserror::Error;
 
 /// Root error enum for minicode operations across all subsystems.
@@ -23,9 +21,13 @@ pub enum MinicodeError {
     #[error("Security / Sandbox error: {0}")]
     Security(#[from] SecurityError),
 
+    #[error("MCP Protocol error: {0}")]
+    Mcp(#[from] McpError),
+
     #[error("Channel communication error: {0}")]
     Channel(String),
 
+    #[allow(dead_code)]
     #[error("UI error: {0}")]
     Ui(String),
 
@@ -56,6 +58,7 @@ pub enum ConfigError {
     #[error("Missing required API key for provider '{provider}'. Please set {env_var} or configure it in .env")]
     MissingApiKey { provider: String, env_var: String },
 
+    #[allow(dead_code)]
     #[error("Invalid configuration value for '{key}': {reason}")]
     InvalidValue { key: String, reason: String },
 }
@@ -77,9 +80,11 @@ pub enum ProviderError {
     #[error("Unsupported model '{model}' for provider '{provider}'")]
     UnsupportedModel { model: String, provider: String },
 
+    #[allow(dead_code)]
     #[error("Tool call parsing error: {0}")]
     ToolCallParse(String),
 
+    #[allow(dead_code)]
     #[error("Context window exceeded: prompt uses {used} tokens, max is {limit}")]
     ContextWindowExceeded { used: usize, limit: usize },
 }
@@ -107,6 +112,7 @@ pub enum ToolError {
     #[error("Command timed out after {timeout_secs} seconds")]
     CommandTimeout { timeout_secs: u64 },
 
+    #[allow(dead_code)]
     #[error("Tool execution was rejected by user: {reason}")]
     Rejected { reason: String },
 }
@@ -116,14 +122,19 @@ pub enum ContextError {
     #[error("Tree-sitter parse error: {0}")]
     TreeSitter(String),
 
+    #[allow(dead_code)]
     #[error("Unsupported language for AST parsing: {0}")]
     UnsupportedLanguage(String),
 
     #[error("Token counting error: {0}")]
     TokenCount(String),
 
+    #[allow(dead_code)]
     #[error("PageRank graph computation error: {0}")]
     Graph(String),
+
+    #[error("Core memory error: {0}")]
+    Memory(String),
 }
 
 #[derive(Error, Debug)]
@@ -137,6 +148,7 @@ pub enum SessionError {
     #[error("No backup checkpoint available to undo for turn {turn_id}")]
     NoBackupAvailable { turn_id: usize },
 
+    #[allow(dead_code)]
     #[error("Corrupted session file at {path}: line {line_number}")]
     CorruptedFile { path: String, line_number: usize },
 }
@@ -149,11 +161,37 @@ pub enum SecurityError {
         workspace_root: String,
     },
 
+    #[allow(dead_code)]
     #[error("Forbidden dangerous command: '{command}'")]
     ForbiddenCommand { command: String },
 
     #[error("Landlock sandbox enforcement error: {0}")]
     Landlock(String),
+}
+
+#[derive(Error, Debug)]
+pub enum McpError {
+    #[error("MCP server '{0}' not found or not running")]
+    ServerNotFound(String),
+
+    #[error("MCP connection failed for server '{server}': {reason}")]
+    ConnectionFailed { server: String, reason: String },
+
+    #[error("MCP tool '{tool}' failed on server '{server}': {reason}")]
+    ToolCallFailed {
+        server: String,
+        tool: String,
+        reason: String,
+    },
+
+    #[error("MCP operation timed out for server '{server}' after {timeout_secs}s")]
+    Timeout { server: String, timeout_secs: u64 },
+
+    #[error("MCP transport error: {0}")]
+    Transport(String),
+
+    #[error("MCP protocol error: {0}")]
+    Protocol(String),
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for MinicodeError {

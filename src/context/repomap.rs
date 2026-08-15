@@ -181,6 +181,30 @@ mod tests {
         assert!(names.contains(&"compute_sum"));
         assert!(names.contains(&"UserAccount"));
 
-        std::fs::remove_dir_all(&temp_dir).ok();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_treesitter_abi_versions_match() {
+        let core_version = tree_sitter::LANGUAGE_VERSION;
+        let rust_lang: Language = tree_sitter_rust::LANGUAGE.into();
+        let python_lang: Language = tree_sitter_python::LANGUAGE.into();
+        let js_lang: Language = tree_sitter_javascript::LANGUAGE.into();
+        let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+
+        let languages = [
+            ("rust", rust_lang.version()),
+            ("python", python_lang.version()),
+            ("javascript", js_lang.version()),
+            ("typescript", ts_lang.version()),
+        ];
+
+        for (name, version) in &languages {
+            assert!(
+                *version <= core_version && *version >= tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
+                "Tree-sitter ABI incompatibility for {}: version {} not compatible with core version {} (min {})",
+                name, version, core_version, tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION
+            );
+        }
     }
 }

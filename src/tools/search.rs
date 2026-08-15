@@ -1,11 +1,10 @@
+use crate::constants::MAX_SEARCH_RESULTS;
 use crate::error::{Result, ToolError};
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-
-const MAX_SEARCH_RESULTS: usize = 50;
 
 /// Fast in-memory grep search across workspace files respecting `.gitignore`.
 pub fn grep_search(
@@ -28,9 +27,21 @@ pub fn grep_search(
 
     let file_regex: Option<Regex> = match file_pattern {
         Some(pat) => {
-            let converted = pat.replace('*', ".*");
+            let mut pattern_regex = String::from("^");
+            for c in pat.chars() {
+                match c {
+                    '*' => pattern_regex.push_str(".*"),
+                    '?' => pattern_regex.push('.'),
+                    '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                        pattern_regex.push('\\');
+                        pattern_regex.push(c);
+                    }
+                    _ => pattern_regex.push(c),
+                }
+            }
+            pattern_regex.push('$');
             Some(
-                Regex::new(&converted).map_err(|e| ToolError::InvalidArguments {
+                Regex::new(&pattern_regex).map_err(|e| ToolError::InvalidArguments {
                     name: "grep_search".to_string(),
                     reason: format!("Invalid file pattern: {}", e),
                 })?,
@@ -49,13 +60,16 @@ pub fn grep_search(
     let mut matches = Vec::new();
 
     for result in walker {
-        if matches.len() >= MAX_SEARCH_RESULTS {
+        if matches.len() >= crate::constants::MAX_SEARCH_RESULTS {
             break;
         }
 
         let entry = match result {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::debug!(error = %e, "Skipping unreadable file/directory during grep_search");
+                continue;
+            }
         };
 
         if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {

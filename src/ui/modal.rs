@@ -336,21 +336,24 @@ impl ModalState {
 
 /// Helper function to create a centered rect rectangle
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let margin_y = 100_u16.saturating_sub(percent_y) / 2;
+    let margin_x = 100_u16.saturating_sub(percent_x) / 2;
+
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(margin_y),
+            Constraint::Percentage(percent_y.min(100)),
+            Constraint::Percentage(margin_y),
         ])
         .split(r);
 
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(margin_x),
+            Constraint::Percentage(percent_x.min(100)),
+            Constraint::Percentage(margin_x),
         ])
         .split(popup_layout[1])[1]
 }

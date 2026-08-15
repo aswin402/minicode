@@ -33,9 +33,12 @@ impl UndoEngine {
             } else {
                 // File did not exist before this turn — delete it
                 if orig.exists() {
-                    std::fs::remove_file(orig).ok();
-                    tracing::info!(path = %file.original_path, "Removed file created in rolled-back turn");
-                    restored_paths.push(format!("(deleted) {}", file.original_path));
+                    if let Err(e) = std::fs::remove_file(orig) {
+                        tracing::warn!(path = %file.original_path, error = %e, "Failed to remove newly created file during undo rollback");
+                    } else {
+                        tracing::info!(path = %file.original_path, "Removed file created in rolled-back turn");
+                        restored_paths.push(format!("(deleted) {}", file.original_path));
+                    }
                 }
             }
         }
@@ -57,6 +60,9 @@ pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
     let backup_manager = BackupManager::new(workspace_root);
     if let Some(turn_id) = backup_manager.latest_turn_id() {
         let files = UndoEngine::rollback_turn(&backup_manager, turn_id)?;
+        if let Err(e) = backup_manager.remove_turn_backup(turn_id) {
+            tracing::warn!(turn = turn_id, error = %e, "Failed to remove turn backup directory after rollback");
+        }
         let mut restored = 0;
         let mut deleted = 0;
         for f in &files {

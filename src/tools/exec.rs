@@ -4,24 +4,32 @@ use crate::sandbox::landlock::apply_landlock_sandbox;
 use std::path::Path;
 use std::time::Duration;
 
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const MAX_OUTPUT_BYTES: usize = 50 * 1024; // 50 KB cap
-
 /// Executes a shell command inside the sandboxed workspace environment.
 pub async fn exec_cmd(
     workspace_root: &Path,
     command_str: &str,
     timeout_secs: Option<u64>,
 ) -> Result<String> {
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
-
-    // Optional Landlock enforcement
-    apply_landlock_sandbox(workspace_root, true).ok();
+    let timeout =
+        Duration::from_secs(timeout_secs.unwrap_or(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS));
 
     let mut std_cmd = build_sanitized_command("sh", workspace_root);
     std_cmd.arg("-c").arg(command_str);
 
+    #[cfg(target_os = "linux")]
+    {
+        let ws = workspace_root.to_path_buf();
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            std_cmd.pre_exec(move || {
+                let _ = apply_landlock_sandbox(&ws, true);
+                Ok(())
+            });
+        }
+    }
+
     let mut tokio_cmd = tokio::process::Command::from(std_cmd);
+    tokio_cmd.kill_on_drop(true);
 
     let execution_future = tokio_cmd.output();
 
@@ -47,25 +55,29 @@ pub async fn exec_cmd(
         combined.push_str(&stderr);
     }
 
-    if combined.len() > MAX_OUTPUT_BYTES {
-        let truncated = &combined[..MAX_OUTPUT_BYTES];
+    if combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES {
+        let valid_end = combined.floor_char_boundary(crate::constants::EXEC_MAX_OUTPUT_BYTES);
+        let truncated = &combined[..valid_end];
         combined = format!(
-            "{}\n\n[... Output truncated: exceeded 50KB limit ...]",
+            "{}\n\n[... Output truncated: exceeded max limit ...]",
             truncated
         );
     }
 
     let status_code = output.status.code().unwrap_or(-1);
+    let exit_code = output.status.code();
+    let compacted = super::compactor::compact_tool_output(command_str, &combined, exit_code);
+
     if !output.status.success() {
         return Ok(format!(
-            "Command exited with non-zero status ({status_code}):\n{combined}"
+            "Command exited with non-zero status ({status_code}):\n{compacted}"
         ));
     }
 
-    if combined.trim().is_empty() {
+    if compacted.trim().is_empty() {
         Ok("Command executed successfully (no output).".to_string())
     } else {
-        Ok(combined)
+        Ok(compacted)
     }
 }
 

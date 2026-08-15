@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.4] — 2026-08-15
+
+### 🛡️ Security & Sandboxing
+- **Landlock Async Isolation (`src/sandbox/landlock.rs`, `src/tools/exec.rs`)**:
+  - Moved Landlock kernel rule enforcement (`ruleset.restrict_self()`) into Linux `std_cmd.pre_exec(...)` hooks after `fork()` so Tokio async worker threads are never restricted.
+  - Added explicit read-write access to `/tmp` for build tools and test suites while restricting `/usr`, `/lib`, `/etc`, and `/bin` to read-only.
+- **Environment Variable Sanitization (`src/sandbox/env.rs`)**:
+  - Expanded secret stripping with 19 vendor blocked prefixes and sensitive patterns (`DATABASE_URL`, `SENTRY_DSN`, `KUBECONFIG`, `DOCKER_HOST`, `SSH_AUTH_SOCK`, `SIGNING`, `CERTIFICATE`).
+- **Lexical Path Validation (`src/sandbox/path.rs`)**:
+  - Added lexical path normalization resolving `.` and `..` before filesystem existence checks.
+
+### ⚡ Critical Runtime Safety & LLM Protocol
+- **UTF-8 Char Boundary Safety**:
+  - Replaced unsafe byte slicing with `floor_char_boundary()` across output compactors (`src/tools/exec.rs`), web body truncation (`src/tools/web.rs`), system prompt truncation (`src/agent/prompt.rs`), API key masking (`src/ui/configure.rs`), and modal positioning (`src/ui/modal.rs`).
+- **Tool Protocol Conformance (`src/agent/loop.rs`)**:
+  - Fixed `Message::tool_result` to pass `tool_call.id` instead of `tool_call.name`.
+- **Command Compactor Hardening (`src/tools/compactor.rs`)**:
+  - Made `compact_cargo_check` and `compact_cargo_test` strictly preserve full error output whenever exit code is non-zero.
+  - Made subcommand detection flag-aware (skipping flags like `+nightly`, `--quiet`, `-C`).
+- **Process Safety (`src/tools/exec.rs`, `src/mcp/client.rs`)**:
+  - Enabled `.kill_on_drop(true)` on `tokio::process::Command` to eliminate zombie child processes on timeout.
+  - Added process group isolation (`process_group(0)`) on Unix for clean process tree teardowns.
+
+### 📁 Filesystem & Patching Robustness
+- **Empty File Read Support (`src/tools/fs.rs`)**:
+  - Added explicit handling for 0-byte file reads without index out-of-bounds errors.
+- **Atomic File Writes (`src/tools/fs.rs`, `src/context/memory.rs`)**:
+  - All file writes now write to temporary sibling files (`.tmp_<pid>_<uuid>`) and atomically rename.
+- **Sliding-Window Fuzzy Patch Matching (`src/tools/fs.rs`)**:
+  - Replaced full-file diffing with sliding-window similarity scoring via `similar::TextDiff::ratio()`.
+- **POSIX Trailing Newline Preservation (`src/tools/fs.rs`)**:
+  - Preserved trailing newlines across all patch matching strategies.
+
+### 🧠 AST Code Graph & Memory Engineering
+- **Cross-File Dependency Graph (`src/context/graph.rs`)**:
+  - Populated directed graph edges between modules based on extracted Tree-sitter symbol references.
+- **Cross-Tier Memory Synchronization (`src/context/memory.rs`)**:
+  - Synchronized and deduplicated preference keys across local and global memory stores.
+- **Line-Anchored Task Plan Checkboxes (`src/context/working_memory.rs`)**:
+  - Line-by-line matching for progress status updates without accidental substring replacements.
+- **Float Standardization (`src/context/compressor.rs`)**:
+  - Standardized threshold and margin math to `f64`.
+
+### 🔄 Session Management & Multi-Turn Undo
+- **Multi-Turn Consecutive `/undo` (`src/session/undo.rs`, `src/session/backup.rs`)**:
+  - Canonicalized paths in backup checkpointing to seamlessly support relative paths.
+  - Added automatic cleanup of rolled-back turn backup directories to allow consecutive undo operations.
+- **Session Resume & Continue (`src/main.rs`, `src/app.rs`)**:
+  - Wired CLI `--resume <session_id>` and `--continue` flags to hydrate previous session history into both interactive TUI and plain REPL modes.
+
+### 🔌 Model Context Protocol (MCP) & UI Consistency
+- **MCP Discovery & Compliance (`src/config.rs`, `src/mcp/server.rs`, `src/mcp/client.rs`)**:
+  - Discovered both global (`~/.config/minicode/mcp.json`) and workspace (`.minicode/mcp.json`) MCP configurations.
+  - Implemented standard JSON-RPC 2.0 error handling and response formatting.
+- **UI Auto-Scroll Clamping (`src/ui/view.rs`)**:
+  - Clamped manual and auto-scroll offsets to prevent viewport underflows and overflows.
+- **Centralized Constants Documentation (`src/constants.rs`)**:
+  - Documented all 45 constants with comprehensive rustdoc comments.
+
+---
+
 ## [0.0.3] — 2026-08-14
 
 ### 🚀 Added

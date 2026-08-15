@@ -50,9 +50,42 @@ impl CodeGraph {
             }
         }
 
-        // Scan symbols & connections
+        // Map symbol name -> defining file
+        let mut symbol_to_file: HashMap<String, PathBuf> = HashMap::new();
+
         for file in &source_files {
-            self.extractor.extract_file_symbols(file).ok();
+            match self.extractor.extract_file_symbols(file) {
+                Ok(symbols) => {
+                    for sym in symbols {
+                        if sym.name.len() > 2 {
+                            symbol_to_file.insert(sym.name, file.clone());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(path = %file.display(), error = %e, "Could not extract AST symbols from file");
+                }
+            }
+        }
+
+        // Build edges based on cross-file symbol references
+        for file in &source_files {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                let from_idx = match self.node_indices.get(file) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+
+                for (sym_name, target_file) in &symbol_to_file {
+                    if target_file != file && content.contains(sym_name) {
+                        if let Some(&to_idx) = self.node_indices.get(target_file) {
+                            if !self.graph.contains_edge(from_idx, to_idx) {
+                                self.graph.add_edge(from_idx, to_idx, ());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -72,8 +105,8 @@ impl CodeGraph {
             scores.insert(node_idx, initial_score);
         }
 
-        let damping = 0.85;
-        let iterations = 20;
+        let damping = crate::constants::PAGERANK_DAMPING;
+        let iterations = crate::constants::PAGERANK_ITERATIONS;
 
         for _ in 0..iterations {
             let mut next_scores = HashMap::new();
@@ -92,7 +125,7 @@ impl CodeGraph {
                     .iter()
                     .any(|af| self.node_indices.get(af) == Some(&node))
                 {
-                    0.3
+                    crate::constants::PAGERANK_PERSONALIZATION_BIAS
                 } else {
                     0.0
                 };

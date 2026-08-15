@@ -3,6 +3,35 @@
 use crate::error::{Result, SecurityError};
 use std::path::{Path, PathBuf};
 
+/// Lexically normalizes a path resolving `.`, `..`, and prefix/root components without filesystem access.
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(..) => components.push(component),
+            std::path::Component::RootDir => {
+                components.clear();
+                components.push(component);
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if let Some(last) = components.last() {
+                    match last {
+                        std::path::Component::Normal(..) => {
+                            components.pop();
+                        }
+                        _ => components.push(component),
+                    }
+                } else {
+                    components.push(component);
+                }
+            }
+            std::path::Component::Normal(..) => components.push(component),
+        }
+    }
+    components.into_iter().collect()
+}
+
 /// Validates that a requested path does not escape the workspace root.
 ///
 /// Handles relative paths, `..` traversals, and symbolic link dereferencing
@@ -14,24 +43,35 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
             workspace_root: format!("Failed to canonicalize workspace root: {}", e),
         })?;
 
-    let resolved_path = if user_path.is_absolute() {
+    let raw_resolved = if user_path.is_absolute() {
         user_path.to_path_buf()
     } else {
-        workspace_root.join(user_path)
+        canonical_root.join(user_path)
     };
 
+    let normalized = normalize_path(&raw_resolved);
+
+    // Initial check: normalized path must start with canonical root
+    if !normalized.starts_with(&canonical_root) {
+        return Err(SecurityError::PathEscapesWorkspace {
+            path: user_path.display().to_string(),
+            workspace_root: canonical_root.display().to_string(),
+        }
+        .into());
+    }
+
     // If the file/path exists, canonicalize it directly (resolves symlinks)
-    if resolved_path.exists() {
-        let canonical_target = std::fs::canonicalize(&resolved_path).map_err(|e| {
+    if normalized.exists() {
+        let canonical_target = std::fs::canonicalize(&normalized).map_err(|e| {
             SecurityError::PathEscapesWorkspace {
-                path: resolved_path.display().to_string(),
+                path: normalized.display().to_string(),
                 workspace_root: format!("Failed to canonicalize path: {}", e),
             }
         })?;
 
         if !canonical_target.starts_with(&canonical_root) {
             return Err(SecurityError::PathEscapesWorkspace {
-                path: resolved_path.display().to_string(),
+                path: user_path.display().to_string(),
                 workspace_root: canonical_root.display().to_string(),
             }
             .into());
@@ -41,7 +81,7 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
     } else {
         // If file does not exist yet (e.g. for write_file / new file creation),
         // canonicalize the nearest existing parent directory
-        let mut curr = resolved_path.as_path();
+        let mut curr = normalized.as_path();
         while let Some(parent) = curr.parent() {
             if parent.exists() {
                 let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
@@ -53,7 +93,7 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
 
                 if !canonical_parent.starts_with(&canonical_root) {
                     return Err(SecurityError::PathEscapesWorkspace {
-                        path: resolved_path.display().to_string(),
+                        path: user_path.display().to_string(),
                         workspace_root: canonical_root.display().to_string(),
                     }
                     .into());
@@ -63,7 +103,7 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
             curr = parent;
         }
 
-        Ok(resolved_path)
+        Ok(normalized)
     }
 }
 
