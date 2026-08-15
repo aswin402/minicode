@@ -49,8 +49,14 @@ impl ContextCompressor {
             return output.to_string();
         }
 
-        let head_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(total_lines / 2);
-        let tail_count = crate::constants::COMPRESSOR_HEAD_TAIL_LINES.min(total_lines - head_count);
+        let budget = (max_lines / 2).max(1);
+        let head_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
+        let tail_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
+
+        if head_count + tail_count >= total_lines {
+            return output.to_string();
+        }
+
         let truncated_count = total_lines - (head_count + tail_count);
 
         let head: Vec<&str> = output.lines().take(head_count).collect();
@@ -82,11 +88,11 @@ impl ContextCompressor {
             "Compacting conversation context history"
         );
 
-        // Retain system messages (index 0) and the most recent 4 messages
-        let preserve_count = 4.min(messages.len());
-        let cutoff = messages.len() - preserve_count;
+        // Retain the most recent preserved messages and compress older tool observations
+        let preserve_count = crate::constants::CONTEXT_MIN_PRESERVED_MESSAGES.min(messages.len());
+        let cutoff = messages.len().saturating_sub(preserve_count);
 
-        for msg in messages.iter_mut().take(cutoff).skip(1) {
+        for msg in messages.iter_mut().take(cutoff) {
             if msg.role == Role::Tool {
                 // Compress older tool outputs
                 msg.content =

@@ -43,17 +43,21 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
         }
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| ToolError::CommandExec(format!("Failed to read response body: {}", e)))?;
+    use futures::StreamExt;
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
 
-    if bytes.len() > crate::constants::MAX_WEB_RESPONSE_BYTES {
-        return Err(ToolError::CommandExec(format!(
-            "Response body exceeded maximum limit of {} bytes",
-            crate::constants::MAX_WEB_RESPONSE_BYTES
-        ))
-        .into());
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res
+            .map_err(|e| ToolError::CommandExec(format!("Failed reading response chunk: {}", e)))?;
+        if bytes.len() + chunk.len() > crate::constants::MAX_WEB_RESPONSE_BYTES {
+            return Err(ToolError::CommandExec(format!(
+                "Response body exceeded maximum limit of {} bytes",
+                crate::constants::MAX_WEB_RESPONSE_BYTES
+            ))
+            .into());
+        }
+        bytes.extend_from_slice(&chunk);
     }
 
     let html_text = String::from_utf8_lossy(&bytes).to_string();

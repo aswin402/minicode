@@ -286,7 +286,10 @@ impl TimelineView {
                         )]));
                     } else {
                         let mut first = true;
-                        for out_line in trimmed.lines().take(12) {
+                        for out_line in trimmed
+                            .lines()
+                            .take(crate::constants::UI_MAX_TOOL_OUTPUT_LINES)
+                        {
                             let prefix = if first { "  └ " } else { "    " };
                             first = false;
 
@@ -308,8 +311,9 @@ impl TimelineView {
                                 Span::styled(out_line, Style::default().fg(line_color)),
                             ]));
                         }
-                        if trimmed.lines().count() > 12 {
-                            let remaining = trimmed.lines().count() - 12;
+                        if trimmed.lines().count() > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
+                            let remaining = trimmed.lines().count()
+                                - crate::constants::UI_MAX_TOOL_OUTPUT_LINES;
                             lines.push(Line::from(vec![Span::styled(
                                 format!("    ... +{} lines (output folded)", remaining),
                                 Style::default().fg(theme.border),

@@ -106,7 +106,7 @@ impl SymbolIndex {
             if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 let path = result.path();
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if matches!(ext, "rs" | "py" | "js" | "ts" | "jsx" | "tsx") {
+                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
                         if let Ok(file_symbols) = extractor.extract_file_symbols(path) {
                             for sym in file_symbols {
                                 if sym.kind != "import" {
@@ -158,7 +158,7 @@ impl SymbolIndex {
             doc_comment: sym.doc_comment,
         });
 
-        self.recompute_corpus_stats();
+        self.doc_count = self.symbols.len();
     }
 
     /// Locates an exact or prefix match for a symbol name
@@ -203,12 +203,11 @@ impl SymbolIndex {
         };
 
         for q_token in &query_tokens {
-            let mut matched_postings: Vec<(usize, f64)> = Vec::new(); // (sym_idx, match_weight)
+            let mut matched_symbols = HashMap::new();
 
             if let Some(postings) = self.postings.get(q_token) {
-                // Exact token match gets full weight (1.0)
                 for &sym_idx in postings {
-                    matched_postings.push((sym_idx, 1.0));
+                    matched_symbols.insert(sym_idx, 1.0);
                 }
             } else {
                 // O(log N + K) BTreeMap prefix range search
@@ -220,20 +219,21 @@ impl SymbolIndex {
                             self.postings.range(q_token.clone()..prefix_end)
                         {
                             for &sym_idx in postings {
-                                matched_postings
-                                    .push((sym_idx, crate::constants::BM25_PREFIX_WEIGHT));
+                                matched_symbols
+                                    .entry(sym_idx)
+                                    .or_insert(crate::constants::BM25_PREFIX_WEIGHT);
                             }
                         }
                     }
                 }
             }
 
-            if !matched_postings.is_empty() {
-                let df = *self.doc_freq.get(q_token).unwrap_or(&1) as f64;
+            if !matched_symbols.is_empty() {
+                let df = (matched_symbols.len() as f64).max(1.0);
                 // Standard Robertson-Spärck Jones IDF with smoothing
                 let idf = (((n - df + 0.5) / (df + 0.5)) + 1.0).ln().max(0.1);
 
-                for (sym_idx, weight) in matched_postings {
+                for (sym_idx, weight) in matched_symbols {
                     let dl = self.doc_lengths.get(sym_idx).copied().unwrap_or(1) as f64;
                     let tf = 1.0 * weight;
                     let bm25 = idf * (tf * (BM25_K1 + 1.0))

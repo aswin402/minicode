@@ -70,8 +70,45 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
         }
     }
 
-    // Allow read-only access to standard system directories (/usr, /lib, /etc, /bin)
-    for sys_path in &["/usr", "/lib", "/lib64", "/etc", "/bin"] {
+    let system_paths = [
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/etc",
+        "/bin",
+        "/dev",
+        "/proc",
+        "/opt",
+        "/usr/local",
+    ];
+
+    let home_dir = std::env::var("HOME").ok();
+    let cargo_home = home_dir.as_ref().map(|h| format!("{}/.cargo", h));
+    let rustup_home = home_dir.as_ref().map(|h| format!("{}/.rustup", h));
+    let nvm_home = home_dir.as_ref().map(|h| format!("{}/.nvm", h));
+    let local_home = home_dir.as_ref().map(|h| format!("{}/.local", h));
+
+    for p_str in [cargo_home, rustup_home, nvm_home, local_home]
+        .into_iter()
+        .flatten()
+    {
+        let p = Path::new(&p_str);
+        if p.exists() {
+            if let Ok(fd) = PathFd::new(p) {
+                ruleset_created = ruleset_created
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(ABI::V1)))
+                    .map_err(|e| {
+                        SecurityError::Landlock(format!(
+                            "Failed to add path rule for {}: {}",
+                            p.display(),
+                            e
+                        ))
+                    })?;
+            }
+        }
+    }
+
+    for sys_path in &system_paths {
         let p = Path::new(sys_path);
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {
@@ -91,8 +128,6 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
     ruleset_created.restrict_self().map_err(|e| {
         SecurityError::Landlock(format!("Failed to enforce Landlock restrictions: {}", e))
     })?;
-
-    tracing::debug!(workspace = %workspace_root.display(), "Landlock sandbox enforced");
     Ok(())
 }
 

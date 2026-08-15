@@ -53,6 +53,16 @@ impl AgentLoop {
         &self.session_id
     }
 
+    pub fn update_config(&mut self, config: Config, provider: Box<dyn Provider>) {
+        self.config = config;
+        self.provider = provider;
+        tracing::info!(
+            provider = %self.config.provider.default,
+            model = %self.config.provider.model,
+            "Updated agent configuration at runtime"
+        );
+    }
+
     /// Prunes conversation message history if total tokens exceed CONTEXT_WINDOW_PRUNE_THRESHOLD,
     /// or if message count grows too large. Always preserves the most recent CONTEXT_MIN_PRESERVED_MESSAGES.
     pub fn prune_context(&mut self) {
@@ -74,6 +84,20 @@ impl AgentLoop {
                     let removed_tokens = compressor.count_tokens(&removed.content);
                     total_tokens = total_tokens.saturating_sub(removed_tokens + 4);
                 }
+
+                // Invariant: Never leave an orphaned tool result message at the start of conversation history
+                while self.messages.len() > 1
+                    && self
+                        .messages
+                        .first()
+                        .map(|m| m.role == crate::agent::types::Role::Tool)
+                        .unwrap_or(false)
+                {
+                    let removed = self.messages.remove(0);
+                    let removed_tokens = compressor.count_tokens(&removed.content);
+                    total_tokens = total_tokens.saturating_sub(removed_tokens + 4);
+                }
+
                 let pruned_count = initial_count - self.messages.len();
                 if pruned_count > 0 {
                     tracing::info!(
@@ -143,11 +167,11 @@ impl AgentLoop {
             system_instruction: Some(system_prompt),
         };
 
-        let mut retry_count = 0;
         let max_retries = DEFAULT_MAX_RETRIES;
 
         while iteration < max_iterations {
             iteration += 1;
+            let mut retry_count = 0;
 
             let mut iteration_text = String::new();
             let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
@@ -340,6 +364,7 @@ impl AgentLoop {
                     // Append tool result message for LLM context
                     self.messages.push(Message::tool_result(
                         tool_call.id,
+                        tool_call.name,
                         tool_result.output.clone(),
                     ));
 

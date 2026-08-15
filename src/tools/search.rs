@@ -93,9 +93,13 @@ pub fn grep_search(
             .strip_prefix(workspace_root)
             .unwrap_or(path)
             .to_string_lossy();
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
 
         if let Some(ref f_reg) = file_regex {
-            if !f_reg.is_match(&rel_path) {
+            if !f_reg.is_match(&rel_path) && !f_reg.is_match(&file_name) {
                 continue;
             }
         }
@@ -110,7 +114,12 @@ pub fn grep_search(
                     }
                     if let Ok(line) = line_res {
                         if regex.is_match(&line) {
-                            matches.push(format!("{}:{}: {}", rel_path, line_idx + 1, line.trim()));
+                            matches.push(format!(
+                                "{}:{}: {}",
+                                rel_path,
+                                line_idx + 1,
+                                line.trim_end()
+                            ));
                         }
                     }
                 }

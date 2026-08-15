@@ -255,6 +255,29 @@ impl WorkingMemory {
             }
         }
 
+        if let Ok(findings) = fs::read_to_string(self.findings_path()) {
+            let non_empty_lines: Vec<&str> = findings
+                .lines()
+                .filter(|l| {
+                    !l.trim().is_empty()
+                        && !l.starts_with("# Discoveries")
+                        && !l.starts_with("> Workspace:")
+                })
+                .collect();
+            if !non_empty_lines.is_empty() {
+                block.push_str("\n# Key Findings & Discoveries:\n");
+                let recent = if non_empty_lines.len() > 10 {
+                    &non_empty_lines[non_empty_lines.len() - 10..]
+                } else {
+                    &non_empty_lines[..]
+                };
+                for line in recent {
+                    block.push_str(line);
+                    block.push('\n');
+                }
+            }
+        }
+
         block.push_str("</working_memory>");
         block
     }

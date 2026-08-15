@@ -21,6 +21,14 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+pub enum AgentCommand {
+    Prompt(String),
+    UpdateConfig {
+        config: Box<Config>,
+        provider: Box<dyn crate::agent::provider::Provider>,
+    },
+}
+
 pub struct App<'a> {
     workspace_root: std::path::PathBuf,
     config: Config,
@@ -88,21 +96,33 @@ impl<'a> App<'a> {
         let mut terminal = Terminal::new(backend)?;
 
         let mut event_stream = EventStream::new();
-        let (prompt_tx, mut prompt_rx) = mpsc::unbounded_channel::<String>();
+        let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
         // Spawn background non-blocking Agent actor
         let agent_task = tokio::spawn(async move {
-            while let Some(prompt) = prompt_rx.recv().await {
-                if let Err(e) = agent.execute_turn(&prompt, event_tx.clone()).await {
-                    let err_event = AgentEvent::Error {
-                        turn_id: None,
-                        code: "execution_error".to_string(),
-                        message: e.to_string(),
-                        retrying: false,
-                        retry_after_ms: None,
-                    };
-                    event_tx.send(err_event).ok();
+            while let Some(cmd) = control_rx.recv().await {
+                match cmd {
+                    AgentCommand::Prompt(prompt) => {
+                        if let Err(e) = agent.execute_turn(&prompt, event_tx.clone()).await {
+                            let err_event = AgentEvent::Error {
+                                turn_id: None,
+                                code: "execution_error".to_string(),
+                                message: e.to_string(),
+                                retrying: false,
+                                retry_after_ms: None,
+                            };
+                            if let Err(send_err) = event_tx.send(err_event) {
+                                tracing::error!(
+                                    error = %send_err,
+                                    "Failed to send agent error event to UI channel"
+                                );
+                            }
+                        }
+                    }
+                    AgentCommand::UpdateConfig { config, provider } => {
+                        agent.update_config(*config, provider);
+                    }
                 }
             }
         });
@@ -226,7 +246,7 @@ impl<'a> App<'a> {
 
                         // Modal is active — intercept keyboard navigation
                         if self.modal.is_active() {
-                            self.handle_modal_key(key_event).await;
+                            self.handle_modal_key(key_event, &control_tx).await;
                             continue;
                         }
 
@@ -296,7 +316,12 @@ impl<'a> App<'a> {
                             self.work_start = Some(Instant::now());
 
                             // Dispatch asynchronously to agent background actor
-                            prompt_tx.send(prompt).ok();
+                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt)) {
+                                tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
+                                self.is_working = false;
+                                self.work_start = None;
+                                self.timeline.add_status(format!("❌ Agent communication failure: {}", e));
+                            }
                         }
                     }
                 }
@@ -313,7 +338,11 @@ impl<'a> App<'a> {
     }
 
     /// Handles keyboard interaction within in-TUI modal dialogs
-    async fn handle_modal_key(&mut self, key: crossterm::event::KeyEvent) {
+    async fn handle_modal_key(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
         match &mut self.modal {
             ModalState::None => {}
             ModalState::ProviderSelect {
@@ -397,6 +426,27 @@ impl<'a> App<'a> {
                         let selected_model = models[real_idx].id.clone();
                         self.config.provider.default = provider.clone();
                         self.config.provider.model = selected_model.clone();
+
+                        let custom_url = if self.config.provider.default == "ollama" {
+                            Some(self.config.provider.ollama.host.as_str())
+                        } else {
+                            None
+                        };
+
+                        if let Ok(key) = self.config.get_api_key(&self.config.provider.default) {
+                            if let Ok(new_prov) =
+                                crate::agent::provider::create_provider_with_base_url(
+                                    &self.config.provider.default,
+                                    &key,
+                                    custom_url,
+                                )
+                            {
+                                let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                    config: Box::new(self.config.clone()),
+                                    provider: new_prov,
+                                });
+                            }
+                        }
 
                         self.timeline.add_status(format!(
                             "✔ Switched active provider to '{}' and model to '{}'",

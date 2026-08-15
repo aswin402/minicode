@@ -31,7 +31,7 @@ impl StatusWidgets {
 
         if needs_refresh && !IS_FETCHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let ws = workspace.to_path_buf();
-            std::thread::spawn(move || {
+            let fetcher = move || {
                 let output = std::process::Command::new("git")
                     .arg("rev-parse")
                     .arg("--abbrev-ref")
@@ -56,7 +56,13 @@ impl StatusWidgets {
                     *guard = Some((Instant::now(), branch));
                 }
                 IS_FETCHING.store(false, std::sync::atomic::Ordering::SeqCst);
-            });
+            };
+
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn_blocking(fetcher);
+            } else {
+                std::thread::spawn(fetcher);
+            }
         }
 
         cached_branch

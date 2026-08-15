@@ -52,8 +52,17 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
+    #[error("Failed to write config file at {path}: {source}")]
+    FileWrite {
+        path: String,
+        source: std::io::Error,
+    },
+
     #[error("Failed to parse TOML configuration: {0}")]
     TomlParse(#[from] toml::de::Error),
+
+    #[error("Failed to serialize TOML configuration: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
 
     #[error("Missing required API key for provider '{provider}'. Please set {env_var} or configure it in .env")]
     MissingApiKey { provider: String, env_var: String },

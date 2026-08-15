@@ -208,6 +208,7 @@ fn try_whitespace_normalized_replace(
     }
 
     let search_trimmed: Vec<&str> = search_lines.iter().map(|l| l.trim()).collect();
+    let mut matches = Vec::new();
 
     for i in 0..=(orig_lines.len() - search_lines.len()) {
         let slice_trimmed: Vec<&str> = orig_lines[i..i + search_lines.len()]
@@ -216,16 +217,22 @@ fn try_whitespace_normalized_replace(
             .collect();
 
         if slice_trimmed == search_trimmed {
-            let mut result_lines = Vec::new();
-            result_lines.extend_from_slice(&orig_lines[..i]);
-            result_lines.push(replace);
-            result_lines.extend_from_slice(&orig_lines[i + search_lines.len()..]);
-            let mut res = result_lines.join("\n");
-            if original.ends_with('\n') && !res.ends_with('\n') {
-                res.push('\n');
-            }
-            return Some(res);
+            matches.push(i);
         }
+    }
+
+    // Only apply if uniquely matched to prevent ambiguous edits
+    if matches.len() == 1 {
+        let i = matches[0];
+        let mut result_lines = Vec::new();
+        result_lines.extend_from_slice(&orig_lines[..i]);
+        result_lines.push(replace);
+        result_lines.extend_from_slice(&orig_lines[i + search_lines.len()..]);
+        let mut res = result_lines.join("\n");
+        if original.ends_with('\n') && !res.ends_with('\n') {
+            res.push('\n');
+        }
+        return Some(res);
     }
 
     None
@@ -241,32 +248,37 @@ fn try_fuzzy_replace(original: &str, search: &str, replace: &str) -> Option<Stri
 
     let window_size = search_lines.len();
     let search_str = search_lines.join("\n");
+    let mut matching_indices = Vec::new();
     let mut best_ratio = 0.0;
-    let mut best_index = None;
 
     for i in 0..=(orig_lines.len() - window_size) {
         let window_str = orig_lines[i..i + window_size].join("\n");
         let diff = TextDiff::from_lines(&window_str, &search_str);
-        let ratio = diff.ratio();
+        let ratio = diff.ratio() as f64;
 
-        if ratio as f64 > best_ratio {
-            best_ratio = ratio as f64;
-            best_index = Some(i);
+        if ratio >= crate::constants::FUZZY_MATCH_THRESHOLD {
+            if ratio > best_ratio + 0.001 {
+                best_ratio = ratio;
+                matching_indices.clear();
+                matching_indices.push(i);
+            } else if (ratio - best_ratio).abs() < 0.001 {
+                matching_indices.push(i);
+            }
         }
     }
 
-    if best_ratio >= crate::constants::FUZZY_MATCH_THRESHOLD {
-        if let Some(idx) = best_index {
-            let mut result_lines = Vec::new();
-            result_lines.extend_from_slice(&orig_lines[..idx]);
-            result_lines.push(replace);
-            result_lines.extend_from_slice(&orig_lines[idx + window_size..]);
-            let mut res = result_lines.join("\n");
-            if original.ends_with('\n') && !res.ends_with('\n') {
-                res.push('\n');
-            }
-            return Some(res);
+    // Only apply if uniquely matched to prevent ambiguous edits
+    if matching_indices.len() == 1 {
+        let idx = matching_indices[0];
+        let mut result_lines = Vec::new();
+        result_lines.extend_from_slice(&orig_lines[..idx]);
+        result_lines.push(replace);
+        result_lines.extend_from_slice(&orig_lines[idx + window_size..]);
+        let mut res = result_lines.join("\n");
+        if original.ends_with('\n') && !res.ends_with('\n') {
+            res.push('\n');
         }
+        return Some(res);
     }
 
     None
@@ -354,6 +366,22 @@ mod tests {
 
         let read = read_file(&temp_dir, rel_path, None, None).unwrap();
         assert!(read.contains("a + b"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_patch_file_ambiguous_matches_rejected() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_ambig_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let rel_path = "dup.rs";
+        let content = "fn one() {\n    let x = 1;\n}\nfn two() {\n    let x = 1;\n}\n";
+        write_file(&temp_dir, rel_path, content).unwrap();
+
+        let res = patch_file(&temp_dir, rel_path, "let x = 1;", "let x = 2;");
+        assert!(res.is_err());
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

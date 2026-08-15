@@ -357,6 +357,18 @@ impl ToolRegistry {
         backup_manager: Option<&BackupManager>,
         turn_id: usize,
     ) -> Result<String> {
+        if let Some(err_msg) = args.get("__json_parse_error").and_then(|v| v.as_str()) {
+            let raw = args
+                .get("__raw")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            return Err(ToolError::InvalidArguments {
+                name: tool_name.to_string(),
+                reason: format!("{}. Raw arguments: '{}'", err_msg, raw),
+            }
+            .into());
+        }
+
         match tool_name {
             "read_file" => {
                 let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -710,5 +722,18 @@ mod tests {
         assert_eq!(parse_u64_param(Some(&invalid_str)), None);
 
         assert_eq!(parse_u64_param(None), None);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_invalid_json_arguments() {
+        let root = Path::new(".");
+        let args = json!({
+            "__json_parse_error": "Invalid syntax at line 1 column 4",
+            "__raw": "{\"a\":"
+        });
+        let res = ToolRegistry::dispatch(root, "call_1", "read_file", &args, None, 1).await;
+        assert!(!res.success);
+        assert!(res.output.contains("Invalid syntax"));
+        assert!(res.output.contains("Raw arguments"));
     }
 }

@@ -9,10 +9,21 @@ impl UndoEngine {
     pub fn rollback_turn(backup_manager: &BackupManager, turn_id: usize) -> Result<Vec<String>> {
         let manifest = backup_manager.load_turn_manifest(turn_id)?;
         let mut restored_paths = Vec::new();
+        let ws_root = backup_manager.workspace_root();
 
         for file in manifest.files {
             let orig = Path::new(&file.original_path);
             let backup = Path::new(&file.backup_path);
+
+            // Defense in depth: validate that the target path is strictly confined within workspace
+            if let Err(e) = crate::sandbox::path::validate_path_in_workspace(ws_root, orig) {
+                tracing::warn!(
+                    path = %file.original_path,
+                    error = %e,
+                    "Skipping untrusted manifest path escaping workspace during undo rollback"
+                );
+                continue;
+            }
 
             if file.existed_before {
                 if backup.exists() {

@@ -18,16 +18,27 @@ pub struct BackedUpFile {
 }
 
 pub struct BackupManager {
+    workspace_root: PathBuf,
     backup_root: PathBuf,
 }
 
 impl BackupManager {
     pub fn new(workspace_root: &Path) -> Self {
         Self {
+            workspace_root: workspace_root.to_path_buf(),
             backup_root: workspace_root
                 .join(WORKSPACE_DIR_NAME)
                 .join(BACKUPS_DIR_NAME),
         }
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
+    #[allow(dead_code)]
+    pub fn backup_root(&self) -> &Path {
+        &self.backup_root
     }
 
     /// Creates a safety checkpoint of a file before modification in a given turn.
@@ -43,13 +54,10 @@ impl BackupManager {
         let turn_dir = self.backup_root.join(turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
 
+        let full_file =
+            crate::sandbox::path::validate_path_in_workspace(workspace_root, file_path)?;
         let canonical_ws =
             std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
-        let full_file = if file_path.is_absolute() {
-            std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf())
-        } else {
-            workspace_root.join(file_path)
-        };
 
         let relative_path = full_file
             .strip_prefix(&canonical_ws)

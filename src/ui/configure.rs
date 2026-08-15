@@ -82,7 +82,7 @@ impl ConfigMenu {
                     Self::save_all(&config, workspace)?;
                     writeln!(
                         handle,
-                        "\n\x1b[32m✔ Configuration saved successfully to ~/.config/minicode/minicode.toml and .env\x1b[0m"
+                        "\n\x1b[32m✔ Configuration saved successfully to ~/.config/minicode/config.toml and .env\x1b[0m"
                     )?;
                     break;
                 }
@@ -197,7 +197,7 @@ impl ConfigMenu {
             let active_key = if key_input == "0" || key_input == "b" {
                 continue;
             } else if !key_input.is_empty() {
-                update_dotenv(workspace, env_var, key_input);
+                update_dotenv(workspace, env_var, key_input)?;
                 std::env::set_var(env_var, key_input);
                 key_input.to_string()
             } else {
@@ -291,7 +291,7 @@ impl ConfigMenu {
 
         let env_var = format!("{}_API_KEY", name.to_uppercase().replace('-', "_"));
         if !api_key.is_empty() {
-            update_dotenv(workspace, &env_var, &api_key);
+            update_dotenv(workspace, &env_var, &api_key)?;
             std::env::set_var(&env_var, &api_key);
         }
 
@@ -539,40 +539,55 @@ impl ConfigMenu {
         // Save to ~/.config/minicode/config.toml
         if let Some(config_dir) = dirs::config_dir() {
             let app_dir = config_dir.join(crate::constants::CONFIG_DIR_NAME);
-            std::fs::create_dir_all(&app_dir).ok();
+            std::fs::create_dir_all(&app_dir).map_err(|e| {
+                crate::error::ConfigError::FileWrite {
+                    path: app_dir.display().to_string(),
+                    source: e,
+                }
+            })?;
             let toml_path = app_dir.join(crate::constants::CONFIG_FILE_NAME);
-            if let Ok(content) = toml::to_string_pretty(config) {
-                std::fs::write(toml_path, content).ok();
-            }
+            let content =
+                toml::to_string_pretty(config).map_err(crate::error::ConfigError::TomlSerialize)?;
+            std::fs::write(&toml_path, content).map_err(|e| {
+                crate::error::ConfigError::FileWrite {
+                    path: toml_path.display().to_string(),
+                    source: e,
+                }
+            })?;
         }
 
         // Also update local .env
-        update_dotenv(workspace, "MINICODE_PROVIDER", &config.provider.default);
-        update_dotenv(workspace, "MINICODE_MODEL", &config.provider.model);
+        update_dotenv(workspace, "MINICODE_PROVIDER", &config.provider.default)?;
+        update_dotenv(workspace, "MINICODE_MODEL", &config.provider.model)?;
         update_dotenv(
             workspace,
             "MINICODE_APPROVAL_POLICY",
             &config.agent.approval_policy,
-        );
+        )?;
 
         Ok(())
     }
 }
 
-fn update_dotenv(workspace: &Path, key: &str, value: &str) {
-    let env_path = workspace.join(".env");
+fn update_dotenv(workspace: &Path, key: &str, value: &str) -> Result<()> {
+    let env_path = workspace.join(crate::constants::ENV_FILE_NAME);
     let mut lines = Vec::new();
     let mut found = false;
 
     if env_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&env_path) {
-            for line in content.lines() {
-                if line.starts_with(&format!("{}=", key)) {
-                    lines.push(format!("{}={}", key, value));
-                    found = true;
-                } else {
-                    lines.push(line.to_string());
+        match std::fs::read_to_string(&env_path) {
+            Ok(content) => {
+                for line in content.lines() {
+                    if line.starts_with(&format!("{}=", key)) {
+                        lines.push(format!("{}={}", key, value));
+                        found = true;
+                    } else {
+                        lines.push(line.to_string());
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(path = %env_path.display(), error = %e, "Failed to read .env file");
             }
         }
     }
@@ -581,5 +596,11 @@ fn update_dotenv(workspace: &Path, key: &str, value: &str) {
         lines.push(format!("{}={}", key, value));
     }
 
-    std::fs::write(env_path, lines.join("\n") + "\n").ok();
+    std::fs::write(&env_path, lines.join("\n") + "\n").map_err(|e| {
+        crate::error::ConfigError::FileWrite {
+            path: env_path.display().to_string(),
+            source: e,
+        }
+    })?;
+    Ok(())
 }

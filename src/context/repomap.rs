@@ -54,7 +54,7 @@ impl RepoMapExtractor {
             .to_string()
     }
 
-    /// Helper to extract preceding doc comment (/// or #)
+    /// Helper to extract preceding doc comment (///, //!, //, or #)
     fn extract_doc_comment(code_lines: &[&str], start_row: usize) -> Option<String> {
         if start_row == 0 {
             return None;
@@ -64,6 +64,13 @@ impl RepoMapExtractor {
         while curr > 0 {
             curr -= 1;
             let line = code_lines[curr].trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Skip Rust outer and inner attributes (#[...], #![...]) and Python/TS decorators (@...)
+            if line.starts_with("#[") || line.starts_with("#![") || line.starts_with('@') {
+                continue;
+            }
             if line.starts_with("///") || line.starts_with("//!") {
                 let trimmed = line
                     .trim_start_matches("///")
@@ -72,6 +79,9 @@ impl RepoMapExtractor {
                 doc_lines.push(trimmed);
             } else if line.starts_with('#') {
                 let trimmed = line.trim_start_matches('#').trim();
+                doc_lines.push(trimmed);
+            } else if line.starts_with("//") {
+                let trimmed = line.trim_start_matches("//").trim();
                 doc_lines.push(trimmed);
             } else {
                 break;

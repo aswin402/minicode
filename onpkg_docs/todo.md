@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 1 Post-Audit Fixes | **Status:** ✅ Completed (39 Tests Passing, 0 Warnings)
+> **Current Phase:** v0.0.9 Release & Reliability Engine Hardening | **Status:** ✅ Completed (56 Tests Passing, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -209,3 +209,22 @@
 - [x] **M5 (Medium)**: Removed blanket `#![allow(dead_code)]` directives across 14 modules, replacing with targeted item-level attributes
 - [x] **L4 & L5 (Low)**: Replaced magic exit code `-1` with `SIGNAL_KILLED_EXIT_CODE` in `src/tools/exec.rs` and hardcoded limit `10` with `DEFAULT_LOCATE_SYMBOL_LIMIT` in `src/tools/mod.rs`
 - [x] **Verification**: **54/54 unit tests passing, zero clippy warnings, clean formatting**
+
+---
+
+## ✅ Phase 2 Post-Audit Fixes — Round 4 (v0.0.9 COMPLETED)
+- [x] **C1 (Critical)**: Fixed silent error swallowing in configuration wizard file writes (`save_all`, `update_dotenv`) using `ConfigError::FileWrite` and `ConfigError::TomlSerialize` in `src/ui/configure.rs`
+- [x] **C2 (Critical)**: Standardized MCP client protocol handshake (`initialize` -> `notifications/initialized`) and attached `_meta` attribution for stdio and HTTP tool calls in `src/mcp/client.rs`
+- [x] **H1 (High)**: Handled streaming tool call JSON syntax errors with structured error marker (`__json_parse_error`) providing actionable feedback to LLM in `src/agent/provider.rs` and `src/tools/mod.rs`
+- [x] **H2 (High)**: Replaced unbounded web response buffering with stream chunking using `bytes_stream()` and `MAX_WEB_RESPONSE_BYTES` in `src/tools/web.rs`
+- [x] **H3 (High)**: Implemented deadlock-free bounded subprocess stream reading with `tokio::io::AsyncReadExt::take()` in `src/tools/exec.rs` to bound memory to constant $O(1)$
+- [x] **H4 (High)**: Centralized extension matching in symbol index using `SUPPORTED_LANG_EXTENSIONS` in `src/context/index.rs`
+- [x] **M1 (Medium)**: Dynamically projected MCP server `tools/list` from `ToolRegistry::get_tool_schemas()` in `src/mcp/server.rs` (100% DRY)
+- [x] **M2 (Medium)**: Added uniqueness checks to whitespace and fuzzy patch replacement in `src/tools/fs.rs` to prevent ambiguous replacements
+- [x] **M3 (Medium)**: Removed system prompt index assumption in `ContextCompressor::compact_history` in `src/context/compressor.rs`
+- [x] **M4 (Medium)**: Handled and logged channel send errors for `prompt_tx` and `event_tx` in `src/app.rs`
+- [x] **L1 (Low)**: Reset turn retry count per iteration in `src/agent/loop.rs`
+- [x] **L2 (Low)**: Centralized `UI_MAX_TOOL_OUTPUT_LINES` in `src/constants.rs` and `src/ui/view.rs`
+- [x] **L3 (Low)**: Added warning logging for MCP notification tool execution failures in `src/mcp/server.rs`
+- [x] **L4 (Low)**: Used `tokio::task::spawn_blocking` for background git branch probing in `src/ui/status.rs`
+- [x] **Verification**: **56/56 unit tests passing, zero clippy warnings, clean formatting**

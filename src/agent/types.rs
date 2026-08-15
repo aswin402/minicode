@@ -17,6 +17,8 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
 impl Message {
@@ -27,6 +29,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         }
     }
 
@@ -36,6 +39,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         }
     }
 
@@ -45,6 +49,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            tool_name: None,
         }
     }
 
@@ -54,15 +59,21 @@ impl Message {
             content: content.into(),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            tool_name: None,
         }
     }
 
-    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             role: Role::Tool,
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            tool_name: Some(tool_name.into()),
         }
     }
 }

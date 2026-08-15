@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.9] — 2026-08-16
+
+### 🚀 Critical Bug Fixes & Reliability Hardening
+- **Google Gemini Function Calling Name Alignment (`src/agent/types.rs`, `src/agent/loop.rs`, `src/agent/provider.rs`)**:
+  - Attached real `tool_name` to `Message::tool_result` constructor so Gemini receives declared tool names (`read_file`, `write_file`) in `functionResponse.name` rather than synthetic UUIDs, preventing API 400 Bad Request errors.
+- **MCP Client Multi-Server Tool Discovery & Stdio Streaming (`src/mcp/client.rs`, `src/constants.rs`)**:
+  - Implemented `discover_server_tools` to dynamically query connected stdio and HTTP/SSE MCP servers via `tools/list` on initialization.
+  - Replaced blocking `wait_with_output()` with asynchronous `BufReader::lines()` streaming reader to support persistent stdio MCP daemons without timing out.
+  - Added robust `extract_tool_output` with `isError: true` payload extraction.
+- **Child Process Pipe Drain & Process Group Termination (`src/tools/exec.rs`)**:
+  - Concurrently drains subprocess pipe buffer overflow to `tokio::io::sink()` to prevent child processes from blocking on full OS pipe buffers when output exceeds 512 KB.
+  - Enforces process group isolation with `process_group(0)` on Unix and terminates full process trees on timeout.
+- **MCP Server Full Tool Parity (`src/mcp/server.rs`)**:
+  - Delegated MCP server tool execution directly to `ToolRegistry::dispatch` to expose all 17 coding tools with backup snapshots, sandbox enforcement, and standard `isError` response payloads.
+- **Backup & Undo Workspace Path Confinement (`src/session/backup.rs`, `src/session/undo.rs`)**:
+  - Enforced `validate_path_in_workspace` on safety checkpoint creation and undo rollbacks to eliminate path traversal vulnerabilities.
+
+### 🧠 Context Engine & Search Enhancements
+- **Context Pruning Conversation Turn Invariant (`src/agent/loop.rs`)**:
+  - Guaranteed that pruning never leaves an orphaned `Role::Tool` message at the beginning of LLM conversation history.
+- **Observation Masking Dynamic Budget (`src/context/compressor.rs`)**:
+  - Derived head and tail lines dynamically from `max_lines` to prevent zero or negative truncation slices.
+- **BM25 Prefix Range Query Deduplication & IDF Calculation (`src/context/index.rs`)**:
+  - Deduplicated postings per query token during BTreeMap prefix range scans and computed correct document frequency for prefix matches.
+- **Deterministic Parallel Tool Call Ordering (`src/agent/provider.rs`)**:
+  - Switched tool call streaming accumulator to `BTreeMap<usize, ...>` to guarantee deterministic execution order across parallel tool dispatches.
+- **Landlock Sandbox Permitted Paths Expansion (`src/sandbox/landlock.rs`)**:
+  - Added `/dev`, `/proc`, `/opt`, `/usr/local`, and user toolchain directories (`~/.cargo`, `~/.rustup`, `~/.nvm`, `~/.local`) to Landlock permitted read paths.
+- **Search File Pattern Matching for Nested Paths (`src/tools/search.rs`)**:
+  - Supported filename and relative path glob matching for patterns like `*.rs` and `client.rs` across nested directories.
+
+### ⚡ Interactive TUI State Sync
+- **Runtime Configuration Synchronization (`src/app.rs`, `src/agent/loop.rs`)**:
+  - Implemented `AgentCommand::UpdateConfig` channel to immediately sync provider, model, and API key updates from the in-TUI modal dialog to the active background agent loop.
+- **Doc Comment Attribute Parsing (`src/context/repomap.rs`)**:
+  - Skipped Rust attributes (`#[...]`, `#![...]`) and Python decorators (`@...`) when extracting doc comments in Tree-sitter AST repo mapping.
+- **Working Memory Findings Prompt Injection (`src/context/working_memory.rs`)**:
+  - Linked discoveries and key findings from `findings.md` into the active `<working_memory>` system prompt block.
+
+---
+
 ## [0.0.8] — 2026-08-15
 
 ### 🧠 Context Window Management & Memory Protection

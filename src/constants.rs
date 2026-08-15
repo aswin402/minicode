@@ -66,9 +66,16 @@ pub const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
 /// JSON-RPC invalid parameters error code
 pub const JSONRPC_INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC server error code
+#[allow(dead_code)]
 pub const JSONRPC_SERVER_ERROR: i32 = -32000;
 /// MCP tools invocation method name
 pub const MCP_METHOD_TOOLS_CALL: &str = "tools/call";
+/// MCP tools list method name
+pub const MCP_METHOD_TOOLS_LIST: &str = "tools/list";
+/// MCP initialize method name
+pub const MCP_METHOD_INITIALIZE: &str = "initialize";
+/// MCP initialized notification method name
+pub const MCP_METHOD_INITIALIZED: &str = "notifications/initialized";
 /// Default timeout for external MCP tool invocations
 pub const DEFAULT_MCP_TIMEOUT_SECS: u64 = 30;
 /// Namespace prefix for tools registered from external MCP servers
@@ -105,6 +112,8 @@ pub const MAX_AUTOCOMPLETE_ROWS: usize = 4;
 pub const DEFAULT_MAP_TOKENS: usize = 1024;
 /// Cache TTL in seconds for background git branch queries
 pub const GIT_BRANCH_CACHE_TTL_SECS: u64 = 5;
+/// Maximum lines of tool execution output displayed inline in timeline before folding
+pub const UI_MAX_TOOL_OUTPUT_LINES: usize = 12;
 /// ASCII banner wordmark lines rendered in welcome timeline
 pub const ASCII_WORDMARK_LINES: &[&str] = &[
     "   ___ ___                           _     ",
