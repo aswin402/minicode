@@ -197,4 +197,15 @@
 - [x] **L9 (Low)**: Centralized `DEFAULT_LOCATE_SYMBOL_LIMIT` in `src/constants.rs` and `src/mcp/server.rs`
 - [x] **Verification**: **52/52 unit tests passing, zero clippy warnings, clean formatting**
 
+---
 
+## ✅ Phase 2 Post-Audit Fixes — Round 3 (v0.0.8 COMPLETED)
+- [x] **H1 (High)**: Implemented sliding window conversation context pruner (`prune_context()`) in `src/agent/loop.rs` to prevent OOM and context window exhaustion in long sessions
+- [x] **H2 & M3 (High/Medium)**: Handled and logged filesystem errors in model cache loading (`load_cache`) and saving (`save_cache`) in `src/agent/models.rs`
+- [x] **H3 (High)**: Logged warnings on temporary file cleanup failures during atomic write rollbacks in `src/tools/fs.rs` and `src/context/memory.rs`
+- [x] **M1 & L1 (Medium/Low)**: Replaced hardcoded provider URLs and timeouts with centralized constants (`GEMINI_BASE_URL`, `OPENROUTER_BASE_URL`, `PROJECT_REPO_URL`, `PROVIDER_REQUEST_TIMEOUT_SECS`, `PROVIDER_STREAM_TIMEOUT_SECS`) in `src/agent/provider.rs`
+- [x] **M2 (Medium)**: Used centralized directory and filename constants (`CONFIG_DIR_NAME`, `WORKSPACE_DIR_NAME`, `MODELS_CACHE_FILE`) in `src/agent/models.rs`
+- [x] **M4 (Medium)**: Fixed stale tool count doc comment in `src/tools/mod.rs`
+- [x] **M5 (Medium)**: Removed blanket `#![allow(dead_code)]` directives across 14 modules, replacing with targeted item-level attributes
+- [x] **L4 & L5 (Low)**: Replaced magic exit code `-1` with `SIGNAL_KILLED_EXIT_CODE` in `src/tools/exec.rs` and hardcoded limit `10` with `DEFAULT_LOCATE_SYMBOL_LIMIT` in `src/tools/mod.rs`
+- [x] **Verification**: **54/54 unit tests passing, zero clippy warnings, clean formatting**

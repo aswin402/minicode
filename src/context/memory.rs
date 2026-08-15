@@ -101,7 +101,13 @@ impl CoreMemory {
         ));
         fs::write(&tmp_path, content).map_err(|e| ContextError::Memory(e.to_string()))?;
         if let Err(e) = fs::rename(&tmp_path, path) {
-            fs::remove_file(&tmp_path).ok();
+            if let Err(cleanup_err) = fs::remove_file(&tmp_path) {
+                tracing::warn!(
+                    path = %tmp_path.display(),
+                    error = %cleanup_err,
+                    "Failed to clean up temporary memory file after rename failure"
+                );
+            }
             return Err(ContextError::Memory(e.to_string()).into());
         }
         Ok(())

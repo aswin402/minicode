@@ -107,7 +107,13 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
     drop(file);
 
     std::fs::rename(&tmp_path, &target_path).map_err(|e| {
-        std::fs::remove_file(&tmp_path).ok();
+        if let Err(cleanup_err) = std::fs::remove_file(&tmp_path) {
+            tracing::warn!(
+                path = %tmp_path.display(),
+                error = %cleanup_err,
+                "Failed to clean up temporary file after rename failure"
+            );
+        }
         ToolError::FileOp {
             path: relative_path.to_string(),
             source: e,

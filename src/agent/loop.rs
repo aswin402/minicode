@@ -3,8 +3,8 @@ use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX,
-    RETRY_BACKOFF_SECS,
+    CONTEXT_MIN_PRESERVED_MESSAGES, CONTEXT_WINDOW_PRUNE_THRESHOLD, DEFAULT_MAX_RETRIES,
+    DEFAULT_MAX_TOOL_ITERATIONS, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -53,6 +53,40 @@ impl AgentLoop {
         &self.session_id
     }
 
+    /// Prunes conversation message history if total tokens exceed CONTEXT_WINDOW_PRUNE_THRESHOLD,
+    /// or if message count grows too large. Always preserves the most recent CONTEXT_MIN_PRESERVED_MESSAGES.
+    pub fn prune_context(&mut self) {
+        if self.messages.len() <= CONTEXT_MIN_PRESERVED_MESSAGES {
+            return;
+        }
+
+        if let Ok(compressor) = crate::context::compressor::ContextCompressor::new() {
+            // First attempt to compact older tool observations in-place
+            compressor.compact_history(&mut self.messages, CONTEXT_WINDOW_PRUNE_THRESHOLD);
+
+            let mut total_tokens = compressor.count_messages_tokens(&self.messages);
+            if total_tokens > CONTEXT_WINDOW_PRUNE_THRESHOLD {
+                let initial_count = self.messages.len();
+                while self.messages.len() > CONTEXT_MIN_PRESERVED_MESSAGES
+                    && total_tokens > CONTEXT_WINDOW_PRUNE_THRESHOLD
+                {
+                    let removed = self.messages.remove(0);
+                    let removed_tokens = compressor.count_tokens(&removed.content);
+                    total_tokens = total_tokens.saturating_sub(removed_tokens + 4);
+                }
+                let pruned_count = initial_count - self.messages.len();
+                if pruned_count > 0 {
+                    tracing::info!(
+                        pruned_messages = pruned_count,
+                        remaining_messages = self.messages.len(),
+                        remaining_tokens = total_tokens,
+                        "Pruned oldest conversation messages to fit context window budget"
+                    );
+                }
+            }
+        }
+    }
+
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
     /// Emits structured `AgentEvent`s over the provided MPSC channel for UI or NDJSON rendering.
     pub async fn execute_turn(
@@ -63,7 +97,8 @@ impl AgentLoop {
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
 
-        // 1. Append user prompt
+        // 1. Prune conversation context if approaching budget, then append user prompt
+        self.prune_context();
         self.messages.push(Message::user(user_prompt));
 
         let system_prompt = PromptBuilder::build_system_prompt(&self.workspace_root, None);
@@ -342,5 +377,78 @@ impl AgentLoop {
         };
 
         Ok(turn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, ToolSchema};
+    use async_trait::async_trait;
+
+    struct DummyProvider;
+
+    #[async_trait]
+    impl Provider for DummyProvider {
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn default_model(&self) -> &str {
+            "dummy-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            let stream = tokio_stream::empty();
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[test]
+    fn test_prune_context_preserves_minimum_messages() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(DummyProvider);
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+
+        // Add small number of messages <= CONTEXT_MIN_PRESERVED_MESSAGES
+        agent_loop.messages.push(Message::user("Hello 1"));
+        agent_loop.messages.push(Message::assistant("Hi 1"));
+        agent_loop.prune_context();
+        assert_eq!(agent_loop.messages.len(), 2);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_prune_context_compacts_and_prunes_large_history() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(DummyProvider);
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+
+        // Add 10 messages with huge content
+        let huge_text = "word ".repeat(15_000);
+        for i in 0..10 {
+            agent_loop
+                .messages
+                .push(Message::user(format!("User {}", i)));
+            agent_loop
+                .messages
+                .push(Message::assistant(huge_text.clone()));
+        }
+        assert_eq!(agent_loop.messages.len(), 20);
+
+        agent_loop.prune_context();
+        // Should have pruned oldest messages down while preserving at least min preserved
+        assert!(agent_loop.messages.len() < 20);
+        assert!(agent_loop.messages.len() >= CONTEXT_MIN_PRESERVED_MESSAGES);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

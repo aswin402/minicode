@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::agent::types::{Message, Role};
 use crate::error::Result;
 use tiktoken_rs::CoreBPE;

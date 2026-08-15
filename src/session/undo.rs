@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{Result, SessionError};
 use crate::session::backup::BackupManager;
 use std::path::Path;
@@ -57,6 +55,7 @@ pub struct UndoResult {
     pub turn_id: usize,
     pub restored_count: usize,
     pub deleted_count: usize,
+    #[allow(dead_code)]
     pub files: Vec<String>,
 }
 

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{ProviderError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,9 +34,12 @@ impl ModelFetcher {
             .unwrap_or_default();
 
         let cache_path = if let Some(config_dir) = dirs::config_dir() {
-            config_dir.join("minicode").join("models_cache.json")
+            config_dir
+                .join(crate::constants::CONFIG_DIR_NAME)
+                .join(crate::constants::MODELS_CACHE_FILE)
         } else {
-            PathBuf::from(".minicode").join("models_cache.json")
+            PathBuf::from(crate::constants::WORKSPACE_DIR_NAME)
+                .join(crate::constants::MODELS_CACHE_FILE)
         };
 
         Self { client, cache_path }
@@ -46,23 +47,55 @@ impl ModelFetcher {
 
     /// Loads cached models from disk if available
     fn load_cache(&self) -> ModelsCache {
-        if self.cache_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&self.cache_path) {
-                if let Ok(cache) = serde_json::from_str::<ModelsCache>(&content) {
-                    return cache;
+        match std::fs::read_to_string(&self.cache_path) {
+            Ok(content) => match serde_json::from_str::<ModelsCache>(&content) {
+                Ok(cache) => cache,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %self.cache_path.display(),
+                        error = %e,
+                        "Corrupted model cache file, falling back to defaults"
+                    );
+                    ModelsCache::default()
                 }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => ModelsCache::default(),
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.cache_path.display(),
+                    error = %e,
+                    "Failed to read model cache file"
+                );
+                ModelsCache::default()
             }
         }
-        ModelsCache::default()
     }
 
     /// Saves updated model cache to disk
     fn save_cache(&self, cache: &ModelsCache) {
         if let Some(parent) = self.cache_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "Failed to create model cache parent directory"
+                );
+                return;
+            }
         }
-        if let Ok(json) = serde_json::to_string_pretty(cache) {
-            std::fs::write(&self.cache_path, json).ok();
+        match serde_json::to_string_pretty(cache) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&self.cache_path, json) {
+                    tracing::warn!(
+                        path = %self.cache_path.display(),
+                        error = %e,
+                        "Failed to write model cache file"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize model cache JSON");
+            }
         }
     }
 
@@ -149,7 +182,7 @@ impl ModelFetcher {
         let mut req = self
             .client
             .get(crate::constants::OPENROUTER_MODELS_URL)
-            .header("HTTP-Referer", "https://github.com/aswin402/minicode")
+            .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
             .header("X-Title", "minicode");
 
         if !api_key.is_empty() {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,6 +20,7 @@ pub struct Message {
 }
 
 impl Message {
+    #[allow(dead_code)]
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,

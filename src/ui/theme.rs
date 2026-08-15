@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::style::Color;
 
 /// Official Aura Theme Color Palette (by Dalton Menezes)
@@ -96,7 +94,9 @@ impl Theme {
 #[derive(Debug, Clone, Copy)]
 pub struct TerminalCaps {
     pub supports_truecolor: bool,
+    #[allow(dead_code)]
     pub supports_256_color: bool,
+    #[allow(dead_code)]
     pub supports_ansi: bool,
 }
 

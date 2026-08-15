@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::constants::{BACKUPS_DIR_NAME, WORKSPACE_DIR_NAME};
 use crate::error::{Result, SessionError};
 use serde::{Deserialize, Serialize};
@@ -101,6 +99,7 @@ impl BackupManager {
     }
 
     /// Saves the turn manifest containing all backed up files in this turn.
+    #[allow(dead_code)]
     pub fn save_turn_manifest(&self, manifest: &BackupManifest) -> Result<()> {
         let turn_dir = self.backup_root.join(manifest.turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
@@ -155,6 +154,7 @@ impl BackupManager {
     }
 
     /// Prunes backup folders older than `max_turns` to prevent disk bloat.
+    #[allow(dead_code)]
     pub fn prune_old_backups(&self, max_turns: usize) -> Result<()> {
         if !self.backup_root.exists() {
             return Ok(());

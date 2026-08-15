@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.8] — 2026-08-15
+
+### 🧠 Context Window Management & Memory Protection
+- **Sliding Window Conversation Context Pruner (`src/agent/loop.rs`, `src/constants.rs`)**:
+  - Implemented `prune_context()` in `AgentLoop` which actively monitors token budget using `ContextCompressor`.
+  - Automatically compacts older tool observations and prunes excess oldest conversation messages when approaching `CONTEXT_WINDOW_PRUNE_THRESHOLD` (100,000 tokens) while guaranteeing preservation of recent turns (`CONTEXT_MIN_PRESERVED_MESSAGES`).
+  - Added unit tests `test_prune_context_preserves_minimum_messages` and `test_prune_context_compacts_and_prunes_large_history`.
+
+### 🛡️ Error Visibility & Resilience
+- **Model Cache I/O Warning Logs (`src/agent/models.rs`)**:
+  - Replaced silent `.ok()` error swallowing with structured `tracing::warn!` logging for model cache directory creation, file write, and corrupted JSON read recovery.
+- **Temp File Atomic Write Cleanup (`src/tools/fs.rs`, `src/context/memory.rs`)**:
+  - Logged warnings on temporary file removal failures during atomic write rollback instead of discarding errors silently.
+
+### 🧹 Dead Code & Interface Polish
+- **Removed Blanket `#![allow(dead_code)]` (`14 files`)**:
+  - Eliminated file-level blanket dead code suppression across `agent/`, `context/`, `session/`, `sandbox/`, and `ui/` modules.
+  - Replaced with targeted, item-level `#[allow(dead_code)]` attributes on specific public API structs and methods.
+- **Provider & Directory Constants Centralization (`src/constants.rs`, `src/agent/provider.rs`, `src/agent/models.rs`, `src/tools/exec.rs`, `src/tools/mod.rs`)**:
+  - Centralized `GEMINI_BASE_URL`, `OPENROUTER_BASE_URL`, `PROJECT_REPO_URL`, `PROVIDER_STREAM_TIMEOUT_SECS`, `PROVIDER_REQUEST_TIMEOUT_SECS`, `MODELS_CACHE_FILE`, `SIGNAL_KILLED_EXIT_CODE`.
+  - Replaced hardcoded provider URLs, timeouts, and magic numbers across the agent and tool subsystems.
+- **Updated Tool Registry Documentation (`src/tools/mod.rs`)**:
+  - Corrected stale tool count doc comment in `ToolRegistry::get_tool_schemas()`.
+
+---
+
 ## [0.0.7] — 2026-08-15
 
 ### 🔒 Reliability & Security Hardening

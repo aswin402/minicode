@@ -1,10 +1,9 @@
-#![allow(dead_code)]
-
 use crate::constants::{AGENTS_MD_FILE, SKILLS_DIR_NAME, SKILL_MD_FILE};
 use crate::error::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -12,10 +11,12 @@ pub struct Skill {
     pub content: String,
 }
 
+#[allow(dead_code)]
 pub struct SkillLoader;
 
 impl SkillLoader {
     /// Discovers all available guidelines, agent rules, and skill definitions in the workspace.
+    #[allow(dead_code)]
     pub fn discover_skills(workspace_root: &Path) -> Result<Vec<Skill>> {
         let mut skills = Vec::new();
 
@@ -92,6 +93,7 @@ impl SkillLoader {
     }
 
     /// Finds a specific skill by name.
+    #[allow(dead_code)]
     pub fn get_skill_by_name(workspace_root: &Path, name: &str) -> Option<Skill> {
         let skills = match Self::discover_skills(workspace_root) {
             Ok(s) => s,

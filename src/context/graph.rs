@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::context::repomap::{RepoMapExtractor, SymbolDef};
 use crate::error::{ContextError, Result};
 use ignore::WalkBuilder;

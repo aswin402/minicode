@@ -68,7 +68,10 @@ pub async fn exec_cmd(
         );
     }
 
-    let status_code = output.status.code().unwrap_or(-1);
+    let status_code = output
+        .status
+        .code()
+        .unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
     let exit_code = output.status.code();
     let compacted = super::compactor::compact_tool_output(command_str, &combined, exit_code);
 

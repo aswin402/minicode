@@ -23,7 +23,7 @@ pub fn parse_u64_param(value: Option<&serde_json::Value>) -> Option<u64> {
 pub struct ToolRegistry;
 
 impl ToolRegistry {
-    /// Returns the schemas of all 14 built-in tools (primitives, core memory, working memory) for the LLM.
+    /// Returns the schemas of all built-in tools (primitives, core memory, working memory) for the LLM.
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
         vec![
             ToolSchema {
@@ -637,7 +637,9 @@ impl ToolRegistry {
                         reason: "Missing required argument 'name'".to_string(),
                     }
                 })?;
-                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
+                let limit = parse_u64_param(args.get("limit"))
+                    .unwrap_or(crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT as u64)
+                    as usize;
                 let mut index = crate::context::index::SymbolIndex::new();
                 index.build_index(workspace_root)?;
                 let matches = if name.contains(' ') {

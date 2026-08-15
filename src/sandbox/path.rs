@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{Result, SecurityError};
 use std::path::{Path, PathBuf};
 

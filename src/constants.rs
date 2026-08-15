@@ -30,9 +30,13 @@ pub const SESSIONS_DIR_NAME: &str = "sessions";
 /// Workspace backup subdirectory name (.minicode/backups)
 pub const BACKUPS_DIR_NAME: &str = "backups";
 /// Standard skill definition markdown filename
+#[allow(dead_code)]
 pub const SKILL_MD_FILE: &str = "SKILL.md";
 /// Skills directory name (.skills)
+#[allow(dead_code)]
 pub const SKILLS_DIR_NAME: &str = ".skills";
+/// Model cache JSON filename
+pub const MODELS_CACHE_FILE: &str = "models_cache.json";
 
 // === Agent Loop Limits ===
 /// Maximum tool calling steps per turn to prevent infinite loops
@@ -41,6 +45,12 @@ pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 pub const DEFAULT_MAX_RETRIES: usize = 3;
 /// Exponential backoff baseline delay in seconds between retries
 pub const RETRY_BACKOFF_SECS: u64 = 2;
+/// Maximum token budget for conversation history before pruning old messages
+pub const CONTEXT_WINDOW_PRUNE_THRESHOLD: usize = 100_000;
+/// Minimum messages to always preserve (system + last N exchanges)
+pub const CONTEXT_MIN_PRESERVED_MESSAGES: usize = 4;
+/// Signal-killed exit code fallback when OS doesn't provide one
+pub const SIGNAL_KILLED_EXIT_CODE: i32 = -1;
 
 // === MCP Protocol ===
 /// Standard JSON-RPC protocol version string
@@ -115,7 +125,7 @@ pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum raw output bytes captured before hard truncation
 pub const EXEC_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 /// Default User-Agent header for web fetching tool
-pub const WEB_USER_AGENT: &str = "minicode/0.0.7 (+https://github.com/aswin402/minicode)";
+pub const WEB_USER_AGENT: &str = "minicode/0.0.8 (+https://github.com/aswin402/minicode)";
 /// HTTP request timeout in seconds for web fetching
 pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages
@@ -232,6 +242,16 @@ pub const MAX_WEB_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 // === Model Provider Endpoints & Timeouts ===
 /// Default timeout in seconds for fetching live models
 pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
+/// Default provider timeout for streaming completions (seconds)
+pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 90;
+/// Default provider timeout for non-streaming requests (seconds)
+pub const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 60;
+/// Gemini API base URL (without trailing path)
+pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+/// OpenRouter API base URL
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+/// Project repository URL (used for HTTP-Referer headers)
+pub const PROJECT_REPO_URL: &str = "https://github.com/aswin402/minicode";
 /// OpenRouter live models API endpoint
 pub const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
 /// Gemini live models API endpoint template

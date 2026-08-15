@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::agent::types::{Message, Role, ToolCall};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
@@ -42,6 +40,7 @@ pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>;
 /// Universal trait for LLM inference providers (Gemini, Claude, OpenAI, OpenRouter, Ollama)
 #[async_trait]
 pub trait Provider: Send + Sync {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
     fn default_model(&self) -> &str;
 
@@ -63,14 +62,16 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_REQUEST_TIMEOUT_SECS,
+            ))
             .build()
             .unwrap_or_default();
 
         Self {
             api_key: api_key.into(),
             client,
-            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            base_url: crate::constants::GEMINI_BASE_URL.to_string(),
         }
     }
 
@@ -326,7 +327,9 @@ impl OpenAiCompatibleProvider {
         default_model: impl Into<String>,
     ) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(90))
+            .timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_STREAM_TIMEOUT_SECS,
+            ))
             .build()
             .unwrap_or_default();
 
@@ -343,14 +346,14 @@ impl OpenAiCompatibleProvider {
         Self::new(
             "openrouter",
             api_key,
-            "https://openrouter.ai/api/v1",
+            crate::constants::OPENROUTER_BASE_URL,
             "anthropic/claude-3.5-sonnet",
         )
     }
 
     pub fn openai(api_key: impl Into<String>) -> Self {
         let base_url = std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+            .unwrap_or_else(|_| crate::constants::OPENAI_DEFAULT_BASE_URL.to_string());
         Self::new("openai", api_key, base_url, "gpt-4o")
     }
 
@@ -492,7 +495,7 @@ impl Provider for OpenAiCompatibleProvider {
         // OpenRouter custom attribution headers
         if self.provider_name == "openrouter" {
             req_builder = req_builder
-                .header("HTTP-Referer", "https://github.com/aswin402/minicode")
+                .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
                 .header("X-Title", "minicode");
         }
 
@@ -643,25 +646,25 @@ pub fn create_provider_with_base_url(
         "deepseek" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "deepseek",
             api_key,
-            custom_base_url.unwrap_or("https://api.deepseek.com/v1"),
+            custom_base_url.unwrap_or(crate::constants::DEEPSEEK_BASE_URL),
             "deepseek-coder",
         ))),
         "groq" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "groq",
             api_key,
-            custom_base_url.unwrap_or("https://api.groq.com/openai/v1"),
+            custom_base_url.unwrap_or(crate::constants::GROQ_BASE_URL),
             "llama-3.3-70b-versatile",
         ))),
         "together" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "together",
             api_key,
-            custom_base_url.unwrap_or("https://api.together.xyz/v1"),
+            custom_base_url.unwrap_or(crate::constants::TOGETHER_BASE_URL),
             "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         ))),
         "ollama" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "ollama",
             "",
-            custom_base_url.unwrap_or("http://localhost:11434/v1"),
+            custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL),
             "qwen2.5-coder",
         ))),
         custom_name => {

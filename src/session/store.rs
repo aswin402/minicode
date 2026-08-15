@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::agent::types::AgentEvent;
 use crate::constants::{CONFIG_DIR_NAME, SESSIONS_DIR_NAME, WORKSPACE_DIR_NAME};
 use crate::error::{Result, SessionError};
@@ -34,6 +32,7 @@ impl SessionStore {
         Self { sessions_dir }
     }
 
+    #[allow(dead_code)]
     pub fn with_dir(dir: PathBuf) -> Self {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!(path = %dir.display(), error = %e, "Failed to create sessions directory");

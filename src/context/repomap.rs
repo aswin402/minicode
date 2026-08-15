@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::{ContextError, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +18,7 @@ pub struct SymbolDef {
 
 #[derive(Debug, Clone)]
 pub struct FileAst {
+    #[allow(dead_code)]
     pub path: PathBuf,
     pub mtime: SystemTime,
     pub symbols: Vec<SymbolDef>,

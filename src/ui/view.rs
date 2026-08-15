@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -15,15 +13,18 @@ pub enum TimelineEntry {
         name: String,
         command_or_path: String,
     },
+    #[allow(dead_code)]
     ToolApproved {
         name: String,
         command_or_path: String,
     },
     ToolFinished {
+        #[allow(dead_code)]
         name: String,
         command_or_path: String,
         success: bool,
         output: String,
+        #[allow(dead_code)]
         duration_ms: Option<u64>,
     },
     SystemStatus(String),
