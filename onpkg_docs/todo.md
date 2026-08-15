@@ -147,8 +147,12 @@
 
 ---
 
-## ⏳ Phase 2: AST Code Intelligence & Search Indexing (PLANNED)
-- [ ] Enhanced Tree-sitter multi-language parsing
-- [ ] Tantivy-based full-text search index
-- [ ] Cross-file symbol resolution
-- [ ] Semantic code search
+## ✅ Phase 2: AST Code Intelligence & Symbol Search Indexing (COMPLETED)
+- [x] Enhanced Tree-sitter multi-language parsing with signatures & doc comments in `src/context/repomap.rs`
+- [x] Directed dependency knowledge graph & Tarjan SCC cycle detection in `src/context/graph.rs`
+- [x] Blast radius impact analysis (`get_blast_radius`) with test coverage correlation in `src/context/graph.rs`
+- [x] Fast in-memory inverted symbol index with subword tokenization & BM25 ranking in `src/context/index.rs`
+- [x] New agent tools (`impact_analysis` & `locate_symbol`) in `src/tools/mod.rs`
+- [x] Protocol exposure in MCP server `tools/list` & `tools/call` in `src/mcp/server.rs`
+- [x] 46/46 unit tests passing with zero clippy warnings and clean formatting
+

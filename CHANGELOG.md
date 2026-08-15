@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.5] — 2026-08-15
+
+### 🧠 AST Code Intelligence & Symbol Extraction
+- **Rich AST Signature & Doc Extraction (`src/context/repomap.rs`)**:
+  - Upgraded `SymbolDef` to extract clean single-line signatures (e.g. `pub fn compute_sum(...) -> i32`, `class UserService:`, `export interface UserProfile`), line spans (`start_line`, `end_line`), and preceding documentation comments (`///`, `//!`, `#`).
+  - Added Tree-sitter query extraction for Rust, Python, JavaScript, and TypeScript encompassing functions, structs, classes, interfaces, traits, enums, type aliases, and module imports.
+
+### 🌐 Code Knowledge Graph & Blast Radius Analysis
+- **Blast Radius & Impact Analysis (`src/context/graph.rs`)**:
+  - Implemented `get_blast_radius` evaluating downstream ripple effects of modifying symbols or files across the codebase.
+  - Multi-hop transitive dependency BFS traversal ($k=3$).
+  - Automated test suite correlation (`tests/`, `*_test.rs`, `test_*`) identifying test coverage.
+  - **Tarjan SCC Cycle Detection**: Utilized `petgraph::algo::tarjan_scc` to identify mutual recursive dependency cycles.
+  - Formatted architectural risk ratings (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) with Markdown report generation.
+
+### ⚡ Sub-Millisecond Inverted Symbol Index
+- **Inverted Symbol Index with BM25 Scoring (`src/context/index.rs`)**:
+  - Subword tokenization supporting `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, and kebab notation.
+  - Definition boosts (+30% for structs, classes, interfaces, traits) and automated penalty down-ranking for test/mock files.
+  - Fast `locate_symbol` and `search_symbols` routines.
+
+### 🛠️ New Agent & MCP Protocol Tools
+- **Architectural Tools Integration (`src/tools/mod.rs`, `src/mcp/server.rs`)**:
+  - Registered `impact_analysis` and `locate_symbol` in the built-in LLM tool registry.
+  - Exposed `impact_analysis` and `locate_symbol` over the Model Context Protocol (MCP) `tools/list` and `tools/call`.
+
+---
+
 ## [0.0.4] — 2026-08-15
 
 ### 🛡️ Security & Sandboxing

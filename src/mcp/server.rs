@@ -219,6 +219,29 @@ impl MinicodeMcpServer {
                             }
                         }
                     }),
+                    json!({
+                        "name": "impact_analysis",
+                        "description": "Analyze blast radius and architectural dependencies for a symbol or file",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "target": { "type": "string", "description": "Symbol name or file path to analyze" }
+                            },
+                            "required": ["target"]
+                        }
+                    }),
+                    json!({
+                        "name": "locate_symbol",
+                        "description": "Instantly locate symbol declarations and signatures across codebase",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Symbol name to locate" },
+                                "limit": { "type": "integer", "description": "Max results" }
+                            },
+                            "required": ["name"]
+                        }
+                    }),
                 ];
 
                 Some(JsonRpcResponse {
@@ -371,6 +394,42 @@ impl MinicodeMcpServer {
                     .map_err(|e| e.to_string())?;
                 Ok(graph.format_repomap(&self.workspace_root, &[], max_tokens))
             }
+            "impact_analysis" => {
+                let target = args
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter 'target'".to_string())?;
+                let mut graph = CodeGraph::new();
+                graph
+                    .build_graph(&self.workspace_root)
+                    .map_err(|e| e.to_string())?;
+                let report = graph
+                    .get_blast_radius(target, &self.workspace_root)
+                    .map_err(|e| e.to_string())?;
+                Ok(report.summary)
+            }
+            "locate_symbol" => {
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "Missing required parameter 'name'".to_string())?;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let mut index = crate::context::index::SymbolIndex::new();
+                index
+                    .build_index(&self.workspace_root)
+                    .map_err(|e| e.to_string())?;
+                let matches = if name.contains(' ') {
+                    index.search_symbols(name, limit)
+                } else {
+                    let mut res = index.locate_symbol(name);
+                    if res.is_empty() {
+                        res = index.search_symbols(name, limit);
+                    }
+                    res.truncate(limit);
+                    res
+                };
+                Ok(index.format_matches(&matches, &self.workspace_root))
+            }
             unknown => Err(format!("Unknown tool '{}'", unknown)),
         }
     }
@@ -407,7 +466,7 @@ mod tests {
         assert!(resp.result.is_some());
         let result = resp.result.unwrap();
         let tools = result.get("tools").unwrap().as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
     }
 
     #[tokio::test]

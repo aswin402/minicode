@@ -103,7 +103,7 @@ pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum raw output bytes captured before hard truncation
 pub const EXEC_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 /// User-Agent header string for HTTP web requests
-pub const WEB_USER_AGENT: &str = "minicode/0.0.4 (+https://github.com/aswin402/minicode)";
+pub const WEB_USER_AGENT: &str = "minicode/0.0.5 (+https://github.com/aswin402/minicode)";
 /// HTTP request timeout in seconds for web fetching
 pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages

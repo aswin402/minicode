@@ -260,6 +260,38 @@ impl ToolRegistry {
                     "properties": {}
                 }),
             },
+            ToolSchema {
+                name: "impact_analysis".to_string(),
+                description: "Analyze the architectural blast radius and downstream dependencies of modifying a symbol or file.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Symbol name (e.g. 'verify_token') or relative file path (e.g. 'src/auth.rs') to analyze"
+                        }
+                    },
+                    "required": ["target"]
+                }),
+            },
+            ToolSchema {
+                name: "locate_symbol".to_string(),
+                description: "Instantly locate symbol declarations, signatures, and doc comments across the workspace without full grep scans.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The exact or partial symbol name to locate"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of matches to return (default: 10)"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
         ]
     }
 
@@ -569,6 +601,40 @@ impl ToolRegistry {
                     Err(e) => Err(e),
                 }
             }
+            "impact_analysis" => {
+                let target = args.get("target").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "impact_analysis".to_string(),
+                        reason: "Missing required argument 'target'".to_string(),
+                    }
+                })?;
+                let mut graph = crate::context::graph::CodeGraph::new();
+                graph.build_graph(workspace_root)?;
+                let report = graph.get_blast_radius(target, workspace_root)?;
+                Ok(report.summary)
+            }
+            "locate_symbol" => {
+                let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "locate_symbol".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    }
+                })?;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                let mut index = crate::context::index::SymbolIndex::new();
+                index.build_index(workspace_root)?;
+                let matches = if name.contains(' ') {
+                    index.search_symbols(name, limit)
+                } else {
+                    let mut res = index.locate_symbol(name);
+                    if res.is_empty() {
+                        res = index.search_symbols(name, limit);
+                    }
+                    res.truncate(limit);
+                    res
+                };
+                Ok(index.format_matches(&matches, workspace_root))
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -584,7 +650,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 14);
+        assert_eq!(schemas.len(), 16);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -600,5 +666,7 @@ mod tests {
         assert!(names.contains(&"log_finding"));
         assert!(names.contains(&"update_progress"));
         assert!(names.contains(&"archive_plan"));
+        assert!(names.contains(&"impact_analysis"));
+        assert!(names.contains(&"locate_symbol"));
     }
 }
