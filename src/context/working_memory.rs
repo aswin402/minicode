@@ -182,26 +182,24 @@ impl WorkingMemory {
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let archive_file = archive_dir.join(format!("{}_archived_plan.md", timestamp));
 
-        let plan = match fs::read_to_string(self.task_plan_path()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read task plan during archive");
-                String::new()
-            }
+        let plan = fs::read_to_string(self.task_plan_path()).map_err(|e| {
+            ContextError::Memory(format!("Failed to read task plan during archive: {}", e))
+        })?;
+
+        let progress = if self.progress_path().exists() {
+            fs::read_to_string(self.progress_path()).map_err(|e| {
+                ContextError::Memory(format!("Failed to read progress during archive: {}", e))
+            })?
+        } else {
+            String::new()
         };
-        let progress = match fs::read_to_string(self.progress_path()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read progress during archive");
-                String::new()
-            }
-        };
-        let findings = match fs::read_to_string(self.findings_path()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to read findings during archive");
-                String::new()
-            }
+
+        let findings = if self.findings_path().exists() {
+            fs::read_to_string(self.findings_path()).map_err(|e| {
+                ContextError::Memory(format!("Failed to read findings during archive: {}", e))
+            })?
+        } else {
+            String::new()
         };
 
         let combined = format!(

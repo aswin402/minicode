@@ -22,8 +22,12 @@ pub async fn exec_cmd(
         unsafe {
             use std::os::unix::process::CommandExt;
             std_cmd.pre_exec(move || {
-                let _ = apply_landlock_sandbox(&ws, true);
-                Ok(())
+                apply_landlock_sandbox(&ws, true).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Landlock sandbox failed: {}", e),
+                    )
+                })
             });
         }
     }

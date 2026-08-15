@@ -174,7 +174,9 @@ impl CoreMemory {
                     .push(MemoryEntry::new(key, value, category));
             }
             self.save_global()?;
-            self.save_local(workspace_root).ok();
+            if let Err(e) = self.save_local(workspace_root) {
+                tracing::warn!(error = %e, "Failed to save complementary local memory (non-fatal)");
+            }
         } else {
             self.global_entries.retain(|e| e.key != key);
             if let Some(existing) = self.local_entries.iter_mut().find(|e| e.key == key) {
@@ -185,7 +187,9 @@ impl CoreMemory {
                     .push(MemoryEntry::new(key, value, category));
             }
             self.save_local(workspace_root)?;
-            self.save_global().ok();
+            if let Err(e) = self.save_global() {
+                tracing::warn!(error = %e, "Failed to save complementary global memory (non-fatal)");
+            }
         }
 
         Ok(())

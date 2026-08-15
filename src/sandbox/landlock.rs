@@ -30,11 +30,16 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
             .and_then(|rs| rs.handle_access(AccessNet::ConnectTcp))
         {
             Ok(rs) => rs,
-            Err(_) => Ruleset::default()
-                .handle_access(AccessFs::from_all(ABI::V1))
-                .map_err(|e| {
-                    SecurityError::Landlock(format!("Failed to configure FS ruleset: {}", e))
-                })?,
+            Err(_) => {
+                tracing::warn!(
+                    "Landlock ABI V4 not supported on kernel — network restriction unavailable, process will have full network access"
+                );
+                Ruleset::default()
+                    .handle_access(AccessFs::from_all(ABI::V1))
+                    .map_err(|e| {
+                        SecurityError::Landlock(format!("Failed to configure FS ruleset: {}", e))
+                    })?
+            }
         }
     } else {
         Ruleset::default()

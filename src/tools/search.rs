@@ -101,17 +101,26 @@ pub fn grep_search(
         }
 
         // Search within file
-        if let Ok(file) = File::open(path) {
-            let reader = BufReader::new(file);
-            for (line_idx, line_res) in reader.lines().enumerate() {
-                if matches.len() >= MAX_SEARCH_RESULTS {
-                    break;
-                }
-                if let Ok(line) = line_res {
-                    if regex.is_match(&line) {
-                        matches.push(format!("{}:{}: {}", rel_path, line_idx + 1, line.trim()));
+        match File::open(path) {
+            Ok(file) => {
+                let reader = BufReader::new(file);
+                for (line_idx, line_res) in reader.lines().enumerate() {
+                    if matches.len() >= MAX_SEARCH_RESULTS {
+                        break;
+                    }
+                    if let Ok(line) = line_res {
+                        if regex.is_match(&line) {
+                            matches.push(format!("{}:{}: {}", rel_path, line_idx + 1, line.trim()));
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %e,
+                    "Skipping unreadable file during grep search"
+                );
             }
         }
     }

@@ -61,7 +61,7 @@ impl CodeGraph {
             if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 let path = result.path();
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if matches!(ext, "rs" | "py" | "js" | "ts" | "jsx" | "tsx") {
+                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
                         source_files.push(path.to_path_buf());
                     }
                 }
@@ -76,8 +76,13 @@ impl CodeGraph {
             }
         }
 
+        let mut file_contents = HashMap::new();
+
         // 2. Extract AST symbols and map symbol -> defining file
         for file in &source_files {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                file_contents.insert(file.clone(), content);
+            }
             match self.extractor.extract_file_symbols(file) {
                 Ok(symbols) => {
                     for sym in &symbols {
@@ -101,7 +106,7 @@ impl CodeGraph {
                 None => continue,
             };
 
-            if let Ok(content) = std::fs::read_to_string(file) {
+            if let Some(content) = file_contents.get(file) {
                 // Extract unique word-boundary identifiers in a single pass
                 let identifiers: HashSet<&str> = content
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -285,11 +290,12 @@ impl CodeGraph {
         }
 
         // 3. Test coverage identification
+        let mut test_coverage_set = HashSet::new();
         let mut test_coverage = Vec::new();
         for dep in direct_dependents.iter().chain(transitive_dependents.iter()) {
             let dep_lower = dep.to_lowercase();
             if (dep_lower.contains("test") || dep_lower.starts_with("tests/"))
-                && !test_coverage.contains(dep)
+                && test_coverage_set.insert(dep.clone())
             {
                 test_coverage.push(dep.clone());
             }

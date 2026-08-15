@@ -91,7 +91,8 @@ impl ContextCompressor {
         for msg in messages.iter_mut().take(cutoff).skip(1) {
             if msg.role == Role::Tool {
                 // Compress older tool outputs
-                msg.content = Self::mask_observation(&msg.content, 10);
+                msg.content =
+                    Self::mask_observation(&msg.content, crate::constants::COMPRESSOR_MASK_LINES);
             }
         }
     }

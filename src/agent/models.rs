@@ -29,7 +29,9 @@ pub struct ModelFetcher {
 impl ModelFetcher {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(
+                crate::constants::MODEL_FETCH_TIMEOUT_SECS,
+            ))
             .build()
             .unwrap_or_default();
 
@@ -78,23 +80,23 @@ impl ModelFetcher {
             "openrouter" => self.fetch_openrouter_models(api_key).await,
             "gemini" | "google" => self.fetch_gemini_models(api_key).await,
             "openai" => {
-                let url = custom_base_url.unwrap_or("https://api.openai.com/v1");
+                let url = custom_base_url.unwrap_or(crate::constants::OPENAI_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "deepseek" => {
-                self.fetch_openai_compatible_models("https://api.deepseek.com/v1", api_key)
+                self.fetch_openai_compatible_models(crate::constants::DEEPSEEK_BASE_URL, api_key)
                     .await
             }
             "groq" => {
-                self.fetch_openai_compatible_models("https://api.groq.com/openai/v1", api_key)
+                self.fetch_openai_compatible_models(crate::constants::GROQ_BASE_URL, api_key)
                     .await
             }
             "together" => {
-                self.fetch_openai_compatible_models("https://api.together.xyz/v1", api_key)
+                self.fetch_openai_compatible_models(crate::constants::TOGETHER_BASE_URL, api_key)
                     .await
             }
             "ollama" => {
-                let url = custom_base_url.unwrap_or("http://localhost:11434/v1");
+                let url = custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             _ => {
@@ -142,11 +144,11 @@ impl ModelFetcher {
         }
     }
 
-    /// Fetches live models from OpenRouter API (`https://openrouter.ai/api/v1/models`)
+    /// Fetches live models from OpenRouter API
     async fn fetch_openrouter_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
         let mut req = self
             .client
-            .get("https://openrouter.ai/api/v1/models")
+            .get(crate::constants::OPENROUTER_MODELS_URL)
             .header("HTTP-Referer", "https://github.com/aswin402/minicode")
             .header("X-Title", "minicode");
 
@@ -218,7 +220,8 @@ impl ModelFetcher {
     /// Fetches live models from Google Gemini API
     async fn fetch_gemini_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+            "{}{}",
+            crate::constants::GEMINI_MODELS_URL_TEMPLATE,
             api_key
         );
 

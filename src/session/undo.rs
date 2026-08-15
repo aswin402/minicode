@@ -31,12 +31,17 @@ impl UndoEngine {
                     restored_paths.push(file.original_path);
                 }
             } else {
-                // File did not exist before this turn — delete it
+                // File or directory did not exist before this turn — delete it
                 if orig.exists() {
-                    if let Err(e) = std::fs::remove_file(orig) {
-                        tracing::warn!(path = %file.original_path, error = %e, "Failed to remove newly created file during undo rollback");
+                    let remove_res = if orig.is_dir() {
+                        std::fs::remove_dir_all(orig)
                     } else {
-                        tracing::info!(path = %file.original_path, "Removed file created in rolled-back turn");
+                        std::fs::remove_file(orig)
+                    };
+                    if let Err(e) = remove_res {
+                        tracing::warn!(path = %file.original_path, error = %e, "Failed to remove newly created path during undo rollback");
+                    } else {
+                        tracing::info!(path = %file.original_path, "Removed path created in rolled-back turn");
                         restored_paths.push(format!("(deleted) {}", file.original_path));
                     }
                 }
@@ -126,6 +131,39 @@ mod tests {
             std::fs::read_to_string(&test_file).unwrap(),
             "Before Change"
         );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_undo_rollback_deletes_created_directory() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_undo_dir_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let new_sub_dir = temp_dir.join("created_dir");
+        std::fs::create_dir_all(&new_sub_dir).unwrap();
+        std::fs::write(new_sub_dir.join("file.txt"), "hello").unwrap();
+
+        let mgr = BackupManager::new(&temp_dir);
+        let backed_up = crate::session::backup::BackedUpFile {
+            original_path: new_sub_dir.to_string_lossy().to_string(),
+            backup_path: String::new(),
+            existed_before: false,
+        };
+
+        let manifest = BackupManifest {
+            turn_id: 2,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            files: vec![backed_up],
+        };
+        mgr.save_turn_manifest(&manifest).unwrap();
+
+        assert!(new_sub_dir.exists());
+
+        let res = rollback_turn(&temp_dir).unwrap();
+        assert_eq!(res.deleted_count, 1);
+        assert!(!new_sub_dir.exists());
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

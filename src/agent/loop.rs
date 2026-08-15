@@ -116,6 +116,7 @@ impl AgentLoop {
 
             let mut iteration_text = String::new();
             let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+            let turn_response_len_before = turn_response.len();
 
             let mut success = false;
             while !success && retry_count <= max_retries {
@@ -144,6 +145,9 @@ impl AgentLoop {
                                 tracing::debug!(error = %e, "Failed to send retry error event");
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                            iteration_text.clear();
+                            pending_tool_calls.clear();
+                            turn_response.truncate(turn_response_len_before);
                             continue;
                         }
                         return Err(e);
@@ -217,6 +221,9 @@ impl AgentLoop {
                             tracing::debug!(error = %e, "Failed to send retry error event");
                         }
                         tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        iteration_text.clear();
+                        pending_tool_calls.clear();
+                        turn_response.truncate(turn_response_len_before);
                         continue;
                     }
                     return Err(err);

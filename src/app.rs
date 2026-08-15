@@ -109,6 +109,7 @@ impl<'a> App<'a> {
 
         let mut ticker =
             tokio::time::interval(Duration::from_millis(crate::constants::TICK_RATE_MS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             let working_secs = self.work_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);

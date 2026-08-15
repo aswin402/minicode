@@ -222,7 +222,8 @@ impl SymbolIndex {
                             self.postings.range(q_token.clone()..prefix_end)
                         {
                             for &sym_idx in postings {
-                                matched_postings.push((sym_idx, 0.6)); // Prefix match weight factor
+                                matched_postings
+                                    .push((sym_idx, crate::constants::BM25_PREFIX_WEIGHT));
                             }
                         }
                     }

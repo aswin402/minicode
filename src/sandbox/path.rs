@@ -36,6 +36,10 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 ///
 /// Handles relative paths, `..` traversals, and symbolic link dereferencing
 /// by canonicalizing both the workspace root and the target path.
+///
+/// **Security Note**: This is a user-space validation check subject to TOCTOU races.
+/// Linux Landlock kernel-level sandboxing (applied in `exec.rs`) is the primary
+/// enforcement mechanism. This function serves as a defense-in-depth layer.
 pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Result<PathBuf> {
     let canonical_root =
         std::fs::canonicalize(workspace_root).map_err(|e| SecurityError::PathEscapesWorkspace {

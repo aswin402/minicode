@@ -114,8 +114,8 @@ pub const MAX_REGEX_QUERY_LEN: usize = 1024;
 pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum raw output bytes captured before hard truncation
 pub const EXEC_MAX_OUTPUT_BYTES: usize = 512 * 1024;
-/// User-Agent header string for HTTP web requests
-pub const WEB_USER_AGENT: &str = "minicode/0.0.6 (+https://github.com/aswin402/minicode)";
+/// Default User-Agent header for web fetching tool
+pub const WEB_USER_AGENT: &str = "minicode/0.0.7 (+https://github.com/aswin402/minicode)";
 /// HTTP request timeout in seconds for web fetching
 pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages
@@ -224,3 +224,39 @@ pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 // === File-Modifying Tools ===
 /// List of built-in tool names that modify workspace files
 pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file"];
+
+// === Security Limits ===
+/// Maximum allowed web response size in bytes (10 MB) to prevent OOM
+pub const MAX_WEB_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+// === Model Provider Endpoints & Timeouts ===
+/// Default timeout in seconds for fetching live models
+pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
+/// OpenRouter live models API endpoint
+pub const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
+/// Gemini live models API endpoint template
+pub const GEMINI_MODELS_URL_TEMPLATE: &str =
+    "https://generativelanguage.googleapis.com/v1beta/models?key=";
+/// OpenAI default API base URL
+pub const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+/// DeepSeek API base URL
+pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
+/// Groq API base URL
+pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
+/// Together AI API base URL
+pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
+/// Ollama default API base URL
+pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
+
+// === Context, Search & Channel Tuning ===
+/// Weight factor for prefix token match in BM25 scoring
+pub const BM25_PREFIX_WEIGHT: f64 = 0.6;
+/// Number of tool observation lines to retain during context compaction
+pub const COMPRESSOR_MASK_LINES: usize = 10;
+/// Default capacity for bounded agent event channel
+#[allow(dead_code)]
+pub const AGENT_EVENT_CHANNEL_CAPACITY: usize = 1024;
+/// Default limit of symbols to return for locate_symbol MCP query
+pub const DEFAULT_LOCATE_SYMBOL_LIMIT: usize = 10;
+/// Supported source file language extensions for AST repomap and graph extraction
+pub const SUPPORTED_LANG_EXTENSIONS: &[&str] = &["rs", "py", "js", "ts", "jsx", "tsx"];

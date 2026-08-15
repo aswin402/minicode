@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.7] — 2026-08-15
+
+### 🔒 Reliability & Security Hardening
+- **Stream Retry State Reset (`src/agent/loop.rs`)**:
+  - Automatically clears `iteration_text`, `pending_tool_calls`, and truncates `turn_response` upon stream errors before retrying, preventing output duplication and malformed tool calls.
+- **Strict Landlock Error Propagation (`src/tools/exec.rs`)**:
+  - Propagated `apply_landlock_sandbox` errors in `pre_exec` hook as `PermissionDenied` so command execution strictly aborts if kernel-level sandboxing fails.
+- **Landlock Network Fallback Warning (`src/sandbox/landlock.rs`)**:
+  - Emits visible `tracing::warn!` when running on Linux kernels lacking Landlock ABI V4 where TCP network restriction cannot be enforced.
+- **Web Response Payload Limit (`src/tools/web.rs`, `src/constants.rs`)**:
+  - Enforced `MAX_WEB_RESPONSE_BYTES` (10 MB) via `Content-Length` and byte buffering to prevent out-of-memory denial-of-service on massive web downloads.
+- **Plan Archiving Integrity (`src/context/working_memory.rs`)**:
+  - Propagated I/O errors during archive reading to guarantee active plans and progress files are never deleted if reading fails.
+
+### ⚡ Performance & Caching Optimizations
+- **Single-Pass AST File Content Caching (`src/context/graph.rs`)**:
+  - Cached file contents in memory during Tree-sitter AST extraction to eliminate duplicate disk reads during dependency edge building.
+- **$O(1)$ Test Coverage Deduplication (`src/context/graph.rs`)**:
+  - Replaced $O(N^2)$ `Vec` lookups with `HashSet` in blast radius test coverage correlation.
+- **HTTP `Retry-After` Header Parsing (`src/agent/provider.rs`)**:
+  - Extracted and honored provider-specified `Retry-After` seconds on HTTP 429 rate limit responses.
+- **TUI Ticker Drift Protection (`src/app.rs`)**:
+  - Configured `MissedTickBehavior::Skip` on TUI 50ms interval ticker to avoid UI frame bursts.
+
+### 🧹 Cleanliness, Centralization & Polish
+- **Environment API Key Trimming (`src/config.rs`)**:
+  - Trimmed surrounding whitespace and newlines from all `.env` and environment variable API keys.
+- **Undo Directory Removal (`src/session/undo.rs`)**:
+  - Added recursive `remove_dir_all` cleanup for directories created during rolled-back turns.
+- **Constants Centralization (`src/constants.rs`, `src/agent/models.rs`, `src/context/index.rs`, `src/context/compressor.rs`, `src/mcp/server.rs`)**:
+  - Consolidated model provider URLs, fetch timeouts, `BM25_PREFIX_WEIGHT`, `COMPRESSOR_MASK_LINES`, `DEFAULT_LOCATE_SYMBOL_LIMIT`, and `SUPPORTED_LANG_EXTENSIONS`.
+- **Grep Skipped File Tracing (`src/tools/search.rs`)**:
+  - Added `tracing::debug!` logging when unreadable files are skipped during search.
+
+---
+
 ## [0.0.6] — 2026-08-15
 
 ### ⚡ Performance & Indexing Optimization

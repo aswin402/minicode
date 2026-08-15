@@ -32,10 +32,31 @@ pub async fn fetch_or_browse(url: &str) -> Result<String> {
         );
     }
 
-    let html_text = response
-        .text()
+    if let Some(content_length) = response.content_length() {
+        if content_length > crate::constants::MAX_WEB_RESPONSE_BYTES as u64 {
+            return Err(ToolError::CommandExec(format!(
+                "Response body too large ({} bytes, maximum allowed is {} bytes)",
+                content_length,
+                crate::constants::MAX_WEB_RESPONSE_BYTES
+            ))
+            .into());
+        }
+    }
+
+    let bytes = response
+        .bytes()
         .await
         .map_err(|e| ToolError::CommandExec(format!("Failed to read response body: {}", e)))?;
+
+    if bytes.len() > crate::constants::MAX_WEB_RESPONSE_BYTES {
+        return Err(ToolError::CommandExec(format!(
+            "Response body exceeded maximum limit of {} bytes",
+            crate::constants::MAX_WEB_RESPONSE_BYTES
+        ))
+        .into());
+    }
+
+    let html_text = String::from_utf8_lossy(&bytes).to_string();
 
     let document = Html::parse_document(&html_text);
 

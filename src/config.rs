@@ -520,11 +520,13 @@ impl Config {
         }
     }
 
-    /// Resolves the API key for a specific provider from the environment.
+    /// Resolves the API key for a specific provider from the environment, trimming surrounding whitespace.
     pub fn get_api_key(&self, provider_name: &str) -> Result<String> {
+        let env_trimmed = |key: &str| std::env::var(key).map(|v| v.trim().to_string());
+
         match provider_name.to_lowercase().as_str() {
-            "gemini" | "google" => std::env::var("GEMINI_API_KEY")
-                .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+            "gemini" | "google" => env_trimmed("GEMINI_API_KEY")
+                .or_else(|_| env_trimmed("GOOGLE_API_KEY"))
                 .map_err(|_| {
                     ConfigError::MissingApiKey {
                         provider: "gemini".to_string(),
@@ -532,15 +534,15 @@ impl Config {
                     }
                     .into()
                 }),
-            "anthropic" | "claude" => std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+            "anthropic" | "claude" => env_trimmed("ANTHROPIC_API_KEY").map_err(|_| {
                 ConfigError::MissingApiKey {
                     provider: "anthropic".to_string(),
                     env_var: "ANTHROPIC_API_KEY".to_string(),
                 }
                 .into()
             }),
-            "openrouter" => std::env::var("OPENROUTER_API_KEY")
-                .or_else(|_| std::env::var("OPENROUTER_KEY"))
+            "openrouter" => env_trimmed("OPENROUTER_API_KEY")
+                .or_else(|_| env_trimmed("OPENROUTER_KEY"))
                 .map_err(|_| {
                     ConfigError::MissingApiKey {
                         provider: "openrouter".to_string(),
@@ -548,7 +550,7 @@ impl Config {
                     }
                     .into()
                 }),
-            "openai" => std::env::var("OPENAI_API_KEY").map_err(|_| {
+            "openai" => env_trimmed("OPENAI_API_KEY").map_err(|_| {
                 ConfigError::MissingApiKey {
                     provider: "openai".to_string(),
                     env_var: "OPENAI_API_KEY".to_string(),
@@ -562,7 +564,7 @@ impl Config {
             custom => {
                 let sanitized_custom = custom.to_uppercase().replace(['-', '.'], "_");
                 let env_var = format!("{}_API_KEY", sanitized_custom);
-                std::env::var(&env_var).map_err(|_| {
+                env_trimmed(&env_var).map_err(|_| {
                     ConfigError::MissingApiKey {
                         provider: custom.to_string(),
                         env_var,
@@ -629,5 +631,14 @@ mod tests {
         let raw: RawConfig = toml::from_str(override_toml).unwrap();
         config.merge_raw(raw);
         assert_eq!(config.agent.auto_approve, false);
+    }
+
+    #[test]
+    fn test_get_api_key_trims_whitespace() {
+        let config = Config::default();
+        std::env::set_var("GEMINI_API_KEY", "  sk-test-gemini-key-12345\n\t ");
+        let key = config.get_api_key("gemini").unwrap();
+        assert_eq!(key, "sk-test-gemini-key-12345");
+        std::env::remove_var("GEMINI_API_KEY");
     }
 }

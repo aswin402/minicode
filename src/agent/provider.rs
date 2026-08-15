@@ -277,13 +277,23 @@ impl Provider for GeminiProvider {
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
                         let status_code = status.as_u16();
                         if status_code == 429 {
-                            yield Err(ProviderError::RateLimited { retry_after_secs: Some(5) }.into());
+                            let retry_after = resp
+                                .headers()
+                                .get("retry-after")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.trim().parse::<u64>().ok())
+                                .or(Some(5));
+                            yield Err(ProviderError::RateLimited {
+                                retry_after_secs: retry_after,
+                            }
+                            .into());
                         } else {
                             let text = resp.text().await.unwrap_or_default();
                             yield Err(ProviderError::Api {
                                 status: status_code,
                                 message: format!("Gemini API error: {}", text),
-                            }.into());
+                            }
+                            .into());
                         }
                         break;
                     }
@@ -575,13 +585,23 @@ impl Provider for OpenAiCompatibleProvider {
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
                         let status_code = status.as_u16();
                         if status_code == 429 {
-                            yield Err(ProviderError::RateLimited { retry_after_secs: Some(5) }.into());
+                            let retry_after = resp
+                                .headers()
+                                .get("retry-after")
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.trim().parse::<u64>().ok())
+                                .or(Some(5));
+                            yield Err(ProviderError::RateLimited {
+                                retry_after_secs: retry_after,
+                            }
+                            .into());
                         } else {
                             let text = resp.text().await.unwrap_or_default();
                             yield Err(ProviderError::Api {
                                 status: status_code,
                                 message: format!("API error ({}): {}", status_code, text),
-                            }.into());
+                            }
+                            .into());
                         }
                         break;
                     }

@@ -432,7 +432,9 @@ impl MinicodeMcpServer {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "Missing required parameter 'name'".to_string())?;
-                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
+                let limit = parse_u64_param(args.get("limit"))
+                    .unwrap_or(crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT as u64)
+                    as usize;
                 let mut index = crate::context::index::SymbolIndex::new();
                 index
                     .build_index(&self.workspace_root)

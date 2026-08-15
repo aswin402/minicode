@@ -173,3 +173,28 @@
 - [x] **L6, L7, L8, L10, L11 (P3)**: Added `MCP_TOOL_PREFIX`, directory constants in `store.rs`/`backup.rs`/`skills.rs`, single-char symbol preservation in `index.rs`, and `#[must_use]` on `build_system_prompt` in `prompt.rs`
 - [x] **Verification**: **50/50 unit tests passing, zero clippy warnings, clean formatting**
 
+---
+
+## ✅ Phase 2 Post-Audit Fixes — Round 2 (v0.0.7 COMPLETED)
+- [x] **C1 (Critical)**: Reset `iteration_text`, `pending_tool_calls`, and truncate `turn_response` on stream retry in `src/agent/loop.rs`
+- [x] **C2 (Critical)**: Propagate `apply_landlock_sandbox` errors in `pre_exec` hook in `src/tools/exec.rs`
+- [x] **H1 (High)**: Log warnings on complementary local/global save errors instead of swallowing with `.ok()` in `src/context/memory.rs`
+- [x] **M1 (Medium)**: Parse `Retry-After` HTTP header from response on HTTP 429 rate limit in `src/agent/provider.rs`
+- [x] **M2 (Medium)**: Trim API keys retrieved from environment variables in `src/config.rs` + added `test_get_api_key_trims_whitespace`
+- [x] **M3 (Medium)**: Cache file contents during AST extraction in `src/context/graph.rs` to eliminate redundant disk reads during edge building
+- [x] **M4 (Medium)**: Replaced O(N²) `test_coverage` `Vec` lookup with `HashSet` in `src/context/graph.rs`
+- [x] **M5 (Medium)**: Added `tracing::debug!` for unreadable files skipped during `grep_search` in `src/tools/search.rs`
+- [x] **M6 (Medium)**: Propagate file read errors during plan archiving in `src/context/working_memory.rs` to prevent data loss
+- [x] **M7 (Medium)**: Added `tracing::warn!` when Landlock network restriction falls back on kernels without ABI V4 in `src/sandbox/landlock.rs`
+- [x] **M8 (Medium)**: Added `MAX_WEB_RESPONSE_BYTES` (10 MB) size check to prevent OOM on large web responses in `src/tools/web.rs`
+- [x] **L1 (Low)**: Centralized model provider API URLs and fetch timeouts in `src/constants.rs` and `src/agent/models.rs`
+- [x] **L3 (Low)**: Added `MissedTickBehavior::Skip` on TUI interval ticker in `src/app.rs`
+- [x] **L4 (Low)**: Centralized `BM25_PREFIX_WEIGHT` in `src/constants.rs` and `src/context/index.rs`
+- [x] **L5 (Low)**: Centralized `COMPRESSOR_MASK_LINES` in `src/constants.rs` and `src/context/compressor.rs`
+- [x] **L6 (Low)**: Centralized `SUPPORTED_LANG_EXTENSIONS` in `src/constants.rs` and `src/context/graph.rs`
+- [x] **L7 (Low)**: Added security documentation comment clarifying TOCTOU user-space limitation in `src/sandbox/path.rs`
+- [x] **L8 (Low)**: Supported recursive directory deletion for paths created during rolled-back turns in `src/session/undo.rs` + added `test_undo_rollback_deletes_created_directory`
+- [x] **L9 (Low)**: Centralized `DEFAULT_LOCATE_SYMBOL_LIMIT` in `src/constants.rs` and `src/mcp/server.rs`
+- [x] **Verification**: **52/52 unit tests passing, zero clippy warnings, clean formatting**
+
+
