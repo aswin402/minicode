@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -60,6 +60,9 @@ petgraph = "0.6"
 
 # Token Counting & Context Engineering
 tiktoken-rs = "0.6"
+
+# Language Server Protocol (LSP) Support
+lsp-types = "0.97"
 
 # Web, HTML Extraction & Browser Automation
 scraper = "0.20"

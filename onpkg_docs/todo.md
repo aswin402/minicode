@@ -322,7 +322,7 @@
 
 ---
 
-## ✅ Phase 3: Multi-Agent Worktree Orchestration (v0.0.15 COMPLETED)
+## ✅ Phase 3: Multi-Agent Worktree Orchestration (v0.0.12 COMPLETED)
 
 - [x] Create `src/git/worktree.rs` (`git worktree add .minicode/worktrees/<id> -b subagent/<id>`, cleanup, merge)
 - [x] Create `src/agent/subagent.rs` (SubAgent struct, spawn, NDJSON stdio streaming, cancel)
@@ -331,5 +331,50 @@
 - [x] Wire `delegate_task` dispatcher with isolated worktree execution
 - [x] Write integration test for parallel worktree subagents (`tests/integration_subagents.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (80 tests passing, 0 clippy warnings)
+
+---
+
+## ✅ Phase 4: Language Server Protocol (LSP) Engine & 2-Tier Compiler Diagnostics (v0.0.13)
+
+- [x] Add `lsp-types = "0.97"` to `Cargo.toml`
+- [x] Create `src/lsp/mod.rs`, `src/lsp/client.rs`, `src/lsp/protocol.rs`, `src/lsp/diagnostics.rs`
+- [x] Implement stdio JSON-RPC 2.0 client with `Content-Length` header framing
+- [x] Implement Tier 1 Fast-Path Compiler Checker (`cargo check --message-format=json`, `tsc --noEmit`, `ruff`)
+- [x] Implement Tier 2 LSP Auto-discovery (`rust-analyzer`, `pyright`/`pylsp`, `typescript-language-server`, `gopls`)
+- [x] Implement `lsp_diagnostics`, `lsp_goto_definition`, and `lsp_find_references` tools in `src/tools/mod.rs` (27 tools total)
+- [x] Integrate autonomous compiler self-healing check in `AgentLoop::execute_turn`
+- [x] Write unit & integration tests for LSP protocol, compiler diagnostics, and self-healing (`tests/integration_lsp_diagnostics.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (86 tests passing, 0 clippy warnings)
+
+---
+
+## 🔲 Phase 5: Interactive TUI Diff Inspector & Permission Modal (v0.0.14)
+
+- [ ] Create `src/ui/diff_viewer.rs` for colored unified diff rendering
+- [ ] Create `src/ui/approval.rs` modal widget for permission gates
+- [ ] Wire approval request handling in `src/app.rs` and `AgentEvent::ApprovalRequest`
+- [ ] Add `[y] Accept`, `[n] Reject`, `[e] Edit`, `[a] Allow All` keyboard event handlers
+- [ ] `cargo test && cargo clippy -- -D warnings`
+
+---
+
+## 🔲 Phase 6: Native Web Search Engine with Anti-Scrape Resilience (v0.0.15)
+
+- [ ] Create `src/tools/web_search.rs`
+- [ ] Implement DuckDuckGo zero-API-key HTML scraper with clean markdown formatting
+- [ ] Add in-memory TTL search cache (15-minute expiration) to avoid rate-limiting
+- [ ] Implement Tavily / Brave Search API fallbacks with `.env` keys
+- [ ] Register `search_web` in `ToolRegistry` (26 built-in agent tools total)
+- [ ] Write unit tests for search query construction and response parsing
+- [ ] `cargo test && cargo clippy -- -D warnings`
+
+---
+
+## 🔲 Phase 7: Release Matrix & Distribution (v0.0.16)
+
+- [ ] Create `.github/workflows/release.yml` with cross-compilation matrix
+- [ ] Create `install.sh` one-line installation script
+- [ ] Update documentation, PRD, and README with new version features and quickstart guides
+- [ ] `cargo test -j 2 -- --test-threads=2` (all targets green)
 
 

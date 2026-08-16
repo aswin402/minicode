@@ -6,6 +6,7 @@ mod context;
 mod error;
 pub mod git;
 mod logging;
+pub mod lsp;
 mod mcp;
 mod sandbox;
 mod session;

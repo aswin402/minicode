@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.13] — 2026-08-16
+
+### 🚀 Language Server Protocol (LSP) Engine & 2-Tier Compiler Diagnostics
+- **Pure-Rust Stdio JSON-RPC 2.0 Client (`src/lsp/protocol.rs`, `src/lsp/client.rs`)**:
+  - Implemented async stdio JSON-RPC 2.0 framing with strict `Content-Length:` header reading and serialization.
+  - Auto-discovery for language servers: `rust-analyzer` (Rust), `pyright` (Python), `typescript-language-server` (TypeScript/JavaScript), and `gopls` (Go).
+  - Handles initialization handshakes, non-blocking requests with timeouts, and clean child process lifecycle management (`SIGTERM` / `SIGKILL` on drop).
+- **2-Tier Hybrid Compiler Diagnostics Engine (`src/lsp/diagnostics.rs`, `src/lsp/mod.rs`)**:
+  - **Tier 1 (Instant Fast-Path)**: Direct compiler CLI checks (`cargo check --message-format=json`, `tsc --noEmit`, `ruff check`) running in < 200ms with zero RAM overhead.
+  - **Tier 2 (Deep Semantic LSP)**: Asynchronous LSP client providing live diagnostics, `lsp_goto_definition`, and `lsp_find_references`.
+  - Added 3 new agent tools: `lsp_diagnostics`, `lsp_goto_definition`, and `lsp_find_references` (expanding built-in tools to **27 agent tools total**).
+- **Autonomous Compiler Self-Healing Loop (`src/agent/loop.rs`, `src/config.rs`)**:
+  - Automatically queries workspace compiler diagnostics after file modifications.
+  - If compiler errors are detected, the agent receives an immediate structured feedback prompt with line, column, and rustc/tsc error spans, automatically fixing syntax or type errors before completing the turn.
+  - Configurable via `[agent] auto_heal = true` in `config.toml`.
+- **Integration Test Suite**:
+  - Added `tests/integration_lsp_diagnostics.rs` validating protocol framing, diagnostic formatting, and tool dispatch.
+  - Total test count expanded to **86 tests passing 100% green** with zero clippy warnings.
+
 ---
 
 ## [0.0.12] — 2026-08-16

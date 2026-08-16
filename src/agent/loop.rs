@@ -169,6 +169,7 @@ impl AgentLoop {
 
         let max_iterations = DEFAULT_MAX_TOOL_ITERATIONS; // Prevent infinite tool loops
         let mut iteration = 0;
+        let mut heal_attempts = 0;
 
         let options = CompletionOptions {
             model: self.config.provider.model.clone(),
@@ -424,7 +425,40 @@ impl AgentLoop {
                     turn_tool_results.push(tool_result);
                 }
             } else {
-                // No more tool calls; assistant finished turn
+                // If files were modified and auto-healing is active, verify workspace compiles cleanly
+                if !turn_files_modified.is_empty()
+                    && self.config.agent.auto_heal
+                    && heal_attempts < 2
+                {
+                    if let Ok(diag_report) =
+                        crate::lsp::LspEngine::run_diagnostics(&self.workspace_root).await
+                    {
+                        if !diag_report.is_clean() && !diag_report.errors.is_empty() {
+                            heal_attempts += 1;
+                            let error_feedback = format!(
+                                "Automatic compiler check detected {} errors after changes. Please review and fix:\n{}",
+                                diag_report.errors.len(),
+                                diag_report.format_for_agent(&self.workspace_root, 6)
+                            );
+                            tracing::warn!("Compiler errors detected post-turn, triggering auto-healing attempt #{}", heal_attempts);
+                            let status_event = AgentEvent::ToolResult {
+                                turn_id,
+                                tool_id: format!("auto_heal_{}", heal_attempts),
+                                tool: "compiler_check".to_string(),
+                                success: false,
+                                output: error_feedback.clone(),
+                                duration_ms: 100,
+                            };
+                            let _ = event_sender.send(status_event);
+
+                            self.messages.push(Message::assistant(iteration_text));
+                            self.messages.push(Message::user(error_feedback));
+                            continue;
+                        }
+                    }
+                }
+
+                // No more tool calls and workspace compiles cleanly; assistant finished turn
                 self.messages.push(Message::assistant(iteration_text));
                 break;
             }

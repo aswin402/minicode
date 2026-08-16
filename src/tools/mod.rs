@@ -423,6 +423,63 @@ impl ToolRegistry {
                     "required": ["task"]
                 }),
             },
+            ToolSchema {
+                name: "lsp_diagnostics".to_string(),
+                description: "Fetch compiler and linter diagnostics across the workspace (or specific files) to check for compile errors and warnings.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "max_items": {
+                            "type": "integer",
+                            "description": "Maximum number of error items to display in detail (default: 8)"
+                        }
+                    }
+                }),
+            },
+            ToolSchema {
+                name: "lsp_goto_definition".to_string(),
+                description: "Resolve the exact file path and line location where a code symbol (function, struct, type) is defined using LSP.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path containing the symbol usage"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "Line number (1-indexed) where the symbol appears"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "Column character offset (1-indexed) of the symbol"
+                        }
+                    },
+                    "required": ["path", "line", "character"]
+                }),
+            },
+            ToolSchema {
+                name: "lsp_find_references".to_string(),
+                description: "Locate all reference usages and call sites of a symbol across the workspace using LSP.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Relative file path containing the symbol"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "Line number (1-indexed)"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "Column character offset (1-indexed)"
+                        }
+                    },
+                    "required": ["path", "line", "character"]
+                }),
+            },
         ]
     }
 
@@ -952,6 +1009,96 @@ impl ToolRegistry {
                 .await?;
                 Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
             }
+            "lsp_diagnostics" => {
+                let max_items = parse_u64_param(args.get("max_items")).unwrap_or(8) as usize;
+                let report = crate::lsp::LspEngine::run_diagnostics(workspace_root).await?;
+                Ok(report.format_for_agent(workspace_root, max_items))
+            }
+            "lsp_goto_definition" => {
+                let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "lsp_goto_definition".to_string(),
+                        reason: "Missing required argument 'path'".to_string(),
+                    }
+                })?;
+                let line = parse_u64_param(args.get("line")).unwrap_or(1) as u32;
+                let character = parse_u64_param(args.get("character")).unwrap_or(1) as u32;
+
+                // LSP uses 0-indexed positions
+                let lsp_line = line.saturating_sub(1);
+                let lsp_col = character.saturating_sub(1);
+
+                let locations = crate::lsp::LspEngine::goto_definition(
+                    workspace_root,
+                    Path::new(path),
+                    lsp_line,
+                    lsp_col,
+                )
+                .await?;
+                if locations.is_empty() {
+                    Ok(format!(
+                        "ℹ No definition found for '{}:{}:{}' via LSP",
+                        path, line, character
+                    ))
+                } else {
+                    let mut out = format!("✔ Found {} definition location(s):\n", locations.len());
+                    for loc in locations {
+                        let rel = loc
+                            .file_path
+                            .strip_prefix(workspace_root)
+                            .unwrap_or(&loc.file_path);
+                        out.push_str(&format!(
+                            "  • {}:{}:{}\n",
+                            rel.display(),
+                            loc.line + 1,
+                            loc.character + 1
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
+            "lsp_find_references" => {
+                let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "lsp_find_references".to_string(),
+                        reason: "Missing required argument 'path'".to_string(),
+                    }
+                })?;
+                let line = parse_u64_param(args.get("line")).unwrap_or(1) as u32;
+                let character = parse_u64_param(args.get("character")).unwrap_or(1) as u32;
+
+                let lsp_line = line.saturating_sub(1);
+                let lsp_col = character.saturating_sub(1);
+
+                let locations = crate::lsp::LspEngine::find_references(
+                    workspace_root,
+                    Path::new(path),
+                    lsp_line,
+                    lsp_col,
+                )
+                .await?;
+                if locations.is_empty() {
+                    Ok(format!(
+                        "ℹ No references found for '{}:{}:{}' via LSP",
+                        path, line, character
+                    ))
+                } else {
+                    let mut out = format!("✔ Found {} reference usage(s):\n", locations.len());
+                    for loc in locations {
+                        let rel = loc
+                            .file_path
+                            .strip_prefix(workspace_root)
+                            .unwrap_or(&loc.file_path);
+                        out.push_str(&format!(
+                            "  • {}:{}:{}\n",
+                            rel.display(),
+                            loc.line + 1,
+                            loc.character + 1
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -967,10 +1114,13 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 24);
+        assert_eq!(schemas.len(), 27);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
+        assert!(names.contains(&"lsp_diagnostics"));
+        assert!(names.contains(&"lsp_goto_definition"));
+        assert!(names.contains(&"lsp_find_references"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"exec_cmd"));
         assert!(names.contains(&"grep_search"));

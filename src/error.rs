@@ -27,6 +27,9 @@ pub enum MinicodeError {
     #[error("Git operation error: {0}")]
     Git(#[from] GitError),
 
+    #[error("LSP error: {0}")]
+    Lsp(String),
+
     #[error("Channel communication error: {0}")]
     Channel(String),
 

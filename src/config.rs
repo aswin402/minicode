@@ -103,6 +103,9 @@ pub struct AgentConfig {
 
     #[serde(default = "default_warning_threshold")]
     pub warning_threshold: f32,
+
+    #[serde(default = "default_true")]
+    pub auto_heal: bool,
 }
 
 impl Default for AgentConfig {
@@ -113,6 +116,7 @@ impl Default for AgentConfig {
             timeout: default_timeout_secs(),
             map_tokens: default_map_tokens(),
             warning_threshold: default_warning_threshold(),
+            auto_heal: true,
         }
     }
 }
@@ -312,6 +316,7 @@ pub struct RawAgentConfig {
     pub timeout: Option<u64>,
     pub map_tokens: Option<usize>,
     pub warning_threshold: Option<f32>,
+    pub auto_heal: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -497,6 +502,9 @@ impl Config {
         }
         if let Some(warning_threshold) = other.agent.warning_threshold {
             self.agent.warning_threshold = warning_threshold;
+        }
+        if let Some(auto_heal) = other.agent.auto_heal {
+            self.agent.auto_heal = auto_heal;
         }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
