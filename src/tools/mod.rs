@@ -3,6 +3,7 @@ pub mod exec;
 pub mod fs;
 pub mod search;
 pub mod web;
+pub mod web_search;
 
 use crate::agent::provider::ToolSchema;
 use crate::agent::types::ToolResult;
@@ -478,6 +479,24 @@ impl ToolRegistry {
                         }
                     },
                     "required": ["path", "line", "character"]
+                }),
+            },
+            ToolSchema {
+                name: "search_web".to_string(),
+                description: "Search the web for up-to-date documentation, API references, library examples, and programming solutions using search engine queries.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search keywords or query string"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of search results to return (default: 5)"
+                        }
+                    },
+                    "required": ["query"]
                 }),
             },
         ]
@@ -1099,6 +1118,18 @@ impl ToolRegistry {
                     Ok(out)
                 }
             }
+            "search_web" => {
+                let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "search_web".to_string(),
+                        reason: "Missing required argument 'query'".to_string(),
+                    }
+                })?;
+                let max_results = parse_u64_param(args.get("max_results")).unwrap_or(5) as usize;
+                let results_md =
+                    crate::tools::web_search::WebSearchService::search(query, max_results).await?;
+                Ok(results_md)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1114,13 +1145,14 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 27);
+        assert_eq!(schemas.len(), 28);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"lsp_diagnostics"));
         assert!(names.contains(&"lsp_goto_definition"));
         assert!(names.contains(&"lsp_find_references"));
+        assert!(names.contains(&"search_web"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"exec_cmd"));
         assert!(names.contains(&"grep_search"));

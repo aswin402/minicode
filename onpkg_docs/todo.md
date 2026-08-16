@@ -359,15 +359,15 @@
 
 ---
 
-## 🔲 Phase 6: Native Web Search Engine with Anti-Scrape Resilience (v0.0.15)
+## ✅ Phase 6: Native Web Search Engine with Anti-Scrape Resilience (v0.0.15)
 
-- [ ] Create `src/tools/web_search.rs`
-- [ ] Implement DuckDuckGo zero-API-key HTML scraper with clean markdown formatting
-- [ ] Add in-memory TTL search cache (15-minute expiration) to avoid rate-limiting
-- [ ] Implement Tavily / Brave Search API fallbacks with `.env` keys
-- [ ] Register `search_web` in `ToolRegistry` (26 built-in agent tools total)
-- [ ] Write unit tests for search query construction and response parsing
-- [ ] `cargo test && cargo clippy -- -D warnings`
+- [x] Create `src/tools/web_search.rs`
+- [x] Implement DuckDuckGo zero-API-key HTML scraper with clean markdown formatting
+- [x] Add in-memory TTL search cache (15-minute expiration) to avoid rate-limiting
+- [x] Implement Tavily / Brave Search API fallbacks with `.env` keys
+- [x] Register `search_web` in `ToolRegistry` (28 built-in agent tools total)
+- [x] Write unit & integration tests (`tests/integration_web_search.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (96 tests passing, 0 clippy warnings)
 
 ---
 

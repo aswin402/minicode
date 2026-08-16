@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] — 2026-08-16
+
+### 🔍 Native Web Search Engine & Anti-Scrape Cache
+- **Native Web Search Engine (`src/tools/web_search.rs`)**:
+  - Implemented multi-provider web search tool `search_web` (expanding built-in tools to **28 agent tools total**).
+  - **Zero-API-key DuckDuckGo Scraper**: High-resilience HTML endpoint scraping with HTML parser, title & snippet extraction, and clean Markdown links.
+  - **In-Memory TTL Search Cache**: Thread-safe 15-minute query caching to avoid rate-limiting during multi-turn planning sessions.
+  - **Optional API Fallbacks**: Seamlessly integrates with Tavily (`TAVILY_API_KEY`) and Brave Search (`BRAVE_API_KEY`) when environment variables are set.
+- **Integration Test Suite**:
+  - Added `tests/integration_web_search.rs` verifying markdown search result compilation, link formatting, and empty query rejection.
+  - Full test suite expanded to **96 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.14] — 2026-08-16
 
 ### 🛡️ Interactive TUI Diff Inspector & Permission Menu Modal
