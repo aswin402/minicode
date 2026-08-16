@@ -60,14 +60,19 @@
 
 ### 1. Installation
 
+#### One-Line Binary Installer (Linux & macOS)
 ```bash
-# Clone repository
-git clone https://github.com/minicode-agent/minicode.git
-cd minicode
+curl -fsSL https://raw.githubusercontent.com/aswin402/minicode/main/install.sh | bash
+```
 
-# Build optimized release binary
-just build-release
-# or
+#### Build From Source (Cargo)
+```bash
+# Install directly from GitHub
+cargo install --git https://github.com/aswin402/minicode.git
+
+# Or clone and build
+git clone https://github.com/aswin402/minicode.git
+cd minicode
 cargo build --release
 ```
 

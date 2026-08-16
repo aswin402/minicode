@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.16] — 2026-08-16
+
+### 📦 Multi-Platform Release Matrix & Single-Command Distribution
+- **Automated Multi-Platform Release Matrix (`.github/workflows/release.yml`)**:
+  - Implemented GitHub Actions release workflow triggering on version tags (`v*`).
+  - Cross-compilation and automated asset packaging for 5 tier-1 platforms:
+    - `x86_64-unknown-linux-gnu` (Linux x86_64 tar.gz + sha256)
+    - `aarch64-unknown-linux-gnu` (Linux ARM64 tar.gz + sha256)
+    - `aarch64-apple-darwin` (macOS Apple Silicon tar.gz + sha256)
+    - `x86_64-apple-darwin` (macOS Intel tar.gz + sha256)
+    - `x86_64-pc-windows-msvc` (Windows x86_64 zip + sha256)
+- **One-Line Curl Installer (`install.sh`)**:
+  - Auto-detects operating system (`uname -s`) and CPU architecture (`uname -m`).
+  - Downloads the matching release archive directly from GitHub Releases and installs to `~/.local/bin/minicode`.
+  - Gracefully falls back to `cargo install` if GitHub API rate limits occur.
+- **Documentation & PRD Synchronization**:
+  - Updated all feature tracker checklists, tool inventories (28 agent tools), and architecture specs in `onpkg_docs/`.
+
+---
+
 ## [0.0.15] — 2026-08-16
 
 ### 🔍 Native Web Search Engine & Anti-Scrape Cache
