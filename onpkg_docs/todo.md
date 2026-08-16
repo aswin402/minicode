@@ -418,4 +418,14 @@
 - [x] Write unit & integration tests (`tests/integration_browser.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (112 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 12: Interactive Embedded PTY Terminal Drawer (v0.0.21)
+
+- [x] Create `src/ui/pty_drawer.rs` with 1000-line bounded ring buffer, scrollable viewport & input prompt
+- [x] Wire `Ctrl+T` shortcut and `/terminal` slash command into `src/app.rs` event loop
+- [x] Integrate asynchronous shell execution directly inside bottom 40% viewport drawer
+- [x] Write unit & integration tests (`tests/integration_pty_drawer.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (115 tests passing, 0 clippy warnings)
+
 

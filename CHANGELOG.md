@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.21] — 2026-08-16
+
+### ⚡ Interactive Embedded PTY Terminal Drawer
+- **Embedded PTY Terminal Drawer (`src/ui/pty_drawer.rs`)**:
+  - Implemented interactive bottom drawer overlay (bottom 40% viewport) with Aura Mint Green borders.
+  - Bounded 1000-line output ring buffer with auto-scroll and color-coded status styling.
+  - Direct shell command execution without leaving the Ratatui TUI session.
+  - Fast keyboard shortcuts: `Ctrl+T` to toggle, `Esc` to close, `Enter` to run.
+  - Added `/terminal` slash command for terminal drawer management.
+- **Integration Test Suite**:
+  - Added `tests/integration_pty_drawer.rs` validating drawer state toggle, line wrapping, ring buffer limits, and test backend rendering.
+  - Test suite expanded to **115 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.20] — 2026-08-16
 
 ### 🌐 ARIA Web Browser & Local UI Dev Inspector

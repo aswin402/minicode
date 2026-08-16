@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-112_Passing-61ffca?style=flat-square" alt="Tests" /></a>
+  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-115_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
 
 ---
@@ -22,6 +22,7 @@
 ## ⚡ Highlights
 
 * **Dual-Mode Operation**: Seamlessly switch between an interactive full-screen **Ratatui TUI** for human developers and a machine-readable **NDJSON streaming protocol** (`--json-stream`) for AI agent orchestrators.
+* **Interactive Embedded PTY Drawer (`Ctrl+T`)**: Embedded bottom terminal pane inside Ratatui with a 1000-line bounded ring buffer to run live shell commands, watch dev servers, and test REPLs without leaving the TUI.
 * **ARIA Web Browser & Local UI Dev Inspector**: Pure-Rust accessibility tree generator and page inspector that maps interactive elements into numbered references (`@e1`, `@e2`) to test and debug local web applications (`http://localhost:3000`).
 * **Cognitive Memory Decay & Repository Knowledge Wiki**: Biological Ebbinghaus exponential memory retention math combined with a persistent Markdown repository knowledge wiki (`.minicode/wiki/`) and automated index cataloging.
 * **Sequential Thinking & Graph of Thoughts (GoT)**: Petgraph-tracked dynamic hypothesis branching, revision tracking, confidence scoring, and solution synthesis for complex architectural tasks.

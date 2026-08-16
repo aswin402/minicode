@@ -35,6 +35,7 @@ pub struct App<'a> {
     theme: Theme,
     timeline: TimelineView,
     input_dock: InputDock<'a>,
+    pty_drawer: crate::ui::PtyDrawer,
     modal: ModalState,
     model_fetcher: ModelFetcher,
     is_working: bool,
@@ -53,6 +54,7 @@ impl<'a> App<'a> {
             theme,
             timeline: TimelineView::new(),
             input_dock: InputDock::new(),
+            pty_drawer: crate::ui::PtyDrawer::new(),
             modal: ModalState::None,
             model_fetcher: ModelFetcher::new(),
             is_working: false,
@@ -210,6 +212,11 @@ impl<'a> App<'a> {
                 if self.modal.is_active() {
                     self.modal.render(frame, frame.area(), &self.theme);
                 }
+
+                // Render Embedded PTY Terminal Drawer if active
+                if self.pty_drawer.is_open {
+                    self.pty_drawer.render(frame, frame.area());
+                }
             })?;
 
             tokio::select! {
@@ -276,6 +283,44 @@ impl<'a> App<'a> {
                             continue;
                         }
 
+                        // Ctrl+T toggles embedded PTY terminal drawer
+                        if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                            self.pty_drawer.toggle();
+                            continue;
+                        }
+
+                        // When PTY drawer is open, route keystrokes into drawer
+                        if self.pty_drawer.is_open {
+                            match key_event.code {
+                                KeyCode::Esc => {
+                                    self.pty_drawer.is_open = false;
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(cmd) = self.pty_drawer.submit_command() {
+                                        let ws = self.workspace_root.clone();
+                                        match crate::tools::exec::exec_cmd(&ws, &cmd, Some(60)).await {
+                                            Ok(out) => {
+                                                for line in out.lines() {
+                                                    self.pty_drawer.append_output(line);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                self.pty_drawer.append_output(format!("Error: {}", e));
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    self.pty_drawer.handle_backspace();
+                                }
+                                KeyCode::Char(c) => {
+                                    self.pty_drawer.handle_char(c);
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
                         // Check for Ctrl+C or Esc to interrupt or exit
                         if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
                             if self.is_working {
@@ -313,6 +358,11 @@ impl<'a> App<'a> {
 
                             if prompt == "/exit" || prompt == "/quit" {
                                 break;
+                            }
+
+                            if prompt == "/terminal" {
+                                self.pty_drawer.toggle();
+                                continue;
                             }
 
                             if prompt == "/clear" {

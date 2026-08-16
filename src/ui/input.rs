@@ -50,6 +50,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "display detailed token usage breakdown",
     },
     SlashCommand {
+        name: "/terminal",
+        description: "toggle interactive embedded terminal drawer (Ctrl+T)",
+    },
+    SlashCommand {
         name: "/clear",
         description: "clear conversation timeline",
     },
