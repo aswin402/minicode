@@ -4,6 +4,7 @@ mod config;
 mod constants;
 mod context;
 mod error;
+pub mod git;
 mod logging;
 mod mcp;
 mod sandbox;

@@ -250,3 +250,86 @@
 - [x] **M11 (Medium)**: Dynamic provider and model display in Aura TUI status bar in `src/ui/status.rs` and `src/app.rs`.
 - [x] **Constants Extraction**: Added `SSRF_BLOCKED_HOSTS`, `INDEX_CACHE_MAX_ENTRIES`, and `PROCESS_KILL_GRACE_PERIOD_MS` to `src/constants.rs`.
 - [x] **Verification**: **63/63 unit tests passing, zero clippy warnings, clean formatting**
+
+---
+
+## ✅ Phase 3: CI/CD Pipeline (v0.0.12 COMPLETED)
+
+- [x] Create `.github/workflows/ci.yml` (lint, test-linux, test-macos matrix)
+- [x] Add CI status badge to `README.md`
+- [x] Add `tempfile` to `[dev-dependencies]` for testing
+
+---
+
+## ✅ Phase 3: Hardened Git Service Engine (v0.0.12 COMPLETED)
+
+### Step 1: Git Service & Subprocess Hardening (`src/git/service.rs`)
+- [x] Create `src/git/mod.rs` with `pub mod service; pub mod commit; pub mod diff_filter;`
+- [x] Implement `GitService` with mandatory env vars (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `LC_ALL=C`, `--no-pager`)
+- [x] Implement `GitCommitService` (commit, commit_files, undo_last_commit, create_branch, checkout_branch, merge conflict detection)
+- [x] Implement `DiffFilter` (lockfile summarization for `Cargo.lock`, `package-lock.json`, etc.)
+- [x] Add `GitError` variants to `src/error.rs`
+- [x] Add git constants (`GIT_COMMIT_MSG_MAX_LEN`, `GIT_DIFF_MAX_BYTES`, `GIT_LOG_DEFAULT_COUNT`, `GIT_TIMEOUT_SECS`) to `src/constants.rs`
+- [x] Write 10 unit tests using temp git repos (all passing)
+- [x] `cargo test && cargo clippy -- -D warnings`
+
+### Step 2: Autonomous Git Agent Tools (`src/tools/mod.rs`)
+- [x] Register `git_status` tool schema (branch, clean/dirty, staged/unstaged/untracked)
+- [x] Register `git_diff` tool schema (with smart lockfile filtering)
+- [x] Register `git_commit` tool schema (commit message, optional path filter)
+- [x] Register `git_log` tool schema (recent commit history)
+- [x] Register `git_conflicts` tool schema (detect and extract conflict markers)
+- [x] Register `create_pr` tool schema (auto-probes `gh` binary for PR creation)
+- [x] Wire tool dispatchers in `ToolRegistry::dispatch_tool()`
+- [x] Invalidate git branch status cache after commit
+- [x] Update tool schema count in unit tests (23 tools)
+- [x] `cargo test && cargo clippy -- -D warnings` (73 tests passing)
+
+---
+
+## ✅ Phase 3: Autonomous Commit Loop & Rollback (v0.0.13 COMPLETED)
+
+### Step 1: Auto-Commit in Agent Loop
+- [x] Add `GitConfig` struct to `src/config.rs` (auto_commit, dirty_commit, ai_commit_messages)
+- [x] Wire git config section in TOML parsing and `merge_raw`
+- [x] Add `AgentEvent::GitCommit` variant to `src/agent/types.rs`
+- [x] Integrate post-turn auto-commit in `execute_turn` when `files_modified > 0`
+- [x] Enhance `/undo` to run `git reset --soft HEAD~1` when auto-commit was active
+- [x] Write unit & integration tests for auto-commit flow
+- [x] `cargo test && cargo clippy -- -D warnings`
+
+### Step 2: Two-Tier Integration Test Framework
+- [x] Add `base_url` override parameter to provider constructors in `src/agent/provider.rs`
+- [x] Create `tests/common/mod.rs` and `tests/common/mock_provider.rs`
+- [x] Implement `MockProvider` with scripted responses and `Provider` trait impl
+- [x] Write `tests/integration_agent_loop.rs` (read-edit-commit turn, tool errors, max iterations, cancellation)
+- [x] Write `tests/integration_git_tools.rs` (status, diff, commit, auto-commit, undo rollback)
+- [x] Verify all integration tests pass with `cargo test --test '*'`
+- [x] `cargo test && cargo clippy -- -D warnings`
+
+---
+
+## ✅ Phase 3: UI Session Controls & Codebase View (v0.0.14 COMPLETED)
+
+- [x] Register `/retry`, `/save`, `/load`, `/map`, `/compact`, `/tokens` in `SLASH_COMMANDS`
+- [x] Implement `/retry` — re-send last user prompt to agent actor
+- [x] Implement `/save <file>` — export session history to Markdown
+- [x] Implement `/load <id>` — hydrate timeline from stored session
+- [x] Implement `/map` — render AST PageRank repo map in timeline
+- [x] Implement `/compact` — trigger manual context compression
+- [x] Implement `/tokens` — show context token breakdown card
+- [x] `cargo test && cargo clippy -- -D warnings`
+
+---
+
+## ✅ Phase 3: Multi-Agent Worktree Orchestration (v0.0.15 COMPLETED)
+
+- [x] Create `src/git/worktree.rs` (`git worktree add .minicode/worktrees/<id> -b subagent/<id>`, cleanup, merge)
+- [x] Create `src/agent/subagent.rs` (SubAgent struct, spawn, NDJSON stdio streaming, cancel)
+- [x] Create `src/agent/orchestrator.rs` (spawn, wait_all, abort, list)
+- [x] Register `delegate_task` tool schema in `src/tools/mod.rs` (24 built-in agent tools total)
+- [x] Wire `delegate_task` dispatcher with isolated worktree execution
+- [x] Write integration test for parallel worktree subagents (`tests/integration_subagents.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (80 tests passing, 0 clippy warnings)
+
+

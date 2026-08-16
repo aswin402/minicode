@@ -35,6 +35,10 @@ impl AgentLoop {
 
         let mcp_client = McpClientManager::new();
 
+        // Ensure internal .minicode directories are ignored by git
+        let git_service = crate::git::GitService::new(workspace_root.to_path_buf());
+        git_service.ensure_git_exclude();
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -427,6 +431,44 @@ impl AgentLoop {
         }
 
         let turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
+
+        // Autonomous Git Auto-Commit if files were modified during this turn
+        if !turn_files_modified.is_empty() && self.config.git.auto_commit {
+            let git = crate::git::GitService::new(self.workspace_root.clone());
+            if git.is_git_repo().await {
+                let commit_svc = crate::git::GitCommitService::new(&git);
+                let commit_msg = crate::git::GitCommitService::generate_conventional_message(
+                    &turn_files_modified,
+                    Some(user_prompt),
+                );
+                match commit_svc
+                    .commit(&commit_msg, Some(&turn_files_modified))
+                    .await
+                {
+                    Ok(hash) => {
+                        let git_event = AgentEvent::GitCommit {
+                            turn_id,
+                            hash,
+                            message: commit_msg,
+                            files: turn_files_modified.clone(),
+                        };
+                        if let Err(e) = self
+                            .session_store
+                            .append_event(&self.session_id, &git_event)
+                        {
+                            tracing::warn!("Failed to persist GitCommit event: {}", e);
+                        }
+                        if let Err(e) = event_sender.send(git_event) {
+                            tracing::debug!(error = %e, "Failed to send git commit event");
+                        }
+                        crate::ui::status::StatusWidgets::invalidate_git_cache();
+                    }
+                    Err(e) => {
+                        tracing::warn!("Auto-commit skipped: {}", e);
+                    }
+                }
+            }
+        }
 
         let end_event = AgentEvent::TurnEnd {
             turn_id,

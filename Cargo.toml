@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -86,3 +86,6 @@ uuid = { version = "1.10", features = ["v4"] }
 [features]
 default = []
 browser = ["dep:chromiumoxide"]
+
+[dev-dependencies]
+tempfile = "3.12"

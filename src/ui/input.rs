@@ -26,6 +26,30 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "revert files modified in the previous turn",
     },
     SlashCommand {
+        name: "/retry",
+        description: "re-submit the last prompt to the agent",
+    },
+    SlashCommand {
+        name: "/save",
+        description: "export conversation history to a file",
+    },
+    SlashCommand {
+        name: "/load",
+        description: "load and display past session history",
+    },
+    SlashCommand {
+        name: "/map",
+        description: "render AST PageRank repository map",
+    },
+    SlashCommand {
+        name: "/compact",
+        description: "manually compact conversation context tokens",
+    },
+    SlashCommand {
+        name: "/tokens",
+        description: "display detailed token usage breakdown",
+    },
+    SlashCommand {
         name: "/clear",
         description: "clear conversation timeline",
     },
@@ -42,6 +66,12 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
 pub struct InputDock<'a> {
     pub textarea: TextArea<'a>,
     pub slash_selected_index: usize,
+}
+
+impl<'a> Default for InputDock<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<'a> InputDock<'a> {

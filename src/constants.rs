@@ -352,3 +352,24 @@ pub const SSRF_BLOCKED_HOSTS: &[&str] = &[
 pub const INDEX_CACHE_MAX_ENTRIES: usize = 1000;
 /// Grace period in milliseconds before escalating SIGTERM to SIGKILL for child processes
 pub const PROCESS_KILL_GRACE_PERIOD_MS: u64 = 500;
+
+// === Git Operations & Diff Limits ===
+/// Maximum recommended length for Git commit summary line
+pub const GIT_COMMIT_MSG_MAX_LEN: usize = 72;
+/// Maximum bytes of Git diff output to include in LLM context
+pub const GIT_DIFF_MAX_BYTES: usize = 50_000;
+/// Default number of commits to return in git_log
+pub const GIT_LOG_DEFAULT_COUNT: usize = 10;
+/// Default timeout in seconds for Git subprocess operations
+pub const GIT_TIMEOUT_SECS: u64 = 30;
+/// Common lockfiles and generated assets to condense in git diffs
+pub const GIT_LOCKFILES: &[&str] = &[
+    "Cargo.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "composer.lock",
+    "Gemfile.lock",
+    "poetry.lock",
+    "bun.lockb",
+];

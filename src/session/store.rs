@@ -18,6 +18,12 @@ pub struct SessionStore {
     sessions_dir: PathBuf,
 }
 
+impl Default for SessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionStore {
     pub fn new() -> Self {
         let sessions_dir = if let Some(config_dir) = dirs::config_dir() {

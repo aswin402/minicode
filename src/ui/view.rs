@@ -46,6 +46,12 @@ pub struct TimelineContext<'a> {
     pub model: &'a str,
 }
 
+impl Default for TimelineView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimelineView {
     pub fn new() -> Self {
         Self {

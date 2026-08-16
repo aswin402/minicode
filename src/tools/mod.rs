@@ -313,6 +313,116 @@ impl ToolRegistry {
                     }
                 }),
             },
+            ToolSchema {
+                name: "git_status".to_string(),
+                description: "Get the current git working tree status (branch, clean/dirty state, staged, unstaged, untracked, and conflicted files).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolSchema {
+                name: "git_diff".to_string(),
+                description: "Get the git diff of uncommitted changes with automatic lockfile condensation and token budgeting.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "staged_only": {
+                            "type": "boolean",
+                            "description": "If true, only show staged changes"
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional list of specific file paths to diff"
+                        }
+                    }
+                }),
+            },
+            ToolSchema {
+                name: "git_commit".to_string(),
+                description: "Stage files and create a git commit with a descriptive message.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "Commit message (Conventional Commits format preferred, e.g. 'feat: ...' or 'fix: ...')"
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional specific file paths to stage and commit. If omitted, stages all changes."
+                        }
+                    },
+                    "required": ["message"]
+                }),
+            },
+            ToolSchema {
+                name: "git_log".to_string(),
+                description: "Show recent git commit history for the repository.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "count": {
+                            "type": "integer",
+                            "description": "Number of commits to return (default: 10)"
+                        }
+                    }
+                }),
+            },
+            ToolSchema {
+                name: "git_conflicts".to_string(),
+                description: "Detect and extract merge conflict markers from repository files.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolSchema {
+                name: "create_pr".to_string(),
+                description: "Create a GitHub pull request using the system's gh CLI with title, description, and base branch.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Pull request title"
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Markdown formatted description of the pull request changes"
+                        },
+                        "draft": {
+                            "type": "boolean",
+                            "description": "If true, creates the pull request as a draft"
+                        }
+                    },
+                    "required": ["title", "body"]
+                }),
+            },
+            ToolSchema {
+                name: "delegate_task".to_string(),
+                description: "Delegate a subtask to an autonomous child AI agent in an isolated Git Worktree. Use for parallel research, refactoring, or independent tasks without corrupting current workspace files.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Clear and detailed task instructions for the subagent"
+                        },
+                        "isolate_branch": {
+                            "type": "boolean",
+                            "description": "If true (default), creates a dedicated Git Worktree branch for isolation"
+                        },
+                        "timeout_secs": {
+                            "type": "integer",
+                            "description": "Maximum seconds to wait for subagent to complete (default: 120)"
+                        }
+                    },
+                    "required": ["task"]
+                }),
+            },
         ]
     }
 
@@ -674,6 +784,174 @@ impl ToolRegistry {
                 graph.build_graph(workspace_root)?;
                 Ok(graph.format_repomap(workspace_root, &[], max_tokens))
             }
+            "git_status" => {
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let status = git.get_status().await?;
+                let mut out = format!(
+                    "Branch: {}\nStatus: {}\n",
+                    status.branch,
+                    if status.is_clean { "Clean" } else { "Dirty" }
+                );
+                if !status.staged.is_empty() {
+                    out.push_str(&format!(
+                        "Staged ({}):\n  • {}\n",
+                        status.staged.len(),
+                        status.staged.join("\n  • ")
+                    ));
+                }
+                if !status.unstaged.is_empty() {
+                    out.push_str(&format!(
+                        "Unstaged ({}):\n  • {}\n",
+                        status.unstaged.len(),
+                        status.unstaged.join("\n  • ")
+                    ));
+                }
+                if !status.untracked.is_empty() {
+                    out.push_str(&format!(
+                        "Untracked ({}):\n  • {}\n",
+                        status.untracked.len(),
+                        status.untracked.join("\n  • ")
+                    ));
+                }
+                if !status.conflicted.is_empty() {
+                    out.push_str(&format!(
+                        "Conflicted ({}):\n  • {}\n",
+                        status.conflicted.len(),
+                        status.conflicted.join("\n  • ")
+                    ));
+                }
+                Ok(out)
+            }
+            "git_diff" => {
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let staged_only = args
+                    .get("staged_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let paths: Option<Vec<String>> =
+                    args.get("paths").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
+                            .collect()
+                    });
+                let diff_output = git.diff(staged_only, paths.as_deref()).await?;
+                if diff_output.trim().is_empty() {
+                    Ok("ℹ No changes detected".to_string())
+                } else {
+                    Ok(diff_output)
+                }
+            }
+            "git_commit" => {
+                let message = args
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "git_commit".to_string(),
+                        reason: "Missing required argument 'message'".to_string(),
+                    })?;
+                let paths: Option<Vec<String>> =
+                    args.get("paths").and_then(|v| v.as_array()).map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
+                            .collect()
+                    });
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let commit_svc = crate::git::GitCommitService::new(&git);
+                let commit_hash = commit_svc.commit(message, paths.as_deref()).await?;
+                crate::ui::status::StatusWidgets::invalidate_git_cache();
+                Ok(format!(
+                    "✔ Created commit {} with message: \"{}\"",
+                    commit_hash, message
+                ))
+            }
+            "git_log" => {
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let count = parse_u64_param(args.get("count"))
+                    .unwrap_or(crate::constants::GIT_LOG_DEFAULT_COUNT as u64)
+                    as usize;
+                let log = git.log(count).await?;
+                if log.trim().is_empty() {
+                    Ok("ℹ No commit history found".to_string())
+                } else {
+                    Ok(log)
+                }
+            }
+            "git_conflicts" => {
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let conflicts = git.find_conflicts().await?;
+                if conflicts.is_empty() {
+                    Ok("✔ No merge conflicts detected in workspace".to_string())
+                } else {
+                    let mut out = format!("⚠ Found {} conflicted file(s):\n", conflicts.len());
+                    for c in conflicts {
+                        out.push_str(&format!(
+                            "\nFile: {} ({} conflict marker(s))\nSnippet:\n{}\n",
+                            c.path, c.conflict_markers_count, c.snippet
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
+            "create_pr" => {
+                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "create_pr".to_string(),
+                        reason: "Missing required argument 'title'".to_string(),
+                    }
+                })?;
+                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "create_pr".to_string(),
+                        reason: "Missing required argument 'body'".to_string(),
+                    }
+                })?;
+                let base = args.get("base").and_then(|v| v.as_str());
+                let draft = args.get("draft").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let git = crate::git::GitService::new(workspace_root.to_path_buf());
+                if !git.is_git_repo().await {
+                    return Ok("ℹ Workspace is not a git repository".to_string());
+                }
+                let pr_url = git.create_pull_request(title, body, base, draft).await?;
+                Ok(format!("✔ Created Pull Request: {}", pr_url))
+            }
+            "delegate_task" => {
+                let task = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "delegate_task".to_string(),
+                        reason: "Missing required argument 'task'".to_string(),
+                    }
+                })?;
+                let isolate = args
+                    .get("isolate_branch")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let timeout_secs = parse_u64_param(args.get("timeout_secs"));
+
+                let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate(
+                    workspace_root,
+                    task,
+                    isolate,
+                    timeout_secs,
+                )
+                .await?;
+                Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -689,7 +967,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 17);
+        assert_eq!(schemas.len(), 24);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -708,6 +986,13 @@ mod tests {
         assert!(names.contains(&"impact_analysis"));
         assert!(names.contains(&"locate_symbol"));
         assert!(names.contains(&"repo_map"));
+        assert!(names.contains(&"git_status"));
+        assert!(names.contains(&"git_diff"));
+        assert!(names.contains(&"git_commit"));
+        assert!(names.contains(&"git_log"));
+        assert!(names.contains(&"git_conflicts"));
+        assert!(names.contains(&"create_pr"));
+        assert!(names.contains(&"delegate_task"));
     }
 
     #[test]

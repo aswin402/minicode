@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check-and-lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+        
+      - name: Cargo Check
+        run: cargo check --all-targets --all-features --locked
+        
+      - name: Clippy Lints
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test-linux:
+    name: Test Suite (Ubuntu)
+    needs: check-and-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+          
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Run Tests
+        run: cargo test --all-targets --all-features --locked --verbose
+
+  test-macos:
+    name: Test Suite (macOS)
+    needs: check-and-lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+          
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Run Tests
+        run: cargo test --all-targets --all-features --locked --verbose

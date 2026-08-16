@@ -33,6 +33,12 @@ pub struct RepoMapExtractor {
     cache: HashMap<PathBuf, FileAst>,
 }
 
+impl Default for RepoMapExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RepoMapExtractor {
     pub fn new() -> Self {
         Self {

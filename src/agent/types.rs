@@ -156,6 +156,14 @@ pub enum AgentEvent {
         backup: String,
     },
 
+    #[serde(rename = "git_commit")]
+    GitCommit {
+        turn_id: usize,
+        hash: String,
+        message: String,
+        files: Vec<String>,
+    },
+
     #[serde(rename = "turn_end")]
     TurnEnd {
         turn_id: usize,

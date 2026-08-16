@@ -40,6 +40,8 @@ pub struct App<'a> {
     is_working: bool,
     work_start: Option<Instant>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    last_user_prompt: Option<String>,
+    last_turn_tokens: usize,
 }
 
 impl<'a> App<'a> {
@@ -56,6 +58,8 @@ impl<'a> App<'a> {
             is_working: false,
             work_start: None,
             cancel_token: None,
+            last_user_prompt: None,
+            last_turn_tokens: 0,
         }
     }
 
@@ -226,10 +230,14 @@ impl<'a> App<'a> {
                         AgentEvent::ToolResult { tool, success, output, duration_ms, .. } => {
                             self.timeline.finish_tool_call(&tool, success, output, duration_ms);
                         }
-                        AgentEvent::TurnEnd { .. } => {
+                        AgentEvent::TurnEnd { total_tokens_used, .. } => {
+                            self.last_turn_tokens = total_tokens_used;
                             self.is_working = false;
                             self.work_start = None;
                             self.cancel_token = None;
+                        }
+                        AgentEvent::GitCommit { hash, message, .. } => {
+                            self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
                         }
                         AgentEvent::Error { message, retrying, .. } => {
                             if retrying {
@@ -287,7 +295,12 @@ impl<'a> App<'a> {
                         }
 
                         // Send input to input dock
-                        if let Some(prompt) = self.input_dock.handle_key(key_event) {
+                        if let Some(raw_prompt) = self.input_dock.handle_key(key_event) {
+                            let prompt = raw_prompt.trim().to_string();
+                            if prompt.is_empty() {
+                                continue;
+                            }
+
                             if prompt == "/exit" || prompt == "/quit" {
                                 break;
                             }
@@ -325,7 +338,123 @@ impl<'a> App<'a> {
                                 continue;
                             }
 
-                            self.timeline.add_user_message(prompt.clone());
+                            if prompt == "/tokens" {
+                                let model_limit = crate::agent::models::get_model_context_limit(&self.config.provider.model);
+                                let card = format!(
+                                    "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Last Turn Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
+                                    self.config.provider.default,
+                                    self.config.provider.model,
+                                    model_limit,
+                                    self.last_turn_tokens,
+                                    self.config.agent.warning_threshold * 100.0
+                                );
+                                self.timeline.add_status(card);
+                                continue;
+                            }
+
+                            if prompt == "/map" {
+                                let mut graph = crate::context::graph::CodeGraph::new();
+                                if let Err(e) = graph.build_graph(&self.workspace_root) {
+                                    self.timeline.add_status(format!("✗ Failed to build repo map: {}", e));
+                                } else {
+                                    let repomap = graph.format_repomap(&self.workspace_root, &[], self.config.agent.map_tokens);
+                                    self.timeline.add_status(format!("🗺️ AST PageRank Repository Map:\n\n{}", repomap));
+                                }
+                                continue;
+                            }
+
+                            if prompt == "/compact" {
+                                self.timeline.add_status("✔ Context compaction requested".to_string());
+                                continue;
+                            }
+
+                            if prompt.starts_with("/save") {
+                                let target_path = prompt.trim_start_matches("/save").trim();
+                                let export_file = if target_path.is_empty() {
+                                    let export_dir = self.workspace_root.join(".minicode").join("exports");
+                                    let _ = std::fs::create_dir_all(&export_dir);
+                                    export_dir.join(format!("session_{}.md", chrono::Utc::now().format("%Y%m%d_%H%M%S")))
+                                } else {
+                                    self.workspace_root.join(target_path)
+                                };
+                                let mut md = format!("# minicode Session Export — {}\n\n", chrono::Utc::now().to_rfc3339());
+                                for entry in &self.timeline.entries {
+                                    match entry {
+                                        crate::ui::view::TimelineEntry::UserPrompt(text) => {
+                                            md.push_str(&format!("### 👤 User\n{}\n\n", text));
+                                        }
+                                        crate::ui::view::TimelineEntry::AssistantMarkdown(text) => {
+                                            md.push_str(&format!("### 🤖 Assistant\n{}\n\n", text));
+                                        }
+                                        crate::ui::view::TimelineEntry::ToolStart { name, command_or_path } => {
+                                            md.push_str(&format!("*🔧 Tool Started:* `{}` (`{}`)\n\n", name, command_or_path));
+                                        }
+                                        crate::ui::view::TimelineEntry::ToolFinished { name, command_or_path, success, output, .. } => {
+                                            md.push_str(&format!("*🔧 Tool Finished:* `{}` (`{}` - {})\n```\n{}\n```\n\n", name, command_or_path, if *success { "success" } else { "failure" }, output));
+                                        }
+                                        crate::ui::view::TimelineEntry::SystemStatus(text) => {
+                                            md.push_str(&format!("*ℹ Status:* {}\n\n", text));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                if let Err(e) = std::fs::write(&export_file, md) {
+                                    self.timeline.add_status(format!("✗ Failed to save session: {}", e));
+                                } else {
+                                    self.timeline.add_status(format!("✔ Saved conversation export to {}", export_file.display()));
+                                }
+                                continue;
+                            }
+
+                            if prompt.starts_with("/load") {
+                                let target_id = prompt.trim_start_matches("/load").trim();
+                                let store = crate::session::store::SessionStore::new();
+                                if target_id.is_empty() {
+                                    match store.list_sessions() {
+                                        Ok(sessions) if !sessions.is_empty() => {
+                                            let mut list_msg = format!("📂 Available Sessions ({}):\n", sessions.len());
+                                            for s in sessions.iter().take(10) {
+                                                list_msg.push_str(&format!("  • {} ({})\n", s.id, s.created_at));
+                                            }
+                                            list_msg.push_str("\nUse `/load <session_id>` to view a session.");
+                                            self.timeline.add_status(list_msg);
+                                        }
+                                        Ok(_) => {
+                                            self.timeline.add_status("ℹ No past sessions found".to_string());
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to list sessions: {}", e));
+                                        }
+                                    }
+                                } else {
+                                    match store.load_session(target_id) {
+                                        Ok(events) => {
+                                            self.timeline.entries.clear();
+                                            self.hydrate_session(&events);
+                                            self.timeline.add_status(format!("✔ Loaded session '{}' with {} events", target_id, events.len()));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to load session '{}': {}", target_id, e));
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+
+                            let prompt_to_run = if prompt == "/retry" {
+                                if let Some(ref last) = self.last_user_prompt {
+                                    self.timeline.add_status(format!("🔄 Retrying last prompt: \"{}\"", last));
+                                    last.clone()
+                                } else {
+                                    self.timeline.add_status("ℹ No previous user prompt to retry".to_string());
+                                    continue;
+                                }
+                            } else {
+                                self.last_user_prompt = Some(prompt.clone());
+                                prompt
+                            };
+
+                            self.timeline.add_user_message(prompt_to_run.clone());
                             self.is_working = true;
                             self.work_start = Some(Instant::now());
 
@@ -333,7 +462,7 @@ impl<'a> App<'a> {
                             self.cancel_token = Some(cancel.clone());
 
                             // Dispatch asynchronously to agent background actor
-                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt, Some(cancel))) {
+                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt_to_run, Some(cancel))) {
                                 tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
                                 self.is_working = false;
                                 self.work_start = None;

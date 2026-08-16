@@ -18,6 +18,9 @@ pub struct Config {
 
     #[serde(default)]
     pub mcp: McpConfig,
+
+    #[serde(default)]
+    pub git: GitConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -248,6 +251,28 @@ pub enum McpTransport {
     Http,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GitConfig {
+    #[serde(default = "default_true")]
+    pub auto_commit: bool,
+
+    #[serde(default)]
+    pub dirty_commit: bool,
+
+    #[serde(default = "default_true")]
+    pub ai_commit_messages: bool,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            auto_commit: true,
+            dirty_commit: false,
+            ai_commit_messages: true,
+        }
+    }
+}
+
 fn default_mcp_transport() -> McpTransport {
     McpTransport::Stdio
 }
@@ -262,6 +287,13 @@ struct McpJsonFile {
     pub mcp_servers: std::collections::HashMap<String, McpServerConfig>,
     #[serde(default)]
     pub servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawGitConfig {
+    pub auto_commit: Option<bool>,
+    pub dirty_commit: Option<bool>,
+    pub ai_commit_messages: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -307,6 +339,8 @@ pub struct RawConfig {
     pub logging: RawLoggingConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub git: RawGitConfig,
 }
 
 impl Config {
@@ -478,6 +512,15 @@ impl Config {
         }
         if let Some(file) = other.logging.file {
             self.logging.file = file;
+        }
+        if let Some(auto_commit) = other.git.auto_commit {
+            self.git.auto_commit = auto_commit;
+        }
+        if let Some(dirty_commit) = other.git.dirty_commit {
+            self.git.dirty_commit = dirty_commit;
+        }
+        if let Some(ai_commit_messages) = other.git.ai_commit_messages {
+            self.git.ai_commit_messages = ai_commit_messages;
         }
         for (name, srv) in other.mcp.servers {
             self.mcp.servers.insert(name, srv);
@@ -656,5 +699,24 @@ mod tests {
         let raw: RawConfig = toml::from_str(override_toml).unwrap();
         config.merge_raw(raw);
         assert_eq!(config.provider.ollama.host, "http://192.168.1.100:11434");
+    }
+
+    #[test]
+    fn test_config_merges_git_from_toml() {
+        let mut config = Config::default();
+        assert_eq!(config.git.auto_commit, true);
+        assert_eq!(config.git.dirty_commit, false);
+
+        let override_toml = r#"
+            [git]
+            auto_commit = false
+            dirty_commit = true
+            ai_commit_messages = false
+        "#;
+        let raw: RawConfig = toml::from_str(override_toml).unwrap();
+        config.merge_raw(raw);
+        assert_eq!(config.git.auto_commit, false);
+        assert_eq!(config.git.dirty_commit, true);
+        assert_eq!(config.git.ai_commit_messages, false);
     }
 }

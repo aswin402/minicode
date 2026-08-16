@@ -30,6 +30,12 @@ pub struct CodeGraph {
     extractor: RepoMapExtractor,
 }
 
+impl Default for CodeGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodeGraph {
     pub fn new() -> Self {
         Self {

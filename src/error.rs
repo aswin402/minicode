@@ -24,6 +24,9 @@ pub enum MinicodeError {
     #[error("MCP Protocol error: {0}")]
     Mcp(#[from] McpError),
 
+    #[error("Git operation error: {0}")]
+    Git(#[from] GitError),
+
     #[error("Channel communication error: {0}")]
     Channel(String),
 
@@ -204,6 +207,32 @@ pub enum McpError {
 
     #[error("MCP protocol error: {0}")]
     Protocol(String),
+}
+
+#[derive(Error, Debug)]
+pub enum GitError {
+    #[error("Not a git repository: {path}")]
+    NotARepo { path: String },
+
+    #[error("Git command '{cmd}' failed (exit code {code:?}):\n{stderr}")]
+    CommandFailed {
+        cmd: String,
+        code: Option<i32>,
+        stderr: String,
+    },
+
+    #[error("Git operation timed out after {timeout_secs}s")]
+    Timeout { timeout_secs: u64 },
+
+    #[allow(dead_code)]
+    #[error("Git branch '{name}' already exists")]
+    BranchAlreadyExists { name: String },
+
+    #[error("No commits found in git repository")]
+    NoCommits,
+
+    #[error("GitHub CLI ('gh') is not installed or not in PATH. Please install gh to use pull request features.")]
+    GhCliNotFound,
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for MinicodeError {

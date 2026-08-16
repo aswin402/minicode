@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.12] — 2026-08-16
+
+### 🚀 Autonomous Git Engine & Worktree Orchestration
+- **Autonomous Git Service Engine (`src/git/service.rs`, `src/git/commit.rs`, `src/git/diff_filter.rs`, `src/git/worktree.rs`)**:
+  - Implemented hardened Git engine using isolated async subprocesses (`tokio::process::Command`) with mandatory flags: `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `LC_ALL=C`, and `--no-pager`.
+  - Added token-budgeted `DiffFilter` that automatically collapses multi-thousand line lockfiles (`Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, etc.) and enforces strict byte budgets (`GIT_DIFF_MAX_BYTES`).
+  - Added 6 autonomous agent git tools: `git_status`, `git_diff`, `git_commit`, `git_log`, `git_conflicts`, and `create_pr` (24 built-in agent tools total).
+  - Implemented `WorktreeManager` supporting isolated parallel subagent branches (`subagent/<id>`) and zero-conflict branch merging.
+
+### 🤖 Autonomous Post-Turn Auto-Commit & Reversible Rollbacks
+- **Autonomous Auto-Commit Loop (`src/agent/loop.rs`, `src/config.rs`)**:
+  - Automatically commits modified files after successful agent turns using generated Conventional Commits messages (`feat: ...`, `fix: ...`, `docs: ...`).
+  - Configurable in `config.toml` (`[git] auto_commit = true, dirty_commit = false, ai_commit_messages = true`).
+  - Synchronized `/undo` rollback to execute `git reset --soft HEAD~1` alongside filesystem checkpoint restoration.
+
+### 🧪 Comprehensive Integration Test Suite & CI/CD Pipeline
+- **GitHub Actions CI (`.github/workflows/ci.yml`)**:
+  - Full CI pipeline validating code formatting (`cargo fmt --check`), strict clippy lints (`cargo clippy -- -D warnings`), and cross-platform tests across Linux (`Ubuntu`) and macOS (`macOS`).
+- **Two-Tier Integration Test Framework (`tests/`)**:
+  - Created `src/lib.rs` and `tests/common/mock_provider.rs` for deterministic multi-turn simulation without network overhead.
+  - Added `tests/integration_agent_loop.rs` verifying multi-turn read-and-patch turns and user cancellation.
+  - Added `tests/integration_git_tools.rs` verifying autonomous git tools, auto-commits, and undo rollbacks.
+  - Added `tests/integration_subagents.rs` verifying parallel worktrees and branch merging.
+  - **80/80 tests passing 100% green**.
+
+### 🖥️ Session Controls & Codebase Observability
+- **Extended Slash Commands (`src/ui/input.rs`, `src/app.rs`)**:
+  - `/retry`: Re-submits the last prompt to the agent loop.
+  - `/save [path]`: Exports the current session timeline to formatted Markdown.
+  - `/load [id]`: Hydrates timeline from past session stores.
+  - `/map`: Renders the AST PageRank repository map directly in the timeline.
+  - `/compact`: Triggers context token compaction.
+  - `/tokens`: Displays detailed token breakdown and context window metrics.
+
+---
+
 ## [0.0.11] — 2026-08-16
 
 ### 🚀 Critical Fixes & Resilience Upgrades

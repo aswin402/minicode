@@ -13,6 +13,24 @@ pub struct ModelInfo {
     pub is_free: bool,
 }
 
+/// Returns estimated max context window length in tokens for common models.
+pub fn get_model_context_limit(model: &str) -> usize {
+    let lower = model.to_lowercase();
+    if lower.contains("gemini-2") || lower.contains("gemini-1.5") {
+        1_000_000
+    } else if lower.contains("claude-3-7") || lower.contains("claude-3-5") {
+        200_000
+    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") {
+        128_000
+    } else if lower.contains("deepseek") || lower.contains("qwen") {
+        64_000
+    } else if lower.contains("llama-3") {
+        128_000
+    } else {
+        32_000
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ModelsCache {
     providers: HashMap<String, Vec<ModelInfo>>,
@@ -22,6 +40,12 @@ struct ModelsCache {
 pub struct ModelFetcher {
     client: reqwest::Client,
     cache_path: PathBuf,
+}
+
+impl Default for ModelFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ModelFetcher {

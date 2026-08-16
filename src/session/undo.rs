@@ -78,6 +78,17 @@ pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
         if let Err(e) = backup_manager.remove_turn_backup(turn_id) {
             tracing::warn!(turn = turn_id, error = %e, "Failed to remove turn backup directory after rollback");
         }
+
+        // If repository has a git commit from this turn, gently soft-reset it
+        let _ = std::process::Command::new("git")
+            .arg("--no-pager")
+            .args(["reset", "--soft", "HEAD~1"])
+            .current_dir(workspace_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_PAGER", "cat")
+            .env("LC_ALL", "C")
+            .output();
+
         let mut restored = 0;
         let mut deleted = 0;
         for f in &files {
@@ -87,6 +98,7 @@ pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
                 restored += 1;
             }
         }
+        crate::ui::status::StatusWidgets::invalidate_git_cache();
         Ok(UndoResult {
             turn_id,
             restored_count: restored,
