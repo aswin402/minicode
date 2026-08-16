@@ -562,6 +562,52 @@ impl ToolRegistry {
                     "properties": {}
                 }),
             },
+            ToolSchema {
+                name: "sequential_thinking".to_string(),
+                description: "Execute a dynamic Graph of Thoughts (GoT) reasoning step to branch hypotheses, score confidence, revise earlier conclusions, and synthesize complex solutions.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "thought_number": {
+                            "type": "integer",
+                            "description": "Current thought number in the sequence (1-indexed)"
+                        },
+                        "total_thoughts": {
+                            "type": "integer",
+                            "description": "Estimated total thoughts required (adaptive)"
+                        },
+                        "thought": {
+                            "type": "string",
+                            "description": "The reasoning content, hypothesis analysis, or evaluation"
+                        },
+                        "is_revision": {
+                            "type": "boolean",
+                            "description": "Whether this thought revises a prior thought"
+                        },
+                        "revises_thought": {
+                            "type": "integer",
+                            "description": "The thought number being revised if is_revision is true"
+                        },
+                        "branch_from_thought": {
+                            "type": "integer",
+                            "description": "The thought number to branch off from if exploring an alternative hypothesis"
+                        },
+                        "branch_id": {
+                            "type": "string",
+                            "description": "Identifier name for this reasoning branch (e.g. 'hypothesis_a')"
+                        },
+                        "needs_more_thoughts": {
+                            "type": "boolean",
+                            "description": "Whether more thinking steps are needed before reaching a conclusion"
+                        },
+                        "score": {
+                            "type": "number",
+                            "description": "Optional confidence score between 0.0 and 1.0"
+                        }
+                    },
+                    "required": ["thought_number", "total_thoughts", "thought", "needs_more_thoughts"]
+                }),
+            },
         ]
     }
 
@@ -1325,6 +1371,18 @@ impl ToolRegistry {
                 }
                 Ok(out)
             }
+            "sequential_thinking" => {
+                let thought_node: crate::agent::sequential_thinking::ThoughtNode =
+                    serde_json::from_value(args.clone()).map_err(|e| {
+                        ToolError::InvalidArguments {
+                            name: "sequential_thinking".to_string(),
+                            reason: format!("Invalid thought node parameters: {}", e),
+                        }
+                    })?;
+                let output =
+                    crate::agent::sequential_thinking::ThinkingSession::step(thought_node)?;
+                Ok(output)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1340,7 +1398,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 32);
+        assert_eq!(schemas.len(), 33);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -1349,6 +1407,7 @@ mod tests {
         assert!(names.contains(&"get_next_task"));
         assert!(names.contains(&"complete_task"));
         assert!(names.contains(&"critic_review"));
+        assert!(names.contains(&"sequential_thinking"));
         assert!(names.contains(&"lsp_goto_definition"));
         assert!(names.contains(&"lsp_find_references"));
         assert!(names.contains(&"search_web"));

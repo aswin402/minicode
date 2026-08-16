@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-101_Passing-61ffca?style=flat-square" alt="Tests" /></a>
+  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-104_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
 
 ---
@@ -22,6 +22,7 @@
 ## ⚡ Highlights
 
 * **Dual-Mode Operation**: Seamlessly switch between an interactive full-screen **Ratatui TUI** for human developers and a machine-readable **NDJSON streaming protocol** (`--json-stream`) for AI agent orchestrators.
+* **Sequential Thinking & Graph of Thoughts (GoT)**: Petgraph-tracked dynamic hypothesis branching, revision tracking, confidence scoring, and solution synthesis for complex architectural tasks.
 * **Topological Task DAG & Actor-Critic Loop**: Petgraph-powered dependency DAG engine with topological execution sorting, complexity scoring heuristics (1–10), and automated compiler/linter quality gates.
 * **Interactive Diff Inspector & Permission Modal**: Syntax-highlighted Aura Theme unified diff viewer with an interactive 4-option permission gate (`Accept`, `Reject`, `Allow Session`, `Type Custom Instructions`).
 * **Language Server Protocol & Compiler Self-Healing**: 2-Tier diagnostics (instant < 200ms CLI checks + deep semantic LSP via `rust-analyzer`, `pyright`, `tsc`, and `gopls`) that automatically inspects and heals compiler errors after file modifications.
@@ -29,7 +30,7 @@
 * **Multi-Agent Worktree Orchestration**: Delegate tasks to isolated parallel AI subagents in dedicated Git Worktrees (`subagent/<id>`) without file lock race conditions.
 * **Aura Theme Design**: Sleek, distraction-free inline streaming timeline inspired by Dalton Menezes' [Aura Theme](https://github.com/daltonmenezes/aura-theme). Zero cluttered dashboard widgets.
 * **Universal Multi-Provider Engine**: Native support for **OpenRouter** (including free-tier models), **Google Gemini**, **OpenAI**, **DeepSeek**, **Groq**, **Together AI**, and local **Ollama/vLLM** endpoints with automatic rate-limit backoff retries.
-* **32 Built-in Agent Tools**: Specialized primitives across topological task DAGs, Actor-Critic validation, web search & scraping, file editing, LSP diagnostics & code navigation, AST repository mapping, fact memories, plan workflows, git operations, and subagent delegation.
+* **33 Built-in Agent Tools**: Specialized primitives across sequential thinking DAGs, topological task DAGs, Actor-Critic validation, web search & scraping, file editing, LSP diagnostics & code navigation, AST repository mapping, fact memories, plan workflows, git operations, and subagent delegation.
 * **AST Code Graph Engineering**: Multi-language Tree-sitter parsers (Rust, Python, JS, TS) with Petgraph dependency graphs and Personalized PageRank for precise repository mapping.
 * **OS-Level Kernel Sandbox**: Confinement powered by Linux kernel **Landlock**, workspace path canonicalization, and strict environment variable sanitization.
 * **Turn-Level Safety & Undo**: Automatic pre-mutation file snapshots with an instantaneous `/undo` rollback engine.

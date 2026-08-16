@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.18] — 2026-08-16
+
+### 🔀 Sequential Thinking & Graph of Thoughts (GoT) Reasoning
+- **Graph of Thoughts Reasoning Engine (`src/agent/sequential_thinking.rs`)**:
+  - Implemented dynamic hypothesis branching, revision tracking, and confidence scoring (`score: 0.0`–`1.0`).
+  - Tracks non-linear thinking trajectories in a directed graph using `petgraph`.
+  - Added tool: `sequential_thinking` (expanding built-in tools to **33 agent tools total**).
+  - Generates synthesized outline summaries upon convergence for complex debugging and architectural planning turns.
+- **Integration Test Suite**:
+  - Added `tests/integration_sequential_thinking.rs` validating thought node progression, hypothesis branching, and tool dispatch.
+  - Test suite expanded to **104 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.17] — 2026-08-16
 
 ### 🧠 Topological Task DAG & Actor-Critic Verification Engine

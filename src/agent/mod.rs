@@ -4,6 +4,7 @@ pub mod models;
 pub mod orchestrator;
 pub mod prompt;
 pub mod provider;
+pub mod sequential_thinking;
 pub mod subagent;
 pub mod task_dag;
 pub mod types;

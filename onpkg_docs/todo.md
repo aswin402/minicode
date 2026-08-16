@@ -388,4 +388,14 @@
 - [x] Write unit & integration tests (`tests/integration_task_dag.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (101 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 9: Sequential Thinking & Graph of Thoughts (GoT) (v0.0.18)
+
+- [x] Create `src/agent/sequential_thinking.rs` for dynamic Graph of Thoughts reasoning with petgraph DAG tracking
+- [x] Implement hypothesis branching, confidence scoring, thought revisions, and synthesized trajectory outlines
+- [x] Register `sequential_thinking` in `ToolRegistry` (expanding built-in tools to **33 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_sequential_thinking.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (104 tests passing, 0 clippy warnings)
+
 

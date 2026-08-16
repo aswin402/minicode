@@ -97,9 +97,7 @@ impl TaskDag {
     }
 
     /// Builds a petgraph `DiGraph` representation for cycle detection and topological sorting.
-    fn build_graph(
-        &self,
-    ) -> Result<GraphRepresentation> {
+    fn build_graph(&self) -> Result<GraphRepresentation> {
         let mut graph = DiGraph::new();
         let mut id_to_node = HashMap::new();
         let mut node_to_id = HashMap::new();
