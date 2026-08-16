@@ -22,6 +22,7 @@ pub enum ModalState {
         loading: bool,
     },
     Help,
+    Approval(crate::ui::approval::ApprovalModalState),
 }
 
 impl ModalState {
@@ -329,6 +330,9 @@ impl ModalState {
 
                 let p = Paragraph::new(help_text).block(block);
                 frame.render_widget(p, popup_area);
+            }
+            ModalState::Approval(approval_state) => {
+                approval_state.render(frame, area, theme);
             }
         }
     }

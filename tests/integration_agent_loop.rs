@@ -3,7 +3,6 @@ mod common;
 use common::{MockProvider, MockResponse};
 use minicode::agent::AgentLoop;
 use minicode::config::Config;
-use std::path::PathBuf;
 use tempfile::tempdir;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

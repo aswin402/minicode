@@ -239,6 +239,16 @@ impl<'a> App<'a> {
                         AgentEvent::GitCommit { hash, message, .. } => {
                             self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
                         }
+                        AgentEvent::ApprovalRequest { turn_id, tool_id, tool, args, .. } => {
+                            let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
+                                turn_id,
+                                &tool_id,
+                                &tool,
+                                &args,
+                                &self.theme,
+                            );
+                            self.modal = crate::ui::modal::ModalState::Approval(approval_state);
+                        }
                         AgentEvent::Error { message, retrying, .. } => {
                             if retrying {
                                 self.timeline.add_status(message);
@@ -625,6 +635,61 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
+            ModalState::Approval(ref mut approval_state) => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                    self.timeline
+                        .add_status("ℹ Action cancelled by user".to_string());
+                }
+                KeyCode::Up => {
+                    approval_state.prev_option();
+                }
+                KeyCode::Down => {
+                    approval_state.next_option();
+                }
+                KeyCode::Backspace => {
+                    approval_state.handle_backspace();
+                }
+                KeyCode::Char(c) => {
+                    approval_state.handle_char(c);
+                }
+                KeyCode::Enter => {
+                    if let Some(resp) = approval_state.confirm_selection() {
+                        match resp {
+                            crate::ui::approval::ApprovalResponse::Accept => {
+                                self.timeline
+                                    .add_status("✔ Action approved & applied".to_string());
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::Reject => {
+                                self.timeline
+                                    .add_status("✗ Action rejected by user".to_string());
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::AllowSession => {
+                                self.config.agent.auto_approve = true;
+                                self.timeline.add_status(
+                                    "✔ Auto-approve enabled for this session".to_string(),
+                                );
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::CustomFeedback(feedback) => {
+                                self.timeline
+                                    .add_status(format!("💬 User feedback sent: \"{}\"", feedback));
+                                self.modal = ModalState::None;
+
+                                let token = tokio_util::sync::CancellationToken::new();
+                                self.cancel_token = Some(token.clone());
+                                self.is_working = true;
+                                self.work_start = Some(Instant::now());
+                                let _ =
+                                    control_tx.send(AgentCommand::Prompt(feedback, Some(token)));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
     }
 }

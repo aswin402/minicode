@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-86_Passing-61ffca?style=flat-square" alt="Tests" /></a>
+  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-92_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
 
 ---
@@ -22,6 +22,7 @@
 ## ⚡ Highlights
 
 * **Dual-Mode Operation**: Seamlessly switch between an interactive full-screen **Ratatui TUI** for human developers and a machine-readable **NDJSON streaming protocol** (`--json-stream`) for AI agent orchestrators.
+* **Interactive Diff Inspector & Permission Modal**: Syntax-highlighted Aura Theme unified diff viewer with an interactive 4-option permission gate (`Accept`, `Reject`, `Allow Session`, `Type Custom Instructions`).
 * **Language Server Protocol & Compiler Self-Healing**: 2-Tier diagnostics (instant < 200ms CLI checks + deep semantic LSP via `rust-analyzer`, `pyright`, `tsc`, and `gopls`) that automatically inspects and heals compiler errors after file modifications.
 * **Autonomous Git Engine**: Fully autonomous git operations with automatic post-turn Conventional Commits, lockfile filtering, branch management, and reversible undo rollbacks.
 * **Multi-Agent Worktree Orchestration**: Delegate tasks to isolated parallel AI subagents in dedicated Git Worktrees (`subagent/<id>`) without file lock race conditions.

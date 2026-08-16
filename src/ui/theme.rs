@@ -18,6 +18,12 @@ pub struct Theme {
     pub border: Color,       // Aura Subtle Border (#3d375e)
 }
 
+impl Default for Theme {
+    fn default() -> Self {
+        Self::aura_dark()
+    }
+}
+
 impl Theme {
     /// Official Aura Dark Theme (Default)
     pub fn aura_dark() -> Self {

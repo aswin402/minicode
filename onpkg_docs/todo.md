@@ -348,13 +348,14 @@
 
 ---
 
-## 🔲 Phase 5: Interactive TUI Diff Inspector & Permission Modal (v0.0.14)
+## ✅ Phase 5: Interactive TUI Diff Inspector & Permission Menu Modal (v0.0.14)
 
-- [ ] Create `src/ui/diff_viewer.rs` for colored unified diff rendering
-- [ ] Create `src/ui/approval.rs` modal widget for permission gates
-- [ ] Wire approval request handling in `src/app.rs` and `AgentEvent::ApprovalRequest`
-- [ ] Add `[y] Accept`, `[n] Reject`, `[e] Edit`, `[a] Allow All` keyboard event handlers
-- [ ] `cargo test && cargo clippy -- -D warnings`
+- [x] Create `src/ui/diff_viewer.rs` for syntax-highlighted Aura Theme colored unified diff rendering
+- [x] Create `src/ui/approval.rs` modal widget with interactive 4-option selection menu and custom feedback input
+- [x] Wire approval request handling in `src/app.rs` and `AgentEvent::ApprovalRequest`
+- [x] Add `↑/↓/j/k` menu navigation, `1-4` direct keys, and `Enter` confirmation (`[1] Accept`, `[2] Reject`, `[3] Allow Session`, `[4] Type Feedback`)
+- [x] Write unit & integration tests (`tests/integration_diff_modal.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (92 tests passing, 0 clippy warnings)
 
 ---
 

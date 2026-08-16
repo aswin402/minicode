@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] — 2026-08-16
+
+### 🛡️ Interactive TUI Diff Inspector & Permission Menu Modal
+- **Syntax-Highlighted Unified Diff Viewer (`src/ui/diff_viewer.rs`)**:
+  - Implemented terminal diff engine powered by `similar`, rendering clean colored unified diff lines matching Dalton Menezes' Aura Theme (`+` Aura Mint Green additions, `-` Aura Coral Red deletions, muted context).
+  - Truncates oversized diff hunks gracefully with line counts.
+- **Interactive 4-Option Permission Selection Modal (`src/ui/approval.rs`, `src/ui/modal.rs`, `src/app.rs`)**:
+  - Replaced legacy single-key prompts with an interactive Aura modal menu displaying target action details and proposed changes.
+  - Interactive navigable options (`↑` / `↓` / `j` / `k` or direct numbers `1`–`4`, `Enter` to confirm):
+    - `[1] Accept & Apply (Execute action)`
+    - `[2] Reject (Decline this action)`
+    - `[3] Allow for this Session (Auto-approve subsequent turns)`
+    - `[4] Type Feedback / Custom Instructions (Guide agent)`
+  - Direct steering support: When option 4 is selected, an inline feedback input dock opens, sending custom instructions back to the agent loop.
+- **Integration Test Suite**:
+  - Added `tests/integration_diff_modal.rs` testing diff formatting, modal navigation, and custom feedback typing.
+  - Test suite expanded to **92 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.13] — 2026-08-16
 
 ### 🚀 Language Server Protocol (LSP) Engine & 2-Tier Compiler Diagnostics
