@@ -398,4 +398,14 @@
 - [x] Write unit & integration tests (`tests/integration_sequential_thinking.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (104 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 10: Cognitive Memory Decay & Knowledge Wiki Engine (v0.0.19)
+
+- [x] Create `src/context/decay.rs` with biological exponential memory decay modeling (`Permanent`, `Milestone`, `Transient`)
+- [x] Create `src/context/wiki.rs` for persistent Markdown knowledge wiki cataloging (`.minicode/wiki/`)
+- [x] Register 3 new agent tools: `wiki_write`, `wiki_read`, and `wiki_search` (expanding built-in tools to **36 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_wiki_and_decay.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (109 tests passing, 0 clippy warnings)
+
 

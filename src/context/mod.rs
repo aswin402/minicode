@@ -1,7 +1,9 @@
 pub mod compressor;
+pub mod decay;
 pub mod graph;
 pub mod index;
 pub mod memory;
 pub mod repomap;
 pub mod skills;
+pub mod wiki;
 pub mod working_memory;

@@ -608,6 +608,66 @@ impl ToolRegistry {
                     "required": ["thought_number", "total_thoughts", "thought", "needs_more_thoughts"]
                 }),
             },
+            ToolSchema {
+                name: "wiki_write".to_string(),
+                description: "Write or update a persistent Markdown knowledge document in the repository knowledge wiki (.minicode/wiki/<topic>.md).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Topic slug (e.g. 'architecture-database', 'oauth-flow')"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Human-readable title of the wiki document"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Full Markdown content, guidelines, decisions, or instructions"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "List of search tags and categorization keywords"
+                        },
+                        "references": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Associated file paths or related wiki topic slugs"
+                        }
+                    },
+                    "required": ["topic", "title", "content"]
+                }),
+            },
+            ToolSchema {
+                name: "wiki_read".to_string(),
+                description: "Read a specific knowledge wiki document from .minicode/wiki/<topic>.md by topic slug.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Topic slug to read"
+                        }
+                    },
+                    "required": ["topic"]
+                }),
+            },
+            ToolSchema {
+                name: "wiki_search".to_string(),
+                description: "Search across repository knowledge wiki documents matching topic, title, tags, or content keywords.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search keyword or phrase"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
         ]
     }
 
@@ -1383,6 +1443,74 @@ impl ToolRegistry {
                     crate::agent::sequential_thinking::ThinkingSession::step(thought_node)?;
                 Ok(output)
             }
+            "wiki_write" => {
+                let topic = args["topic"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "wiki_write".to_string(),
+                        reason: "Missing 'topic'".to_string(),
+                    })?;
+                let title = args["title"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "wiki_write".to_string(),
+                        reason: "Missing 'title'".to_string(),
+                    })?;
+                let content =
+                    args["content"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "wiki_write".to_string(),
+                            reason: "Missing 'content'".to_string(),
+                        })?;
+                let tags: Vec<String> = args["tags"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let references: Vec<String> = args["references"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let res = crate::context::wiki::WikiManager::write_entry(
+                    workspace_root,
+                    topic,
+                    title,
+                    content,
+                    &tags,
+                    &references,
+                )?;
+                Ok(res)
+            }
+            "wiki_read" => {
+                let topic = args["topic"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "wiki_read".to_string(),
+                        reason: "Missing 'topic'".to_string(),
+                    })?;
+                let content = crate::context::wiki::WikiManager::read_entry(workspace_root, topic)?;
+                Ok(content)
+            }
+            "wiki_search" => {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "wiki_search".to_string(),
+                        reason: "Missing 'query'".to_string(),
+                    })?;
+                let results =
+                    crate::context::wiki::WikiManager::search_entries(workspace_root, query)?;
+                Ok(results)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1398,7 +1526,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 33);
+        assert_eq!(schemas.len(), 36);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -1408,6 +1536,9 @@ mod tests {
         assert!(names.contains(&"complete_task"));
         assert!(names.contains(&"critic_review"));
         assert!(names.contains(&"sequential_thinking"));
+        assert!(names.contains(&"wiki_write"));
+        assert!(names.contains(&"wiki_read"));
+        assert!(names.contains(&"wiki_search"));
         assert!(names.contains(&"lsp_goto_definition"));
         assert!(names.contains(&"lsp_find_references"));
         assert!(names.contains(&"search_web"));

@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.19] — 2026-08-16
+
+### 📚 Cognitive Memory Decay & Repository Knowledge Wiki
+- **Exponential Cognitive Memory Decay (`src/context/decay.rs`)**:
+  - Implemented Ebbinghaus-inspired temporal memory retention modeling ($R(t) = \exp(-\ln(2) \cdot t / (H \cdot S))$).
+  - Scope partitioning: `Permanent` (zero decay for repo rules), `Milestone` (7-day half-life for active goals), and `Transient` (60-minute half-life for episodic debug traces).
+  - Automatic reinforcement boosts stability factor upon re-access.
+- **Compounding Knowledge Wiki Engine (`src/context/wiki.rs`)**:
+  - Filesystem-backed Markdown knowledge base in `.minicode/wiki/<topic>.md`.
+  - Automatic `.minicode/wiki/index.md` cataloging and topic frontmatter serialization.
+  - Added tools: `wiki_write`, `wiki_read`, and `wiki_search` (expanding built-in tools to **36 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_wiki_and_decay.rs` validating biological memory retention decay, pruning, and full wiki CRUD tool lifecycle.
+  - Test suite expanded to **109 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.18] — 2026-08-16
 
 ### 🔀 Sequential Thinking & Graph of Thoughts (GoT) Reasoning
