@@ -21,6 +21,7 @@ pub struct FileAst {
     #[allow(dead_code)]
     pub path: PathBuf,
     pub mtime: SystemTime,
+    pub file_size: u64,
     pub symbols: Vec<SymbolDef>,
 }
 
@@ -102,10 +103,11 @@ impl RepoMapExtractor {
     pub fn extract_file_symbols(&mut self, file_path: &Path) -> Result<Vec<SymbolDef>> {
         let metadata = std::fs::metadata(file_path)?;
         let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let file_size = metadata.len();
 
         // Check incremental cache
         if let Some(cached) = self.cache.get(file_path) {
-            if cached.mtime == mtime {
+            if cached.mtime == mtime && cached.file_size == file_size {
                 return Ok(cached.symbols.clone());
             }
         }
@@ -139,6 +141,10 @@ impl RepoMapExtractor {
                 r#"
                 ((function_declaration name: (identifier) @name) @def)
                 ((class_declaration name: (identifier) @name) @def)
+                ((method_definition name: (property_identifier) @name) @def)
+                ((variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression)]) @def)
                 "#,
             ),
             "ts" | "tsx" => (
@@ -148,6 +154,11 @@ impl RepoMapExtractor {
                 ((class_declaration name: (type_identifier) @name) @def)
                 ((interface_declaration name: (type_identifier) @name) @def)
                 ((type_alias_declaration name: (type_identifier) @name) @def)
+                ((enum_declaration name: (identifier) @name) @def)
+                ((method_definition name: (property_identifier) @name) @def)
+                ((variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression)]) @def)
                 "#,
             ),
             _ => {
@@ -242,6 +253,7 @@ impl RepoMapExtractor {
             FileAst {
                 path: file_path.to_path_buf(),
                 mtime,
+                file_size,
                 symbols: symbols.clone(),
             },
         );
@@ -375,5 +387,41 @@ export function formatProfile(user: UserProfile): string {
                 name, version, core_version, tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION
             );
         }
+    }
+
+    #[test]
+    fn test_extract_ts_arrow_functions_and_methods() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_ts_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let ts_file = temp_dir.join("component.tsx");
+        let ts_code = r#"
+export enum Status {
+    Active,
+    Inactive,
+}
+
+export class ServiceClient {
+    public connect() {
+        return true;
+    }
+}
+
+export const fetchUserData = async (id: string) => {
+    return { id };
+};
+"#;
+        std::fs::write(&ts_file, ts_code).unwrap();
+
+        let mut extractor = RepoMapExtractor::new();
+        let symbols = extractor.extract_file_symbols(&ts_file).unwrap();
+
+        assert!(symbols.iter().any(|s| s.name == "Status"));
+        assert!(symbols.iter().any(|s| s.name == "ServiceClient"));
+        assert!(symbols.iter().any(|s| s.name == "connect"));
+        assert!(symbols.iter().any(|s| s.name == "fetchUserData"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

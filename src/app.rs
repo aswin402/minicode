@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub enum AgentCommand {
-    Prompt(String),
+    Prompt(String, Option<tokio_util::sync::CancellationToken>),
     UpdateConfig {
         config: Box<Config>,
         provider: Box<dyn crate::agent::provider::Provider>,
@@ -39,6 +39,7 @@ pub struct App<'a> {
     model_fetcher: ModelFetcher,
     is_working: bool,
     work_start: Option<Instant>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl<'a> App<'a> {
@@ -54,6 +55,7 @@ impl<'a> App<'a> {
             model_fetcher: ModelFetcher::new(),
             is_working: false,
             work_start: None,
+            cancel_token: None,
         }
     }
 
@@ -103,8 +105,11 @@ impl<'a> App<'a> {
         let agent_task = tokio::spawn(async move {
             while let Some(cmd) = control_rx.recv().await {
                 match cmd {
-                    AgentCommand::Prompt(prompt) => {
-                        if let Err(e) = agent.execute_turn(&prompt, event_tx.clone()).await {
+                    AgentCommand::Prompt(prompt, cancel_token) => {
+                        if let Err(e) = agent
+                            .execute_turn(&prompt, event_tx.clone(), cancel_token)
+                            .await
+                        {
                             let err_event = AgentEvent::Error {
                                 turn_id: None,
                                 code: "execution_error".to_string(),
@@ -192,6 +197,7 @@ impl<'a> App<'a> {
                     chunks[3],
                     &self.theme,
                     &self.workspace_root,
+                    &self.config.provider.default,
                     &self.config.provider.model,
                     active_mcp_count,
                 );
@@ -223,6 +229,7 @@ impl<'a> App<'a> {
                         AgentEvent::TurnEnd { .. } => {
                             self.is_working = false;
                             self.work_start = None;
+                            self.cancel_token = None;
                         }
                         AgentEvent::Error { message, retrying, .. } => {
                             if retrying {
@@ -231,6 +238,7 @@ impl<'a> App<'a> {
                                 self.timeline.append_assistant_delta(&format!("\n✗ Error: {}\n", message));
                                 self.is_working = false;
                                 self.work_start = None;
+                                self.cancel_token = None;
                             }
                         }
                         _ => {}
@@ -253,9 +261,12 @@ impl<'a> App<'a> {
                         // Check for Ctrl+C or Esc to interrupt or exit
                         if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
                             if self.is_working {
+                                if let Some(token) = self.cancel_token.take() {
+                                    token.cancel();
+                                }
                                 self.is_working = false;
                                 self.work_start = None;
-                                self.timeline.add_status("Interrupted".to_string());
+                                self.timeline.add_status("⏹ Turn interrupted by user".to_string());
                             } else {
                                 break;
                             }
@@ -269,6 +280,9 @@ impl<'a> App<'a> {
                         }
                         if key_event.code == KeyCode::PageDown {
                             self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_add(crate::constants::PAGE_SCROLL_LINES);
+                            if self.timeline.scroll_offset == 0 {
+                                self.timeline.auto_scroll = true;
+                            }
                             continue;
                         }
 
@@ -315,11 +329,15 @@ impl<'a> App<'a> {
                             self.is_working = true;
                             self.work_start = Some(Instant::now());
 
+                            let cancel = tokio_util::sync::CancellationToken::new();
+                            self.cancel_token = Some(cancel.clone());
+
                             // Dispatch asynchronously to agent background actor
-                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt)) {
+                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt, Some(cancel))) {
                                 tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
                                 self.is_working = false;
                                 self.work_start = None;
+                                self.cancel_token = None;
                                 self.timeline.add_status(format!("❌ Agent communication failure: {}", e));
                             }
                         }
@@ -433,25 +451,38 @@ impl<'a> App<'a> {
                             None
                         };
 
-                        if let Ok(key) = self.config.get_api_key(&self.config.provider.default) {
-                            if let Ok(new_prov) =
-                                crate::agent::provider::create_provider_with_base_url(
+                        match self.config.get_api_key(&self.config.provider.default) {
+                            Ok(key) => {
+                                match crate::agent::provider::create_provider_with_base_url(
                                     &self.config.provider.default,
                                     &key,
                                     custom_url,
-                                )
-                            {
-                                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                    config: Box::new(self.config.clone()),
-                                    provider: new_prov,
-                                });
+                                ) {
+                                    Ok(new_prov) => {
+                                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                            config: Box::new(self.config.clone()),
+                                            provider: new_prov,
+                                        });
+                                        self.timeline.add_status(format!(
+                                            "✔ Switched active provider to '{}' and model to '{}'",
+                                            provider, selected_model
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!(
+                                            "✗ Failed to create provider '{}': {}",
+                                            provider, e
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.timeline.add_status(format!(
+                                    "✗ Missing API key for provider '{}': {}",
+                                    provider, e
+                                ));
                             }
                         }
-
-                        self.timeline.add_status(format!(
-                            "✔ Switched active provider to '{}' and model to '{}'",
-                            provider, selected_model
-                        ));
                     }
                     self.modal = ModalState::None;
                 }

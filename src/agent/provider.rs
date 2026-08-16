@@ -97,11 +97,15 @@ impl GeminiProvider {
                             parts.push(serde_json::json!({ "text": msg.content }));
                         }
                         for tc in tool_calls {
+                            let mut func_call = serde_json::json!({
+                                "name": tc.name,
+                                "args": tc.arguments
+                            });
+                            if !tc.id.is_empty() {
+                                func_call["id"] = serde_json::json!(tc.id);
+                            }
                             parts.push(serde_json::json!({
-                                "functionCall": {
-                                    "name": tc.name,
-                                    "args": tc.arguments
-                                }
+                                "functionCall": func_call
                             }));
                         }
                         contents.push(serde_json::json!({
@@ -121,17 +125,41 @@ impl GeminiProvider {
                         .as_deref()
                         .or(msg.tool_call_id.as_deref())
                         .unwrap_or("unknown_tool");
-                    contents.push(serde_json::json!({
-                        "role": "user",
-                        "parts": [{
-                            "functionResponse": {
-                                "name": tool_name,
-                                "response": {
-                                    "output": msg.content
+                    let mut func_resp = serde_json::json!({
+                        "name": tool_name,
+                        "response": {
+                            "output": msg.content
+                        }
+                    });
+                    if let Some(ref call_id) = msg.tool_call_id {
+                        if !call_id.is_empty() {
+                            func_resp["id"] = serde_json::json!(call_id);
+                        }
+                    }
+                    let part = serde_json::json!({
+                        "functionResponse": func_resp
+                    });
+
+                    // Merge consecutive tool responses into single user content block
+                    let mut merged = false;
+                    if let Some(last) = contents.last_mut() {
+                        if last.get("role").and_then(|r| r.as_str()) == Some("user") {
+                            if let Some(parts) =
+                                last.get_mut("parts").and_then(|p| p.as_array_mut())
+                            {
+                                if parts.iter().any(|p| p.get("functionResponse").is_some()) {
+                                    parts.push(part.clone());
+                                    merged = true;
                                 }
                             }
-                        }]
-                    }));
+                        }
+                    }
+                    if !merged {
+                        contents.push(serde_json::json!({
+                            "role": "user",
+                            "parts": [part]
+                        }));
+                    }
                 }
             }
         }
@@ -185,8 +213,8 @@ impl Provider for GeminiProvider {
         };
 
         let url = format!(
-            "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, model, self.api_key
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, model
         );
 
         let contents = Self::format_contents(messages);
@@ -212,6 +240,7 @@ impl Provider for GeminiProvider {
             .client
             .post(&url)
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", &self.api_key)
             .json(&request_body);
 
         let event_source = EventSource::new(request).map_err(|e| {
@@ -237,9 +266,47 @@ impl Provider for GeminiProvider {
 
                         match parsed {
                             Ok(val) => {
-                                // Check for candidates
+                                // 1. Check API-level error inside stream payload
+                                if let Some(err) = val.get("error") {
+                                    let code = err.get("code").and_then(|c| c.as_u64()).unwrap_or(500) as u16;
+                                    let message = err
+                                        .get("message")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("Unknown Gemini API error")
+                                        .to_string();
+                                    yield Err(ProviderError::Api {
+                                        status: code,
+                                        message: format!("Gemini stream API error: {}", message),
+                                    }
+                                    .into());
+                                    break;
+                                }
+
+                                // 2. Check prompt-level policy blocks
+                                if let Some(feedback) = val.get("promptFeedback") {
+                                    if let Some(reason) = feedback.get("blockReason").and_then(|r| r.as_str()) {
+                                        yield Err(ProviderError::Api {
+                                            status: 400,
+                                            message: format!("Gemini prompt blocked: blockReason={}", reason),
+                                        }
+                                        .into());
+                                        break;
+                                    }
+                                }
+
+                                // 3. Check candidates and candidate finishReason
                                 if let Some(candidates) = val.get("candidates").and_then(|c| c.as_array()) {
                                     for candidate in candidates {
+                                        if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
+                                            if reason == "SAFETY" || reason == "RECITATION" || reason == "BLOCKLIST" || reason == "PROHIBITED_CONTENT" {
+                                                yield Err(ProviderError::Api {
+                                                    status: 400,
+                                                    message: format!("Gemini candidate generation halted: finishReason={}", reason),
+                                                }
+                                                .into());
+                                                return;
+                                            }
+                                        }
                                         if let Some(parts) = candidate.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
                                             for part in parts {
                                                 // Handle text delta
@@ -253,8 +320,13 @@ impl Provider for GeminiProvider {
                                                 if let Some(func_call) = part.get("functionCall") {
                                                     if let Some(name) = func_call.get("name").and_then(|n| n.as_str()) {
                                                         let args = func_call.get("args").cloned().unwrap_or(serde_json::json!({}));
+                                                        let call_id = func_call
+                                                            .get("id")
+                                                            .and_then(|i| i.as_str())
+                                                            .map(|s| s.to_string())
+                                                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                                                         let tool_call = ToolCall {
-                                                            id: uuid::Uuid::new_v4().to_string(),
+                                                            id: call_id,
                                                             name: name.to_string(),
                                                             arguments: args,
                                                         };
@@ -575,7 +647,9 @@ impl Provider for OpenAiCompatibleProvider {
                                                     }
                                                     if let Some(func) = tc.get("function") {
                                                         if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
-                                                            entry.1.push_str(name);
+                                                            if entry.1.is_empty() {
+                                                                entry.1 = name.to_string();
+                                                            }
                                                         }
                                                         if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
                                                             entry.2.push_str(args);
@@ -719,5 +793,64 @@ pub fn create_provider_with_base_url(
                 .into())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::{Message, Role};
+
+    #[test]
+    fn test_gemini_format_merges_consecutive_tool_messages() {
+        let messages = vec![
+            Message::user("Please read two files"),
+            Message {
+                role: Role::Assistant,
+                content: "".to_string(),
+                tool_calls: Some(vec![
+                    crate::agent::types::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path": "src/main.rs"}),
+                    },
+                    crate::agent::types::ToolCall {
+                        id: "call_2".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path": "src/lib.rs"}),
+                    },
+                ]),
+                tool_call_id: None,
+                tool_name: None,
+            },
+            Message {
+                role: Role::Tool,
+                content: "fn main() {}".to_string(),
+                tool_calls: None,
+                tool_call_id: Some("call_1".to_string()),
+                tool_name: Some("read_file".to_string()),
+            },
+            Message {
+                role: Role::Tool,
+                content: "pub mod agent;".to_string(),
+                tool_calls: None,
+                tool_call_id: Some("call_2".to_string()),
+                tool_name: Some("read_file".to_string()),
+            },
+        ];
+
+        let formatted = GeminiProvider::format_contents(&messages);
+        // Expect exactly 3 content items: 1 user prompt, 1 model with 2 functionCalls, 1 user with 2 functionResponses merged
+        assert_eq!(formatted.len(), 3);
+        assert_eq!(formatted[0]["role"], "user");
+        assert_eq!(formatted[1]["role"], "model");
+        assert_eq!(formatted[1]["parts"].as_array().unwrap().len(), 2);
+        assert_eq!(formatted[2]["role"], "user");
+        let tool_parts = formatted[2]["parts"].as_array().unwrap();
+        assert_eq!(tool_parts.len(), 2);
+        assert_eq!(tool_parts[0]["functionResponse"]["name"], "read_file");
+        assert_eq!(tool_parts[0]["functionResponse"]["id"], "call_1");
+        assert_eq!(tool_parts[1]["functionResponse"]["name"], "read_file");
+        assert_eq!(tool_parts[1]["functionResponse"]["id"], "call_2");
     }
 }

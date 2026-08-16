@@ -270,6 +270,7 @@ pub struct RawProviderConfig {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<usize>,
+    pub ollama: Option<OllamaConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -444,6 +445,9 @@ impl Config {
         }
         if let Some(max_tokens) = other.provider.max_tokens {
             self.provider.max_tokens = max_tokens;
+        }
+        if let Some(ollama) = other.provider.ollama {
+            self.provider.ollama = ollama;
         }
         if let Some(auto_approve) = other.agent.auto_approve {
             self.agent.auto_approve = auto_approve;
@@ -640,5 +644,17 @@ mod tests {
         let key = config.get_api_key("gemini").unwrap();
         assert_eq!(key, "sk-test-gemini-key-12345");
         std::env::remove_var("GEMINI_API_KEY");
+    }
+
+    #[test]
+    fn test_config_merges_ollama_from_toml() {
+        let mut config = Config::default();
+        let override_toml = r#"
+            [provider.ollama]
+            host = "http://192.168.1.100:11434"
+        "#;
+        let raw: RawConfig = toml::from_str(override_toml).unwrap();
+        config.merge_raw(raw);
+        assert_eq!(config.provider.ollama.host, "http://192.168.1.100:11434");
     }
 }

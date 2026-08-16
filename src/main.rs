@@ -293,7 +293,7 @@ async fn run_headless_task(
         }
     });
 
-    agent.execute_turn(task, tx).await?;
+    agent.execute_turn(task, tx, None).await?;
     event_consumer.await.ok();
 
     Ok(())
@@ -335,7 +335,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                     }
                 });
 
-                if let Err(e) = agent.execute_turn(&text, tx).await {
+                if let Err(e) = agent.execute_turn(&text, tx, None).await {
                     let err_event = AgentEvent::Error {
                         turn_id: None,
                         code: "execution_error".to_string(),
@@ -498,7 +498,7 @@ async fn run_interactive_mode(
                 }
             });
 
-            if let Err(e) = mut_agent.execute_turn(trimmed, tx).await {
+            if let Err(e) = mut_agent.execute_turn(trimmed, tx, None).await {
                 eprintln!("Error: {}", e);
             }
             event_consumer.await.ok();

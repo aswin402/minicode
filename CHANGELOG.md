@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.0.11] — 2026-08-16
+
+### 🚀 Critical Fixes & Resilience Upgrades
+- **Gemini Multi-Tool Turn Merging & ID Support (`src/agent/provider.rs`)**:
+  - Merged adjacent `Role::Tool` messages into a single `role: "user"` message with multiple `functionResponse` parts to adhere strictly to the Gemini multi-turn API format and prevent HTTP 400 Bad Request errors.
+  - Attached call `id` to both `functionCall` and `functionResponse` for seamless Gemini 2.0+ tool call matching.
+- **CodeGraph Dangling Node Mass Redistribution & L1 Normalization (`src/context/graph.rs`)**:
+  - Resolved graph probability leakage by redistributing dangling node mass across all nodes during PageRank power iteration, followed by exact L1 normalization ($\sum P_i = 1.0$).
+  - Upgraded symbol-to-file lookup to support multiple declarations of identical identifiers across distinct files with keyword noise filtering.
+- **Cooperative Agent Cancellation (`src/agent/loop.rs`, `src/app.rs`, `Cargo.toml`)**:
+  - Integrated `tokio_util::sync::CancellationToken` into `AgentLoop::execute_turn` to enable immediate and clean cancellation on `Esc` / `Ctrl+C` across LLM streaming, token processing, and tool dispatching.
+  - Fixed token usage inflation by tracking `last_prompt_tokens + cumulative_completion_tokens`.
+- **Automatic Backup Manifest Persistence (`src/session/backup.rs`)**:
+  - Safety checkpoint creation now automatically creates or updates the turn's `manifest.json` on disk using validated absolute workspace paths.
+
+### 🛡️ Security & Sandbox Hardening
+- **SSRF Network Protection (`src/tools/web.rs`, `src/constants.rs`, `src/error.rs`)**:
+  - Added strict SSRF validation to `fetch_or_browse` blocking localhost, IPv4 loopback (`127.0.0.0/8`), IPv6 loopback (`::1`), link-local (`169.254.0.0/16`), private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`), and cloud metadata endpoints (`169.254.169.254`).
+- **Landlock Kernel Compatibility & Graceful Degradation (`src/sandbox/landlock.rs`)**:
+  - Added robust detection for unsupported host kernels (`ENOSYS`, `EOPNOTSUPP`), allowing WSL2, Docker containers, and older Linux kernels to degrade gracefully without crashing.
+- **Process Group Termination with SIGKILL Escalation (`src/tools/exec.rs`, `Cargo.toml`)**:
+  - Subprocess timeouts now send `SIGTERM` followed by a grace period before escalating to `SIGKILL` directly via `libc::kill`.
+
+### ⚡ Context Engine, UI & Configuration
+- **Expanded Tree-sitter Queries (`src/context/repomap.rs`)**:
+  - Extended JavaScript and TypeScript queries to extract class methods, arrow functions, `enum_declaration`, and interface properties.
+  - Hardened AST cache invalidation using a `(modified_time, file_size)` tuple.
+- **Gemini Header Authentication & Stream Error Extraction (`src/agent/provider.rs`, `src/agent/models.rs`)**:
+  - Switched Gemini API authentication to standard `x-goog-api-key` header instead of URL query parameters.
+  - Extracted prompt-level policy blocks (`blockReason`), API stream errors, and candidate `finishReason` stops (`SAFETY`, `RECITATION`, `BLOCKLIST`).
+- **Ollama TOML Configuration & Status Display (`src/config.rs`, `src/ui/status.rs`, `src/app.rs`)**:
+  - Added `pub ollama: Option<OllamaConfig>` to `RawProviderConfig` and merged in `merge_raw`.
+  - Updated Aura TUI status bar to display the active provider along with the model name (e.g., `gemini:gemini-2.5-pro`).
+
+---
+
 ## [0.0.9] — 2026-08-16
 
 ### 🚀 Critical Bug Fixes & Reliability Hardening

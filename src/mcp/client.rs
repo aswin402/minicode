@@ -30,6 +30,37 @@ pub struct McpClientManager {
     initialized: Arc<AtomicBool>,
 }
 
+fn build_stdio_command(cmd: &str, server_cfg: &McpServerConfig) -> tokio::process::Command {
+    let mut child_cmd = if let Some(args) = &server_cfg.args {
+        let mut c = tokio::process::Command::new(cmd);
+        c.args(args);
+        c
+    } else {
+        let mut c = tokio::process::Command::new("sh");
+        c.arg("-c").arg(cmd);
+        c
+    };
+
+    if let Some(env_vars) = &server_cfg.env {
+        for (k, v) in env_vars {
+            child_cmd.env(k, v);
+        }
+    }
+
+    child_cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    #[cfg(unix)]
+    {
+        child_cmd.process_group(0);
+    }
+
+    child_cmd
+}
+
 impl Default for McpClientManager {
     fn default() -> Self {
         Self::new()
@@ -115,28 +146,16 @@ impl McpClientManager {
                     .into());
                 };
 
-                let mut child_cmd = tokio::process::Command::new("sh");
-                child_cmd
-                    .arg("-c")
-                    .arg(cmd)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .kill_on_drop(true);
-
-                #[cfg(unix)]
-                {
-                    child_cmd.process_group(0);
-                }
-
+                let mut child_cmd = build_stdio_command(cmd, server_cfg);
                 let mut child = child_cmd.spawn().map_err(|e| McpError::ConnectionFailed {
                     server: server_name.into(),
                     reason: format!("Failed to spawn process '{}': {}", cmd, e),
                 })?;
 
+                let init_id = self.request_id.fetch_add(1, Ordering::SeqCst);
                 let init_req = serde_json::json!({
                     "jsonrpc": JSONRPC_VERSION,
-                    "id": req_id,
+                    "id": init_id,
                     "method": crate::constants::MCP_METHOD_INITIALIZE,
                     "params": {
                         "protocolVersion": crate::constants::MCP_PROTOCOL_VERSION,
@@ -449,37 +468,16 @@ impl McpClientManager {
                     .into());
                 };
 
-                let mut child_cmd = tokio::process::Command::new("sh");
-                child_cmd
-                    .arg("-c")
-                    .arg(cmd)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .kill_on_drop(true);
-
-                if let Some(args) = &server_cfg.args {
-                    child_cmd.args(args);
-                }
-                if let Some(env_vars) = &server_cfg.env {
-                    for (k, v) in env_vars {
-                        child_cmd.env(k, v);
-                    }
-                }
-
-                #[cfg(unix)]
-                {
-                    child_cmd.process_group(0);
-                }
-
+                let mut child_cmd = build_stdio_command(cmd, server_cfg);
                 let mut child = child_cmd.spawn().map_err(|e| McpError::ConnectionFailed {
                     server: server_name.into(),
                     reason: format!("Failed to spawn process '{}': {}", cmd, e),
                 })?;
 
+                let init_id = self.request_id.fetch_add(1, Ordering::SeqCst);
                 let init_req = serde_json::json!({
                     "jsonrpc": JSONRPC_VERSION,
-                    "id": 1,
+                    "id": init_id,
                     "method": crate::constants::MCP_METHOD_INITIALIZE,
                     "params": {
                         "protocolVersion": crate::constants::MCP_PROTOCOL_VERSION,

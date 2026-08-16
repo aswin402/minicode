@@ -228,3 +228,25 @@
 - [x] **L3 (Low)**: Added warning logging for MCP notification tool execution failures in `src/mcp/server.rs`
 - [x] **L4 (Low)**: Used `tokio::task::spawn_blocking` for background git branch probing in `src/ui/status.rs`
 - [x] **Verification**: **56/56 unit tests passing, zero clippy warnings, clean formatting**
+
+---
+
+## ✅ Phase 2 Post-Audit Fixes — Round 5 (v0.0.10 COMPLETED)
+- [x] **C1 (Critical)**: Merged consecutive `Role::Tool` messages into single `role: "user"` message containing all `functionResponse` parts in `src/agent/provider.rs` to satisfy Gemini multi-turn format.
+- [x] **C2 (Critical)**: Implemented PageRank dangling node mass redistribution and exact L1 normalization ($\sum P_i = 1.0$) in `src/context/graph.rs` + multi-declaration symbol lookup.
+- [x] **C3 (Critical)**: Integrated `tokio_util::sync::CancellationToken` for cooperative agent task cancellation on `Esc`/`Ctrl+C` across streaming and tool execution in `src/agent/loop.rs` and `src/app.rs`.
+- [x] **C4 (Critical)**: Safety checkpoint creation automatically persists/updates `manifest.json` on disk using validated absolute paths in `src/session/backup.rs`.
+- [x] **H1 (High)**: Direct execution for stdio MCP servers without `sh -c` argument loss in `src/mcp/client.rs`.
+- [x] **H3 (High)**: Added graceful fallback for unsupported Landlock host kernels (`ENOSYS`, `EOPNOTSUPP`) in `src/sandbox/landlock.rs`.
+- [x] **H4 (High)**: Expanded JavaScript/TypeScript Tree-sitter queries for methods, arrow functions, and enums in `src/context/repomap.rs`.
+- [x] **H5 (High)**: Merged `OllamaConfig` in `RawProviderConfig` and `merge_raw` in `src/config.rs`.
+- [x] **H6 (High)**: Gemini SSE stream error extraction (`promptFeedback.blockReason`, stream `error`, and candidate `finishReason`) in `src/agent/provider.rs`.
+- [x] **M1 (Medium)**: Switched Gemini authentication to `x-goog-api-key` header in `src/agent/provider.rs` and `src/agent/models.rs`.
+- [x] **M3 (Medium)**: Added SSRF protection for `fetch_or_browse` in `src/tools/web.rs` blocking loopback, link-local, private subnets, and cloud metadata.
+- [x] **M5 (Medium)**: Fixed OpenAI streaming tool name deduplication in `src/agent/provider.rs`.
+- [x] **M6 (Medium)**: Hardened AST cache invalidation with `(mtime, file_size)` tuple in `src/context/repomap.rs`.
+- [x] **M8 (Medium)**: Process group timeout termination with SIGTERM and SIGKILL escalation via `libc::kill` in `src/tools/exec.rs`.
+- [x] **M9 (Medium)**: Resilient session listing with directory entry flattening in `src/session/store.rs`.
+- [x] **M11 (Medium)**: Dynamic provider and model display in Aura TUI status bar in `src/ui/status.rs` and `src/app.rs`.
+- [x] **Constants Extraction**: Added `SSRF_BLOCKED_HOSTS`, `INDEX_CACHE_MAX_ENTRIES`, and `PROCESS_KILL_GRACE_PERIOD_MS` to `src/constants.rs`.
+- [x] **Verification**: **63/63 unit tests passing, zero clippy warnings, clean formatting**

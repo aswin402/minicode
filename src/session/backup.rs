@@ -72,38 +72,77 @@ impl BackupManager {
 
         let backup_dest = turn_dir.join(relative_path);
 
-        if file_path.exists() {
+        let backed_up_file = if full_file.exists() {
             if let Some(parent) = backup_dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(file_path, &backup_dest).map_err(|e| {
+            std::fs::copy(&full_file, &backup_dest).map_err(|e| {
                 SessionError::WriteCheckpoint(format!(
                     "Failed to copy {} to backup {}: {}",
-                    file_path.display(),
+                    full_file.display(),
                     backup_dest.display(),
                     e
                 ))
             })?;
 
             tracing::debug!(
-                original = %file_path.display(),
+                original = %full_file.display(),
                 backup = %backup_dest.display(),
                 turn = turn_id,
                 "File safety checkpoint created"
             );
 
-            Ok(BackedUpFile {
-                original_path: file_path.display().to_string(),
+            BackedUpFile {
+                original_path: full_file.display().to_string(),
                 backup_path: backup_dest.display().to_string(),
                 existed_before: true,
-            })
+            }
         } else {
-            Ok(BackedUpFile {
-                original_path: file_path.display().to_string(),
+            BackedUpFile {
+                original_path: full_file.display().to_string(),
                 backup_path: backup_dest.display().to_string(),
                 existed_before: false,
-            })
+            }
+        };
+
+        // Auto-persist / update turn manifest so /undo is always guaranteed to work immediately
+        let manifest_path = turn_dir.join("manifest.json");
+        let mut manifest = if manifest_path.exists() {
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(content) => {
+                    serde_json::from_str::<BackupManifest>(&content).unwrap_or_else(|_| {
+                        BackupManifest {
+                            turn_id,
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            files: Vec::new(),
+                        }
+                    })
+                }
+                Err(_) => BackupManifest {
+                    turn_id,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    files: Vec::new(),
+                },
+            }
+        } else {
+            BackupManifest {
+                turn_id,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                files: Vec::new(),
+            }
+        };
+
+        if !manifest
+            .files
+            .iter()
+            .any(|f| f.original_path == backed_up_file.original_path)
+        {
+            manifest.files.push(backed_up_file.clone());
+            let data = serde_json::to_string_pretty(&manifest)?;
+            std::fs::write(&manifest_path, data)?;
         }
+
+        Ok(backed_up_file)
     }
 
     /// Saves the turn manifest containing all backed up files in this turn.
@@ -256,5 +295,30 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
         let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn test_checkpoint_automatically_persists_manifest() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_backup_auto_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("a.txt");
+        let file_b = temp_dir.join("b.txt");
+        std::fs::write(&file_a, "Alpha").unwrap();
+        std::fs::write(&file_b, "Beta").unwrap();
+
+        let mgr = BackupManager::new(&temp_dir);
+        // Call checkpoint on both files in turn 42
+        mgr.create_checkpoint(&temp_dir, &file_a, 42).unwrap();
+        mgr.create_checkpoint(&temp_dir, &file_b, 42).unwrap();
+
+        // Manifest should automatically exist and contain both files
+        let manifest = mgr.load_turn_manifest(42).unwrap();
+        assert_eq!(manifest.turn_id, 42);
+        assert_eq!(manifest.files.len(), 2);
+        assert_eq!(mgr.latest_turn_id(), Some(42));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

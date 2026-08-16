@@ -1594,7 +1594,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minicode"
-version = "0.0.8"
+version = "0.0.11"
 dependencies = [
  "anstyle-query",
  "anyhow",
@@ -1614,6 +1614,7 @@ dependencies = [
  "ignore",
  "indicatif",
  "landlock",
+ "libc",
  "petgraph",
  "pulldown-cmark",
  "ratatui",
@@ -1631,6 +1632,7 @@ dependencies = [
  "tiktoken-rs",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-appender",

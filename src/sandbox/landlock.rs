@@ -49,9 +49,29 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
             })?
     };
 
-    let mut ruleset_created = ruleset.create().map_err(|e| {
-        SecurityError::Landlock(format!("Failed to create Landlock ruleset: {}", e))
-    })?;
+    let mut ruleset_created = match ruleset.create() {
+        Ok(rc) => rc,
+        Err(e) => {
+            let err_msg = format!("{}", e);
+            if err_msg.contains("ENOSYS")
+                || err_msg.contains("EOPNOTSUPP")
+                || err_msg.contains("Function not implemented")
+                || err_msg.contains("Operation not supported")
+                || err_msg.to_lowercase().contains("not supported")
+            {
+                tracing::warn!(
+                    error = %e,
+                    "Landlock not supported on this host kernel; proceeding without Landlock sandbox"
+                );
+                return Ok(());
+            }
+            return Err(SecurityError::Landlock(format!(
+                "Failed to create Landlock ruleset: {}",
+                e
+            ))
+            .into());
+        }
+    };
 
     // Allow read/write within workspace root
     if let Ok(workspace_fd) = PathFd::new(workspace_root) {
@@ -125,9 +145,25 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
     }
 
     // Restrict current thread (inherited by subsequent child processes)
-    ruleset_created.restrict_self().map_err(|e| {
-        SecurityError::Landlock(format!("Failed to enforce Landlock restrictions: {}", e))
-    })?;
+    if let Err(e) = ruleset_created.restrict_self() {
+        let err_msg = format!("{}", e);
+        if err_msg.contains("ENOSYS")
+            || err_msg.contains("EOPNOTSUPP")
+            || err_msg.contains("Function not implemented")
+            || err_msg.contains("Operation not supported")
+        {
+            tracing::warn!(
+                error = %e,
+                "Landlock restrict_self unsupported on host kernel; proceeding without Landlock sandbox"
+            );
+            return Ok(());
+        }
+        return Err(SecurityError::Landlock(format!(
+            "Failed to enforce Landlock restrictions: {}",
+            e
+        ))
+        .into());
+    }
     Ok(())
 }
 

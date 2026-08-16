@@ -252,13 +252,14 @@ impl ModelFetcher {
 
     /// Fetches live models from Google Gemini API
     async fn fetch_gemini_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        let url = format!(
-            "{}{}",
-            crate::constants::GEMINI_MODELS_URL_TEMPLATE,
-            api_key
-        );
+        let url = crate::constants::GEMINI_MODELS_URL;
 
-        let resp = self.client.get(&url).send().await?;
+        let resp = self
+            .client
+            .get(url)
+            .header("x-goog-api-key", api_key)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();

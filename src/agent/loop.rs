@@ -86,7 +86,7 @@ impl AgentLoop {
                 }
 
                 // Invariant: Never leave an orphaned tool result message at the start of conversation history
-                while self.messages.len() > 1
+                while !self.messages.is_empty()
                     && self
                         .messages
                         .first()
@@ -117,6 +117,7 @@ impl AgentLoop {
         &mut self,
         user_prompt: &str,
         event_sender: mpsc::UnboundedSender<AgentEvent>,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Turn> {
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
@@ -137,11 +138,15 @@ impl AgentLoop {
         let mcp_tools = self.mcp_client.get_tool_schemas().await;
         tools.extend(mcp_tools);
 
+        let initial_context_tokens = crate::context::compressor::ContextCompressor::new()
+            .map(|c| c.count_messages_tokens(&self.messages))
+            .unwrap_or(0);
+
         let start_event = AgentEvent::TurnStart {
             turn_id,
             timestamp: chrono::Utc::now().to_rfc3339(),
             model: self.config.provider.model.clone(),
-            context_tokens: 0,
+            context_tokens: initial_context_tokens,
         };
         if let Err(e) = self
             .session_store
@@ -154,7 +159,8 @@ impl AgentLoop {
         let mut turn_response = String::new();
         let mut turn_tool_calls = Vec::new();
         let mut turn_tool_results = Vec::new();
-        let mut turn_tokens_used = 0;
+        let mut last_prompt_tokens: usize = 0;
+        let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
 
         let max_iterations = DEFAULT_MAX_TOOL_ITERATIONS; // Prevent infinite tool loops
@@ -170,6 +176,14 @@ impl AgentLoop {
         let max_retries = DEFAULT_MAX_RETRIES;
 
         while iteration < max_iterations {
+            // Check cancellation before each LLM call
+            if let Some(ref cancel) = cancel_token {
+                if cancel.is_cancelled() {
+                    tracing::info!("Turn #{} cancelled before LLM request", turn_id);
+                    break;
+                }
+            }
+
             iteration += 1;
             let mut retry_count = 0;
 
@@ -214,9 +228,23 @@ impl AgentLoop {
                 };
 
                 let mut stream_error = None;
-                while let Some(chunk_res) = stream.next().await {
-                    match chunk_res {
-                        Ok(StreamChunk::Delta(delta)) => {
+                let mut cancelled = false;
+
+                loop {
+                    let next_chunk = if let Some(ref cancel) = cancel_token {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                cancelled = true;
+                                break;
+                            }
+                            chunk = stream.next() => chunk,
+                        }
+                    } else {
+                        stream.next().await
+                    };
+
+                    match next_chunk {
+                        Some(Ok(StreamChunk::Delta(delta))) => {
                             iteration_text.push_str(&delta);
                             turn_response.push_str(&delta);
                             let delta_event = AgentEvent::StreamDelta {
@@ -227,7 +255,7 @@ impl AgentLoop {
                                 tracing::debug!(error = %e, "Failed to send stream delta event");
                             }
                         }
-                        Ok(StreamChunk::ToolCallChunk(tool_call)) => {
+                        Some(Ok(StreamChunk::ToolCallChunk(tool_call))) => {
                             let call_event = AgentEvent::ToolCall {
                                 turn_id,
                                 tool_id: tool_call.id.clone(),
@@ -245,20 +273,29 @@ impl AgentLoop {
                             }
                             pending_tool_calls.push(tool_call);
                         }
-                        Ok(StreamChunk::Usage {
+                        Some(Ok(StreamChunk::Usage {
                             prompt_tokens,
                             completion_tokens,
-                        }) => {
-                            turn_tokens_used += prompt_tokens + completion_tokens;
+                        })) => {
+                            last_prompt_tokens = prompt_tokens;
+                            cumulative_completion_tokens += completion_tokens;
                         }
-                        Ok(StreamChunk::Done) => {
+                        Some(Ok(StreamChunk::Done)) => {
                             break;
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             stream_error = Some(e);
                             break;
                         }
+                        None => {
+                            break;
+                        }
                     }
+                }
+
+                if cancelled {
+                    tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
+                    break;
                 }
 
                 if let Some(err) = stream_error {
@@ -299,6 +336,18 @@ impl AgentLoop {
                 ));
 
                 for tool_call in pending_tool_calls {
+                    // Check cancellation before each tool execution
+                    if let Some(ref cancel) = cancel_token {
+                        if cancel.is_cancelled() {
+                            tracing::info!(
+                                "Turn #{} cancelled before tool dispatch: {}",
+                                turn_id,
+                                tool_call.name
+                            );
+                            break;
+                        }
+                    }
+
                     turn_tool_calls.push(tool_call.clone());
 
                     // Check if file modification tool to record file
@@ -376,6 +425,8 @@ impl AgentLoop {
                 break;
             }
         }
+
+        let turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
 
         let end_event = AgentEvent::TurnEnd {
             turn_id,

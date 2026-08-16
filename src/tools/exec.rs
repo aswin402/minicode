@@ -86,10 +86,16 @@ pub async fn exec_cmd(
         Err(_) => {
             #[cfg(unix)]
             if let Some(pid) = child.id() {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(format!("-{}", pid))
-                    .output();
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGTERM);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    crate::constants::PROCESS_KILL_GRACE_PERIOD_MS,
+                ))
+                .await;
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
             }
             let _ = child.kill().await;
             return Err(ToolError::CommandTimeout {

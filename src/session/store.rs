@@ -145,8 +145,7 @@ impl SessionStore {
             return Ok(sessions);
         }
 
-        for entry in std::fs::read_dir(&self.sessions_dir)? {
-            let entry = entry?;
+        for entry in std::fs::read_dir(&self.sessions_dir)?.flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
                 if let Ok(file) = std::fs::File::open(&path) {

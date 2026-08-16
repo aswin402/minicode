@@ -174,6 +174,9 @@ pub enum SecurityError {
     #[error("Forbidden dangerous command: '{command}'")]
     ForbiddenCommand { command: String },
 
+    #[error("SSRF security policy blocked access to '{url}': {reason}")]
+    SsrfBlocked { url: String, reason: String },
+
     #[error("Landlock sandbox enforcement error: {0}")]
     Landlock(String),
 }

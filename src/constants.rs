@@ -134,7 +134,11 @@ pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum raw output bytes captured before hard truncation
 pub const EXEC_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 /// Default User-Agent header for web fetching tool
-pub const WEB_USER_AGENT: &str = "minicode/0.0.8 (+https://github.com/aswin402/minicode)";
+pub const WEB_USER_AGENT: &str = concat!(
+    "minicode/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/aswin402/minicode)"
+);
 /// HTTP request timeout in seconds for web fetching
 pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages
@@ -149,9 +153,52 @@ pub const COMPRESSOR_SAFETY_MARGIN: f64 = 0.15;
 pub const COMPRESSOR_HEAD_TAIL_LINES: usize = 15;
 
 // === Graph / PageRank & Blast Radius ===
+/// Identifiers too common to form meaningful cross-file dependency edges
+pub const CODEGRAPH_IGNORED_IDENTIFIERS: &[&str] = &[
+    "new",
+    "default",
+    "from",
+    "into",
+    "get",
+    "set",
+    "init",
+    "run",
+    "test",
+    "id",
+    "name",
+    "value",
+    "result",
+    "error",
+    "ok",
+    "err",
+    "self",
+    "this",
+    "super",
+    "None",
+    "Some",
+    "Ok",
+    "Err",
+    "true",
+    "false",
+    "to_string",
+    "as_str",
+    "clone",
+    "unwrap",
+    "expect",
+    "map",
+    "and_then",
+    "is_empty",
+    "len",
+    "push",
+    "pop",
+    "insert",
+    "remove",
+    "contains",
+    "iter",
+    "collect",
+];
 /// Random teleport probability damping factor for PageRank
 pub const PAGERANK_DAMPING: f64 = 0.85;
-/// Number of power-iteration cycles for PageRank convergence
 pub const PAGERANK_ITERATIONS: usize = 20;
 /// Personalization score boost for files currently open or mentioned
 pub const PAGERANK_PERSONALIZATION_BIAS: f64 = 0.3;
@@ -263,9 +310,8 @@ pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const PROJECT_REPO_URL: &str = "https://github.com/aswin402/minicode";
 /// OpenRouter live models API endpoint
 pub const OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
-/// Gemini live models API endpoint template
-pub const GEMINI_MODELS_URL_TEMPLATE: &str =
-    "https://generativelanguage.googleapis.com/v1beta/models?key=";
+/// Gemini live models API endpoint
+pub const GEMINI_MODELS_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 /// OpenAI default API base URL
 pub const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 /// DeepSeek API base URL
@@ -289,3 +335,20 @@ pub const AGENT_EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub const DEFAULT_LOCATE_SYMBOL_LIMIT: usize = 10;
 /// Supported source file language extensions for AST repomap and graph extraction
 pub const SUPPORTED_LANG_EXTENSIONS: &[&str] = &["rs", "py", "js", "ts", "jsx", "tsx"];
+
+// === Web & Network Security ===
+/// Default hostnames blocked from web browsing to prevent SSRF
+pub const SSRF_BLOCKED_HOSTS: &[&str] = &[
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "0.0.0.0",
+    "169.254.169.254",
+];
+
+// === Search Index & Process Limits ===
+/// Maximum cached file symbol mappings in SearchIndex before FIFO eviction
+#[allow(dead_code)]
+pub const INDEX_CACHE_MAX_ENTRIES: usize = 1000;
+/// Grace period in milliseconds before escalating SIGTERM to SIGKILL for child processes
+pub const PROCESS_KILL_GRACE_PERIOD_MS: u64 = 500;

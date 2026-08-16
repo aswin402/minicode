@@ -25,7 +25,7 @@ pub struct BlastRadiusReport {
 pub struct CodeGraph {
     graph: DiGraph<PathBuf, ()>,
     node_indices: HashMap<PathBuf, NodeIndex>,
-    symbol_to_file: HashMap<String, (PathBuf, SymbolDef)>,
+    symbol_to_file: HashMap<String, Vec<(PathBuf, SymbolDef)>>,
     file_to_symbols: HashMap<PathBuf, Vec<SymbolDef>>,
     extractor: RepoMapExtractor,
 }
@@ -76,7 +76,7 @@ impl CodeGraph {
 
         let mut file_contents = HashMap::new();
 
-        // 2. Extract AST symbols and map symbol -> defining file
+        // 2. Extract AST symbols and map symbol -> defining files
         for file in &source_files {
             if let Ok(content) = std::fs::read_to_string(file) {
                 file_contents.insert(file.clone(), content);
@@ -86,7 +86,9 @@ impl CodeGraph {
                     for sym in &symbols {
                         if sym.name.len() > 2 && sym.kind != "import" {
                             self.symbol_to_file
-                                .insert(sym.name.clone(), (file.clone(), sym.clone()));
+                                .entry(sym.name.clone())
+                                .or_default()
+                                .push((file.clone(), sym.clone()));
                         }
                     }
                     self.file_to_symbols.insert(file.clone(), symbols);
@@ -97,7 +99,7 @@ impl CodeGraph {
             }
         }
 
-        // 3. Build directed dependency edges based on cross-file symbol references (O(V * I) single-pass)
+        // 3. Build directed dependency edges based on cross-file symbol references
         for file in &source_files {
             let from_idx = match self.node_indices.get(file) {
                 Some(&idx) => idx,
@@ -112,11 +114,16 @@ impl CodeGraph {
                     .collect();
 
                 for ident in identifiers {
-                    if let Some((target_file, _)) = self.symbol_to_file.get(ident) {
-                        if target_file != file {
-                            if let Some(&to_idx) = self.node_indices.get(target_file) {
-                                if !self.graph.contains_edge(from_idx, to_idx) {
-                                    self.graph.add_edge(from_idx, to_idx, ());
+                    if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
+                        continue;
+                    }
+                    if let Some(targets) = self.symbol_to_file.get(ident) {
+                        for (target_file, _) in targets {
+                            if target_file != file {
+                                if let Some(&to_idx) = self.node_indices.get(target_file) {
+                                    if !self.graph.contains_edge(from_idx, to_idx) {
+                                        self.graph.add_edge(from_idx, to_idx, ());
+                                    }
                                 }
                             }
                         }
@@ -128,15 +135,16 @@ impl CodeGraph {
         Ok(())
     }
 
-    /// Computes PageRank scores for all indexed files.
+    /// Computes PageRank scores for all indexed files with dangling node mass redistribution.
     pub fn compute_pagerank(&self, active_files: &[PathBuf]) -> Vec<(PathBuf, f64)> {
         let node_count = self.graph.node_count();
         if node_count == 0 {
             return Vec::new();
         }
 
+        let n = node_count as f64;
         let mut scores: HashMap<NodeIndex, f64> = HashMap::new();
-        let initial_score = 1.0 / node_count as f64;
+        let initial_score = 1.0 / n;
 
         for node_idx in self.graph.node_indices() {
             scores.insert(node_idx, initial_score);
@@ -146,6 +154,14 @@ impl CodeGraph {
         let iterations = crate::constants::PAGERANK_ITERATIONS;
 
         for _ in 0..iterations {
+            // Compute dangling sum (nodes with 0 outgoing edges)
+            let dangling_sum: f64 = self
+                .graph
+                .node_indices()
+                .filter(|&node| self.graph.neighbors(node).count() == 0)
+                .map(|node| *scores.get(&node).unwrap_or(&0.0))
+                .sum();
+
             let mut next_scores = HashMap::new();
             for node in self.graph.node_indices() {
                 let mut sum_in = 0.0;
@@ -167,10 +183,20 @@ impl CodeGraph {
                     0.0
                 };
 
-                let score =
-                    (1.0 - damping) / node_count as f64 + damping * sum_in + personalization_bias;
+                let score = (1.0 - damping) / n
+                    + damping * (sum_in + (dangling_sum / n))
+                    + personalization_bias;
                 next_scores.insert(node, score);
             }
+
+            // L1 score normalization so total score mass sums to 1.0
+            let total: f64 = next_scores.values().sum();
+            if total > 0.0 {
+                for score in next_scores.values_mut() {
+                    *score /= total;
+                }
+            }
+
             scores = next_scores;
         }
 
@@ -191,12 +217,20 @@ impl CodeGraph {
         workspace_root: &Path,
     ) -> Result<BlastRadiusReport> {
         let (target_type, file_path, symbol_name) =
-            if let Some((path, _sym)) = self.symbol_to_file.get(target_query) {
-                (
-                    "symbol".to_string(),
-                    path.clone(),
-                    Some(target_query.to_string()),
-                )
+            if let Some(targets) = self.symbol_to_file.get(target_query) {
+                if let Some((path, _sym)) = targets.first() {
+                    (
+                        "symbol".to_string(),
+                        path.clone(),
+                        Some(target_query.to_string()),
+                    )
+                } else {
+                    return Err(ContextError::Graph(format!(
+                        "Symbol '{}' has no associated source files",
+                        target_query
+                    ))
+                    .into());
+                }
             } else {
                 let candidate_path = if Path::new(target_query).is_absolute() {
                     PathBuf::from(target_query)
@@ -523,6 +557,43 @@ mod tests {
 
         let formatted = graph.format_repomap(&temp_dir, &[file_a], 50);
         assert!(formatted.contains("helper.rs"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_codegraph_handles_duplicate_symbol_names() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_dup_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("mod_a.rs");
+        let file_b = temp_dir.join("mod_b.rs");
+        let file_c = temp_dir.join("caller.rs");
+
+        std::fs::write(
+            &file_a,
+            "pub struct Config;\nimpl Config { pub fn new() -> Self { Self } }",
+        )
+        .unwrap();
+        std::fs::write(
+            &file_b,
+            "pub struct Options;\nimpl Options { pub fn new() -> Self { Self } }",
+        )
+        .unwrap();
+        std::fs::write(&file_c, "pub fn init() { let _a = mod_a::Config::new(); }").unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        // Check that 'new' has multiple symbol definitions stored
+        assert!(graph.symbol_to_file.get("new").unwrap().len() >= 2);
+
+        // PageRank should compute and be normalized (sum ~ 1.0)
+        let ranked = graph.compute_pagerank(&[]);
+        assert_eq!(ranked.len(), 3);
+        let total_score: f64 = ranked.iter().map(|(_, s)| s).sum();
+        assert!((total_score - 1.0).abs() < 1e-4);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

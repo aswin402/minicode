@@ -81,6 +81,7 @@ impl StatusWidgets {
         area: Rect,
         theme: &Theme,
         workspace: &Path,
+        provider: &str,
         model: &str,
         mcp_count: usize,
     ) {
@@ -95,10 +96,12 @@ impl StatusWidgets {
             workspace.display().to_string()
         };
 
+        let provider_model = format!("{}:{}", provider, model);
+
         let mut footer_spans = vec![
             Span::styled(" ", Style::default()),
             Span::styled(
-                model,
+                provider_model,
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
