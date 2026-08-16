@@ -408,4 +408,14 @@
 - [x] Write unit & integration tests (`tests/integration_wiki_and_decay.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (109 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 11: ARIA Web Browser & Local UI Dev Inspector (v0.0.20)
+
+- [x] Create `src/tools/browser.rs` with ARIA accessibility tree generator and numbered element references (`@e1`, `@e2`, ...)
+- [x] Implement page snapshots with interactive control parsing (`<button>`, `<a>`, `<input>`, `<select>`, `<textarea>`)
+- [x] Register 2 new agent tools: `browser_navigate` and `browser_snapshot` (expanding built-in tools to **38 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_browser.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (112 tests passing, 0 clippy warnings)
+
 

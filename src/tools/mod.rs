@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod compactor;
 pub mod exec;
 pub mod fs;
@@ -666,6 +667,38 @@ impl ToolRegistry {
                         }
                     },
                     "required": ["query"]
+                }),
+            },
+            ToolSchema {
+                name: "browser_navigate".to_string(),
+                description: "Navigate to a web page or local development server (e.g. http://localhost:3000) and extract an interactive ARIA accessibility tree with numbered element references (@e1, @e2).".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The web URL or localhost address to navigate to"
+                        }
+                    },
+                    "required": ["url"]
+                }),
+            },
+            ToolSchema {
+                name: "browser_snapshot".to_string(),
+                description: "Capture an accessible ARIA DOM snapshot of a given HTML string or URL to inspect interactive UI components.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL of the page"
+                        },
+                        "html": {
+                            "type": "string",
+                            "description": "Raw HTML string to parse into accessibility tree (optional)"
+                        }
+                    },
+                    "required": ["url"]
                 }),
             },
         ]
@@ -1511,6 +1544,35 @@ impl ToolRegistry {
                     crate::context::wiki::WikiManager::search_entries(workspace_root, query)?;
                 Ok(results)
             }
+            "browser_navigate" => {
+                let url = args["url"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_navigate".to_string(),
+                        reason: "Missing 'url'".to_string(),
+                    })?;
+                let snapshot = crate::tools::browser::BrowserController::navigate(url).await?;
+                let report =
+                    crate::tools::browser::BrowserController::format_snapshot_report(&snapshot);
+                Ok(report)
+            }
+            "browser_snapshot" => {
+                let url = args["url"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_snapshot".to_string(),
+                        reason: "Missing 'url'".to_string(),
+                    })?;
+                let html_opt = args["html"].as_str();
+                let snapshot = if let Some(html) = html_opt {
+                    crate::tools::browser::BrowserController::parse_html_to_aria_snapshot(url, html)
+                } else {
+                    crate::tools::browser::BrowserController::navigate(url).await?
+                };
+                let report =
+                    crate::tools::browser::BrowserController::format_snapshot_report(&snapshot);
+                Ok(report)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1526,7 +1588,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 36);
+        assert_eq!(schemas.len(), 38);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -1535,6 +1597,8 @@ mod tests {
         assert!(names.contains(&"get_next_task"));
         assert!(names.contains(&"complete_task"));
         assert!(names.contains(&"critic_review"));
+        assert!(names.contains(&"browser_navigate"));
+        assert!(names.contains(&"browser_snapshot"));
         assert!(names.contains(&"sequential_thinking"));
         assert!(names.contains(&"wiki_write"));
         assert!(names.contains(&"wiki_read"));

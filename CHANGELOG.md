@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.20] — 2026-08-16
+
+### 🌐 ARIA Web Browser & Local UI Dev Inspector
+- **ARIA Accessibility Tree Generator (`src/tools/browser.rs`)**:
+  - Implemented pure-Rust DOM & accessibility tree extractor for live web pages and local dev servers (`http://localhost:3000`, `http://localhost:8080`).
+  - Converts interactive controls (`<button>`, `<a>`, `<input>`, `<select>`, `<textarea>`) into numbered element references (`@e1`, `@e2`, ...).
+  - Extracts form actions, input names/types, and links for testing web applications.
+  - Added tools: `browser_navigate` and `browser_snapshot` (expanding built-in tools to **38 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_browser.rs` validating HTML accessibility tree generation, element reference resolution, and tool dispatch.
+  - Test suite expanded to **112 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.19] — 2026-08-16
 
 ### 📚 Cognitive Memory Decay & Repository Knowledge Wiki
