@@ -1,9 +1,11 @@
+pub mod critic;
 pub mod r#loop;
 pub mod models;
 pub mod orchestrator;
 pub mod prompt;
 pub mod provider;
 pub mod subagent;
+pub mod task_dag;
 pub mod types;
 
 #[allow(unused_imports)]

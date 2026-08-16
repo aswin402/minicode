@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.17] — 2026-08-16
+
+### 🧠 Topological Task DAG & Actor-Critic Verification Engine
+- **Petgraph-Powered Task DAG Engine (`src/agent/task_dag.rs`)**:
+  - Implemented dependency-managed Directed Acyclic Graph (DAG) for multi-step feature execution.
+  - Cycle detection and topological execution ordering via `petgraph::algo::toposort`.
+  - Heuristic complexity scoring engine (1–10 scale) based on scope, affected file depth, and risk keywords.
+  - Added tools: `create_task_dag`, `get_next_task`, and `complete_task`.
+- **Actor-Critic Quality Gate (`src/agent/critic.rs`)**:
+  - Automated dual-agent verification pass running compiler diagnostics, linter checks, and git modification analysis.
+  - Added tool: `critic_review` (expanding built-in tools to **32 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_task_dag.rs` validating dependency graphs, topological order resolution, unblocked task queries, and critic reviews.
+  - Test suite expanded to **101 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.16] — 2026-08-16
 
 ### 📦 Multi-Platform Release Matrix & Single-Command Distribution

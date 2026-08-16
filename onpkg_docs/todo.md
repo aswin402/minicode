@@ -378,4 +378,14 @@
 - [x] Update documentation, PRD, and README with new version features and quickstart guides
 - [x] `cargo test -j 2 -- --test-threads=2` (96 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 8: Topological Task DAG & Actor-Critic Loop (v0.0.17)
+
+- [x] Create `src/agent/task_dag.rs` with `petgraph` dependency resolution, cycle detection & complexity scoring heuristics (1–10)
+- [x] Create `src/agent/critic.rs` for automated Actor-Critic quality gates (compiler diagnostics, git status, test verification)
+- [x] Register 4 new agent tools: `create_task_dag`, `get_next_task`, `complete_task`, and `critic_review` (expanding to **32 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_task_dag.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (101 tests passing, 0 clippy warnings)
+
 

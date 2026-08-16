@@ -499,6 +499,69 @@ impl ToolRegistry {
                     "required": ["query"]
                 }),
             },
+            ToolSchema {
+                name: "create_task_dag".to_string(),
+                description: "Initialize or replace a topological Task DAG with dependency resolution and complexity scoring.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "description": "List of task objects with id, title, description, and optional dependencies array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "Unique task identifier (e.g. task-1)" },
+                                    "title": { "type": "string", "description": "Brief task title" },
+                                    "description": { "type": "string", "description": "Detailed task requirements" },
+                                    "dependencies": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Array of task IDs that must be completed before this task can execute"
+                                    }
+                                },
+                                "required": ["id", "title", "description"]
+                            }
+                        }
+                    },
+                    "required": ["tasks"]
+                }),
+            },
+            ToolSchema {
+                name: "get_next_task".to_string(),
+                description: "Retrieve all currently unblocked and executable tasks from the active Task DAG.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolSchema {
+                name: "complete_task".to_string(),
+                description: "Update the lifecycle status of a task in the DAG to completed or failed, unlocking downstream dependencies.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "The task ID to update"
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["completed", "failed", "in_progress"],
+                            "description": "The new status of the task (default: completed)"
+                        }
+                    },
+                    "required": ["task_id"]
+                }),
+            },
+            ToolSchema {
+                name: "critic_review".to_string(),
+                description: "Run an automated Actor-Critic evaluation pass over current workspace changes (compiler diagnostics, linter warnings, git status) to verify code quality.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ]
     }
 
@@ -1130,6 +1193,138 @@ impl ToolRegistry {
                     crate::tools::web_search::WebSearchService::search(query, max_results).await?;
                 Ok(results_md)
             }
+            "create_task_dag" => {
+                let tasks_array =
+                    args.get("tasks")
+                        .and_then(|v| v.as_array())
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "create_task_dag".to_string(),
+                            reason: "Missing required argument 'tasks' array".to_string(),
+                        })?;
+
+                let mut dag = crate::agent::task_dag::TaskDag::new();
+                for item in tasks_array {
+                    let task: crate::agent::task_dag::TaskItem =
+                        serde_json::from_value(item.clone()).map_err(|e| {
+                            ToolError::InvalidArguments {
+                                name: "create_task_dag".to_string(),
+                                reason: format!("Invalid task schema: {}", e),
+                            }
+                        })?;
+                    dag.add_task(task);
+                }
+
+                // Validate no cycles exist
+                let order = dag.topological_order()?;
+                dag.save(workspace_root)?;
+
+                Ok(format!(
+                    "✔ Task DAG initialized with {} tasks (Topological Order: {})\n\n{}",
+                    dag.tasks.len(),
+                    order.join(" ➔ "),
+                    dag.generate_report()
+                ))
+            }
+            "get_next_task" => {
+                let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
+                if dag.tasks.is_empty() {
+                    return Ok("ℹ No active Task DAG found in workspace. Use 'create_task_dag' to initialize one.".to_string());
+                }
+
+                let next_tasks = dag.next_executable_tasks();
+                if next_tasks.is_empty() {
+                    let report = dag.generate_report();
+                    if dag
+                        .tasks
+                        .values()
+                        .all(|t| t.status == crate::agent::task_dag::TaskStatus::Completed)
+                    {
+                        Ok(format!("🎉 All tasks in DAG are completed!\n\n{}", report))
+                    } else {
+                        Ok(format!("⏸ No tasks currently unblocked. Check in-progress tasks or dependencies.\n\n{}", report))
+                    }
+                } else {
+                    let mut out = format!(
+                        "🎯 Next Executable Task(s) ({} unblocked):\n\n",
+                        next_tasks.len()
+                    );
+                    for task in next_tasks {
+                        out.push_str(&format!(
+                            "• `{}`: **{}** (Complexity: {}/10)\n  {}\n\n",
+                            task.id, task.title, task.complexity_score, task.description
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
+            "complete_task" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "complete_task".to_string(),
+                        reason: "Missing required argument 'task_id'".to_string(),
+                    })?;
+
+                let status_str = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("completed");
+                let status = match status_str {
+                    "in_progress" => crate::agent::task_dag::TaskStatus::InProgress,
+                    "failed" => crate::agent::task_dag::TaskStatus::Failed,
+                    _ => crate::agent::task_dag::TaskStatus::Completed,
+                };
+
+                let mut dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
+                dag.set_task_status(task_id, status)?;
+                dag.save(workspace_root)?;
+
+                let next = dag.next_executable_tasks();
+                let next_desc = if next.is_empty() {
+                    "None (all remaining tasks are blocked or completed)".to_string()
+                } else {
+                    next.iter()
+                        .map(|t| format!("`{}` ({})", t.id, t.title))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                Ok(format!(
+                    "✔ Updated task `{}` to status {:?}.\n👉 Newly unblocked executable task(s): {}\n\n{}",
+                    task_id,
+                    status,
+                    next_desc,
+                    dag.generate_report()
+                ))
+            }
+            "critic_review" => {
+                let report =
+                    crate::agent::critic::CriticValidator::review_workspace(workspace_root).await?;
+                let verdict_str = if report.is_approved {
+                    "✔ [CRITIC APPROVED]"
+                } else {
+                    "❌ [CRITIC REJECTED]"
+                };
+
+                let mut out = format!("🔍 Critic Evaluation Summary: {}\n\n", verdict_str);
+                out.push_str(&format!("• Status: {}\n", report.suggested_feedback));
+                out.push_str(&format!("• Compiler Errors: {}\n", report.compiler_errors));
+                out.push_str(&format!(
+                    "• Compiler Warnings: {}\n",
+                    report.compiler_warnings
+                ));
+                if !report.uncommitted_files.is_empty() {
+                    out.push_str(&format!(
+                        "• Modified Files ({}):\n",
+                        report.uncommitted_files.len()
+                    ));
+                    for file in &report.uncommitted_files {
+                        out.push_str(&format!("    - {}\n", file));
+                    }
+                }
+                Ok(out)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1145,11 +1340,15 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 28);
+        assert_eq!(schemas.len(), 32);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"lsp_diagnostics"));
+        assert!(names.contains(&"create_task_dag"));
+        assert!(names.contains(&"get_next_task"));
+        assert!(names.contains(&"complete_task"));
+        assert!(names.contains(&"critic_review"));
         assert!(names.contains(&"lsp_goto_definition"));
         assert!(names.contains(&"lsp_find_references"));
         assert!(names.contains(&"search_web"));
