@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.25] — 2026-08-18
+
+### 🗜️ Multi-Turn Context Observation Deduplication
+- **Observation Deduplicator (`src/context/dedup.rs`)**:
+  - Implemented automatic content fingerprinting and deduplication for repetitive tool observations across long multi-turn sessions.
+  - Collapses duplicate file reads into compact reference pointers preserving line counts and turn anchors.
+  - Deduplicates repeating compiler diagnostics and linter outputs into summarized status indicators.
+  - Automatically integrated into the agent execution loop's `prune_context()` pipeline.
+  - Added new tool: `prune_context` (expanding built-in tools to **45 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_context_dedup.rs` validating observation collapsing, character savings, and tool dispatch.
+  - Test suite expanded to **128 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.24] — 2026-08-18
 
 ### 🌳 Tree-sitter AST Pattern Matching & Symbol Extraction

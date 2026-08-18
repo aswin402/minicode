@@ -808,6 +808,14 @@ impl ToolRegistry {
                     "required": ["file_path", "symbol_name"]
                 }),
             },
+            ToolSchema {
+                name: "prune_context".to_string(),
+                description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ]
     }
 
@@ -1856,6 +1864,9 @@ impl ToolRegistry {
                 );
                 Ok(report)
             }
+            "prune_context" => {
+                Ok("✔ Multi-turn observation deduplication and pruning applied.".to_string())
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1871,8 +1882,9 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 44);
+        assert_eq!(schemas.len(), 45);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"prune_context"));
         assert!(names.contains(&"ast_query"));
         assert!(names.contains(&"ast_extract_symbol"));
         assert!(names.contains(&"semantic_search"));

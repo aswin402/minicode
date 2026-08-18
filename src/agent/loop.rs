@@ -74,6 +74,9 @@ impl AgentLoop {
             return;
         }
 
+        // 1. Deduplicate identical file reads and repetitive compiler checks across turns
+        crate::context::dedup::ObservationDeduplicator::deduplicate_messages(&mut self.messages);
+
         if let Ok(compressor) = crate::context::compressor::ContextCompressor::new() {
             // First attempt to compact older tool observations in-place
             compressor.compact_history(&mut self.messages, CONTEXT_WINDOW_PRUNE_THRESHOLD);

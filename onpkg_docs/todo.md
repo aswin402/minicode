@@ -458,4 +458,14 @@
 - [x] Write unit & integration tests (`tests/integration_ast_transform.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (125 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 16: Multi-Turn Context Observation Deduplication (v0.0.25)
+
+- [x] Create `src/context/dedup.rs` with fingerprint hash tracking for repetitive file reads and identical compiler check logs
+- [x] Hook automatic observation deduplication into `prune_context()` in `src/agent/loop.rs`
+- [x] Register `prune_context` agent tool (expanding built-in tools to **45 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_context_dedup.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (128 tests passing, 0 clippy warnings)
+
 
