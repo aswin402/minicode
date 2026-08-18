@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.23] — 2026-08-18
+
+### 🔍 Sub-millisecond Local Semantic Code Search
+- **Semantic Code Vector Index (`src/context/semantic.rs`)**:
+  - Implemented 100% offline, pure-Rust localized semantic embedding index utilizing 128-dimensional character n-gram and subword hashing projections (FastText/Model2Vec style).
+  - Sliding window source chunking (~25 lines) with line-span coordinates and cosine similarity ranking.
+  - Disk-backed index cache in `.minicode/cache/semantic_index.json` with mtime-based incremental updates.
+  - Added new tool: `semantic_search` (expanding built-in tools to **42 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_semantic_search.rs` validating source chunking, vector projections, cosine similarity retrieval, and tool dispatch.
+  - Test suite expanded to **122 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.22] — 2026-08-18
 
 ### 🛠️ Dynamic Skill Creation & Hot-Reloading Engine

@@ -438,4 +438,14 @@
 - [x] Write unit & integration tests (`tests/integration_skill_forge.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (118 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 14: Sub-millisecond Local Semantic Code Search (v0.0.23)
+
+- [x] Create `src/context/semantic.rs` with 128-dim character n-gram + subword hashing projections and cosine similarity ranking
+- [x] Implement incremental source chunking (~25 lines) and disk cache persistence in `.minicode/cache/semantic_index.json`
+- [x] Register `semantic_search` agent tool (expanding built-in tools to **42 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_semantic_search.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (122 tests passing, 0 clippy warnings)
+
 

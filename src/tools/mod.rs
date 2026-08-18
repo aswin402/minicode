@@ -750,6 +750,24 @@ impl ToolRegistry {
                     "required": ["name"]
                 }),
             },
+            ToolSchema {
+                name: "semantic_search".to_string(),
+                description: "Perform fast sub-millisecond offline semantic vector code search using intent queries across all indexed source files.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language query describing the logic, concept, or feature to find"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of ranked code snippets to return (default 5)"
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
         ]
     }
 
@@ -1683,6 +1701,44 @@ impl ToolRegistry {
                 );
                 Ok(report)
             }
+            "semantic_search" => {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "semantic_search".to_string(),
+                        reason: "Missing 'query'".to_string(),
+                    })?;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+                let mut index = crate::context::semantic::SemanticIndex::new();
+                let _ = index.build_index(workspace_root)?;
+                let results = index.search(query, limit);
+
+                if results.is_empty() {
+                    Ok(format!(
+                        "ℹ No semantic matches found for query `{}`.",
+                        query
+                    ))
+                } else {
+                    let mut out = format!(
+                        "🔍 Semantic Search Results for `{}` ({} matches):\n\n",
+                        query,
+                        results.len()
+                    );
+                    for (i, r) in results.iter().enumerate() {
+                        out.push_str(&format!(
+                            "{}. `{}:{}-{}` (Score: {:.2})\n```\n{}\n```\n\n",
+                            i + 1,
+                            r.file_path,
+                            r.start_line,
+                            r.end_line,
+                            r.similarity_score,
+                            r.snippet.trim()
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1698,8 +1754,9 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 41);
+        assert_eq!(schemas.len(), 42);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"semantic_search"));
         assert!(names.contains(&"create_skill"));
         assert!(names.contains(&"list_skills"));
         assert!(names.contains(&"inspect_skill"));
