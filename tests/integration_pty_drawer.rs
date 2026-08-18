@@ -27,7 +27,10 @@ fn test_pty_drawer_state_lifecycle_and_input() {
     assert_eq!(drawer.input_buffer, "");
 
     drawer.append_output("hello from shell");
-    assert!(drawer.history_lines.iter().any(|l| l.contains("hello from shell")));
+    assert!(drawer
+        .history_lines
+        .iter()
+        .any(|l| l.contains("hello from shell")));
 
     drawer.clear();
     assert!(drawer.history_lines.iter().any(|l| l.contains("cleared")));

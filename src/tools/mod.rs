@@ -701,6 +701,55 @@ impl ToolRegistry {
                     "required": ["url"]
                 }),
             },
+            ToolSchema {
+                name: "create_skill".to_string(),
+                description: "Create and hot-load a new specialized skill package in .minicode/skills/<name>/SKILL.md with instructions and allowed tools.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Skill name identifier (e.g. 'rust-perf', 'db-migration')"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "High-level summary of what this skill does"
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Detailed multi-step markdown instructions, rules, and examples"
+                        },
+                        "allowed_tools": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional list of tool names this skill leverages"
+                        }
+                    },
+                    "required": ["name", "description", "instructions"]
+                }),
+            },
+            ToolSchema {
+                name: "list_skills".to_string(),
+                description: "List all discovered skills across workspace and user skill directories.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolSchema {
+                name: "inspect_skill".to_string(),
+                description: "Inspect and read full markdown instructions and execution rules for a specific skill by name.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the skill to inspect"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
         ]
     }
 
@@ -1573,6 +1622,67 @@ impl ToolRegistry {
                     crate::tools::browser::BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
             }
+            "create_skill" => {
+                let name = args["name"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "create_skill".to_string(),
+                        reason: "Missing 'name'".to_string(),
+                    })?;
+                let description =
+                    args["description"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "create_skill".to_string(),
+                            reason: "Missing 'description'".to_string(),
+                        })?;
+                let instructions =
+                    args["instructions"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "create_skill".to_string(),
+                            reason: "Missing 'instructions'".to_string(),
+                        })?;
+                let allowed_tools: Vec<String> = args["allowed_tools"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let res = crate::context::skill_forge::SkillForge::create_skill(
+                    workspace_root,
+                    name,
+                    description,
+                    instructions,
+                    &allowed_tools,
+                )?;
+                Ok(res)
+            }
+            "list_skills" => {
+                let res = crate::context::skill_forge::SkillForge::list_all_skills(workspace_root)?;
+                Ok(res)
+            }
+            "inspect_skill" => {
+                let name = args["name"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "inspect_skill".to_string(),
+                        reason: "Missing 'name'".to_string(),
+                    })?;
+                let skill =
+                    crate::context::skill_forge::SkillForge::inspect_skill(workspace_root, name)?;
+                let report = format!(
+                    "🛠️ Skill: **{}**\n📁 Path: `{}`\n📝 Description: _{}_\n\n## Instructions\n\n{}",
+                    skill.name,
+                    skill.path.display(),
+                    skill.description,
+                    skill.instructions
+                );
+                Ok(report)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1588,8 +1698,11 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 38);
+        assert_eq!(schemas.len(), 41);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"create_skill"));
+        assert!(names.contains(&"list_skills"));
+        assert!(names.contains(&"inspect_skill"));
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"lsp_diagnostics"));

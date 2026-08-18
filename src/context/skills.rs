@@ -9,10 +9,87 @@ pub struct Skill {
     pub description: String,
     pub path: PathBuf,
     pub content: String,
+    pub instructions: String,
 }
 
 #[allow(dead_code)]
 pub struct SkillLoader;
+
+/// Top-level convenience wrapper for skill discovery.
+pub fn discover_skills(workspace_root: &Path) -> Vec<Skill> {
+    SkillLoader::discover_skills(workspace_root).unwrap_or_default()
+}
+
+/// Parses raw markdown with optional YAML frontmatter into a structured `Skill`.
+pub fn parse_skill_markdown(content: &str, path: &Path) -> Result<Skill> {
+    let (frontmatter_name, desc, instructions) = if let Some(stripped) = content.strip_prefix("---")
+    {
+        if let Some(end_idx) = stripped.find("---") {
+            let frontmatter = &stripped[..end_idx];
+            let body = stripped[end_idx + 3..].trim();
+            let name = extract_frontmatter_field(frontmatter, "name");
+            let desc = extract_frontmatter_field(frontmatter, "description")
+                .unwrap_or_else(|| "Custom workspace skill".to_string());
+            (name, desc, body.to_string())
+        } else {
+            (
+                None,
+                "Custom workspace skill".to_string(),
+                content.to_string(),
+            )
+        }
+    } else {
+        (
+            None,
+            "Custom workspace skill".to_string(),
+            content.to_string(),
+        )
+    };
+
+    let name = frontmatter_name.unwrap_or_else(|| {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unnamed-skill".to_string());
+        if stem.eq_ignore_ascii_case("skill") {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(stem)
+        } else {
+            stem
+        }
+    });
+
+    Ok(Skill {
+        name,
+        description: desc,
+        path: path.to_path_buf(),
+        content: content.to_string(),
+        instructions,
+    })
+}
+
+/// Extracts a string field value from a YAML frontmatter block.
+pub fn extract_frontmatter_field(frontmatter: &str, field: &str) -> Option<String> {
+    let prefix = format!("{}:", field);
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&prefix) {
+            let val = trimmed.trim_start_matches(&prefix).trim();
+            let clean = val.trim_matches('"').trim_matches('\'').trim();
+            if !clean.is_empty() {
+                return Some(clean.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extracts the `description:` field value from a YAML frontmatter block.
+pub fn extract_frontmatter_description(frontmatter: &str) -> Option<String> {
+    extract_frontmatter_field(frontmatter, "description")
+}
 
 impl SkillLoader {
     /// Discovers all available guidelines, agent rules, and skill definitions in the workspace.
@@ -29,6 +106,7 @@ impl SkillLoader {
                     description: "Repository rules, architecture instructions, and conventions"
                         .to_string(),
                     path: agents_md,
+                    instructions: content.clone(),
                     content,
                 });
             }
@@ -46,6 +124,7 @@ impl SkillLoader {
                     name: "root-skill".to_string(),
                     description: "Root skill instructions for current workspace".to_string(),
                     path: skill_md,
+                    instructions: content.clone(),
                     content,
                 });
             }
@@ -57,35 +136,73 @@ impl SkillLoader {
 
         // 3. Scan .skills/ directory
         let skills_dir = workspace_root.join(SKILLS_DIR_NAME);
-        match std::fs::read_dir(&skills_dir) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                        match std::fs::read_to_string(&path) {
-                            Ok(content) => {
-                                let name = path
-                                    .file_stem()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string();
-                                skills.push(Skill {
-                                    name,
-                                    description: "Workspace skill definition".to_string(),
-                                    path,
-                                    content,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::warn!(path = %path.display(), error = %e, "Failed to read skill file");
-                            }
-                        }
+        if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let name = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let desc = extract_frontmatter_description(&content)
+                            .unwrap_or_else(|| "Workspace skill definition".to_string());
+                        skills.push(Skill {
+                            name,
+                            description: desc,
+                            path,
+                            instructions: content.clone(),
+                            content,
+                        });
                     }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(path = %skills_dir.display(), error = %e, "Failed to read .skills directory");
+        }
+
+        // 4. Scan .minicode/skills/ directory
+        let minicode_skills_dir = workspace_root.join(".minicode").join("skills");
+        if let Ok(entries) = std::fs::read_dir(&minicode_skills_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let skill_md = path.join("SKILL.md");
+                    if skill_md.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&skill_md) {
+                            let name = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            let desc = extract_frontmatter_description(&content)
+                                .unwrap_or_else(|| "Dynamic repository skill".to_string());
+                            skills.push(Skill {
+                                name,
+                                description: desc,
+                                path: skill_md,
+                                instructions: content.clone(),
+                                content,
+                            });
+                        }
+                    }
+                } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let name = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let desc = extract_frontmatter_description(&content)
+                            .unwrap_or_else(|| "Dynamic repository skill".to_string());
+                        skills.push(Skill {
+                            name,
+                            description: desc,
+                            path,
+                            instructions: content.clone(),
+                            content,
+                        });
+                    }
+                }
             }
         }
 

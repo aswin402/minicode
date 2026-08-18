@@ -428,4 +428,14 @@
 - [x] Write unit & integration tests (`tests/integration_pty_drawer.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (115 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 13: Dynamic Skill Creation & Hot-Reloading Engine (v0.0.22)
+
+- [x] Create `src/context/skill_forge.rs` for dynamic skill creation, YAML frontmatter formatting, and hot-reload discovery
+- [x] Update `src/context/skills.rs` with frontmatter field parser and `.minicode/skills/` directory traversal
+- [x] Register 3 new agent tools: `create_skill`, `list_skills`, `inspect_skill` (expanding built-in tools to **41 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_skill_forge.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (118 tests passing, 0 clippy warnings)
+
 

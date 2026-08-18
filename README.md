@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-115_Passing-61ffca?style=flat-square" alt="Tests" /></a>
+  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-118_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
 
 ---
@@ -22,6 +22,7 @@
 ## ⚡ Highlights
 
 * **Dual-Mode Operation**: Seamlessly switch between an interactive full-screen **Ratatui TUI** for human developers and a machine-readable **NDJSON streaming protocol** (`--json-stream`) for AI agent orchestrators.
+* **Dynamic Skill Creation & Hot-Reloading**: Create, validate, and hot-load project-specific skill packages (`.minicode/skills/<name>/SKILL.md`) with YAML frontmatter without restarting the session.
 * **Interactive Embedded PTY Drawer (`Ctrl+T`)**: Embedded bottom terminal pane inside Ratatui with a 1000-line bounded ring buffer to run live shell commands, watch dev servers, and test REPLs without leaving the TUI.
 * **ARIA Web Browser & Local UI Dev Inspector**: Pure-Rust accessibility tree generator and page inspector that maps interactive elements into numbered references (`@e1`, `@e2`) to test and debug local web applications (`http://localhost:3000`).
 * **Cognitive Memory Decay & Repository Knowledge Wiki**: Biological Ebbinghaus exponential memory retention math combined with a persistent Markdown repository knowledge wiki (`.minicode/wiki/`) and automated index cataloging.
@@ -33,7 +34,7 @@
 * **Multi-Agent Worktree Orchestration**: Delegate tasks to isolated parallel AI subagents in dedicated Git Worktrees (`subagent/<id>`) without file lock race conditions.
 * **Aura Theme Design**: Sleek, distraction-free inline streaming timeline inspired by Dalton Menezes' [Aura Theme](https://github.com/daltonmenezes/aura-theme). Zero cluttered dashboard widgets.
 * **Universal Multi-Provider Engine**: Native support for **OpenRouter** (including free-tier models), **Google Gemini**, **OpenAI**, **DeepSeek**, **Groq**, **Together AI**, and local **Ollama/vLLM** endpoints with automatic rate-limit backoff retries.
-* **38 Built-in Agent Tools**: Specialized primitives across web browser ARIA trees, repository knowledge wikis, cognitive memory decay, sequential thinking DAGs, topological task DAGs, Actor-Critic validation, web search & scraping, file editing, LSP diagnostics & code navigation, AST repository mapping, fact memories, plan workflows, git operations, and subagent delegation.
+* **41 Built-in Agent Tools**: Specialized primitives across dynamic skill creation & inspection, web browser ARIA trees, repository knowledge wikis, cognitive memory decay, sequential thinking DAGs, topological task DAGs, Actor-Critic validation, web search & scraping, file editing, LSP diagnostics & code navigation, AST repository mapping, fact memories, plan workflows, git operations, and subagent delegation.
 * **AST Code Graph Engineering**: Multi-language Tree-sitter parsers (Rust, Python, JS, TS) with Petgraph dependency graphs and Personalized PageRank for precise repository mapping.
 * **OS-Level Kernel Sandbox**: Confinement powered by Linux kernel **Landlock**, workspace path canonicalization, and strict environment variable sanitization.
 * **Turn-Level Safety & Undo**: Automatic pre-mutation file snapshots with an instantaneous `/undo` rollback engine.

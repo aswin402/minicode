@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.22] — 2026-08-18
+
+### 🛠️ Dynamic Skill Creation & Hot-Reloading Engine
+- **Dynamic Skill Forge (`src/context/skill_forge.rs`)**:
+  - Allows autonomous agents and developers to forge, validate, and hot-load project-specific skill packages into `.minicode/skills/<name>/SKILL.md`.
+  - Automatic YAML frontmatter serialization with metadata (`name`, `description`, `version`, `author`, `allowed_tools`).
+  - Hot-reloading integration with `SkillDiscoverer` for zero-restart skill activation.
+  - Added 3 new tools: `create_skill`, `list_skills`, and `inspect_skill` (expanding built-in tools to **41 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_skill_forge.rs` validating skill creation, metadata parsing, directory inspection, and tool execution.
+  - Test suite expanded to **118 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.21] — 2026-08-16
 
 ### ⚡ Interactive Embedded PTY Terminal Drawer
