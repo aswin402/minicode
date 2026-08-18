@@ -816,6 +816,43 @@ impl ToolRegistry {
                     "properties": {}
                 }),
             },
+            ToolSchema {
+                name: "explore_hypotheses".to_string(),
+                description: "Spawn multiple speculative Git worktree branches to explore and compare alternative implementation hypotheses.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "hypotheses": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "List of alternative implementation descriptions to explore"
+                        }
+                    },
+                    "required": ["hypotheses"]
+                }),
+            },
+            ToolSchema {
+                name: "evaluate_branch".to_string(),
+                description: "Run automated compiler diagnostics and calculate fitness score for a speculative hypothesis branch.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "branch_id": {
+                            "type": "string",
+                            "description": "Identifier of the hypothesis branch (e.g. 'hyp_20260818_120000_b1')"
+                        }
+                    },
+                    "required": ["branch_id"]
+                }),
+            },
+            ToolSchema {
+                name: "select_best_branch".to_string(),
+                description: "Select the winning speculative branch with the highest fitness score and discard temporary alternative branches.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ]
     }
 
@@ -1867,6 +1904,85 @@ impl ToolRegistry {
             "prune_context" => {
                 Ok("✔ Multi-turn observation deduplication and pruning applied.".to_string())
             }
+            "explore_hypotheses" => {
+                let hypotheses: Vec<String> = args["hypotheses"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "explore_hypotheses".to_string(),
+                        reason: "Missing 'hypotheses' array".to_string(),
+                    })?;
+
+                let session = crate::agent::hypothesis::HypothesisEngine::create_branches(
+                    workspace_root,
+                    &hypotheses,
+                )
+                .await?;
+
+                let mut out = format!(
+                    "🌱 Spawned {} speculative branches (Session `{}`):\n\n",
+                    session.branches.len(),
+                    session.id
+                );
+                for (i, b) in session.branches.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{}. **Branch `{}`**:\n   _{}_\n   📁 Worktree: `{}`\n\n",
+                        i + 1,
+                        b.id,
+                        b.description,
+                        b.worktree_path.display()
+                    ));
+                }
+                out.push_str("👉 Use 'evaluate_branch' to score each branch or 'select_best_branch' to merge the winner.");
+                Ok(out)
+            }
+            "evaluate_branch" => {
+                let branch_id =
+                    args["branch_id"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "evaluate_branch".to_string(),
+                            reason: "Missing 'branch_id'".to_string(),
+                        })?;
+
+                let branch = crate::agent::hypothesis::HypothesisEngine::evaluate_branch(
+                    workspace_root,
+                    branch_id,
+                )
+                .await?;
+
+                let status_icon = if branch.compiler_clean { "✔" } else { "✗" };
+                let report = format!(
+                    "{} Branch `{}` Evaluation:\n• Fitness Score: {:.2}/1.00\n• Status: {:?}\n• Compiler Clean: {}\n• Errors: {}\n• Warnings: {}\n• Notes: {}",
+                    status_icon,
+                    branch.id,
+                    branch.fitness_score,
+                    branch.status,
+                    branch.compiler_clean,
+                    branch.compiler_errors,
+                    branch.compiler_warnings,
+                    branch.notes
+                );
+                Ok(report)
+            }
+            "select_best_branch" => {
+                let winner =
+                    crate::agent::hypothesis::HypothesisEngine::select_best_branch(workspace_root)
+                        .await?;
+
+                let report = format!(
+                    "🏆 Selected Winning Branch `{}`!\n• Description: {}\n• Fitness Score: {:.2}\n• Worktree: `{}`\n\nAll alternative speculative branches have been cleanly discarded.",
+                    winner.id,
+                    winner.description,
+                    winner.fitness_score,
+                    winner.worktree_path.display()
+                );
+                Ok(report)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1882,8 +1998,11 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 45);
+        assert_eq!(schemas.len(), 48);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"explore_hypotheses"));
+        assert!(names.contains(&"evaluate_branch"));
+        assert!(names.contains(&"select_best_branch"));
         assert!(names.contains(&"prune_context"));
         assert!(names.contains(&"ast_query"));
         assert!(names.contains(&"ast_extract_symbol"));

@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.26] — 2026-08-18
+
+### 🌲 Dynamic Multi-Branch Hypothesis Search & Speculative Rollout
+- **Hypothesis Engine (`src/agent/hypothesis.rs`)**:
+  - Implemented parallel speculative branch exploration in isolated Git worktrees for evaluating competing implementation strategies.
+  - Objective branch fitness evaluation using automated compiler diagnostics (`FastCompilerChecker`), error/warning counts, and normalized fitness scores ($0.0$–$1.0$).
+  - Automatic winning branch selection and instant clean-up of temporary alternative speculative worktrees.
+  - Added 3 new tools: `explore_hypotheses`, `evaluate_branch`, `select_best_branch` (expanding built-in tools to **48 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_hypothesis_tree.rs` validating multi-branch lifecycle, fitness scoring, winner selection, and tool dispatch.
+  - Test suite expanded to **131 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.25] — 2026-08-18
 
 ### 🗜️ Multi-Turn Context Observation Deduplication

@@ -1,4 +1,5 @@
 pub mod critic;
+pub mod hypothesis;
 pub mod r#loop;
 pub mod models;
 pub mod orchestrator;

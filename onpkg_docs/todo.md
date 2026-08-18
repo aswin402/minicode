@@ -468,4 +468,15 @@
 - [x] Write unit & integration tests (`tests/integration_context_dedup.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (128 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 17: Dynamic Multi-Branch Hypothesis Search & Speculative Rollout (v0.0.26)
+
+- [x] Create `src/agent/hypothesis.rs` for parallel speculative branch generation in isolated Git worktrees
+- [x] Implement automated compiler diagnostic scoring, test pass rates, and normalized branch fitness metrics (0.0–1.0)
+- [x] Implement optimal branch selection with automatic cleanup of rejected speculative branches
+- [x] Register 3 new agent tools: `explore_hypotheses`, `evaluate_branch`, `select_best_branch` (expanding built-in tools to **48 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_hypothesis_tree.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (131 tests passing, 0 clippy warnings)
+
 
