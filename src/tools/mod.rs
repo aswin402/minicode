@@ -768,6 +768,46 @@ impl ToolRegistry {
                     "required": ["query"]
                 }),
             },
+            ToolSchema {
+                name: "ast_query".to_string(),
+                description: "Query Tree-sitter AST syntax tree nodes for a file (e.g. functions, structs, classes, impls) with optional kind and name filters.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Relative workspace file path (e.g. 'src/app.rs', 'server.ts', 'main.py')"
+                        },
+                        "node_kind": {
+                            "type": "string",
+                            "description": "Optional AST node kind filter (e.g. 'function_item', 'struct_item', 'class_definition')"
+                        },
+                        "name_filter": {
+                            "type": "string",
+                            "description": "Optional substring filter for symbol names"
+                        }
+                    },
+                    "required": ["file_path"]
+                }),
+            },
+            ToolSchema {
+                name: "ast_extract_symbol".to_string(),
+                description: "Extract the exact AST code definition and line boundaries for a named symbol in a file.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Relative workspace file path"
+                        },
+                        "symbol_name": {
+                            "type": "string",
+                            "description": "Exact name of the function, struct, class, or method"
+                        }
+                    },
+                    "required": ["file_path", "symbol_name"]
+                }),
+            },
         ]
     }
 
@@ -1739,6 +1779,83 @@ impl ToolRegistry {
                     Ok(out)
                 }
             }
+            "ast_query" => {
+                let file_path =
+                    args["file_path"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_query".to_string(),
+                            reason: "Missing 'file_path'".to_string(),
+                        })?;
+                let node_kind = args.get("node_kind").and_then(|v| v.as_str());
+                let name_filter = args.get("name_filter").and_then(|v| v.as_str());
+
+                let nodes = crate::context::ast_transform::AstTransformer::query_nodes(
+                    workspace_root,
+                    file_path,
+                    node_kind,
+                    name_filter,
+                )?;
+
+                if nodes.is_empty() {
+                    Ok(format!("ℹ No matching AST nodes found in `{}`.", file_path))
+                } else {
+                    let mut out = format!(
+                        "🌳 AST Query Results for `{}` ({} nodes):\n\n",
+                        file_path,
+                        nodes.len()
+                    );
+                    for (i, node) in nodes.iter().enumerate() {
+                        let pub_marker = if node.is_public { " [pub]" } else { "" };
+                        out.push_str(&format!(
+                            "{}. `{}` **{}**{} (Lines {}-{})\n```\n{}\n```\n\n",
+                            i + 1,
+                            node.kind,
+                            node.name,
+                            pub_marker,
+                            node.start_line,
+                            node.end_line,
+                            node.snippet.trim()
+                        ));
+                    }
+                    Ok(out)
+                }
+            }
+            "ast_extract_symbol" => {
+                let file_path =
+                    args["file_path"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_extract_symbol".to_string(),
+                            reason: "Missing 'file_path'".to_string(),
+                        })?;
+                let symbol_name =
+                    args["symbol_name"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_extract_symbol".to_string(),
+                            reason: "Missing 'symbol_name'".to_string(),
+                        })?;
+
+                let node = crate::context::ast_transform::AstTransformer::extract_symbol(
+                    workspace_root,
+                    file_path,
+                    symbol_name,
+                )?;
+
+                let pub_marker = if node.is_public { " [public]" } else { "" };
+                let report = format!(
+                    "🌳 Extracted AST Symbol: **{}**{} (Kind: `{}`)\n📁 File: `{}` (Lines {}-{})\n\n```\n{}\n```",
+                    node.name,
+                    pub_marker,
+                    node.kind,
+                    file_path,
+                    node.start_line,
+                    node.end_line,
+                    node.snippet.trim()
+                );
+                Ok(report)
+            }
             unknown => Err(ToolError::NotFound {
                 name: unknown.to_string(),
             }
@@ -1754,8 +1871,10 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 42);
+        assert_eq!(schemas.len(), 44);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"ast_query"));
+        assert!(names.contains(&"ast_extract_symbol"));
         assert!(names.contains(&"semantic_search"));
         assert!(names.contains(&"create_skill"));
         assert!(names.contains(&"list_skills"));

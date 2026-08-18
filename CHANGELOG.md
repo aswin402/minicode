@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.24] — 2026-08-18
+
+### 🌳 Tree-sitter AST Pattern Matching & Symbol Extraction
+- **AST Transformer Engine (`src/context/ast_transform.rs`)**:
+  - Implemented multi-language Tree-sitter AST structural query engine supporting Rust, Python, JavaScript, and TypeScript.
+  - Granular node kind and symbol name filtering with visibility modifier detection (`pub`, `export`).
+  - Exact symbol extraction with complete syntax body and line coordinates for precise AI context injection.
+  - Added 2 new tools: `ast_query` and `ast_extract_symbol` (expanding built-in tools to **44 agent tools total**).
+- **Integration Test Suite**:
+  - Added `tests/integration_ast_transform.rs` validating AST node queries, filtering, and symbol extraction across Rust, Python, and TypeScript.
+  - Test suite expanded to **125 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.23] — 2026-08-18
 
 ### 🔍 Sub-millisecond Local Semantic Code Search

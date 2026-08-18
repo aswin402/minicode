@@ -448,4 +448,14 @@
 - [x] Write unit & integration tests (`tests/integration_semantic_search.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (122 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 15: Tree-sitter AST Pattern Matching & Symbol Extraction (v0.0.24)
+
+- [x] Create `src/context/ast_transform.rs` with multi-language Tree-sitter AST query engine (Rust, Python, JS, TS)
+- [x] Implement node kind and name filtering, visibility modifier detection, and symbol body extraction
+- [x] Register 2 new agent tools: `ast_query` and `ast_extract_symbol` (expanding built-in tools to **44 agent tools total**)
+- [x] Write unit & integration tests (`tests/integration_ast_transform.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (125 tests passing, 0 clippy warnings)
+
 
