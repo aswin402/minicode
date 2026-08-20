@@ -129,7 +129,7 @@ impl StatusWidgets {
                     .fg(ctx.theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(ctx.theme.muted)),
+            Span::styled(" | ", Style::default().fg(ctx.theme.muted)),
             Span::styled(display_path, Style::default().fg(ctx.theme.info)),
         ];
 
