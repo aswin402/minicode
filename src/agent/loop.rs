@@ -409,6 +409,13 @@ impl AgentLoop {
                         .await
                     };
 
+                    // === Secret Redaction: sanitize tool output before any sink ===
+                    let tool_result = crate::agent::types::ToolResult {
+                        output: crate::sandbox::redact::SecretRedactor::global()
+                            .redact(&tool_result.output),
+                        ..tool_result
+                    };
+
                     let res_event = AgentEvent::ToolResult {
                         turn_id,
                         tool_id: tool_result.tool_id.clone(),
@@ -450,6 +457,8 @@ impl AgentLoop {
                                 diag_report.errors.len(),
                                 diag_report.format_for_agent(&self.workspace_root, 6)
                             );
+                            let error_feedback = crate::sandbox::redact::SecretRedactor::global()
+                                .redact(&error_feedback);
                             tracing::warn!("Compiler errors detected post-turn, triggering auto-healing attempt #{}", heal_attempts);
                             let status_event = AgentEvent::ToolResult {
                                 turn_id,

@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.36] — 2026-08-21
+
+### Zero-Leak Secret Redaction Proxy (`src/sandbox/redact.rs`)
+- **Centralized Secret Redaction Engine**:
+  - Created `SecretRedactor` with lazy-init `OnceLock` global instance.
+  - 16 compiled regex patterns covering: OpenAI (`sk-...`, `sk-proj-...`), Anthropic (`sk-ant-...`), GitHub (`ghp_`, `ghs_`, `github_pat_`), AWS (`AKIA...`, secret key assignments), Google (`AIza...`), Stripe (`sk_live_`, `rk_test_`), Slack (`xox[bpras]-...`), Bearer tokens, JWT tokens, PEM private key blocks, generic `api_key=...` assignments, connection string passwords, and hex secrets.
+  - Environment variable harvesting: scans host env at init for vars matching `SECRET_PATTERNS` and `BLOCKED_PREFIXES`, stores values for exact-match redaction.
+- **Single Hook Architecture (`src/agent/loop.rs`)**:
+  - Inserted redaction between tool dispatch and all three output sinks (UI timeline, session JSONL persistence, LLM conversation context).
+  - Covers all 51 built-in tools, MCP tool results, and auto-heal compiler output.
+  - No secret ever reaches the TUI display, log files, or the LLM API.
+- **Constants & Infrastructure**:
+  - Added `REDACTED_PLACEHOLDER` constant (`[REDACTED]`) in `src/constants.rs`.
+  - Registered `redact` module in `src/sandbox/mod.rs`.
+- **Verification & Testing**:
+  - Added 20 unit tests in `src/sandbox/redact.rs` covering all 16 patterns, false positive guards, empty input, multi-secret strings, and env exact-match with minimum length threshold.
+  - Added 7 integration tests in `tests/integration_secret_redaction.rs` simulating real tool output scenarios.
+  - All tests passing with zero compiler or clippy warnings.
+
 ## [0.0.35] — 2026-08-20
 
 ### 🎨 Interactive Live Theme Switcher Modal (`/theme`)

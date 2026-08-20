@@ -579,3 +579,22 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_theme_switcher.rs`
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (171 tests passing, 0 warnings)
+
+---
+
+## ✅ Phase 26: Zero-Leak Secret Redaction Proxy (v0.0.36)
+- [x] **Task 1: Secret Redaction Engine (`src/sandbox/redact.rs`)**
+  - [x] Implement `SecretRedactor` with `OnceLock` global lazy-init
+  - [x] Add 16 regex patterns for common secret formats (OpenAI, Anthropic, GitHub, AWS, Google, Stripe, Slack, Bearer, JWT, PEM, generic assignments, connection passwords, hex secrets)
+  - [x] Implement env-var harvesting from `SECRET_PATTERNS` and `BLOCKED_PREFIXES`
+  - [x] Add exact-match redaction with 8-char minimum length guard
+- [x] **Task 2: Central Redaction Hook (`src/agent/loop.rs`)**
+  - [x] Insert `SecretRedactor::global().redact()` after tool dispatch, before all 3 output sinks
+  - [x] Cover built-in tools (51), MCP tools, and auto-heal compiler output
+- [x] **Task 3: Constants & Module Registration**
+  - [x] Add `REDACTED_PLACEHOLDER` to `src/constants.rs`
+  - [x] Register `pub mod redact` in `src/sandbox/mod.rs`
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_secret_redaction.rs` (7 tests)
+  - [x] 20 unit tests in `src/sandbox/redact.rs`
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (all tests passing, 0 warnings)

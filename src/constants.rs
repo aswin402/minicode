@@ -283,6 +283,10 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "CLOUDFLARE_",
 ];
 
+// === Secret Redaction ===
+/// Placeholder text used to replace detected secrets in tool outputs
+pub const REDACTED_PLACEHOLDER: &str = "[REDACTED]";
+
 // === Timestamp Format ===
 /// Standard RFC-like timestamp format for progress and memory logs
 pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
