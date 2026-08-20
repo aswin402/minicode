@@ -22,6 +22,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "select or switch active LLM provider",
     },
     SlashCommand {
+        name: "/theme",
+        description: "switch TUI color theme (Aura, Tokyo Night, Nord, etc.)",
+    },
+    SlashCommand {
         name: "/undo",
         description: "revert files modified in the previous turn",
     },
@@ -312,5 +316,26 @@ impl<'a> InputDock<'a> {
 
         let p = Paragraph::new(lines).style(Style::default().bg(theme.bg_primary));
         frame.render_widget(p, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matching_slash_commands_suggests_theme() {
+        let mut dock = InputDock::new();
+        dock.textarea.insert_str("/th");
+        let matches = dock.matching_slash_commands();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "/theme");
+
+        let mut dock2 = InputDock::new();
+        dock2.textarea.insert_str("/");
+        let all_matches = dock2.matching_slash_commands();
+        assert!(all_matches.iter().any(|c| c.name == "/theme"));
+        assert!(all_matches.iter().any(|c| c.name == "/undo"));
+        assert!(all_matches.iter().any(|c| c.name == "/model"));
     }
 }

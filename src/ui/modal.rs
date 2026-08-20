@@ -634,6 +634,13 @@ impl ModalState {
                         ),
                     ]),
                     Line::from(vec![
+                        Span::styled("  /theme     ", Style::default().fg(theme.success)),
+                        Span::styled(
+                            "Switch TUI color theme palette interactively",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
                         Span::styled("  /undo      ", Style::default().fg(theme.success)),
                         Span::styled(
                             "Revert all file modifications from previous turn",
