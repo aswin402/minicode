@@ -148,7 +148,10 @@ impl<'a> App<'a> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            let working_secs = self.work_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+            let working_millis = self
+                .work_start
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
 
             // Render UI with Aura Theme aesthetic
             terminal.draw(|frame| {
@@ -183,7 +186,7 @@ impl<'a> App<'a> {
                 let timeline_ctx = TimelineContext {
                     theme: &self.theme,
                     is_working: self.is_working,
-                    working_secs,
+                    working_millis,
                     workspace: &self.workspace_root,
                     provider: &self.config.provider.default,
                     model: &self.config.provider.model,

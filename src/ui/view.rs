@@ -8,7 +8,10 @@ use ratatui::Frame;
 #[derive(Debug, Clone)]
 pub enum TimelineEntry {
     UserPrompt(String),
-    ThoughtBlock(String),
+    ThoughtBlock {
+        text: String,
+        duration_secs: Option<f64>,
+    },
     AssistantMarkdown(String),
     ToolStart {
         name: String,
@@ -41,6 +44,7 @@ pub struct TimelineView {
     pub selection_end: std::cell::Cell<Option<(u16, u16)>>,
     pub is_selecting: std::cell::Cell<bool>,
     pub in_thought_mode: bool,
+    pub thought_start: Option<std::time::Instant>,
     pub timeline_area: std::cell::Cell<Rect>,
     pub cached_plain_lines: std::cell::RefCell<Vec<String>>,
 }
@@ -48,7 +52,7 @@ pub struct TimelineView {
 pub struct TimelineContext<'a> {
     pub theme: &'a Theme,
     pub is_working: bool,
-    pub working_secs: u64,
+    pub working_millis: u64,
     pub workspace: &'a std::path::Path,
     pub provider: &'a str,
     pub model: &'a str,
@@ -71,6 +75,7 @@ impl TimelineView {
             selection_end: std::cell::Cell::new(None),
             is_selecting: std::cell::Cell::new(false),
             in_thought_mode: false,
+            thought_start: None,
             timeline_area: std::cell::Cell::new(Rect::default()),
             cached_plain_lines: std::cell::RefCell::new(Vec::new()),
         }
@@ -142,17 +147,25 @@ impl TimelineView {
     }
 
     pub fn append_thought_delta(&mut self, delta: &str) {
-        if let Some(TimelineEntry::ThoughtBlock(ref mut text)) = self.entries.last_mut() {
+        if self.thought_start.is_none() {
+            self.thought_start = Some(std::time::Instant::now());
+        }
+        if let Some(TimelineEntry::ThoughtBlock { text, .. }) = self.entries.last_mut() {
             text.push_str(delta);
         } else {
-            self.entries
-                .push(TimelineEntry::ThoughtBlock(delta.to_string()));
+            self.entries.push(TimelineEntry::ThoughtBlock {
+                text: delta.to_string(),
+                duration_secs: None,
+            });
         }
     }
 
     #[allow(dead_code)]
-    pub fn add_thought_block(&mut self, text: String) {
-        self.entries.push(TimelineEntry::ThoughtBlock(text));
+    pub fn add_thought_block(&mut self, text: String, duration_secs: Option<f64>) {
+        self.entries.push(TimelineEntry::ThoughtBlock {
+            text,
+            duration_secs,
+        });
     }
 
     pub fn append_assistant_delta(&mut self, delta: &str) {
@@ -166,6 +179,14 @@ impl TimelineView {
                         self.append_thought_delta(thought_chunk);
                     }
                     self.in_thought_mode = false;
+                    let dur = self.thought_start.take().map(|s| s.elapsed().as_secs_f64());
+                    if let Some(TimelineEntry::ThoughtBlock { duration_secs, .. }) =
+                        self.entries.last_mut()
+                    {
+                        if duration_secs.is_none() {
+                            *duration_secs = dur;
+                        }
+                    }
                     text = &text[end_idx + "</thought>".len()..];
                 } else {
                     self.append_thought_delta(text);
@@ -177,6 +198,7 @@ impl TimelineView {
                     self.append_assistant_text(prefix);
                 }
                 self.in_thought_mode = true;
+                self.thought_start = Some(std::time::Instant::now());
                 text = &text[start_idx + "<thought>".len()..];
             } else {
                 self.append_assistant_text(text);
@@ -507,13 +529,20 @@ impl TimelineView {
                     ]));
                     lines.push(Line::from(String::new()));
                 }
-                TimelineEntry::ThoughtBlock(thoughts) => {
-                    let trimmed = thoughts.trim();
+                TimelineEntry::ThoughtBlock {
+                    text,
+                    duration_secs,
+                } => {
+                    let trimmed = text.trim();
                     if !trimmed.is_empty() {
+                        let dur_display =
+                            duration_secs.unwrap_or_else(|| (ctx.working_millis as f64) / 1000.0);
+                        let header = format!("• Thought for {:.1}s", dur_display);
+
                         lines.push(Line::from(vec![Span::styled(
-                            "💭 Thinking Process:",
+                            header,
                             Style::default()
-                                .fg(theme.highlight)
+                                .fg(theme.muted)
                                 .add_modifier(Modifier::BOLD),
                         )]));
                         for t_line in trimmed.lines() {
@@ -522,7 +551,7 @@ impl TimelineView {
                                 Span::styled(
                                     t_line,
                                     Style::default()
-                                        .fg(theme.highlight)
+                                        .fg(theme.muted)
                                         .add_modifier(Modifier::ITALIC),
                                 ),
                             ]));
@@ -634,18 +663,19 @@ impl TimelineView {
         // Live working / thinking status spinner at bottom if running
         if ctx.is_working {
             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let frame_idx = (ctx.working_secs as usize * 3) % spinner_frames.len();
+            let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
             let spinner = spinner_frames[frame_idx];
+            let elapsed_secs = (ctx.working_millis as f64) / 1000.0;
 
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!("{} Thinking... ", spinner),
+                    format!("{} Thinking ", spinner),
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("({}s • esc to interrupt)", ctx.working_secs),
+                    format!("({:.1}s • esc to interrupt)", elapsed_secs),
                     Style::default().fg(theme.muted),
                 ),
             ]));

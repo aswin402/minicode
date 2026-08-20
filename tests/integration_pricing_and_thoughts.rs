@@ -25,7 +25,10 @@ fn test_pricing_calculator_all_major_providers() {
 fn test_timeline_thought_block_and_thinking_spinner_rendering() {
     let mut timeline = TimelineView::new();
     timeline.add_user_message("Refactor database".to_string());
-    timeline.add_thought_block("Analyzing schema dependencies in models.rs...".to_string());
+    timeline.add_thought_block(
+        "Analyzing schema dependencies in models.rs...".to_string(),
+        Some(1.5),
+    );
     timeline.append_assistant_delta("Here is the refactored database connection.");
 
     let theme = Theme::aura_dark();
@@ -33,7 +36,7 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
     let ctx = TimelineContext {
         theme: &theme,
         is_working: true,
-        working_secs: 2,
+        working_millis: 1500,
         workspace,
         provider: "anthropic",
         model: "claude-3-5-sonnet",
@@ -53,9 +56,9 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
     let combined = text_lines.join("\n");
 
     assert!(combined.contains("Refactor database"));
-    assert!(combined.contains("Thinking Process"));
+    assert!(combined.contains("• Thought for 1.5s"));
     assert!(combined.contains("Analyzing schema dependencies"));
-    assert!(combined.contains("Thinking..."));
+    assert!(combined.contains("Thinking"));
 }
 
 #[test]
@@ -68,9 +71,9 @@ fn test_cross_chunk_streaming_thoughts() {
     timeline.append_assistant_delta("Everything looks good to proceed!");
 
     assert_eq!(timeline.entries.len(), 2);
-    if let minicode::ui::view::TimelineEntry::ThoughtBlock(thoughts) = &timeline.entries[0] {
-        assert!(thoughts.contains("Step 1: Inspecting Cargo.toml"));
-        assert!(thoughts.contains("Step 2: Checking build targets."));
+    if let minicode::ui::view::TimelineEntry::ThoughtBlock { text, .. } = &timeline.entries[0] {
+        assert!(text.contains("Step 1: Inspecting Cargo.toml"));
+        assert!(text.contains("Step 2: Checking build targets."));
     } else {
         panic!("First entry should be ThoughtBlock");
     }

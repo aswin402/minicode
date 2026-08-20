@@ -171,7 +171,7 @@ impl StatusWidgets {
 
         let right_spans = vec![
             Span::styled(
-                format!("⚡ {} ", cost_str),
+                format!("{} ", cost_str),
                 Style::default()
                     .fg(ctx.theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
