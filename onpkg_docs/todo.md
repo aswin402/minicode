@@ -491,4 +491,53 @@
 - [x] Write unit tests (`test_timeline_scrolling_and_auto_scroll_resumption` in `src/ui/view.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (132 tests passing, 0 clippy warnings)
 
+---
 
+## ✅ Phase 19: Context-Aware AST Diffing & Deterministic Mock Provider (v0.0.29)
+- [x] Create `src/context/ast_diff.rs` for structural AST deltas and breaking change rule validation
+- [x] Create `src/agent/mock_provider.rs` & `src/agent/replay.rs` for deterministic simulation and offline regression replay
+- [x] Register `ast_diff` agent tool (expanding to 49 agent tools total)
+- [x] Pass all 144 tests 100% green
+
+---
+
+## ✅ Phase 20: Sentrux Architecture Governance & RTK Output Filter (v0.0.30)
+- [x] Create `src/context/governance.rs` for layer boundary checking, cyclic dependency detection (Tarjan SCC), and modularity scoring
+- [x] Create `src/tools/rtk_filter.rs` cutting 60–90% token waste from compiler and test outputs
+- [x] Register `check_architecture` agent tool (expanding to 50 agent tools milestone)
+- [x] Pass all 148 tests 100% green
+
+---
+
+## ✅ Phase 21: Task Complexity Scorer & Dollar Spend Telemetry (v0.0.31)
+- [x] Create `src/agent/complexity.rs` for task difficulty ($1$–$10$) and auto-decomposition planning
+- [x] Create `src/agent/pricing.rs` with per-model token pricing across Claude, GPT, Gemini, DeepSeek, and Ollama
+- [x] Register `score_task_complexity` agent tool (expanding to 51 agent tools total)
+- [x] Pass all 153 tests 100% green
+
+---
+
+## ✅ Phase 22: Fluid Thinking Animation & Configurable Cost Spend (v0.0.32)
+- [x] Implement smooth 80ms millisecond-based animated spinner in TUI timeline
+- [x] Implement clean, borderless `• Thought for {s}s` thought blocks in muted italics without emojis
+- [x] Add configurable `show_cost: bool` in `UiConfig` (defaulting to disabled for a clean status bar)
+- [x] Pass all 154 tests 100% green
+
+---
+
+## 🎯 Phase 23: Codebase Modularization & Refactoring (v0.0.33)
+- [ ] **Wave 1: Unified Workspace File Traversal (`src/context/walker.rs`)**
+  - [ ] Create canonical `WorkspaceWalker` with standardized exclusions (`target/`, `.git/`, `node_modules/`)
+  - [ ] Refactor `index.rs`, `governance.rs`, `complexity.rs`, and `repomap.rs` to eliminate duplicate directory walkers
+- [ ] **Wave 2: UI Timeline Decomposition & Selection Extraction**
+  - [ ] Extract mouse drag text selection and coordinate mapping into `src/ui/selection.rs`
+  - [ ] Separate timeline component renderers (`thought.rs`, `tool_card.rs`, `markdown.rs`)
+- [ ] **Wave 3: Modular Domain Tool Registry (`src/tools/registry/`)**
+  - [ ] Create `ToolModule` trait contract in `src/tools/traits.rs`
+  - [ ] Partition `src/tools/mod.rs` (2,160 LOC) into domain files: `fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `git_tools.rs`, `agent_tools.rs`, `context_tools.rs`, `web_tools.rs`
+  - [ ] Preserve 100% parameter signature parity across all 51 agent tools
+- [ ] **Wave 4: Centralization of Remaining Heuristic Constants**
+  - [ ] Move complexity risk weights and decay parameters to `src/constants.rs`
+- [ ] **Wave 5: Verification & Architectural Benchmark**
+  - [ ] Run full 154-test suite and verify 0 clippy warnings
+  - [ ] Execute Sentrux architecture sensor (`check_architecture`) to confirm zero layer violations
