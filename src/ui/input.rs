@@ -218,17 +218,11 @@ impl<'a> InputDock<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border).bg(theme.bg_primary))
-            .style(Style::default().bg(theme.bg_primary));
+            .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
+            .style(Style::default().bg(theme.bg_input));
 
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
-
-        // Fill inner area with shaded input background
-        let inner_fill = Block::default()
-            .borders(Borders::NONE)
-            .style(Style::default().bg(theme.bg_input));
-        frame.render_widget(inner_fill, inner_area);
 
         // Subdivide inner area to render "› " prompt and text editor inline
         let input_chunks = ratatui::layout::Layout::default()
