@@ -59,7 +59,7 @@ impl MarkdownRenderer {
             }
 
             // Markdown Table Row detection (e.g. "| Col 1 | Col 2 |")
-            if line.starts_with('|') && line.ends_with('|') {
+            if line.starts_with('|') && line.ends_with('|') && line.len() >= 2 {
                 if let Some(table_line) = Self::render_table_row(line, theme) {
                     lines.push(table_line);
                     continue;
@@ -101,17 +101,10 @@ impl MarkdownRenderer {
                 )];
                 spans.extend(Self::parse_inline(rest, theme));
                 lines.push(Line::from(spans));
-            } else if (line.starts_with("**") && (line.ends_with("**:") || line.ends_with("**")))
-                && !line[2..line.len() - 2].contains("**")
-            {
+            } else if let Some(header_title) = Self::parse_section_header(line) {
                 // Standalone bold section header (e.g., "**Recent Commits (latest 20):**" or "**Summary:**")
-                let content = if line.ends_with("**:") {
-                    format!("{}:", &line[2..line.len() - 3])
-                } else {
-                    line[2..line.len() - 2].to_string()
-                };
                 lines.push(Line::from(vec![Span::styled(
-                    content,
+                    header_title,
                     Style::default()
                         .fg(theme.highlight)
                         .add_modifier(Modifier::BOLD),
@@ -158,6 +151,25 @@ impl MarkdownRenderer {
         }
 
         lines
+    }
+
+    /// Safely detects and parses standalone bold section headers (e.g. "**Recent Commits:**" or "**Summary**")
+    fn parse_section_header(line: &str) -> Option<String> {
+        if line.len() < 5 {
+            return None;
+        }
+        if let Some(without_prefix) = line.strip_prefix("**") {
+            if let Some(inner) = without_prefix.strip_suffix("**:") {
+                if !inner.contains("**") && !inner.trim().is_empty() {
+                    return Some(format!("{}:", inner.trim()));
+                }
+            } else if let Some(inner) = without_prefix.strip_suffix("**") {
+                if !inner.contains("**") && !inner.trim().is_empty() {
+                    return Some(inner.trim().to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Helper to detect and parse numbered list items (e.g. "1. Item", "12. Item")
@@ -221,52 +233,46 @@ impl MarkdownRenderer {
         Some(Line::from(spans))
     }
 
-    /// Parses inline Markdown styling (bold, code, paths, URLs, metrics)
+    /// Parses inline Markdown styling (bold, code, paths, URLs, metrics) safely
     pub fn parse_inline<'a>(text: &'a str, theme: &'a Theme) -> Vec<Span<'a>> {
         let mut spans = Vec::new();
-        let mut idx = 0;
-        let bytes = text.as_bytes();
-        let len = bytes.len();
+        let mut current_buf = String::new();
 
-        let mut current_text = String::new();
-
-        let flush_current = |current: &mut String, spans: &mut Vec<Span<'a>>| {
-            if !current.is_empty() {
-                let token_spans = Self::highlight_tokens(current, theme);
+        let flush_buf = |buf: &mut String, spans: &mut Vec<Span<'a>>| {
+            if !buf.is_empty() {
+                let token_spans = Self::highlight_tokens(buf, theme);
                 spans.extend(token_spans);
-                current.clear();
+                buf.clear();
             }
         };
 
-        while idx < len {
+        let mut rem = text;
+        while !rem.is_empty() {
             // 1. Inline Code: `code`
-            if bytes[idx] == b'`' {
-                if let Some(end_rel) = text[idx + 1..].find('`') {
-                    let end_pos = idx + 1 + end_rel;
-                    flush_current(&mut current_text, &mut spans);
-                    let code_str = &text[idx + 1..end_pos];
+            if rem.starts_with('`') {
+                if let Some(end_idx) = rem[1..].find('`') {
+                    let code_content = &rem[1..1 + end_idx];
+                    flush_buf(&mut current_buf, &mut spans);
                     spans.push(Span::styled(
-                        code_str.to_string(),
+                        code_content.to_string(),
                         Style::default()
                             .fg(theme.info)
                             .bg(theme.bg_elevated)
                             .add_modifier(Modifier::BOLD),
                     ));
-                    idx = end_pos + 1;
+                    rem = &rem[1 + end_idx + 1..];
                     continue;
                 }
             }
 
             // 2. Bold: **bold**
-            if idx + 1 < len && bytes[idx] == b'*' && bytes[idx + 1] == b'*' {
-                if let Some(end_rel) = text[idx + 2..].find("**") {
-                    let end_pos = idx + 2 + end_rel;
-                    flush_current(&mut current_text, &mut spans);
-                    let bold_str = &text[idx + 2..end_pos];
+            if rem.starts_with("**") {
+                if let Some(end_idx) = rem[2..].find("**") {
+                    let bold_content = &rem[2..2 + end_idx];
+                    flush_buf(&mut current_buf, &mut spans);
 
-                    // Check if bold string is a version, keyword, or path
-                    let style = if bold_str.starts_with('v')
-                        && bold_str[1..]
+                    let style = if bold_content.starts_with('v')
+                        && bold_content[1..]
                             .chars()
                             .next()
                             .map(|c| c.is_ascii_digit())
@@ -275,9 +281,9 @@ impl MarkdownRenderer {
                         Style::default()
                             .fg(theme.warning)
                             .add_modifier(Modifier::BOLD)
-                    } else if bold_str.starts_with("feat")
-                        || bold_str.starts_with("fix")
-                        || bold_str.starts_with("refactor")
+                    } else if bold_content.starts_with("feat")
+                        || bold_content.starts_with("fix")
+                        || bold_content.starts_with("refactor")
                     {
                         Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
                     } else {
@@ -286,43 +292,48 @@ impl MarkdownRenderer {
                             .add_modifier(Modifier::BOLD)
                     };
 
-                    spans.push(Span::styled(bold_str.to_string(), style));
-                    idx = end_pos + 2;
+                    spans.push(Span::styled(bold_content.to_string(), style));
+                    rem = &rem[2 + end_idx + 2..];
                     continue;
                 }
             }
 
             // 3. Links: [text](url)
-            if bytes[idx] == b'[' {
-                if let Some(close_bracket) = text[idx + 1..].find(']') {
-                    let text_end = idx + 1 + close_bracket;
-                    if text_end + 1 < len && bytes[text_end + 1] == b'(' {
-                        if let Some(close_paren) = text[text_end + 2..].find(')') {
-                            let url_end = text_end + 2 + close_paren;
-                            flush_current(&mut current_text, &mut spans);
-                            let link_text = &text[idx + 1..text_end];
+            if let Some(after_open) = rem.strip_prefix('[') {
+                if let Some(bracket_end) = after_open.find(']') {
+                    let link_text = &after_open[..bracket_end];
+                    let after_bracket = &after_open[bracket_end + 1..];
+                    if let Some(after_paren) = after_bracket.strip_prefix('(') {
+                        if let Some(paren_end) = after_paren.find(')') {
+                            flush_buf(&mut current_buf, &mut spans);
                             spans.push(Span::styled(
                                 link_text.to_string(),
                                 Style::default()
                                     .fg(theme.info)
                                     .add_modifier(Modifier::UNDERLINED),
                             ));
-                            idx = url_end + 1;
+                            rem = &after_paren[paren_end + 1..];
                             continue;
                         }
                     }
                 }
             }
 
-            current_text.push(text[idx..].chars().next().unwrap_or(' '));
-            idx += text[idx..]
-                .chars()
-                .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(1);
+            // Safely consume one UTF-8 character
+            let mut char_indices = rem.char_indices();
+            if let Some((_, ch)) = char_indices.next() {
+                current_buf.push(ch);
+                if let Some((next_idx, _)) = char_indices.next() {
+                    rem = &rem[next_idx..];
+                } else {
+                    rem = "";
+                }
+            } else {
+                rem = "";
+            }
         }
 
-        flush_current(&mut current_text, &mut spans);
+        flush_buf(&mut current_buf, &mut spans);
         spans
     }
 
@@ -466,6 +477,35 @@ impl MarkdownRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_markdown_edge_cases_no_panic() {
+        let theme = Theme::default();
+        let edge_cases = [
+            "**",
+            "***",
+            "****",
+            "**:",
+            "*",
+            "`",
+            "``",
+            "```",
+            "[",
+            "[]",
+            "[](",
+            "[](url)",
+            "• **",
+            "1. **",
+            "🦀 emoji and UTF-8: › ✔ └ ─",
+            "",
+            "\n\n\n",
+        ];
+
+        for input in edge_cases {
+            let _ = MarkdownRenderer::render(input, &theme);
+            let _ = MarkdownRenderer::parse_inline(input, &theme);
+        }
+    }
 
     #[test]
     fn test_markdown_bold_and_code_spans() {
