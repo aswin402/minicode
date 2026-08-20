@@ -224,6 +224,12 @@ impl<'a> InputDock<'a> {
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
 
+        // Fill inner area with shaded input background
+        let inner_fill = Block::default()
+            .borders(Borders::NONE)
+            .style(Style::default().bg(theme.bg_input));
+        frame.render_widget(inner_fill, inner_area);
+
         // Subdivide inner area to render "› " prompt and text editor inline
         let input_chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Horizontal)
@@ -237,24 +243,24 @@ impl<'a> InputDock<'a> {
             "› ",
             Style::default()
                 .fg(theme.brand_accent)
-                .bg(theme.bg_primary)
+                .bg(theme.bg_input)
                 .add_modifier(Modifier::BOLD),
         );
         let prompt_widget = Paragraph::new(Line::from(vec![prompt_span]))
-            .style(Style::default().bg(theme.bg_primary));
+            .style(Style::default().bg(theme.bg_input));
         frame.render_widget(prompt_widget, input_chunks[0]);
 
         let mut cloned = self.textarea.clone();
-        cloned.set_style(Style::default().fg(theme.text_primary).bg(theme.bg_primary));
+        cloned.set_style(Style::default().fg(theme.text_primary).bg(theme.bg_input));
         cloned.set_cursor_style(Style::default().fg(theme.bg_primary).bg(theme.brand_accent));
         // Explicitly disable underline on cursor line
-        cloned.set_cursor_line_style(Style::default().bg(theme.bg_primary));
-        cloned.set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_primary));
+        cloned.set_cursor_line_style(Style::default().bg(theme.bg_input));
+        cloned.set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_input));
         cloned.set_placeholder_text("Ask minicode to do anything...");
         cloned.set_block(
             Block::default()
                 .borders(Borders::NONE)
-                .style(Style::default().bg(theme.bg_primary)),
+                .style(Style::default().bg(theme.bg_input)),
         );
 
         frame.render_widget(&cloned, input_chunks[1]);
