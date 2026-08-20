@@ -11,6 +11,7 @@ You are pair programming with the user to solve software engineering tasks, debu
 3. When modifying existing files, use precise search-and-replace blocks.
 4. Keep explanations minimal — let your code and actions speak.
 5. Adhere strictly to the language idioms and architecture conventions of the repository.
+6. Before calling tools or providing your final response, provide a brief 1-2 sentence thought process inside `<thought>...</thought>` tags.
 "#;
 
 pub struct PromptBuilder;

@@ -312,7 +312,11 @@ impl Provider for GeminiProvider {
                                                 // Handle text delta
                                                 if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                                     if !text.is_empty() {
-                                                        yield Ok(StreamChunk::Delta(text.to_string()));
+                                                        if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                                                            yield Ok(StreamChunk::Delta(format!("<thought>{}</thought>", text)));
+                                                        } else {
+                                                            yield Ok(StreamChunk::Delta(text.to_string()));
+                                                        }
                                                     }
                                                 }
 
@@ -625,7 +629,14 @@ impl Provider for OpenAiCompatibleProvider {
                                 if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
                                     for choice in choices {
                                         if let Some(delta) = choice.get("delta") {
-                                            // 1. Text Delta
+                                            // 1. Reasoning / Thought Delta (DeepSeek R1, OpenAI o1/o3, etc.)
+                                            if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|r| r.as_str()) {
+                                                if !reasoning.is_empty() {
+                                                    yield Ok(StreamChunk::Delta(format!("<thought>{}</thought>", reasoning)));
+                                                }
+                                            }
+
+                                            // 2. Text Delta
                                             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                                                 if !content.is_empty() {
                                                     yield Ok(StreamChunk::Delta(content.to_string()));

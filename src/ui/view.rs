@@ -40,6 +40,7 @@ pub struct TimelineView {
     pub selection_start: std::cell::Cell<Option<(u16, u16)>>,
     pub selection_end: std::cell::Cell<Option<(u16, u16)>>,
     pub is_selecting: std::cell::Cell<bool>,
+    pub in_thought_mode: bool,
     pub timeline_area: std::cell::Cell<Rect>,
     pub cached_plain_lines: std::cell::RefCell<Vec<String>>,
 }
@@ -69,6 +70,7 @@ impl TimelineView {
             selection_start: std::cell::Cell::new(None),
             selection_end: std::cell::Cell::new(None),
             is_selecting: std::cell::Cell::new(false),
+            in_thought_mode: false,
             timeline_area: std::cell::Cell::new(Rect::default()),
             cached_plain_lines: std::cell::RefCell::new(Vec::new()),
         }
@@ -154,29 +156,33 @@ impl TimelineView {
     }
 
     pub fn append_assistant_delta(&mut self, delta: &str) {
-        // If delta contains <thought>...</thought> tags, split them into ThoughtBlock and AssistantMarkdown
-        if delta.contains("<thought>") && delta.contains("</thought>") {
-            let mut remaining = delta;
-            while let Some(start) = remaining.find("<thought>") {
-                let prefix = &remaining[..start];
+        let mut text = delta;
+
+        while !text.is_empty() {
+            if self.in_thought_mode {
+                if let Some(end_idx) = text.find("</thought>") {
+                    let thought_chunk = &text[..end_idx];
+                    if !thought_chunk.is_empty() {
+                        self.append_thought_delta(thought_chunk);
+                    }
+                    self.in_thought_mode = false;
+                    text = &text[end_idx + "</thought>".len()..];
+                } else {
+                    self.append_thought_delta(text);
+                    break;
+                }
+            } else if let Some(start_idx) = text.find("<thought>") {
+                let prefix = &text[..start_idx];
                 if !prefix.is_empty() {
                     self.append_assistant_text(prefix);
                 }
-                if let Some(end) = remaining[start..].find("</thought>") {
-                    let thought_content = &remaining[start + "<thought>".len()..start + end];
-                    self.append_thought_delta(thought_content);
-                    remaining = &remaining[start + end + "</thought>".len()..];
-                } else {
-                    break;
-                }
+                self.in_thought_mode = true;
+                text = &text[start_idx + "<thought>".len()..];
+            } else {
+                self.append_assistant_text(text);
+                break;
             }
-            if !remaining.is_empty() {
-                self.append_assistant_text(remaining);
-            }
-            return;
         }
-
-        self.append_assistant_text(delta);
     }
 
     fn append_assistant_text(&mut self, text: &str) {

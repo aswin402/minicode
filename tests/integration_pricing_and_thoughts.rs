@@ -57,3 +57,27 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
     assert!(combined.contains("Analyzing schema dependencies"));
     assert!(combined.contains("Thinking..."));
 }
+
+#[test]
+fn test_cross_chunk_streaming_thoughts() {
+    let mut timeline = TimelineView::new();
+    // Simulate streaming chunks split across tokens
+    timeline.append_assistant_delta("<thought>Step 1: ");
+    timeline.append_assistant_delta("Inspecting Cargo.toml for dependencies.\n");
+    timeline.append_assistant_delta("Step 2: Checking build targets.</thought>");
+    timeline.append_assistant_delta("Everything looks good to proceed!");
+
+    assert_eq!(timeline.entries.len(), 2);
+    if let minicode::ui::view::TimelineEntry::ThoughtBlock(thoughts) = &timeline.entries[0] {
+        assert!(thoughts.contains("Step 1: Inspecting Cargo.toml"));
+        assert!(thoughts.contains("Step 2: Checking build targets."));
+    } else {
+        panic!("First entry should be ThoughtBlock");
+    }
+
+    if let minicode::ui::view::TimelineEntry::AssistantMarkdown(text) = &timeline.entries[1] {
+        assert_eq!(text, "Everything looks good to proceed!");
+    } else {
+        panic!("Second entry should be AssistantMarkdown");
+    }
+}
