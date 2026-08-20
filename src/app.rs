@@ -169,11 +169,12 @@ impl<'a> App<'a> {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Min(4),              // Streaming Timeline
-                        Constraint::Length(1),           // Top Spacer / Margin above input dock
-                        Constraint::Length(hint_height), // Autocomplete hint rows
-                        Constraint::Length(3),           // Input Dock
-                        Constraint::Length(1),           // Minimal Bottom Status Line
+                        Constraint::Min(4),              // 0: Streaming Timeline
+                        Constraint::Length(1),           // 1: Top Spacer / Margin above input dock
+                        Constraint::Length(hint_height), // 2: Autocomplete hint rows
+                        Constraint::Length(3),           // 3: Input Dock
+                        Constraint::Length(1), // 4: Bottom Spacer / Margin below input dock
+                        Constraint::Length(1), // 5: Minimal Bottom Status Line
                     ])
                     .split(frame.area());
 
@@ -215,7 +216,7 @@ impl<'a> App<'a> {
                     max_context,
                 };
 
-                StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+                StatusWidgets::render_bottom_bar(frame, chunks[5], &status_ctx);
 
                 // Render Modal Overlay if active
                 if self.modal.is_active() {
