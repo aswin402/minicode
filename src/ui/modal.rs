@@ -55,6 +55,10 @@ pub enum ModalState {
         checkpoints: Vec<TurnCheckpointInfo>,
         selected_index: usize,
     },
+    ThemeSelect {
+        themes: Vec<crate::ui::theme::ThemeInfo>,
+        selected_index: usize,
+    },
     Help,
     Approval(crate::ui::approval::ApprovalModalState),
 }
@@ -112,6 +116,18 @@ impl ModalState {
         ModalState::UndoCheckpoint {
             checkpoints,
             selected_index: 0,
+        }
+    }
+
+    pub fn new_theme_select(active_theme_id: &str) -> Self {
+        let themes = crate::ui::theme::Theme::list_themes();
+        let selected_index = themes
+            .iter()
+            .position(|t| t.id == active_theme_id || active_theme_id.starts_with(&t.id))
+            .unwrap_or(0);
+        ModalState::ThemeSelect {
+            themes,
+            selected_index,
         }
     }
 
@@ -470,6 +486,115 @@ impl ModalState {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("Revert   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Esc] ",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
+                ];
+                let footer_area = Rect {
+                    x: popup_area.x + 2,
+                    y: popup_area.y + popup_area.height.saturating_sub(2),
+                    width: popup_area.width.saturating_sub(4),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
+                    footer_area,
+                );
+            }
+            ModalState::ThemeSelect {
+                themes,
+                selected_index,
+            } => {
+                let popup_area = centered_rect(74, 68, area);
+                frame.render_widget(Clear, popup_area);
+
+                let mut lines = Vec::new();
+                lines.push(Line::from(""));
+
+                let max_visible = 5;
+                let scroll_offset = if *selected_index >= max_visible {
+                    *selected_index - max_visible + 1
+                } else {
+                    0
+                };
+                let visible_themes = themes.iter().skip(scroll_offset).take(max_visible);
+
+                for (idx_rel, t) in visible_themes.enumerate() {
+                    let idx = scroll_offset + idx_rel;
+                    let is_selected = idx == *selected_index;
+
+                    let cursor = if is_selected { "  ❯ " } else { "    " };
+                    let title_style = if is_selected {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    };
+
+                    let mut header_spans = vec![
+                        Span::styled(
+                            cursor,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
+                        Span::styled(format!("{:<22}", t.name), title_style),
+                    ];
+
+                    for c in &t.swatches {
+                        header_spans.push(Span::styled(" ■", Style::default().fg(*c)));
+                    }
+
+                    lines.push(Line::from(header_spans));
+
+                    let desc_style = if is_selected {
+                        Style::default().fg(theme.text_primary)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("        ", Style::default()),
+                        Span::styled(&t.description, desc_style),
+                    ]));
+
+                    lines.push(Line::from(""));
+                }
+
+                let block = Block::default()
+                    .title(" Theme Switcher ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let p = Paragraph::new(lines).block(block);
+                frame.render_widget(p, popup_area);
+
+                let footer_text = vec![
+                    Span::styled(
+                        "[↑/↓] ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Select   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Enter] ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Apply & Save   ", Style::default().fg(theme.text_primary)),
                     Span::styled(
                         "[Esc] ",
                         Style::default()

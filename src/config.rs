@@ -430,6 +430,40 @@ impl Config {
         Ok(config)
     }
 
+    /// Saves the current configuration to disk:
+    /// If project-local `.minicode/config.toml` exists, updates it.
+    /// Otherwise writes to global `~/.config/minicode/config.toml`.
+    pub fn save(&self, workspace_root: Option<&Path>) -> Result<()> {
+        let path = if let Some(ws) = workspace_root {
+            let ws_minicode_dir = ws.join(crate::constants::WORKSPACE_DIR_NAME);
+            let local_path = ws_minicode_dir.join(crate::constants::CONFIG_FILE_NAME);
+            if local_path.exists() || ws_minicode_dir.exists() {
+                local_path
+            } else if let Some(global_dir) = dirs::config_dir() {
+                global_dir
+                    .join(crate::constants::CONFIG_DIR_NAME)
+                    .join(crate::constants::CONFIG_FILE_NAME)
+            } else {
+                local_path
+            }
+        } else if let Some(global_dir) = dirs::config_dir() {
+            global_dir
+                .join(crate::constants::CONFIG_DIR_NAME)
+                .join(crate::constants::CONFIG_FILE_NAME)
+        } else {
+            return Ok(());
+        };
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let toml_str = toml::to_string_pretty(self).map_err(ConfigError::TomlSerialize)?;
+        std::fs::write(&path, toml_str)?;
+        tracing::info!(path = %path.display(), "Configuration saved to disk");
+        Ok(())
+    }
+
     fn load_mcp_json_if_exists(&mut self, path: &Path) {
         match std::fs::read_to_string(path) {
             Ok(content) => match serde_json::from_str::<McpJsonFile>(&content) {

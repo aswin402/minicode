@@ -562,3 +562,20 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_undo_checkpoint.rs`
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (168 tests passing, 0 warnings)
+
+---
+
+## ✅ Phase 25: Interactive Live Theme Switcher Modal (`/theme`) (v0.0.35)
+- [x] **Task 1: Theme Palette Extension (`src/ui/theme.rs`)**
+  - [x] Implement `tokyo_night()`, `catppuccin_mocha()`, `nord_frost()`, `gruvbox_dark()`, `dracula()`, `cyberpunk_matrix()`
+  - [x] Add `ThemeInfo` struct and `Theme::list_themes()`
+  - [x] Update `Theme::detect` to resolve all theme aliases
+- [x] **Task 2: Theme Selector Modal UI (`src/ui/modal.rs`)**
+  - [x] Add `ModalState::ThemeSelect` enum variant and `new_theme_select` constructor
+  - [x] Render interactive list with colored swatch glyphs `■`, descriptions, and footer hints
+- [x] **Task 3: App Wiring & Persistence (`src/app.rs`)**
+  - [x] Hook `/theme` and `/themes` commands to instantiate and display `ThemeSelect`
+  - [x] Handle `Enter`, `Up`, `Down`, `Esc` in `handle_modal_key` with live theme switching and config save
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_theme_switcher.rs`
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (171 tests passing, 0 warnings)

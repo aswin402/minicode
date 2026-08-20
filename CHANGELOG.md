@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.35] — 2026-08-20
+
+### 🎨 Interactive Live Theme Switcher Modal (`/theme`)
+- **Developer Color Palettes (`src/ui/theme.rs`)**:
+  - Implemented full truecolor themes for top developer color schemes:
+    - **Aura Dark (Default)** (Purple & Mint)
+    - **Tokyo Night** (Midnight Blue & Lavender)
+    - **Catppuccin Mocha** (Soothing Mauve & Rosewater)
+    - **Nord Frost** (Arctic Slate & Polar Blue)
+    - **Gruvbox Dark** (Retro Warm Amber & Forest Green)
+    - **Dracula** (Vampire Purple & Emerald)
+    - **Cyberpunk Matrix** (Neon Emerald, Electric Cyan & Pitch Black)
+    - **Aura Soft Dark** & **ANSI 256 Fallback**
+- **Visual Modal Selector (`src/ui/modal.rs`, `src/app.rs`)**:
+  - Added `ModalState::ThemeSelect` rendered upon typing `/theme` or `/themes`.
+  - Displays live colored swatch glyphs (`■`), titles, and descriptions with keyboard navigation (`↑`/`↓` to select, `Enter` to apply & save, `Esc` to cancel).
+- **Live Switching & Automatic Persistence (`src/config.rs`, `src/app.rs`)**:
+  - Implemented `Config::save(workspace_root)` which writes changes back to `.minicode/config.toml` or `~/.config/minicode/config.toml`.
+  - Instantly recolors the running terminal interface on selection without restarting the application.
+- **Verification & Testing**:
+  - Added `tests/integration_theme_switcher.rs` testing palette uniqueness, theme detection, modal layout, and configuration file persistence.
+  - Expanded test suite to **171 tests passing 100% green** with zero compiler or clippy warnings.
+
+---
+
 ## [0.0.34] — 2026-08-20
 
 ### ⏪ Interactive Timeline Checkpoint Undo Engine (`/undo`)
