@@ -202,15 +202,20 @@ impl<'a> App<'a> {
                     .filter(|s| s.enabled)
                     .count();
 
-                StatusWidgets::render_bottom_bar(
-                    frame,
-                    chunks[4],
-                    &self.theme,
-                    &self.workspace_root,
-                    &self.config.provider.default,
-                    &self.config.provider.model,
-                    active_mcp_count,
-                );
+                let max_context =
+                    crate::agent::models::get_model_context_limit(&self.config.provider.model);
+
+                let status_ctx = crate::ui::StatusContext {
+                    theme: &self.theme,
+                    workspace: &self.workspace_root,
+                    provider: &self.config.provider.default,
+                    model: &self.config.provider.model,
+                    mcp_count: active_mcp_count,
+                    used_tokens: self.last_turn_tokens,
+                    max_context,
+                };
+
+                StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
 
                 // Render Modal Overlay if active
                 if self.modal.is_active() {

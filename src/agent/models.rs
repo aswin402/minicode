@@ -16,18 +16,19 @@ pub struct ModelInfo {
 /// Returns estimated max context window length in tokens for common models.
 pub fn get_model_context_limit(model: &str) -> usize {
     let lower = model.to_lowercase();
-    if lower.contains("gemini-2") || lower.contains("gemini-1.5") {
+    if lower.contains("gemini-2") || lower.contains("gemini-1.5") || lower.contains("1m") {
         1_000_000
-    } else if lower.contains("claude-3-7") || lower.contains("claude-3-5") {
+    } else if lower.contains("claude-3-7")
+        || lower.contains("claude-3-5")
+        || lower.contains("claude-3")
+        || lower.contains("sonnet")
+        || lower.contains("opus")
+    {
         200_000
-    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") {
-        128_000
-    } else if lower.contains("deepseek") || lower.contains("qwen") {
-        64_000
-    } else if lower.contains("llama-3") {
-        128_000
+    } else if lower.contains("gemma") {
+        8_192
     } else {
-        32_000
+        128_000
     }
 }
 

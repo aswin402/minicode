@@ -16,6 +16,6 @@ pub use diff_viewer::DiffViewer;
 pub use input::InputDock;
 pub use modal::ModalState;
 pub use pty_drawer::PtyDrawer;
-pub use status::StatusWidgets;
+pub use status::{StatusContext, StatusWidgets};
 pub use theme::Theme;
 pub use view::{TimelineContext, TimelineView};
