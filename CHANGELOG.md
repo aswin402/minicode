@@ -5,6 +5,24 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.32] — 2026-08-20
+
+### 🎨 Fluid Thinking Animation, Clean Thought Stream & Configurable Cost Spend
+- **Smooth 80ms Thinking Spinner (`src/ui/view.rs`, `src/app.rs`)**:
+  - Replaced integer second animation ticks with high-resolution millisecond tracking (`working_millis`), achieving fluid 80ms frame cycling without terminal lag or stutter.
+  - Formatted timer with subsecond precision: `⠋ Thinking (2.4s • esc to interrupt)`.
+- **Clean Minimalist Thought Blocks (`src/ui/view.rs`)**:
+  - Replaced vertical border box lines with clean two-space indented typography in Aura muted italics.
+  - Removed all emojis across the interface for sleek, distraction-free CLI aesthetic.
+  - Implemented exact thought completion header: `• Thought for {s}s` (e.g. `• Thought for 2.4s`, `• Thought for 21.0s`).
+  - Fixed `0.0s` duration calculation bug by linking thought completion directly to elapsed turn execution time with fallback to `working_millis`.
+- **Configurable Dollar Cost Spend Toggle (`src/config.rs`, `src/ui/status.rs`, `src/ui/configure.rs`)**:
+  - Made session dollar spend an opt-in configuration toggle in `UiConfig` (`show_cost: bool`, defaults to `false`).
+  - Keeps bottom status bar minimal and focused on context tokens (`4.2k / 128k`) by default.
+  - Added option `[5]` in the interactive configuration wizard (`cargo run -- --configure`) to easily toggle cost display on or off.
+
+---
+
 ## [0.0.31] — 2026-08-20
 
 ### 🎯 Task Complexity Scorer, Live Dollar Spend Telemetry & TUI Thinking Blocks
