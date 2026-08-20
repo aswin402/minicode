@@ -52,7 +52,7 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
         })
         .unwrap();
 
-    let text_lines = timeline.cached_plain_lines.borrow().clone();
+    let text_lines = timeline.selection.cached_plain_lines.borrow().clone();
     let combined = text_lines.join("\n");
 
     assert!(combined.contains("Refactor database"));

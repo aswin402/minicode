@@ -6,6 +6,7 @@ pub mod input;
 pub mod markdown;
 pub mod modal;
 pub mod pty_drawer;
+pub mod selection;
 pub mod status;
 pub mod theme;
 pub mod view;

@@ -4,7 +4,6 @@ use crate::constants::{
 };
 use crate::context::repomap::{RepoMapExtractor, SymbolDef};
 use crate::error::Result;
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -96,24 +95,15 @@ impl SymbolIndex {
 
         let mut extractor = RepoMapExtractor::new();
 
-        let walker = WalkBuilder::new(workspace_root)
-            .hidden(true)
-            .parents(true)
-            .git_ignore(true)
-            .build();
+        let files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(crate::constants::SUPPORTED_LANG_EXTENSIONS)
+            .collect_absolute_files();
 
-        for result in walker.flatten() {
-            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = result.path();
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
-                        if let Ok(file_symbols) = extractor.extract_file_symbols(path) {
-                            for sym in file_symbols {
-                                if sym.kind != "import" {
-                                    self.add_symbol(path.to_path_buf(), sym);
-                                }
-                            }
-                        }
+        for path in files {
+            if let Ok(file_symbols) = extractor.extract_file_symbols(&path) {
+                for sym in file_symbols {
+                    if sym.kind != "import" {
+                        self.add_symbol(path.clone(), sym);
                     }
                 }
             }

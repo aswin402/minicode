@@ -373,3 +373,34 @@ pub const GIT_LOCKFILES: &[&str] = &[
     "poetry.lock",
     "bun.lockb",
 ];
+
+// === Task Complexity & Cognitive Decay Tuning ===
+/// Keywords indicating high architectural or operational risk
+pub const COMPLEXITY_HIGH_RISK_TERMS: &[&str] = &[
+    "refactor", "migrate", "rewrite", "database", "schema", "auth", "security", "async", "lock",
+    "thread", "breaking", "api", "protocol",
+];
+
+/// Keywords indicating medium operational complexity
+pub const COMPLEXITY_MEDIUM_RISK_TERMS: &[&str] = &[
+    "add",
+    "create",
+    "implement",
+    "update",
+    "fix",
+    "test",
+    "support",
+    "tool",
+    "parse",
+    "format",
+    "render",
+    "endpoint",
+    "cache",
+];
+
+/// Transient memory half-life in seconds (1 hour)
+pub const MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS: f32 = 3600.0;
+/// Milestone memory half-life in seconds (7 days)
+pub const MEMORY_DECAY_MILESTONE_HALF_LIFE_SECS: f32 = 7.0 * 24.0 * 3600.0;
+/// Stability step multiplier per memory reinforcement
+pub const MEMORY_DECAY_STABILITY_STEP: f32 = 0.5;

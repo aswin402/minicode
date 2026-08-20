@@ -525,19 +525,18 @@
 
 ---
 
-## 🎯 Phase 23: Codebase Modularization & Refactoring (v0.0.33)
-- [ ] **Wave 1: Unified Workspace File Traversal (`src/context/walker.rs`)**
-  - [ ] Create canonical `WorkspaceWalker` with standardized exclusions (`target/`, `.git/`, `node_modules/`)
-  - [ ] Refactor `index.rs`, `governance.rs`, `complexity.rs`, and `repomap.rs` to eliminate duplicate directory walkers
-- [ ] **Wave 2: UI Timeline Decomposition & Selection Extraction**
-  - [ ] Extract mouse drag text selection and coordinate mapping into `src/ui/selection.rs`
-  - [ ] Separate timeline component renderers (`thought.rs`, `tool_card.rs`, `markdown.rs`)
-- [ ] **Wave 3: Modular Domain Tool Registry (`src/tools/registry/`)**
-  - [ ] Create `ToolModule` trait contract in `src/tools/traits.rs`
-  - [ ] Partition `src/tools/mod.rs` (2,160 LOC) into domain files: `fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `git_tools.rs`, `agent_tools.rs`, `context_tools.rs`, `web_tools.rs`
-  - [ ] Preserve 100% parameter signature parity across all 51 agent tools
-- [ ] **Wave 4: Centralization of Remaining Heuristic Constants**
-  - [ ] Move complexity risk weights and decay parameters to `src/constants.rs`
-- [ ] **Wave 5: Verification & Architectural Benchmark**
-  - [ ] Run full 154-test suite and verify 0 clippy warnings
-  - [ ] Execute Sentrux architecture sensor (`check_architecture`) to confirm zero layer violations
+## ✅ Phase 23: Codebase Modularization & Refactoring (v0.0.33)
+- [x] **Wave 1: Unified Workspace File Traversal (`src/context/walker.rs`)**
+  - [x] Create canonical `WorkspaceWalker` with standardized exclusions (`target/`, `.git/`, `node_modules/`, `.venv/`, `dist/`, `build/`)
+  - [x] Refactor `index.rs`, `governance.rs`, `complexity.rs`, and `semantic.rs` to eliminate duplicate directory walkers
+- [x] **Wave 2: UI Timeline Decomposition & Selection Extraction**
+  - [x] Extract mouse drag text selection, coordinate tracking, and visual highlights into `src/ui/selection.rs` (`TimelineSelection`)
+  - [x] Embed `TimelineSelection` into `src/ui/view.rs` with clean delegation
+- [x] **Wave 3: Modular Domain Tool Registry (`src/tools/registry/`)**
+  - [x] Partition monolithic `src/tools/mod.rs` (2,160 LOC) into 7 domain modules: `fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `git_tools.rs`, `agent_tools.rs`, `context_tools.rs`, `web_tools.rs`
+  - [x] Keep `src/tools/mod.rs` as clean facade router while preserving 100% parameter signature parity across all 51 agent tools
+- [x] **Wave 4: Centralization of Remaining Heuristic Constants**
+  - [x] Move task complexity risk keywords and memory decay parameters to `src/constants.rs`
+- [x] **Wave 5: Verification & Architectural Benchmark**
+  - [x] Run full test suite (163 tests passing, 0 clippy warnings)
+  - [x] Run `cargo fmt` and verify formatting

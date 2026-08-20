@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.33] — 2026-08-20
+
+### 🏗️ Codebase Modularization, Domain Tool Registry & Unified Traversal Engine
+- **Modular Domain Tool Registry (`src/tools/registry/`, `src/tools/mod.rs`)**:
+  - Decomposed the monolithic 2,160 LOC `src/tools/mod.rs` registry into 7 domain submodules:
+    - `fs_tools.rs` (`read_file`, `write_file`, `patch_file`)
+    - `exec_tools.rs` (`exec_cmd`)
+    - `search_tools.rs` (`grep_search`, `locate_symbol`, `semantic_search`, `ast_query`, `ast_extract_symbol`, `ast_diff`)
+    - `git_tools.rs` (`git_status`, `git_diff`, `git_commit`, `git_log`, `git_conflicts`, `create_pr`)
+    - `agent_tools.rs` (`delegate_task`, `create_task_dag`, `get_next_task`, `complete_task`, `critic_review`, `sequential_thinking`, `score_task_complexity`, `explore_hypotheses`, `evaluate_branch`, `select_best_branch`)
+    - `context_tools.rs` (`remember_fact`, `update_fact`, `forget_fact`, `create_plan`, `read_plan`, `log_finding`, `update_progress`, `archive_plan`, `impact_analysis`, `repo_map`, `lsp_diagnostics`, `lsp_goto_definition`, `lsp_find_references`, `wiki_write`, `wiki_read`, `wiki_search`, `create_skill`, `list_skills`, `inspect_skill`, `check_architecture`, `prune_context`)
+    - `web_tools.rs` (`fetch_or_browse`, `search_web`, `browser_navigate`, `browser_snapshot`)
+  - Preserved 100% parameter signature parity across all 51 built-in agent tools with a concise facade router.
+- **Unified Workspace File Traversal Engine (`src/context/walker.rs`)**:
+  - Created canonical `WorkspaceWalker` abstracting `ignore::WalkBuilder` traversal, `.gitignore` awareness, hidden file filtering, depth limits, and standardized exclusions (`target`, `.git`, `node_modules`, `.venv`, `dist`, `build`).
+  - Refactored `src/agent/complexity.rs`, `src/context/index.rs`, `src/context/governance.rs`, and `src/context/semantic.rs` to use the unified engine, eliminating over 100 lines of duplicated traversal code.
+- **TUI Selection Decomposition (`src/ui/selection.rs`, `src/ui/view.rs`)**:
+  - Extracted mouse drag text selection, coordinate tracking `(col, row)`, selection bounding boxes, multi-line visual highlight slicing, and clipboard copying into `TimelineSelection`.
+- **Centralized Heuristic Constants (`src/constants.rs`)**:
+  - Centralized task complexity risk keywords and cognitive memory decay parameters into `src/constants.rs`.
+- **Verification & Testing**:
+  - All 163 unit and integration tests passing 100% green with 0 clippy warnings and clean formatting.
+
+---
+
 ## [0.0.32] — 2026-08-20
 
 ### 🎨 Fluid Thinking Animation, Clean Thought Stream & Configurable Cost Spend

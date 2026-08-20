@@ -62,31 +62,15 @@ impl TaskComplexityScorer {
 
         // 1. Identify predicted relevant files from workspace
         let mut predicted_files = Vec::new();
-        let walker = ignore::WalkBuilder::new(workspace_root)
-            .hidden(true)
-            .git_ignore(true)
-            .build();
+        let all_files =
+            crate::context::walker::WorkspaceWalker::new(workspace_root).collect_relative_files();
 
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let rel_path = path
-                    .strip_prefix(workspace_root)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
-
-                if rel_path.starts_with("target/") || rel_path.starts_with(".git/") {
-                    continue;
-                }
-
-                // Check if file name matches any task word
-                let rel_lower = rel_path.to_lowercase();
-                for word in &words {
-                    if rel_lower.contains(word) && !predicted_files.contains(&rel_path) {
-                        predicted_files.push(rel_path.clone());
-                        break;
-                    }
+        for rel_path in all_files {
+            let rel_lower = rel_path.to_lowercase();
+            for word in &words {
+                if rel_lower.contains(word) && !predicted_files.contains(&rel_path) {
+                    predicted_files.push(rel_path.clone());
+                    break;
                 }
             }
         }
@@ -94,43 +78,12 @@ impl TaskComplexityScorer {
         // 2. Complexity heuristic scoring
         let mut raw_score = 1u32;
 
-        // Keywords indicating cross-cutting refactoring or high-risk changes
-        let high_risk_terms = [
-            "refactor",
-            "rewrite",
-            "migrate",
-            "database",
-            "security",
-            "auth",
-            "concurrency",
-            "async",
-            "protocol",
-            "architecture",
-            "breaking",
-            "all",
-        ];
-        let medium_risk_terms = [
-            "add",
-            "create",
-            "implement",
-            "update",
-            "fix",
-            "test",
-            "support",
-            "tool",
-            "parse",
-            "format",
-            "render",
-            "endpoint",
-            "cache",
-        ];
-
-        for term in &high_risk_terms {
+        for term in crate::constants::COMPLEXITY_HIGH_RISK_TERMS {
             if task_lower.contains(term) {
                 raw_score += 2;
             }
         }
-        for term in &medium_risk_terms {
+        for term in crate::constants::COMPLEXITY_MEDIUM_RISK_TERMS {
             if task_lower.contains(term) {
                 raw_score += 1;
             }

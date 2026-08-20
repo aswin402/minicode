@@ -11,5 +11,6 @@ pub mod repomap;
 pub mod semantic;
 pub mod skill_forge;
 pub mod skills;
+pub mod walker;
 pub mod wiki;
 pub mod working_memory;

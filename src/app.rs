@@ -416,7 +416,7 @@ impl<'a> App<'a> {
                                         self.work_start = None;
                                         self.timeline.add_status("⏹ Turn interrupted by user".to_string());
                                         continue;
-                                    } else if key_event.code == KeyCode::Esc && self.timeline.selection_start.get().is_some() {
+                                    } else if key_event.code == KeyCode::Esc && self.timeline.has_selection() {
                                         self.timeline.clear_selection();
                                         continue;
                                     } else {

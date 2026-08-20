@@ -1,5 +1,4 @@
-use crate::error::{Result, ToolError};
-use ignore::WalkBuilder;
+use crate::error::Result;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -91,45 +90,22 @@ impl ArchitectureGovernor {
         let mut file_imports: HashMap<String, HashSet<String>> = HashMap::new();
         let mut file_locs: HashMap<String, usize> = HashMap::new();
 
-        let walker = WalkBuilder::new(workspace_root)
-            .hidden(true)
-            .git_ignore(true)
-            .build();
+        let rel_files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(&["rs", "py", "ts", "js"])
+            .collect_relative_files();
 
-        for entry_res in walker {
-            let entry = entry_res.map_err(|e| ToolError::FileOp {
-                path: workspace_root.display().to_string(),
-                source: std::io::Error::other(e),
-            })?;
+        for rel_path in rel_files {
+            let full_path = workspace_root.join(&rel_path);
+            let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-            let path = entry.path();
-            if path.is_file() {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if matches!(ext, "rs" | "py" | "ts" | "js") {
-                    let rel_path = path
-                        .strip_prefix(workspace_root)
-                        .unwrap_or(path)
-                        .to_string_lossy()
-                        .to_string();
+            if let Ok(content) = fs::read_to_string(&full_path) {
+                let lines = content.lines().count();
+                total_files += 1;
+                total_loc += lines;
+                file_locs.insert(rel_path.clone(), lines);
 
-                    // Skip target/ and hidden dirs
-                    if rel_path.starts_with("target/")
-                        || rel_path.starts_with(".git/")
-                        || rel_path.starts_with("node_modules/")
-                    {
-                        continue;
-                    }
-
-                    if let Ok(content) = fs::read_to_string(path) {
-                        let lines = content.lines().count();
-                        total_files += 1;
-                        total_loc += lines;
-                        file_locs.insert(rel_path.clone(), lines);
-
-                        let imports = Self::extract_imports(&rel_path, &content, ext);
-                        file_imports.insert(rel_path, imports);
-                    }
-                }
+                let imports = Self::extract_imports(&rel_path, &content, ext);
+                file_imports.insert(rel_path, imports);
             }
         }
 

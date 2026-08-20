@@ -110,40 +110,18 @@ impl SemanticIndex {
         let cache_path = Self::cache_path(workspace_root);
         self.load_cache(&cache_path);
 
-        let mut walker = ignore::WalkBuilder::new(workspace_root);
-        walker
-            .hidden(true)
-            .git_ignore(true)
-            .git_global(false)
-            .git_exclude(true);
-
         let mut indexed_count = 0;
+        let rel_files =
+            crate::context::walker::WorkspaceWalker::new(workspace_root).collect_relative_files();
 
-        for entry in walker.build().flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-
+        for rel_path in rel_files {
+            let path = workspace_root.join(&rel_path);
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !is_indexable_extension(ext) {
                 continue;
             }
 
-            let rel_path = path
-                .strip_prefix(workspace_root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
-
-            if rel_path.starts_with(".git")
-                || rel_path.starts_with(".minicode")
-                || rel_path.starts_with("target")
-            {
-                continue;
-            }
-
-            let metadata = match fs::metadata(path) {
+            let metadata = match fs::metadata(&path) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -165,7 +143,7 @@ impl SemanticIndex {
             self.chunks.retain(|c| c.file_path != rel_path);
 
             // Read and chunk file
-            if let Ok(content) = fs::read_to_string(path) {
+            if let Ok(content) = fs::read_to_string(&path) {
                 let chunks = chunk_source_code(&rel_path, &content);
                 self.chunks.extend(chunks);
                 self.file_hashes.insert(rel_path, mtime);

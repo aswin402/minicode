@@ -62,12 +62,13 @@ impl ScopedMemoryFact {
         }
 
         let elapsed_secs = current_time_secs.saturating_sub(self.last_accessed_at) as f32;
-        let stability_factor = 1.0 + (self.reinforcement_count as f32 * 0.5);
+        let stability_factor =
+            1.0 + (self.reinforcement_count as f32 * crate::constants::MEMORY_DECAY_STABILITY_STEP);
 
         let half_life_secs = match self.scope {
             MemoryScope::Permanent => f32::MAX,
-            MemoryScope::Milestone => 7.0 * 24.0 * 3600.0, // 7 days
-            MemoryScope::Transient => 3600.0,              // 60 minutes
+            MemoryScope::Milestone => crate::constants::MEMORY_DECAY_MILESTONE_HALF_LIFE_SECS,
+            MemoryScope::Transient => crate::constants::MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS,
         };
 
         // Exponential decay: R(t) = exp(-ln(2) * t / (half_life * stability))
