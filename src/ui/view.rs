@@ -36,6 +36,11 @@ pub struct TimelineView {
     pub scroll_offset: std::cell::Cell<u16>,
     pub auto_scroll: std::cell::Cell<bool>,
     pub max_scroll: std::cell::Cell<u16>,
+    pub selection_start: std::cell::Cell<Option<(u16, u16)>>,
+    pub selection_end: std::cell::Cell<Option<(u16, u16)>>,
+    pub is_selecting: std::cell::Cell<bool>,
+    pub timeline_area: std::cell::Cell<Rect>,
+    pub cached_plain_lines: std::cell::RefCell<Vec<String>>,
 }
 
 pub struct TimelineContext<'a> {
@@ -60,6 +65,11 @@ impl TimelineView {
             scroll_offset: std::cell::Cell::new(0),
             auto_scroll: std::cell::Cell::new(true),
             max_scroll: std::cell::Cell::new(0),
+            selection_start: std::cell::Cell::new(None),
+            selection_end: std::cell::Cell::new(None),
+            is_selecting: std::cell::Cell::new(false),
+            timeline_area: std::cell::Cell::new(Rect::default()),
+            cached_plain_lines: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -221,6 +231,117 @@ impl TimelineView {
             }
         }
         out
+    }
+
+    /// Handles mouse button press to initiate text selection
+    pub fn handle_mouse_down(&self, col: u16, row: u16) {
+        let area = self.timeline_area.get();
+        if col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
+        {
+            let char_col = col.saturating_sub(area.x);
+            let line_idx = row
+                .saturating_sub(area.y)
+                .saturating_add(self.scroll_offset.get());
+            self.selection_start.set(Some((char_col, line_idx)));
+            self.selection_end.set(Some((char_col, line_idx)));
+            self.is_selecting.set(true);
+        } else {
+            self.clear_selection();
+        }
+    }
+
+    /// Handles mouse drag to expand text selection range
+    pub fn handle_mouse_drag(&self, col: u16, row: u16) {
+        if !self.is_selecting.get() {
+            return;
+        }
+        let area = self.timeline_area.get();
+        let char_col = col.saturating_sub(area.x);
+        let line_idx = row
+            .saturating_sub(area.y)
+            .saturating_add(self.scroll_offset.get());
+        self.selection_end.set(Some((char_col, line_idx)));
+    }
+
+    /// Handles mouse button release: completes selection and auto-copies to system clipboard
+    pub fn handle_mouse_up(&self, col: u16, row: u16) -> Option<String> {
+        if !self.is_selecting.get() {
+            return None;
+        }
+        self.handle_mouse_drag(col, row);
+        self.is_selecting.set(false);
+
+        let extracted = self.extract_selected_text();
+        if let Some(ref text) = extracted {
+            if !text.trim().is_empty() {
+                crate::ui::clipboard::copy_to_clipboard(text);
+            }
+        }
+        extracted
+    }
+
+    /// Clears any active visual text selection
+    pub fn clear_selection(&self) {
+        self.selection_start.set(None);
+        self.selection_end.set(None);
+        self.is_selecting.set(false);
+    }
+
+    /// Extracts the plain string contents of the selected text region
+    pub fn extract_selected_text(&self) -> Option<String> {
+        let start = self.selection_start.get()?;
+        let end = self.selection_end.get()?;
+
+        if start == end {
+            return None;
+        }
+
+        let ((c1, r1), (c2, r2)) = if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
+            (start, end)
+        } else {
+            (end, start)
+        };
+
+        let plain_lines = self.cached_plain_lines.borrow();
+        if plain_lines.is_empty() {
+            return None;
+        }
+
+        let mut result = String::new();
+        for r in r1..=r2 {
+            if (r as usize) < plain_lines.len() {
+                let line = &plain_lines[r as usize];
+                let char_count = line.chars().count();
+
+                if r1 == r2 {
+                    let start_c = (c1 as usize).min(char_count);
+                    let end_c = (c2 as usize).min(char_count);
+                    if start_c < end_c {
+                        let sub: String =
+                            line.chars().skip(start_c).take(end_c - start_c).collect();
+                        result.push_str(&sub);
+                    }
+                } else if r == r1 {
+                    let start_c = (c1 as usize).min(char_count);
+                    let sub: String = line.chars().skip(start_c).collect();
+                    result.push_str(&sub);
+                    result.push('\n');
+                } else if r == r2 {
+                    let end_c = (c2 as usize).min(char_count);
+                    let sub: String = line.chars().take(end_c).collect();
+                    result.push_str(&sub);
+                } else {
+                    result.push_str(line);
+                    result.push('\n');
+                }
+            }
+        }
+
+        if result.trim().is_empty() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     fn extract_cmd_display(name: &str, args_json: &str) -> String {
@@ -456,6 +577,21 @@ impl TimelineView {
             ]));
         }
 
+        self.timeline_area.set(area);
+
+        // Cache plain text lines for mouse drag text extraction
+        {
+            let mut cache = self.cached_plain_lines.borrow_mut();
+            cache.clear();
+            for l in &lines {
+                let mut line_str = String::new();
+                for s in &l.spans {
+                    line_str.push_str(&s.content);
+                }
+                cache.push(line_str);
+            }
+        }
+
         let total_lines = lines.len() as u16;
         let viewport_height = area.height;
         let max_scroll = total_lines.saturating_sub(viewport_height);
@@ -525,5 +661,30 @@ mod tests {
         view.scroll_to_bottom();
         assert_eq!(view.scroll_offset.get(), 50);
         assert!(view.auto_scroll.get());
+    }
+
+    #[test]
+    fn test_timeline_mouse_selection_and_copy() {
+        let view = TimelineView::new();
+        view.timeline_area.set(Rect::new(0, 0, 80, 24));
+        *view.cached_plain_lines.borrow_mut() = vec![
+            "Line zero hello world".to_string(),
+            "Line one minicode assistant".to_string(),
+            "Line two testing auto copy".to_string(),
+        ];
+
+        // 1. Single line mouse drag selection
+        view.handle_mouse_down(5, 0); // "zero" starts around index 5
+        view.handle_mouse_drag(9, 0);
+        let extracted = view.handle_mouse_up(9, 0);
+        assert_eq!(extracted, Some("zero".to_string()));
+
+        // 2. Multi-line mouse drag selection
+        view.handle_mouse_down(5, 0);
+        view.handle_mouse_drag(8, 1);
+        let multi_extracted = view.handle_mouse_up(8, 1);
+        assert!(multi_extracted.is_some());
+        let text = multi_extracted.unwrap();
+        assert!(text.contains("zero hello world\nLine one"));
     }
 }

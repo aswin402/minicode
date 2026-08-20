@@ -7,7 +7,7 @@ use crate::session::undo::rollback_turn;
 use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineContext, TimelineView};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-    KeyModifiers, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -297,6 +297,31 @@ impl<'a> App<'a> {
                                             self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(3);
                                         } else {
                                             self.timeline.scroll_down(3);
+                                        }
+                                    }
+                                    MouseEventKind::Down(MouseButton::Left) => {
+                                        if !self.pty_drawer.is_open && !self.modal.is_active() {
+                                            self.timeline.handle_mouse_down(mouse_event.column, mouse_event.row);
+                                        }
+                                    }
+                                    MouseEventKind::Drag(MouseButton::Left) => {
+                                        if !self.pty_drawer.is_open && !self.modal.is_active() {
+                                            self.timeline.handle_mouse_drag(mouse_event.column, mouse_event.row);
+                                        }
+                                    }
+                                    MouseEventKind::Up(MouseButton::Left) => {
+                                        if !self.pty_drawer.is_open && !self.modal.is_active() {
+                                            if let Some(selected_text) = self.timeline.handle_mouse_up(mouse_event.column, mouse_event.row) {
+                                                let trimmed = selected_text.trim();
+                                                if !trimmed.is_empty() {
+                                                    let preview = if trimmed.len() > 25 {
+                                                        format!("{}...", &trimmed[..trimmed.char_indices().map(|(i, _)| i).take(25).last().unwrap_or(0)])
+                                                    } else {
+                                                        trimmed.to_string()
+                                                    };
+                                                    self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                                }
+                                            }
                                         }
                                     }
                                     _ => {}
