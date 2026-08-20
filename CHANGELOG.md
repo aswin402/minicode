@@ -5,6 +5,27 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.28] — 2026-08-20
+
+### 📋 Live Mouse Drag Text Highlighting, Auto-Copy & Terminal Clipboard
+- **Mouse Drag Selection & Auto-Copy (`src/ui/view.rs`, `src/app.rs`, `src/ui/clipboard.rs`)**:
+  - Implemented OpenCode-style interactive text selection with real-time visual inverted highlighting (`Modifier::REVERSED`) across single-line, multi-line, and backwards mouse drags.
+  - Automatically copies highlighted text to the system clipboard upon mouse release with zero external OS dependencies using pure-Rust terminal `OSC 52` escape sequences.
+  - Displays instant inline confirmation toast showing the copied snippet preview (`✔ Copied to clipboard: "..."`).
+  - Added dedicated `/copy` and `/copy all` slash commands in `src/ui/input.rs` for quickly copying the latest assistant response or the complete formatted conversation transcript.
+  - Handled clean selection dismissal on <kbd>Esc</kbd>, single click, and prompt submission.
+- **Rich Terminal Markdown Syntax Highlighter (`src/ui/markdown.rs`, `src/ui/view.rs`)**:
+  - Panic-safe markdown tokenizer replacing unsafe byte slicing with UTF-8 character boundary scanning and `strip_prefix`/`strip_suffix`.
+  - Vibrant Aura theme token highlights for file paths (mint green `#61ffca`), headings (Aura purple/pink), metrics/latencies/versions (orange `#ffca85`), and structured tables.
+- **Status Bar Context & Layout Refinements (`src/ui/status.rs`, `src/app.rs`, `src/ui/input.rs`)**:
+  - Right-aligned token context counter (`4.2k / 128k`) with dynamic threshold color coding (<60% green, 60-85% warning orange, >85% red).
+  - Shaded elevated input dock (`theme.bg_input`) with rounded inner border and bottom margin spacer.
+- **Unit & Integration Tests**:
+  - Added `test_apply_selection_to_line`, `test_timeline_mouse_selection_and_copy`, `test_base64_encode`, `test_copy_to_clipboard`, `test_format_tokens`, and `test_markdown_edge_cases_no_panic`.
+  - Test suite expanded to **141 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.27] — 2026-08-20
 
 ### 🖱️ Smooth Mouse Wheel & Multi-Key TUI Timeline Scrolling
