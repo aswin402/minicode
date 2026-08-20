@@ -147,6 +147,9 @@ pub struct UiConfig {
 
     #[serde(default = "default_max_width")]
     pub max_width: usize,
+
+    #[serde(default)]
+    pub show_cost: bool,
 }
 
 impl Default for UiConfig {
@@ -155,6 +158,7 @@ impl Default for UiConfig {
             theme: default_theme(),
             plain: false,
             max_width: default_max_width(),
+            show_cost: false,
         }
     }
 }

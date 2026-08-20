@@ -20,6 +20,7 @@ pub struct StatusContext<'a> {
     pub mcp_count: usize,
     pub used_tokens: usize,
     pub max_context: usize,
+    pub show_cost: bool,
     pub session_cost_usd: f64,
 }
 
@@ -167,16 +168,19 @@ impl StatusWidgets {
             ctx.theme.success // Mint green
         };
 
-        let cost_str = crate::agent::pricing::ModelPricing::format_cost(ctx.session_cost_usd);
-
-        let right_spans = vec![
-            Span::styled(
+        let mut right_spans = Vec::new();
+        if ctx.show_cost {
+            let cost_str = crate::agent::pricing::ModelPricing::format_cost(ctx.session_cost_usd);
+            right_spans.push(Span::styled(
                 format!("{} ", cost_str),
                 Style::default()
                     .fg(ctx.theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("• ", Style::default().fg(ctx.theme.muted)),
+            ));
+            right_spans.push(Span::styled("• ", Style::default().fg(ctx.theme.muted)));
+        }
+
+        right_spans.extend(vec![
             Span::styled(
                 used_str,
                 Style::default().fg(used_color).add_modifier(Modifier::BOLD),
@@ -184,7 +188,7 @@ impl StatusWidgets {
             Span::styled(" / ", Style::default().fg(ctx.theme.muted)),
             Span::styled(max_str, Style::default().fg(ctx.theme.muted)),
             Span::styled(" ", Style::default()),
-        ];
+        ]);
 
         let block = Block::default()
             .borders(Borders::NONE)
@@ -223,5 +227,29 @@ mod tests {
         assert_eq!(StatusWidgets::format_tokens(200_000), "200k");
         assert_eq!(StatusWidgets::format_tokens(1_000_000), "1M");
         assert_eq!(StatusWidgets::format_tokens(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn test_status_bar_show_cost_toggle() {
+        let theme = Theme::aura_dark();
+        let ws = Path::new(".");
+        let ctx_without_cost = StatusContext {
+            theme: &theme,
+            workspace: ws,
+            provider: "anthropic",
+            model: "claude-3-5-sonnet",
+            mcp_count: 0,
+            used_tokens: 4200,
+            max_context: 128000,
+            show_cost: false,
+            session_cost_usd: 0.042,
+        };
+        assert!(!ctx_without_cost.show_cost);
+
+        let ctx_with_cost = StatusContext {
+            show_cost: true,
+            ..ctx_without_cost
+        };
+        assert!(ctx_with_cost.show_cost);
     }
 }

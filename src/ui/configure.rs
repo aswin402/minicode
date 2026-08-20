@@ -40,8 +40,13 @@ impl ConfigMenu {
                 "  \x1b[1m[3]\x1b[0m Select Model (Live Fetch from Provider)"
             )?;
             writeln!(handle, "  \x1b[1m[4]\x1b[0m Toggle Tool Approval Policy")?;
+            writeln!(
+                handle,
+                "  \x1b[1m[5]\x1b[0m Toggle Cost Display in Status Bar (currently: \x1b[36m{}\x1b[0m)",
+                if config.ui.show_cost { "ENABLED" } else { "DISABLED" }
+            )?;
             writeln!(handle, "  \x1b[1m[0]\x1b[0m Save & Exit")?;
-            write!(handle, "\n  Enter choice [0-4]: ")?;
+            write!(handle, "\n  Enter choice [0-5]: ")?;
             handle.flush()?;
 
             let mut input = String::new();
@@ -78,6 +83,18 @@ impl ConfigMenu {
                 "4" => {
                     Self::submenu_toggle_policy(&mut handle, &mut reader, &mut config)?;
                 }
+                "5" => {
+                    config.ui.show_cost = !config.ui.show_cost;
+                    writeln!(
+                        handle,
+                        "\x1b[32m✔ Cost display in status bar set to: {}\x1b[0m",
+                        if config.ui.show_cost {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    )?;
+                }
                 "0" | "exit" | "quit" | "q" => {
                     Self::save_all(&config, workspace)?;
                     writeln!(
@@ -87,7 +104,7 @@ impl ConfigMenu {
                     break;
                 }
                 _ => {
-                    writeln!(handle, "\x1b[31mInvalid option. Please choose 0-4.\x1b[0m")?;
+                    writeln!(handle, "\x1b[31mInvalid option. Please choose 0-5.\x1b[0m")?;
                 }
             }
         }

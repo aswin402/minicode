@@ -219,6 +219,7 @@ impl<'a> App<'a> {
                     mcp_count: active_mcp_count,
                     used_tokens: self.last_turn_tokens,
                     max_context,
+                    show_cost: self.config.ui.show_cost,
                     session_cost_usd: self.total_cost_usd,
                 };
 
