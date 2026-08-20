@@ -1,4 +1,5 @@
 pub mod approval;
+pub mod clipboard;
 pub mod configure;
 pub mod diff_viewer;
 pub mod input;
@@ -11,6 +12,8 @@ pub mod view;
 
 #[allow(unused_imports)]
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
+#[allow(unused_imports)]
+pub use clipboard::copy_to_clipboard;
 pub use configure::ConfigMenu;
 #[allow(unused_imports)]
 pub use diff_viewer::DiffViewer;

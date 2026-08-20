@@ -433,6 +433,41 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/copy" || prompt.starts_with("/copy ") {
+                                    let copy_all = prompt.contains("all");
+                                    let text_to_copy = if copy_all {
+                                        self.timeline.get_all_transcript_text()
+                                    } else {
+                                        self.timeline
+                                            .get_last_assistant_response()
+                                            .unwrap_or_default()
+                                    };
+
+                                    if text_to_copy.trim().is_empty() {
+                                        self.timeline
+                                            .add_status("ℹ Nothing to copy yet".to_string());
+                                    } else {
+                                        let ok =
+                                            crate::ui::clipboard::copy_to_clipboard(&text_to_copy);
+                                        if ok {
+                                            let label = if copy_all {
+                                                "entire conversation"
+                                            } else {
+                                                "latest assistant response"
+                                            };
+                                            self.timeline.add_status(format!(
+                                                "✔ Copied {} to clipboard",
+                                                label
+                                            ));
+                                        } else {
+                                            self.timeline.add_status(
+                                                "✗ Failed to copy to clipboard".to_string(),
+                                            );
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/clear" {
                                     self.timeline.entries.clear();
                                     continue;

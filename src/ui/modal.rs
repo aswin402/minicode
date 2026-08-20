@@ -275,6 +275,13 @@ impl ModalState {
                         ),
                     ]),
                     Line::from(vec![
+                        Span::styled("  /copy      ", Style::default().fg(theme.success)),
+                        Span::styled(
+                            "Copy latest AI response to clipboard (/copy all for whole chat)",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
                         Span::styled("  /clear     ", Style::default().fg(theme.success)),
                         Span::styled(
                             "Clear conversation timeline display",
@@ -289,6 +296,13 @@ impl ModalState {
                         ),
                     ]),
                     Line::from(""),
+                    Line::from(vec![
+                        Span::styled("  Shift+Drag ", Style::default().fg(theme.warning)),
+                        Span::styled(
+                            "Select and copy text in terminal directly",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
                     Line::from(vec![
                         Span::styled("  Enter      ", Style::default().fg(theme.warning)),
                         Span::styled(

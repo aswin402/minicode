@@ -180,6 +180,49 @@ impl TimelineView {
         self.entries.push(TimelineEntry::SystemStatus(status));
     }
 
+    /// Gets the most recent assistant response text for copying
+    pub fn get_last_assistant_response(&self) -> Option<String> {
+        for entry in self.entries.iter().rev() {
+            if let TimelineEntry::AssistantMarkdown(ref text) = entry {
+                return Some(text.clone());
+            }
+        }
+        None
+    }
+
+    /// Gets the entire conversation transcript as markdown
+    pub fn get_all_transcript_text(&self) -> String {
+        let mut out = String::new();
+        for entry in &self.entries {
+            match entry {
+                TimelineEntry::UserPrompt(prompt) => {
+                    out.push_str(&format!("## User\n{}\n\n", prompt));
+                }
+                TimelineEntry::AssistantMarkdown(text) => {
+                    out.push_str(&format!("## Assistant\n{}\n\n", text));
+                }
+                TimelineEntry::ToolFinished {
+                    name,
+                    command_or_path,
+                    output,
+                    success,
+                    ..
+                } => {
+                    let status = if *success { "success" } else { "failed" };
+                    out.push_str(&format!(
+                        "### Tool: {} ({}) [{}]\n```\n{}\n```\n\n",
+                        name,
+                        command_or_path,
+                        status,
+                        output.trim()
+                    ));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     fn extract_cmd_display(name: &str, args_json: &str) -> String {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(args_json) {
             if let Some(cmd) = val.get("command").and_then(|c| c.as_str()) {

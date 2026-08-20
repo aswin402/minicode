@@ -54,6 +54,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "toggle interactive embedded terminal drawer (Ctrl+T)",
     },
     SlashCommand {
+        name: "/copy",
+        description: "copy latest response or entire transcript to clipboard (/copy [all])",
+    },
+    SlashCommand {
         name: "/clear",
         description: "clear conversation timeline",
     },
