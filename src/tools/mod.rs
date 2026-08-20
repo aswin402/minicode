@@ -809,6 +809,24 @@ impl ToolRegistry {
                 }),
             },
             ToolSchema {
+                name: "ast_diff".to_string(),
+                description: "Compute semantic AST structural diff (added/removed/modified functions, classes, structs, signature changes, breaking changes) between versions of a file.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Relative workspace file path (e.g. 'src/lib.rs', 'app.py', 'index.ts')"
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "Optional proposed new content to diff against existing on-disk file. If omitted, diffs working copy against git HEAD."
+                        }
+                    },
+                    "required": ["file_path"]
+                }),
+            },
+            ToolSchema {
                 name: "prune_context".to_string(),
                 description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
                 parameters: json!({
@@ -1901,6 +1919,24 @@ impl ToolRegistry {
                 );
                 Ok(report)
             }
+            "ast_diff" => {
+                let file_path =
+                    args["file_path"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_diff".to_string(),
+                            reason: "Missing 'file_path'".to_string(),
+                        })?;
+                let new_content = args.get("new_content").and_then(|v| v.as_str());
+
+                let report = crate::context::ast_diff::AstDiffEngine::diff_file(
+                    workspace_root,
+                    file_path,
+                    new_content,
+                )?;
+
+                Ok(report.format_markdown())
+            }
             "prune_context" => {
                 Ok("✔ Multi-turn observation deduplication and pruning applied.".to_string())
             }
@@ -1998,8 +2034,9 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 48);
+        assert_eq!(schemas.len(), 49);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"ast_diff"));
         assert!(names.contains(&"explore_hypotheses"));
         assert!(names.contains(&"evaluate_branch"));
         assert!(names.contains(&"select_best_branch"));

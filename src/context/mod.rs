@@ -1,3 +1,4 @@
+pub mod ast_diff;
 pub mod ast_transform;
 pub mod compressor;
 pub mod decay;

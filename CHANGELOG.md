@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.29] — 2026-08-20
+
+### 🌳 Context-Aware Semantic AST Code Diffing & Deterministic Replay Harness
+- **Semantic AST Diffing Engine (`src/context/ast_diff.rs`, `src/tools/mod.rs`)**:
+  - Tree-sitter AST structural delta analyzer for Rust, Python, TypeScript, and JavaScript.
+  - Automatically identifies added, removed, and modified functions, classes, structs, and methods with signature vs. body change granularity.
+  - Built-in breaking change detection heuristic highlighting public API mutations and removed symbols.
+  - Added new tool: `ast_diff` (expanding built-in tools to **49 agent tools total**).
+- **Deterministic Mock Provider & Replay Harness (`src/agent/mock_provider.rs`, `src/agent/replay.rs`)**:
+  - In-memory mock LLM provider simulating streaming text deltas, tool calls, and API error injections for 100% offline regression testing.
+  - Structured `.tape.jsonl` session recorder format capturing turn prompts, tool executions, and assistant completions.
+  - Deterministic replay execution harness asserting exact tool sequences, arguments, and state transitions without live API costs.
+- **Unit & Integration Tests**:
+  - Added `tests/integration_ast_diff.rs` and `tests/integration_replay_harness.rs`.
+  - Added unit tests for AST diffing and mock provider streaming.
+  - Test suite expanded to **144 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.28] — 2026-08-20
 
 ### 📋 Live Mouse Drag Text Highlighting, Auto-Copy & Terminal Clipboard

@@ -1,10 +1,12 @@
 pub mod critic;
 pub mod hypothesis;
 pub mod r#loop;
+pub mod mock_provider;
 pub mod models;
 pub mod orchestrator;
 pub mod prompt;
 pub mod provider;
+pub mod replay;
 pub mod sequential_thinking;
 pub mod subagent;
 pub mod task_dag;
