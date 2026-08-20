@@ -7,6 +7,36 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 #[derive(Debug, Clone)]
+pub struct TurnCheckpointInfo {
+    pub turn_id: usize,
+    pub prompt: String,
+    #[allow(dead_code)]
+    pub timestamp: String,
+    pub time_ago: String,
+    pub files: Vec<String>,
+    pub is_latest: bool,
+}
+
+pub fn format_time_ago(rfc3339_ts: &str) -> String {
+    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(rfc3339_ts) {
+        let now = chrono::Utc::now();
+        let diff = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
+        let secs = diff.num_seconds();
+        if secs < 60 {
+            format!("{}s ago", secs.max(1))
+        } else if secs < 3600 {
+            format!("{}m ago", secs / 60)
+        } else if secs < 86400 {
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+        }
+    } else {
+        "recently".to_string()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum ModalState {
     None,
     ProviderSelect {
@@ -20,6 +50,10 @@ pub enum ModalState {
         selected_index: usize,
         filter: String,
         loading: bool,
+    },
+    UndoCheckpoint {
+        checkpoints: Vec<TurnCheckpointInfo>,
+        selected_index: usize,
     },
     Help,
     Approval(crate::ui::approval::ApprovalModalState),
@@ -55,6 +89,29 @@ impl ModalState {
             selected_index: 0,
             filter: String::new(),
             loading: false,
+        }
+    }
+
+    pub fn new_undo_checkpoint(manifests: Vec<crate::session::backup::BackupManifest>) -> Self {
+        let mut checkpoints = Vec::new();
+        for (i, m) in manifests.into_iter().enumerate() {
+            let time_ago = format_time_ago(&m.timestamp);
+            let prompt = m
+                .user_prompt
+                .unwrap_or_else(|| format!("Turn #{}", m.turn_id));
+            let files = m.files.into_iter().map(|f| f.original_path).collect();
+            checkpoints.push(TurnCheckpointInfo {
+                turn_id: m.turn_id,
+                prompt,
+                timestamp: m.timestamp,
+                time_ago,
+                files,
+                is_latest: i == 0,
+            });
+        }
+        ModalState::UndoCheckpoint {
+            checkpoints,
+            selected_index: 0,
         }
     }
 
@@ -247,6 +304,190 @@ impl ModalState {
                 .style(Style::default().fg(theme.muted))
                 .alignment(Alignment::Center);
                 frame.render_widget(footer, chunks[2]);
+            }
+            ModalState::UndoCheckpoint {
+                checkpoints,
+                selected_index,
+            } => {
+                let popup_area = centered_rect(72, 65, area);
+                frame.render_widget(Clear, popup_area);
+
+                let mut lines = Vec::new();
+                lines.push(Line::from(""));
+
+                let total = checkpoints.len();
+                let max_visible = 5;
+                let scroll_offset = if *selected_index >= max_visible {
+                    *selected_index - max_visible + 1
+                } else {
+                    0
+                };
+                let visible_checkpoints = checkpoints.iter().skip(scroll_offset).take(max_visible);
+
+                for (idx_rel, cp) in visible_checkpoints.enumerate() {
+                    let idx = scroll_offset + idx_rel;
+                    let is_selected = idx == *selected_index;
+                    let is_last = idx == total - 1;
+
+                    let node_sym = if is_selected {
+                        "  ◉─ "
+                    } else {
+                        "  ○─ "
+                    };
+                    let node_style = if is_selected {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+
+                    let turn_badge = if cp.is_latest {
+                        format!("[Turn {}] (Latest)", cp.turn_id)
+                    } else {
+                        format!("[Turn {}]", cp.turn_id)
+                    };
+
+                    let badge_style = if is_selected {
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(node_sym, node_style),
+                        Span::styled(turn_badge, badge_style),
+                    ]));
+
+                    let prompt_style = if is_selected {
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    };
+                    let prompt_display = if cp.prompt.len() > 55 {
+                        format!("{}...", &cp.prompt[..52])
+                    } else {
+                        cp.prompt.clone()
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  │   ",
+                            if is_last {
+                                Style::default().fg(theme.bg_elevated)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            },
+                        ),
+                        Span::styled(format!("\"{}\"", prompt_display), prompt_style),
+                    ]));
+
+                    let file_summary = if cp.files.is_empty() {
+                        "0 files modified".to_string()
+                    } else {
+                        let files_str: Vec<&str> = cp
+                            .files
+                            .iter()
+                            .map(|p| {
+                                std::path::Path::new(p)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(p)
+                            })
+                            .take(2)
+                            .collect();
+                        let more = if cp.files.len() > 2 {
+                            format!(" +{} more", cp.files.len() - 2)
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "{} file(s) ({}{})",
+                            cp.files.len(),
+                            files_str.join(", "),
+                            more
+                        )
+                    };
+
+                    let meta_text = format!("└─ {} • {}", cp.time_ago, file_summary);
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  │   ",
+                            if is_last {
+                                Style::default().fg(theme.bg_elevated)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            },
+                        ),
+                        Span::styled(
+                            meta_text,
+                            Style::default().fg(if is_selected {
+                                theme.brand_accent
+                            } else {
+                                theme.muted
+                            }),
+                        ),
+                    ]));
+
+                    if !is_last {
+                        lines.push(Line::from(vec![Span::styled(
+                            "  │",
+                            Style::default().fg(theme.muted),
+                        )]));
+                    }
+                }
+
+                let block = Block::default()
+                    .title(" Undo to Checkpoint ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let p = Paragraph::new(lines).block(block);
+                frame.render_widget(p, popup_area);
+
+                let footer_text = vec![
+                    Span::styled(
+                        "[↑/↓] ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Select   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Enter] ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Revert   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Esc] ",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
+                ];
+                let footer_area = Rect {
+                    x: popup_area.x + 2,
+                    y: popup_area.y + popup_area.height.saturating_sub(2),
+                    width: popup_area.width.saturating_sub(4),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
+                    footer_area,
+                );
             }
             ModalState::Help => {
                 let popup_area = centered_rect(60, 50, area);

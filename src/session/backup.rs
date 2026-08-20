@@ -7,7 +7,26 @@ use std::path::{Path, PathBuf};
 pub struct BackupManifest {
     pub turn_id: usize,
     pub timestamp: String,
+    #[serde(default)]
+    pub user_prompt: Option<String>,
+    #[serde(default)]
+    pub message_index: usize,
+    #[serde(default)]
+    pub working_memory_plan: Option<String>,
     pub files: Vec<BackedUpFile>,
+}
+
+impl BackupManifest {
+    pub fn new(turn_id: usize) -> Self {
+        Self {
+            turn_id,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            user_prompt: None,
+            message_index: 0,
+            working_memory_plan: None,
+            files: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,27 +128,12 @@ impl BackupManager {
         let manifest_path = turn_dir.join("manifest.json");
         let mut manifest = if manifest_path.exists() {
             match std::fs::read_to_string(&manifest_path) {
-                Ok(content) => {
-                    serde_json::from_str::<BackupManifest>(&content).unwrap_or_else(|_| {
-                        BackupManifest {
-                            turn_id,
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            files: Vec::new(),
-                        }
-                    })
-                }
-                Err(_) => BackupManifest {
-                    turn_id,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    files: Vec::new(),
-                },
+                Ok(content) => serde_json::from_str::<BackupManifest>(&content)
+                    .unwrap_or_else(|_| BackupManifest::new(turn_id)),
+                Err(_) => BackupManifest::new(turn_id),
             }
         } else {
-            BackupManifest {
-                turn_id,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                files: Vec::new(),
-            }
+            BackupManifest::new(turn_id)
         };
 
         if !manifest
@@ -176,6 +180,7 @@ impl BackupManager {
     }
 
     /// Returns the most recent turn ID with an existing backup manifest
+    #[allow(dead_code)]
     pub fn latest_turn_id(&self) -> Option<usize> {
         if !self.backup_root.exists() {
             return None;
@@ -198,6 +203,88 @@ impl BackupManager {
 
         turn_ids.sort();
         turn_ids.last().copied()
+    }
+
+    /// Records the initiation of a new user turn with prompt text and message boundary.
+    pub fn record_turn_start(
+        &self,
+        turn_id: usize,
+        user_prompt: &str,
+        message_index: usize,
+    ) -> Result<()> {
+        let turn_dir = self.backup_root.join(turn_id.to_string());
+        std::fs::create_dir_all(&turn_dir)?;
+        let manifest_path = turn_dir.join("manifest.json");
+
+        let mut manifest = if manifest_path.exists() {
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(content) => {
+                    serde_json::from_str::<BackupManifest>(&content).unwrap_or_else(|_| {
+                        BackupManifest {
+                            turn_id,
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            user_prompt: Some(user_prompt.to_string()),
+                            message_index,
+                            working_memory_plan: None,
+                            files: Vec::new(),
+                        }
+                    })
+                }
+                Err(_) => BackupManifest {
+                    turn_id,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    user_prompt: Some(user_prompt.to_string()),
+                    message_index,
+                    working_memory_plan: None,
+                    files: Vec::new(),
+                },
+            }
+        } else {
+            BackupManifest {
+                turn_id,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                user_prompt: Some(user_prompt.to_string()),
+                message_index,
+                working_memory_plan: None,
+                files: Vec::new(),
+            }
+        };
+
+        manifest.user_prompt = Some(user_prompt.to_string());
+        manifest.message_index = message_index;
+        let data = serde_json::to_string_pretty(&manifest)?;
+        std::fs::write(&manifest_path, data)?;
+        Ok(())
+    }
+
+    /// Discovers and lists all recorded turn checkpoints sorted descending (newest first).
+    pub fn list_checkpoints(&self) -> Vec<BackupManifest> {
+        if !self.backup_root.exists() {
+            return Vec::new();
+        }
+
+        let mut checkpoints = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.backup_root) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let manifest_path = entry.path().join("manifest.json");
+                        if manifest_path.exists() {
+                            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                                if let Ok(manifest) =
+                                    serde_json::from_str::<BackupManifest>(&content)
+                                {
+                                    checkpoints.push(manifest);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        checkpoints.sort_by(|a, b| b.turn_id.cmp(&a.turn_id));
+        checkpoints
     }
 
     /// Prunes backup folders older than `max_turns` to prevent disk bloat.
@@ -260,11 +347,8 @@ mod tests {
         let backed_up = mgr.create_checkpoint(&temp_dir, &test_file, 1).unwrap();
         assert!(backed_up.existed_before);
 
-        let manifest = BackupManifest {
-            turn_id: 1,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            files: vec![backed_up],
-        };
+        let mut manifest = BackupManifest::new(1);
+        manifest.files = vec![backed_up];
         mgr.save_turn_manifest(&manifest).unwrap();
 
         let loaded = mgr.load_turn_manifest(1).unwrap();
@@ -318,6 +402,40 @@ mod tests {
         assert_eq!(manifest.turn_id, 42);
         assert_eq!(manifest.files.len(), 2);
         assert_eq!(mgr.latest_turn_id(), Some(42));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_record_turn_start_and_list_checkpoints() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_backup_checkpoints_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let mgr = BackupManager::new(&temp_dir);
+        mgr.record_turn_start(1, "initial setup", 0).unwrap();
+        mgr.record_turn_start(2, "add authentication", 4).unwrap();
+        mgr.record_turn_start(3, "fix thought timer", 8).unwrap();
+
+        let checkpoints = mgr.list_checkpoints();
+        assert_eq!(checkpoints.len(), 3);
+        assert_eq!(checkpoints[0].turn_id, 3);
+        assert_eq!(
+            checkpoints[0].user_prompt.as_deref(),
+            Some("fix thought timer")
+        );
+        assert_eq!(checkpoints[0].message_index, 8);
+
+        assert_eq!(checkpoints[1].turn_id, 2);
+        assert_eq!(
+            checkpoints[1].user_prompt.as_deref(),
+            Some("add authentication")
+        );
+
+        assert_eq!(checkpoints[2].turn_id, 1);
+        assert_eq!(checkpoints[2].user_prompt.as_deref(), Some("initial setup"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

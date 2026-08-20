@@ -3,7 +3,6 @@ use crate::agent::types::AgentEvent;
 use crate::agent::AgentLoop;
 use crate::config::Config;
 use crate::error::Result;
-use crate::session::undo::rollback_turn;
 use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineContext, TimelineView};
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
@@ -29,6 +28,10 @@ pub enum AgentCommand {
     UpdateConfig {
         config: Box<Config>,
         provider: Box<dyn crate::agent::provider::Provider>,
+    },
+    Rollback {
+        target_turn_id: usize,
+        message_index: usize,
     },
 }
 
@@ -138,6 +141,12 @@ impl<'a> App<'a> {
                     }
                     AgentCommand::UpdateConfig { config, provider } => {
                         agent.update_config(*config, provider);
+                    }
+                    AgentCommand::Rollback {
+                        target_turn_id,
+                        message_index,
+                    } => {
+                        agent.rollback_turn(target_turn_id, message_index);
                     }
                 }
             }
@@ -531,19 +540,12 @@ impl<'a> App<'a> {
                                 }
 
                                 if prompt == "/undo" {
-                                    match rollback_turn(&self.workspace_root) {
-                                        Ok(res) if res.restored_count > 0 || res.deleted_count > 0 => {
-                                            self.timeline.add_status(format!(
-                                                "✔ Reverted turn #{}: restored {} file(s), deleted {} file(s)",
-                                                res.turn_id, res.restored_count, res.deleted_count
-                                            ));
-                                        }
-                                        Ok(_) => {
-                                            self.timeline.add_status("ℹ No changes found to undo in previous turn".to_string());
-                                        }
-                                        Err(e) => {
-                                            self.timeline.add_status(format!("✗ Undo failed: {}", e));
-                                        }
+                                    let backup_mgr = crate::session::backup::BackupManager::new(&self.workspace_root);
+                                    let checkpoints = backup_mgr.list_checkpoints();
+                                    if checkpoints.is_empty() {
+                                        self.timeline.add_status("ℹ No recorded checkpoints available to undo".to_string());
+                                    } else {
+                                        self.modal = ModalState::new_undo_checkpoint(checkpoints);
                                     }
                                     continue;
                                 }
@@ -826,6 +828,59 @@ impl<'a> App<'a> {
                                     "✗ Missing API key for provider '{}': {}",
                                     provider, e
                                 ));
+                            }
+                        }
+                    }
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::UndoCheckpoint {
+                ref checkpoints,
+                ref mut selected_index,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < checkpoints.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if !checkpoints.is_empty() && *selected_index < checkpoints.len() {
+                        let target_checkpoint = checkpoints[*selected_index].clone();
+                        let target_turn_id = target_checkpoint.turn_id;
+                        let target_prompt = target_checkpoint.prompt.clone();
+
+                        match crate::session::undo::rollback_to_checkpoint(
+                            &self.workspace_root,
+                            target_turn_id,
+                        ) {
+                            Ok(res) => {
+                                let backup_mgr = crate::session::backup::BackupManager::new(
+                                    &self.workspace_root,
+                                );
+                                let message_index = backup_mgr
+                                    .load_turn_manifest(target_turn_id)
+                                    .map(|m| m.message_index)
+                                    .unwrap_or(0);
+
+                                let _ = control_tx.send(AgentCommand::Rollback {
+                                    target_turn_id,
+                                    message_index,
+                                });
+
+                                self.timeline.add_status(format!(
+                                    "✔ Reverted workspace & conversation to checkpoint: \"{}\" (Turn #{}) [{} file(s) restored, {} deleted]",
+                                    target_prompt, target_turn_id, res.restored_count, res.deleted_count
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline.add_status(format!("✗ Undo failed: {}", e));
                             }
                         }
                     }

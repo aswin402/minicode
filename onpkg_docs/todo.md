@@ -540,3 +540,25 @@
 - [x] **Wave 5: Verification & Architectural Benchmark**
   - [x] Run full test suite (163 tests passing, 0 clippy warnings)
   - [x] Run `cargo fmt` and verify formatting
+
+---
+
+## ✅ Phase 24: Interactive Timeline Checkpoint Undo Engine (`/undo`) (v0.0.34)
+- [x] **Task 1: Checkpoint Metadata & Storage Engine (`src/session/backup.rs`)**
+  - [x] Add `user_prompt`, `message_index`, and `working_memory_plan` to `BackupManifest`
+  - [x] Implement `record_turn_start(...)` and `list_checkpoints(...)` in `BackupManager`
+  - [x] Unit tests for multi-turn checkpoint discovery and metadata persistence
+- [x] **Task 2: Multi-Turn Rollback Engine (`src/session/undo.rs`)**
+  - [x] Implement `UndoEngine::rollback_to_checkpoint(backup_manager, target_turn_id) -> Result<UndoResult>`
+  - [x] Unit tests for cascading multi-turn file restoration and newly created file deletion
+- [x] **Task 3: Timeline Graph Modal UI (`src/ui/modal.rs`)**
+  - [x] Add `TurnCheckpointInfo` with relative time formatting (`2m ago`, `15s ago`)
+  - [x] Add `ModalState::UndoCheckpoint` rendering Style 4 Timeline Graph (`◉───○───○`)
+  - [x] Visual styling with solid active nodes `◉`, hollow past nodes `○`, connecting lines `│`, and turn badges
+- [x] **Task 4: App Wiring & State Truncation (`src/app.rs`)**
+  - [x] Hook `/undo` command to initialize and display `ModalState::UndoCheckpoint`
+  - [x] Wire `Enter` key on `UndoCheckpoint` to execute file rollback, truncate `session.messages`, and update timeline
+  - [x] Wire `Up`, `Down`, and `Esc` for modal navigation and dismissal
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_undo_checkpoint.rs`
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (168 tests passing, 0 warnings)

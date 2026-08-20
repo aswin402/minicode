@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.34] — 2026-08-20
+
+### ⏪ Interactive Timeline Checkpoint Undo Engine (`/undo`)
+- **Interactive Style 4 Timeline Graph Modal (`src/ui/modal.rs`, `src/app.rs`)**:
+  - Replaced the blind single-turn `/undo` command with an interactive, git-style timeline graph modal with 0 emojis and clean typography.
+  - Visual timeline nodes (`◉` active node, `○` past nodes, `│` connecting branch lines) display prompt text, human-readable relative timestamps (`2m ago`, `15s ago`), and modified file summaries.
+  - Supports keyboard navigation with `↑`/`↓` to traverse earlier turns, `Enter` to revert to the selected checkpoint, and `Esc` to cancel.
+- **Multi-Turn Cascading Rollback Engine (`src/session/undo.rs`, `src/session/backup.rs`)**:
+  - Added `rollback_to_checkpoint(&workspace_root, target_turn_id)` to roll back multiple turns in sequence, restoring pre-turn file states and deleting newly created files added in rolled-back turns.
+  - Automatically resets any intermediate git commits via `git reset --soft HEAD~N`.
+- **Conversation State & Message Truncation (`src/agent/loop.rs`, `src/app.rs`)**:
+  - Recorded turn start metadata (`user_prompt`, `message_index`) in `BackupManifest` at the start of each turn.
+  - Automatically truncates agent LLM conversation history back to the selected checkpoint so the model's context window does not hallucinate from reverted turns.
+- **Verification & Testing**:
+  - Added `tests/integration_undo_checkpoint.rs` covering multi-turn file reversion, checkpoint discovery, and ratatui timeline graph rendering.
+  - Expanded test suite to **168 tests passing 100% green** with zero compiler or clippy warnings.
+
+---
+
 ## [0.0.33] — 2026-08-20
 
 ### 🏗️ Codebase Modularization, Domain Tool Registry & Unified Traversal Engine

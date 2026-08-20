@@ -63,6 +63,7 @@ impl UndoEngine {
 
 #[derive(Debug, Clone)]
 pub struct UndoResult {
+    #[allow(dead_code)]
     pub turn_id: usize,
     pub restored_count: usize,
     pub deleted_count: usize,
@@ -71,40 +72,11 @@ pub struct UndoResult {
 }
 
 /// Convenience function to rollback changes made in the latest recorded turn
+#[allow(dead_code)]
 pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
     let backup_manager = BackupManager::new(workspace_root);
     if let Some(turn_id) = backup_manager.latest_turn_id() {
-        let files = UndoEngine::rollback_turn(&backup_manager, turn_id)?;
-        if let Err(e) = backup_manager.remove_turn_backup(turn_id) {
-            tracing::warn!(turn = turn_id, error = %e, "Failed to remove turn backup directory after rollback");
-        }
-
-        // If repository has a git commit from this turn, gently soft-reset it
-        let _ = std::process::Command::new("git")
-            .arg("--no-pager")
-            .args(["reset", "--soft", "HEAD~1"])
-            .current_dir(workspace_root)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("LC_ALL", "C")
-            .output();
-
-        let mut restored = 0;
-        let mut deleted = 0;
-        for f in &files {
-            if f.starts_with("(deleted)") {
-                deleted += 1;
-            } else {
-                restored += 1;
-            }
-        }
-        crate::ui::status::StatusWidgets::invalidate_git_cache();
-        Ok(UndoResult {
-            turn_id,
-            restored_count: restored,
-            deleted_count: deleted,
-            files,
-        })
+        rollback_to_checkpoint(workspace_root, turn_id)
     } else {
         Ok(UndoResult {
             turn_id: 0,
@@ -113,6 +85,55 @@ pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
             files: vec![],
         })
     }
+}
+
+/// Rolls back changes from the latest recorded turn down to and including `target_turn_id`.
+pub fn rollback_to_checkpoint(workspace_root: &Path, target_turn_id: usize) -> Result<UndoResult> {
+    let backup_manager = BackupManager::new(workspace_root);
+    let checkpoints = backup_manager.list_checkpoints();
+
+    let mut total_restored = 0;
+    let mut total_deleted = 0;
+    let mut all_files = Vec::new();
+    let mut turns_reverted = 0;
+
+    for cp in checkpoints {
+        if cp.turn_id >= target_turn_id {
+            let files = UndoEngine::rollback_turn(&backup_manager, cp.turn_id)?;
+            let _ = backup_manager.remove_turn_backup(cp.turn_id);
+            for f in &files {
+                if f.starts_with("(deleted)") {
+                    total_deleted += 1;
+                } else {
+                    total_restored += 1;
+                }
+            }
+            all_files.extend(files);
+            turns_reverted += 1;
+        }
+    }
+
+    if turns_reverted > 0 {
+        // Soft reset git commits if in a repo
+        let reset_arg = format!("HEAD~{}", turns_reverted);
+        let _ = std::process::Command::new("git")
+            .arg("--no-pager")
+            .args(["reset", "--soft", &reset_arg])
+            .current_dir(workspace_root)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_PAGER", "cat")
+            .env("LC_ALL", "C")
+            .output();
+
+        crate::ui::status::StatusWidgets::invalidate_git_cache();
+    }
+
+    Ok(UndoResult {
+        turn_id: target_turn_id,
+        restored_count: total_restored,
+        deleted_count: total_deleted,
+        files: all_files,
+    })
 }
 
 #[cfg(test)]
@@ -132,11 +153,8 @@ mod tests {
         let mgr = BackupManager::new(&temp_dir);
         let backed_up = mgr.create_checkpoint(&temp_dir, &test_file, 1).unwrap();
 
-        let manifest = BackupManifest {
-            turn_id: 1,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            files: vec![backed_up],
-        };
+        let mut manifest = BackupManifest::new(1);
+        manifest.files = vec![backed_up];
         mgr.save_turn_manifest(&manifest).unwrap();
 
         // Mutate the file
@@ -174,11 +192,8 @@ mod tests {
             existed_before: false,
         };
 
-        let manifest = BackupManifest {
-            turn_id: 2,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            files: vec![backed_up],
-        };
+        let mut manifest = BackupManifest::new(2);
+        manifest.files = vec![backed_up];
         mgr.save_turn_manifest(&manifest).unwrap();
 
         assert!(new_sub_dir.exists());
@@ -186,6 +201,44 @@ mod tests {
         let res = rollback_turn(&temp_dir).unwrap();
         assert_eq!(res.deleted_count, 1);
         assert!(!new_sub_dir.exists());
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_rollback_to_multi_turn_checkpoint() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_undo_multi_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("a.txt");
+        let file_b = temp_dir.join("b.txt");
+        std::fs::write(&file_a, "A initial").unwrap();
+        std::fs::write(&file_b, "B initial").unwrap();
+
+        let mgr = BackupManager::new(&temp_dir);
+
+        // Turn 1: modify file_a
+        let backed_up_1 = mgr.create_checkpoint(&temp_dir, &file_a, 1).unwrap();
+        let mut manifest_1 = BackupManifest::new(1);
+        manifest_1.files = vec![backed_up_1];
+        manifest_1.user_prompt = Some("modify a".to_string());
+        mgr.save_turn_manifest(&manifest_1).unwrap();
+        std::fs::write(&file_a, "A modified in turn 1").unwrap();
+
+        // Turn 2: modify file_b
+        let backed_up_2 = mgr.create_checkpoint(&temp_dir, &file_b, 2).unwrap();
+        let mut manifest_2 = BackupManifest::new(2);
+        manifest_2.files = vec![backed_up_2];
+        manifest_2.user_prompt = Some("modify b".to_string());
+        mgr.save_turn_manifest(&manifest_2).unwrap();
+        std::fs::write(&file_b, "B modified in turn 2").unwrap();
+
+        // Rollback to checkpoint 1 (reverting Turn 2 and Turn 1)
+        let res = rollback_to_checkpoint(&temp_dir, 1).unwrap();
+        assert_eq!(res.restored_count, 2);
+        assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "A initial");
+        assert_eq!(std::fs::read_to_string(&file_b).unwrap(), "B initial");
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

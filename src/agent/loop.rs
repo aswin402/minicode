@@ -131,7 +131,14 @@ impl AgentLoop {
 
         // 1. Prune conversation context if approaching budget, then append user prompt
         self.prune_context();
+        let message_index = self.messages.len();
         self.messages.push(Message::user(user_prompt));
+
+        // Record turn start checkpoint with prompt and message boundary
+        let backup_manager = crate::session::backup::BackupManager::new(&self.workspace_root);
+        if let Err(e) = backup_manager.record_turn_start(turn_id, user_prompt, message_index) {
+            tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
+        }
 
         let system_prompt = PromptBuilder::build_system_prompt(&self.workspace_root, None);
         let mut tools = crate::tools::ToolRegistry::get_tool_schemas();
@@ -532,6 +539,19 @@ impl AgentLoop {
         };
 
         Ok(turn)
+    }
+
+    /// Rolls back the agent's turn counter and truncates message history
+    pub fn rollback_turn(&mut self, target_turn_id: usize, message_index: usize) {
+        self.current_turn_id = target_turn_id.saturating_sub(1);
+        if message_index < self.messages.len() {
+            self.messages.truncate(message_index);
+            tracing::info!(
+                target_turn = target_turn_id,
+                remaining_messages = self.messages.len(),
+                "Agent conversation history rolled back"
+            );
+        }
     }
 }
 

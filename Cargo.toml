@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.33"
+version = "0.0.34"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
