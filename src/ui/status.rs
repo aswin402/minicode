@@ -20,6 +20,7 @@ pub struct StatusContext<'a> {
     pub mcp_count: usize,
     pub used_tokens: usize,
     pub max_context: usize,
+    pub session_cost_usd: f64,
 }
 
 pub struct StatusWidgets;
@@ -149,7 +150,7 @@ impl StatusWidgets {
             ));
         }
 
-        // Format right context token metrics (e.g., "4.2k / 128k")
+        // Format right context token metrics and dollar cost (e.g., "⚡ $0.0042 • 4.2k / 128k")
         let used_str = Self::format_tokens(ctx.used_tokens);
         let max_str = Self::format_tokens(ctx.max_context);
         let ratio = if ctx.max_context > 0 {
@@ -166,7 +167,16 @@ impl StatusWidgets {
             ctx.theme.success // Mint green
         };
 
+        let cost_str = crate::agent::pricing::ModelPricing::format_cost(ctx.session_cost_usd);
+
         let right_spans = vec![
+            Span::styled(
+                format!("⚡ {} ", cost_str),
+                Style::default()
+                    .fg(ctx.theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("• ", Style::default().fg(ctx.theme.muted)),
             Span::styled(
                 used_str,
                 Style::default().fg(used_color).add_modifier(Modifier::BOLD),
@@ -185,7 +195,7 @@ impl StatusWidgets {
             .direction(ratatui::layout::Direction::Horizontal)
             .constraints([
                 ratatui::layout::Constraint::Min(1), // Left: Provider, Path, Git, MCP
-                ratatui::layout::Constraint::Length(18), // Right: Token Context
+                ratatui::layout::Constraint::Length(30), // Right: Dollar spend + Token Context
             ])
             .split(area);
 

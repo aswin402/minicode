@@ -1,9 +1,11 @@
+pub mod complexity;
 pub mod critic;
 pub mod hypothesis;
 pub mod r#loop;
 pub mod mock_provider;
 pub mod models;
 pub mod orchestrator;
+pub mod pricing;
 pub mod prompt;
 pub mod provider;
 pub mod replay;

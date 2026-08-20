@@ -46,6 +46,7 @@ pub struct App<'a> {
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     last_user_prompt: Option<String>,
     last_turn_tokens: usize,
+    total_cost_usd: f64,
 }
 
 impl<'a> App<'a> {
@@ -65,6 +66,7 @@ impl<'a> App<'a> {
             cancel_token: None,
             last_user_prompt: None,
             last_turn_tokens: 0,
+            total_cost_usd: 0.0,
         }
     }
 
@@ -214,6 +216,7 @@ impl<'a> App<'a> {
                     mcp_count: active_mcp_count,
                     used_tokens: self.last_turn_tokens,
                     max_context,
+                    session_cost_usd: self.total_cost_usd,
                 };
 
                 StatusWidgets::render_bottom_bar(frame, chunks[5], &status_ctx);
@@ -249,6 +252,15 @@ impl<'a> App<'a> {
                             }
                             AgentEvent::TurnEnd { total_tokens_used, .. } => {
                                 self.last_turn_tokens = total_tokens_used;
+                                let prompt_toks = (total_tokens_used * 3) / 4;
+                                let comp_toks = total_tokens_used / 4;
+                                let turn_cost = crate::agent::pricing::ModelPricing::calculate_cost(
+                                    &self.config.provider.default,
+                                    &self.config.provider.model,
+                                    prompt_toks,
+                                    comp_toks,
+                                );
+                                self.total_cost_usd += turn_cost;
                                 self.is_working = false;
                                 self.work_start = None;
                                 self.cancel_token = None;

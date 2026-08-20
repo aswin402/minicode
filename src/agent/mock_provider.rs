@@ -137,7 +137,6 @@ impl Provider for MockProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::Role;
     use futures::StreamExt;
 
     #[tokio::test]

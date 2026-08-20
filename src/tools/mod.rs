@@ -836,6 +836,20 @@ impl ToolRegistry {
                 }),
             },
             ToolSchema {
+                name: "score_task_complexity".to_string(),
+                description: "Compute task complexity score (1-10), risk level, estimated token context, and topological subtask decomposition plan before executing complex coding changes.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Natural language task or feature description to evaluate"
+                        }
+                    },
+                    "required": ["task"]
+                }),
+            },
+            ToolSchema {
                 name: "prune_context".to_string(),
                 description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
                 parameters: json!({
@@ -1952,6 +1966,19 @@ impl ToolRegistry {
                 )?;
                 Ok(report.format_markdown())
             }
+            "score_task_complexity" => {
+                let task = args["task"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "score_task_complexity".to_string(),
+                        reason: "Missing 'task' parameter".to_string(),
+                    })?;
+                let score = crate::agent::complexity::TaskComplexityScorer::score_task(
+                    workspace_root,
+                    task,
+                )?;
+                Ok(score.format_markdown())
+            }
             "prune_context" => {
                 Ok("✔ Multi-turn observation deduplication and pruning applied.".to_string())
             }
@@ -2049,8 +2076,9 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 50);
+        assert_eq!(schemas.len(), 51);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"score_task_complexity"));
         assert!(names.contains(&"check_architecture"));
         assert!(names.contains(&"ast_diff"));
         assert!(names.contains(&"explore_hypotheses"));

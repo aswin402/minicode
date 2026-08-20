@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.31] — 2026-08-20
+
+### 🎯 Task Complexity Scorer, Live Dollar Spend Telemetry & TUI Thinking Blocks
+- **Hierarchical Task Complexity & Risk Scorer (`src/agent/complexity.rs`, `src/tools/mod.rs`)**:
+  - Claude Task Master-inspired pre-execution complexity analyzer calculating difficulty score ($1$–$10$) and risk level (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+  - Estimates token context footprint, detects affected files, computes blast radius, and auto-generates multi-stage task decomposition plans.
+  - Added new tool: `score_task_complexity` (expanding built-in suite to **51 agent tools total**).
+- **Live Dollar Spend & Cost Telemetry in TUI Status Bar (`src/agent/pricing.rs`, `src/ui/status.rs`, `src/app.rs`)**:
+  - Real-time pricing model across Anthropic Claude, OpenAI GPT, Google Gemini, DeepSeek, and local Ollama ($0.00/tok).
+  - Displays live session dollar spend (e.g. `⚡ $0.0042 • 4.2k / 128k`) dynamically alongside token context utilization.
+- **TUI "Thinking..." Spinner & Expandable Reasoning Thought Blocks (`src/ui/view.rs`, `src/app.rs`)**:
+  - Added live animated `⠋ Thinking... ({}s • esc to interrupt)` spinner immediately upon prompt submission.
+  - Formats thought processes and reasoning tokens inside a stylized Aura lavender/pink thought box (`💭 Thinking Process:`) with indented borders and italic styling before/alongside the final assistant response.
+  - Automatically parses and separates `<thought>...</thought>` tags from assistant markdown streams.
+- **Unit & Integration Tests**:
+  - Added `tests/integration_complexity_scorer.rs` and `tests/integration_pricing_and_thoughts.rs`.
+  - Expanded test suite to **153 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.30] — 2026-08-20
 
 ### 🏛️ Sentrux Architectural Governance & RTK Token Reduction Interceptor

@@ -8,6 +8,7 @@ use ratatui::Frame;
 #[derive(Debug, Clone)]
 pub enum TimelineEntry {
     UserPrompt(String),
+    ThoughtBlock(String),
     AssistantMarkdown(String),
     ToolStart {
         name: String,
@@ -138,12 +139,52 @@ impl TimelineView {
         self.entries.push(TimelineEntry::UserPrompt(prompt));
     }
 
-    pub fn append_assistant_delta(&mut self, delta: &str) {
-        if let Some(TimelineEntry::AssistantMarkdown(ref mut text)) = self.entries.last_mut() {
+    pub fn append_thought_delta(&mut self, delta: &str) {
+        if let Some(TimelineEntry::ThoughtBlock(ref mut text)) = self.entries.last_mut() {
             text.push_str(delta);
         } else {
             self.entries
-                .push(TimelineEntry::AssistantMarkdown(delta.to_string()));
+                .push(TimelineEntry::ThoughtBlock(delta.to_string()));
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn add_thought_block(&mut self, text: String) {
+        self.entries.push(TimelineEntry::ThoughtBlock(text));
+    }
+
+    pub fn append_assistant_delta(&mut self, delta: &str) {
+        // If delta contains <thought>...</thought> tags, split them into ThoughtBlock and AssistantMarkdown
+        if delta.contains("<thought>") && delta.contains("</thought>") {
+            let mut remaining = delta;
+            while let Some(start) = remaining.find("<thought>") {
+                let prefix = &remaining[..start];
+                if !prefix.is_empty() {
+                    self.append_assistant_text(prefix);
+                }
+                if let Some(end) = remaining[start..].find("</thought>") {
+                    let thought_content = &remaining[start + "<thought>".len()..start + end];
+                    self.append_thought_delta(thought_content);
+                    remaining = &remaining[start + end + "</thought>".len()..];
+                } else {
+                    break;
+                }
+            }
+            if !remaining.is_empty() {
+                self.append_assistant_text(remaining);
+            }
+            return;
+        }
+
+        self.append_assistant_text(delta);
+    }
+
+    fn append_assistant_text(&mut self, text: &str) {
+        if let Some(TimelineEntry::AssistantMarkdown(ref mut existing)) = self.entries.last_mut() {
+            existing.push_str(text);
+        } else {
+            self.entries
+                .push(TimelineEntry::AssistantMarkdown(text.to_string()));
         }
     }
 
@@ -460,6 +501,29 @@ impl TimelineView {
                     ]));
                     lines.push(Line::from(String::new()));
                 }
+                TimelineEntry::ThoughtBlock(thoughts) => {
+                    let trimmed = thoughts.trim();
+                    if !trimmed.is_empty() {
+                        lines.push(Line::from(vec![Span::styled(
+                            "💭 Thinking Process:",
+                            Style::default()
+                                .fg(theme.highlight)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
+                        for t_line in trimmed.lines() {
+                            lines.push(Line::from(vec![
+                                Span::styled("  │ ", Style::default().fg(theme.border)),
+                                Span::styled(
+                                    t_line,
+                                    Style::default()
+                                        .fg(theme.highlight)
+                                        .add_modifier(Modifier::ITALIC),
+                                ),
+                            ]));
+                        }
+                        lines.push(Line::from(String::new()));
+                    }
+                }
                 TimelineEntry::AssistantMarkdown(text) => {
                     let parsed_lines = Self::render_markdown(text, theme);
                     lines.extend(parsed_lines);
@@ -561,13 +625,17 @@ impl TimelineView {
             }
         }
 
-        // Live working status spinner at bottom if running
+        // Live working / thinking status spinner at bottom if running
         if ctx.is_working {
+            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame_idx = (ctx.working_secs as usize * 3) % spinner_frames.len();
+            let spinner = spinner_frames[frame_idx];
+
             lines.push(Line::from(vec![
                 Span::styled(
-                    "• Working ",
+                    format!("{} Thinking... ", spinner),
                     Style::default()
-                        .fg(theme.text_primary)
+                        .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
