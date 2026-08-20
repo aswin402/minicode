@@ -264,6 +264,8 @@ impl<'a> App<'a> {
                                     comp_toks,
                                 );
                                 self.total_cost_usd += turn_cost;
+                                let elapsed_secs = self.work_start.map(|s| s.elapsed().as_secs_f64());
+                                self.timeline.finalize_pending_thoughts(elapsed_secs);
                                 self.is_working = false;
                                 self.work_start = None;
                                 self.cancel_token = None;

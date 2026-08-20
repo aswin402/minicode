@@ -45,6 +45,7 @@ pub struct TimelineView {
     pub is_selecting: std::cell::Cell<bool>,
     pub in_thought_mode: bool,
     pub thought_start: Option<std::time::Instant>,
+    pub turn_start: Option<std::time::Instant>,
     pub timeline_area: std::cell::Cell<Rect>,
     pub cached_plain_lines: std::cell::RefCell<Vec<String>>,
 }
@@ -76,6 +77,7 @@ impl TimelineView {
             is_selecting: std::cell::Cell::new(false),
             in_thought_mode: false,
             thought_start: None,
+            turn_start: None,
             timeline_area: std::cell::Cell::new(Rect::default()),
             cached_plain_lines: std::cell::RefCell::new(Vec::new()),
         }
@@ -144,11 +146,14 @@ impl TimelineView {
             self.entries.push(TimelineEntry::TurnSeparator);
         }
         self.entries.push(TimelineEntry::UserPrompt(prompt));
+        self.turn_start = Some(std::time::Instant::now());
+        self.thought_start = None;
+        self.in_thought_mode = false;
     }
 
     pub fn append_thought_delta(&mut self, delta: &str) {
         if self.thought_start.is_none() {
-            self.thought_start = Some(std::time::Instant::now());
+            self.thought_start = self.turn_start.or_else(|| Some(std::time::Instant::now()));
         }
         if let Some(TimelineEntry::ThoughtBlock { text, .. }) = self.entries.last_mut() {
             text.push_str(delta);
@@ -168,6 +173,17 @@ impl TimelineView {
         });
     }
 
+    pub fn finalize_pending_thoughts(&mut self, elapsed_secs: Option<f64>) {
+        if let Some(TimelineEntry::ThoughtBlock { duration_secs, .. }) = self.entries.last_mut() {
+            if duration_secs.is_none() || duration_secs.unwrap_or(0.0) < 0.1 {
+                *duration_secs = elapsed_secs
+                    .or_else(|| self.thought_start.take().map(|s| s.elapsed().as_secs_f64()))
+                    .or_else(|| self.turn_start.map(|s| s.elapsed().as_secs_f64()));
+            }
+        }
+        self.in_thought_mode = false;
+    }
+
     pub fn append_assistant_delta(&mut self, delta: &str) {
         let mut text = delta;
 
@@ -179,11 +195,15 @@ impl TimelineView {
                         self.append_thought_delta(thought_chunk);
                     }
                     self.in_thought_mode = false;
-                    let dur = self.thought_start.take().map(|s| s.elapsed().as_secs_f64());
+                    let dur = self
+                        .thought_start
+                        .take()
+                        .or(self.turn_start)
+                        .map(|s| s.elapsed().as_secs_f64());
                     if let Some(TimelineEntry::ThoughtBlock { duration_secs, .. }) =
                         self.entries.last_mut()
                     {
-                        if duration_secs.is_none() {
+                        if duration_secs.is_none() || duration_secs.unwrap_or(0.0) < 0.1 {
                             *duration_secs = dur;
                         }
                     }
@@ -198,7 +218,7 @@ impl TimelineView {
                     self.append_assistant_text(prefix);
                 }
                 self.in_thought_mode = true;
-                self.thought_start = Some(std::time::Instant::now());
+                self.thought_start = self.turn_start.or_else(|| Some(std::time::Instant::now()));
                 text = &text[start_idx + "<thought>".len()..];
             } else {
                 self.append_assistant_text(text);
@@ -535,8 +555,10 @@ impl TimelineView {
                 } => {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        let dur_display =
-                            duration_secs.unwrap_or_else(|| (ctx.working_millis as f64) / 1000.0);
+                        let dur_display = match duration_secs {
+                            Some(secs) if *secs >= 0.1 => *secs,
+                            _ => ((ctx.working_millis as f64) / 1000.0).max(0.1),
+                        };
                         let header = format!("• Thought for {:.1}s", dur_display);
 
                         lines.push(Line::from(vec![Span::styled(
@@ -547,7 +569,7 @@ impl TimelineView {
                         )]));
                         for t_line in trimmed.lines() {
                             lines.push(Line::from(vec![
-                                Span::styled("  │ ", Style::default().fg(theme.border)),
+                                Span::styled("  ", Style::default()),
                                 Span::styled(
                                     t_line,
                                     Style::default()
