@@ -592,6 +592,40 @@ impl TimelineView {
             }
         }
 
+        // Apply visual selection highlight if active
+        if let (Some(start), Some(end)) = (self.selection_start.get(), self.selection_end.get()) {
+            if start != end {
+                let ((c1, r1), (c2, r2)) =
+                    if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
+                        (start, end)
+                    } else {
+                        (end, start)
+                    };
+
+                let mut highlighted_lines = Vec::with_capacity(lines.len());
+                for (idx, line) in lines.into_iter().enumerate() {
+                    let line_idx = idx as u16;
+                    if line_idx >= r1 && line_idx <= r2 {
+                        let (sel_start, sel_end) = if r1 == r2 {
+                            (c1 as usize, c2 as usize)
+                        } else if line_idx == r1 {
+                            (c1 as usize, usize::MAX)
+                        } else if line_idx == r2 {
+                            (0, c2 as usize)
+                        } else {
+                            (0, usize::MAX)
+                        };
+                        highlighted_lines.push(Self::apply_selection_to_line(
+                            line, sel_start, sel_end, theme,
+                        ));
+                    } else {
+                        highlighted_lines.push(line);
+                    }
+                }
+                lines = highlighted_lines;
+            }
+        }
+
         let total_lines = lines.len() as u16;
         let viewport_height = area.height;
         let max_scroll = total_lines.saturating_sub(viewport_height);
@@ -613,6 +647,63 @@ impl TimelineView {
             .scroll((scroll, 0));
 
         frame.render_widget(paragraph, area);
+    }
+
+    /// Slices a Line's spans and applies the visual selection highlight style across a character column range
+    fn apply_selection_to_line<'a>(
+        line: Line<'a>,
+        sel_start: usize,
+        sel_end: usize,
+        theme: &'a Theme,
+    ) -> Line<'a> {
+        if sel_start >= sel_end {
+            return line;
+        }
+
+        let mut new_spans = Vec::new();
+        let mut current_col = 0;
+
+        let selection_style = Style::default()
+            .bg(theme.border)
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::REVERSED);
+
+        for span in line.spans {
+            let span_len = span.content.chars().count();
+            let span_end = current_col + span_len;
+
+            if span_end <= sel_start || current_col >= sel_end {
+                // Span is completely outside selection
+                new_spans.push(span);
+            } else {
+                // Span overlaps with selection
+                let chars: Vec<char> = span.content.chars().collect();
+                let overlap_start = sel_start.saturating_sub(current_col).min(span_len);
+                let overlap_end = (sel_end - current_col).min(span_len);
+
+                // 1. Prefix before selection
+                if overlap_start > 0 {
+                    let prefix: String = chars[..overlap_start].iter().collect();
+                    new_spans.push(Span::styled(prefix, span.style));
+                }
+
+                // 2. Selected portion
+                if overlap_start < overlap_end {
+                    let selected: String = chars[overlap_start..overlap_end].iter().collect();
+                    new_spans.push(Span::styled(selected, selection_style));
+                }
+
+                // 3. Suffix after selection
+                if overlap_end < span_len {
+                    let suffix: String = chars[overlap_end..].iter().collect();
+                    new_spans.push(Span::styled(suffix, span.style));
+                }
+            }
+
+            current_col = span_end;
+        }
+
+        Line::from(new_spans)
     }
 
     /// Renders assistant Markdown text into highlighted Ratatui lines
@@ -686,5 +777,27 @@ mod tests {
         assert!(multi_extracted.is_some());
         let text = multi_extracted.unwrap();
         assert!(text.contains("zero hello world\nLine one"));
+    }
+
+    #[test]
+    fn test_apply_selection_to_line() {
+        let theme = Theme::aura_dark();
+        let original_line = Line::from(vec![
+            Span::raw("Hello "),
+            Span::raw("minicode "),
+            Span::raw("world"),
+        ]);
+
+        // Select "minicode" (columns 6..14, excluding the space at col 14)
+        let highlighted = TimelineView::apply_selection_to_line(original_line, 6, 14, &theme);
+        assert_eq!(highlighted.spans.len(), 4);
+        assert_eq!(highlighted.spans[0].content, "Hello ");
+        assert_eq!(highlighted.spans[1].content, "minicode");
+        assert_eq!(highlighted.spans[2].content, " ");
+        assert_eq!(highlighted.spans[3].content, "world");
+        assert!(highlighted.spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED));
     }
 }
