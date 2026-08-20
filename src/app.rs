@@ -170,6 +170,7 @@ impl<'a> App<'a> {
                     .direction(Direction::Vertical)
                     .constraints([
                         Constraint::Min(4),              // Streaming Timeline
+                        Constraint::Length(1),           // Top Spacer / Margin above input dock
                         Constraint::Length(hint_height), // Autocomplete hint rows
                         Constraint::Length(3),           // Input Dock
                         Constraint::Length(1),           // Minimal Bottom Status Line
@@ -188,10 +189,10 @@ impl<'a> App<'a> {
 
                 if has_slash_hint {
                     self.input_dock
-                        .render_autocomplete_hint(frame, chunks[1], &self.theme);
+                        .render_autocomplete_hint(frame, chunks[2], &self.theme);
                 }
 
-                self.input_dock.render(frame, chunks[2], &self.theme);
+                self.input_dock.render(frame, chunks[3], &self.theme);
 
                 let active_mcp_count = self
                     .config
@@ -203,7 +204,7 @@ impl<'a> App<'a> {
 
                 StatusWidgets::render_bottom_bar(
                     frame,
-                    chunks[3],
+                    chunks[4],
                     &self.theme,
                     &self.workspace_root,
                     &self.config.provider.default,

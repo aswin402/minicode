@@ -81,7 +81,7 @@ impl<'a> Default for InputDock<'a> {
 impl<'a> InputDock<'a> {
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
-        textarea.set_placeholder_text("Implement {feature} or ask a question...");
+        textarea.set_placeholder_text("Ask minicode to do anything...");
         textarea.set_cursor_line_style(Style::default());
         Self {
             textarea,
@@ -121,7 +121,7 @@ impl<'a> InputDock<'a> {
     pub fn autocomplete_slash(&mut self) -> bool {
         if let Some(cmd) = self.selected_slash_command() {
             let mut ta = TextArea::new(vec![cmd.name.to_string()]);
-            ta.set_placeholder_text("Implement {feature} or ask a question...");
+            ta.set_placeholder_text("Ask minicode to do anything...");
             ta.set_cursor_line_style(Style::default());
             self.textarea = ta;
             self.slash_selected_index = 0;
@@ -182,7 +182,7 @@ impl<'a> InputDock<'a> {
 
                 if !final_prompt.is_empty() {
                     let mut ta = TextArea::default();
-                    ta.set_placeholder_text("Implement {feature} or ask a question...");
+                    ta.set_placeholder_text("Ask minicode to do anything...");
                     ta.set_cursor_line_style(Style::default());
                     self.textarea = ta;
                     self.slash_selected_index = 0;
@@ -215,24 +215,49 @@ impl<'a> InputDock<'a> {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let mut cloned = self.textarea.clone();
-        cloned.set_style(Style::default().fg(theme.text_primary).bg(theme.bg_input));
-        cloned.set_cursor_style(
-            Style::default()
-                .fg(theme.brand_accent)
-                .bg(theme.brand_accent),
-        );
-        // Explicitly disable underline on cursor line
-        cloned.set_cursor_line_style(Style::default());
-
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(theme.border).bg(theme.bg_input))
-            .style(Style::default().bg(theme.bg_input))
-            .title(" › ");
+            .style(Style::default().bg(theme.bg_input));
 
-        cloned.set_block(block);
-        frame.render_widget(&cloned, area);
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        // Subdivide inner area to render "› " prompt and text editor inline
+        let input_chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Length(2), // "› "
+                ratatui::layout::Constraint::Min(1),    // TextArea input
+            ])
+            .split(inner_area);
+
+        let prompt_span = Span::styled(
+            "› ",
+            Style::default()
+                .fg(theme.brand_accent)
+                .bg(theme.bg_input)
+                .add_modifier(Modifier::BOLD),
+        );
+        let prompt_widget = Paragraph::new(Line::from(vec![prompt_span]))
+            .style(Style::default().bg(theme.bg_input));
+        frame.render_widget(prompt_widget, input_chunks[0]);
+
+        let mut cloned = self.textarea.clone();
+        cloned.set_style(Style::default().fg(theme.text_primary).bg(theme.bg_input));
+        cloned.set_cursor_style(Style::default().fg(theme.bg_primary).bg(theme.brand_accent));
+        // Explicitly disable underline on cursor line
+        cloned.set_cursor_line_style(Style::default().bg(theme.bg_input));
+        cloned.set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_input));
+        cloned.set_placeholder_text("Ask minicode to do anything...");
+        cloned.set_block(
+            Block::default()
+                .borders(Borders::NONE)
+                .style(Style::default().bg(theme.bg_input)),
+        );
+
+        frame.render_widget(&cloned, input_chunks[1]);
     }
 
     /// Renders the slash command autocomplete suggestion rows (with Up/Down arrow selection)
