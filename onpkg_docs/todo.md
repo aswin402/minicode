@@ -479,4 +479,16 @@
 - [x] Write unit & integration tests (`tests/integration_hypothesis_tree.rs`)
 - [x] `cargo test && cargo clippy -- -D warnings` (131 tests passing, 0 clippy warnings)
 
+---
+
+## ✅ Phase 18: Smooth Mouse Wheel & Multi-Key TUI Timeline Scrolling (v0.0.27)
+
+- [x] Enable native mouse capture (`crossterm::EnableMouseCapture`) for mouse wheel and trackpad timeline scrolling
+- [x] Implement dynamic auto-scroll state management with `Cell<u16>` and `Cell<bool>` in `src/ui/view.rs`
+- [x] Add multi-key keyboard navigation (`PageUp`/`PageDown`, `Shift+↑/↓`, `Ctrl+↑/↓`, `Alt+↑/↓`, empty input dock `↑/↓`, `Home`/`End`)
+- [x] Fix terminal drawer (`Ctrl+T`) scroll offset calculation in `src/ui/pty_drawer.rs`
+- [x] Update in-TUI Help modal (`/help`) with full scrolling shortcuts documentation
+- [x] Write unit tests (`test_timeline_scrolling_and_auto_scroll_resumption` in `src/ui/view.rs`)
+- [x] `cargo test && cargo clippy -- -D warnings` (132 tests passing, 0 clippy warnings)
+
 

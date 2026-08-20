@@ -14,7 +14,7 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
-  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-131_Passing-61ffca?style=flat-square" alt="Tests" /></a>
+  <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-132_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
 
 ---

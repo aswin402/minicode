@@ -372,11 +372,11 @@ impl<'a> App<'a> {
 
                                 // Dedicated timeline scroll keys: PageUp / PageDown / Home / End / Shift+Up / Shift+Down / Ctrl+Up / Ctrl+Down / Alt+Up / Alt+Down
                                 if key_event.code == KeyCode::PageUp {
-                                    self.timeline.scroll_page_up(20);
+                                    self.timeline.scroll_page_up(crate::constants::PAGE_SCROLL_LINES * 5);
                                     continue;
                                 }
                                 if key_event.code == KeyCode::PageDown {
-                                    self.timeline.scroll_page_down(20);
+                                    self.timeline.scroll_page_down(crate::constants::PAGE_SCROLL_LINES * 5);
                                     continue;
                                 }
                                 if key_event.code == KeyCode::Home && (key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {

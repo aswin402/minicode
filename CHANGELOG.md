@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.27] — 2026-08-20
+
+### 🖱️ Smooth Mouse Wheel & Multi-Key TUI Timeline Scrolling
+- **TUI Scrolling Engine (`src/ui/view.rs`, `src/app.rs`, `src/ui/pty_drawer.rs`)**:
+  - Enabled native mouse capture (`crossterm::EnableMouseCapture`) for mouse wheel and trackpad smooth scrolling across both the conversation timeline and the embedded terminal drawer.
+  - Implemented dynamic auto-scroll state management with `Cell<u16>` and `Cell<bool>`, fixing the bug where scrolling up jumped straight to line 0 instead of stepping back from the bottom.
+  - Added multi-key keyboard navigation: `PageUp`/`PageDown` (page scrolling), `Shift+↑/↓`, `Ctrl+↑/↓`, `Alt+↑/↓`, empty input dock `↑/↓`, and `Home`/`End` (jump to top/bottom).
+  - Updated in-TUI Help modal (`/help`) with full scrolling shortcuts documentation.
+- **Unit & Integration Tests**:
+  - Added `test_timeline_scrolling_and_auto_scroll_resumption` in `src/ui/view.rs`.
+  - Test suite expanded to **132 tests passing 100% green** with zero clippy warnings.
+
+---
+
 ## [0.0.26] — 2026-08-18
 
 ### 🌲 Dynamic Multi-Branch Hypothesis Search & Speculative Rollout
