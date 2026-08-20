@@ -6,6 +6,7 @@ use ratatui::style::Color;
 pub struct Theme {
     pub bg_primary: Color,
     pub bg_elevated: Color,
+    #[allow(dead_code)]
     pub bg_input: Color,
     pub brand_accent: Color, // Aura Purple (#a277ff)
     pub success: Color,      // Aura Mint Green (#61ffca)
