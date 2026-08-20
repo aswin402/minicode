@@ -33,8 +33,9 @@ pub enum TimelineEntry {
 
 pub struct TimelineView {
     pub entries: Vec<TimelineEntry>,
-    pub scroll_offset: u16,
-    pub auto_scroll: bool,
+    pub scroll_offset: std::cell::Cell<u16>,
+    pub auto_scroll: std::cell::Cell<bool>,
+    pub max_scroll: std::cell::Cell<u16>,
 }
 
 pub struct TimelineContext<'a> {
@@ -56,9 +57,68 @@ impl TimelineView {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            scroll_offset: 0,
-            auto_scroll: true,
+            scroll_offset: std::cell::Cell::new(0),
+            auto_scroll: std::cell::Cell::new(true),
+            max_scroll: std::cell::Cell::new(0),
         }
+    }
+
+    /// Scrolls timeline up by a number of lines
+    pub fn scroll_up(&self, lines: u16) {
+        if self.auto_scroll.get() {
+            self.scroll_offset.set(self.max_scroll.get());
+            self.auto_scroll.set(false);
+        }
+        let current = self.scroll_offset.get();
+        self.scroll_offset.set(current.saturating_sub(lines));
+    }
+
+    /// Scrolls timeline down by a number of lines
+    pub fn scroll_down(&self, lines: u16) {
+        if self.auto_scroll.get() {
+            return;
+        }
+        let current = self.scroll_offset.get();
+        let next = current.saturating_add(lines);
+        let max = self.max_scroll.get();
+        if next >= max {
+            self.scroll_offset.set(max);
+            self.auto_scroll.set(true);
+        } else {
+            self.scroll_offset.set(next);
+        }
+    }
+
+    /// Scrolls timeline up by a page
+    pub fn scroll_page_up(&self, viewport_height: u16) {
+        let step = if viewport_height > 2 {
+            viewport_height.saturating_sub(2)
+        } else {
+            5
+        };
+        self.scroll_up(step);
+    }
+
+    /// Scrolls timeline down by a page
+    pub fn scroll_page_down(&self, viewport_height: u16) {
+        let step = if viewport_height > 2 {
+            viewport_height.saturating_sub(2)
+        } else {
+            5
+        };
+        self.scroll_down(step);
+    }
+
+    /// Jumps straight to the top of conversation history
+    pub fn scroll_to_top(&self) {
+        self.auto_scroll.set(false);
+        self.scroll_offset.set(0);
+    }
+
+    /// Jumps straight to the bottom and resumes auto-scroll
+    pub fn scroll_to_bottom(&self) {
+        self.auto_scroll.set(true);
+        self.scroll_offset.set(self.max_scroll.get());
     }
 
     pub fn add_user_message(&mut self, prompt: String) {
@@ -356,10 +416,12 @@ impl TimelineView {
         let total_lines = lines.len() as u16;
         let viewport_height = area.height;
         let max_scroll = total_lines.saturating_sub(viewport_height);
-        let scroll = if self.auto_scroll {
+        self.max_scroll.set(max_scroll);
+        let scroll = if self.auto_scroll.get() {
+            self.scroll_offset.set(max_scroll);
             max_scroll
         } else {
-            self.scroll_offset.min(max_scroll)
+            self.scroll_offset.get().min(max_scroll)
         };
 
         let block = Block::default()
@@ -472,5 +534,48 @@ impl TimelineView {
         }
 
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timeline_scrolling_and_auto_scroll_resumption() {
+        let view = TimelineView::new();
+        view.max_scroll.set(50);
+        view.auto_scroll.set(true);
+
+        // 1. Scrolling up disables auto_scroll and steps backward from max_scroll
+        view.scroll_up(10);
+        assert!(!view.auto_scroll.get());
+        assert_eq!(view.scroll_offset.get(), 40);
+
+        // 2. Further scroll up
+        view.scroll_up(20);
+        assert_eq!(view.scroll_offset.get(), 20);
+
+        // 3. Scroll to top
+        view.scroll_to_top();
+        assert_eq!(view.scroll_offset.get(), 0);
+        assert!(!view.auto_scroll.get());
+
+        // 4. Scroll down
+        view.scroll_down(30);
+        assert_eq!(view.scroll_offset.get(), 30);
+        assert!(!view.auto_scroll.get());
+
+        // 5. Scroll down to or beyond max_scroll re-enables auto_scroll
+        view.scroll_down(30);
+        assert_eq!(view.scroll_offset.get(), 50);
+        assert!(view.auto_scroll.get());
+
+        // 6. Scroll to bottom
+        view.scroll_up(15);
+        assert!(!view.auto_scroll.get());
+        view.scroll_to_bottom();
+        assert_eq!(view.scroll_offset.get(), 50);
+        assert!(view.auto_scroll.get());
     }
 }

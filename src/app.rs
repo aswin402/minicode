@@ -5,7 +5,10 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::session::undo::rollback_turn;
 use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineContext, TimelineView};
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
+    KeyModifiers, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -99,7 +102,7 @@ impl<'a> App<'a> {
     pub async fn run(&mut self, mut agent: AgentLoop) -> Result<()> {
         enable_raw_mode()?;
         let mut stdout = stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -220,316 +223,376 @@ impl<'a> App<'a> {
             })?;
 
             tokio::select! {
-                // UI frame tick (smooth timer animation during execution)
-                _ = ticker.tick() => {
-                    // Triggers loop draw iteration
-                }
+                    // UI frame tick (smooth timer animation during execution)
+                    _ = ticker.tick() => {
+                        // Triggers loop draw iteration
+                    }
 
-                // Handle Agent streaming events from background actor
-                Some(agent_event) = event_rx.recv() => {
-                    match agent_event {
-                        AgentEvent::StreamDelta { delta, .. } => {
-                            self.timeline.append_assistant_delta(&delta);
-                        }
-                        AgentEvent::ToolCall { tool, args, .. } => {
-                            self.timeline.add_tool_call(tool, args.to_string());
-                        }
-                        AgentEvent::ToolResult { tool, success, output, duration_ms, .. } => {
-                            self.timeline.finish_tool_call(&tool, success, output, duration_ms);
-                        }
-                        AgentEvent::TurnEnd { total_tokens_used, .. } => {
-                            self.last_turn_tokens = total_tokens_used;
-                            self.is_working = false;
-                            self.work_start = None;
-                            self.cancel_token = None;
-                        }
-                        AgentEvent::GitCommit { hash, message, .. } => {
-                            self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
-                        }
-                        AgentEvent::ApprovalRequest { turn_id, tool_id, tool, args, .. } => {
-                            let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
-                                turn_id,
-                                &tool_id,
-                                &tool,
-                                &args,
-                                &self.theme,
-                            );
-                            self.modal = crate::ui::modal::ModalState::Approval(approval_state);
-                        }
-                        AgentEvent::Error { message, retrying, .. } => {
-                            if retrying {
-                                self.timeline.add_status(message);
-                            } else {
-                                self.timeline.append_assistant_delta(&format!("\n✗ Error: {}\n", message));
+                    // Handle Agent streaming events from background actor
+                    Some(agent_event) = event_rx.recv() => {
+                        match agent_event {
+                            AgentEvent::StreamDelta { delta, .. } => {
+                                self.timeline.append_assistant_delta(&delta);
+                            }
+                            AgentEvent::ToolCall { tool, args, .. } => {
+                                self.timeline.add_tool_call(tool, args.to_string());
+                            }
+                            AgentEvent::ToolResult { tool, success, output, duration_ms, .. } => {
+                                self.timeline.finish_tool_call(&tool, success, output, duration_ms);
+                            }
+                            AgentEvent::TurnEnd { total_tokens_used, .. } => {
+                                self.last_turn_tokens = total_tokens_used;
                                 self.is_working = false;
                                 self.work_start = None;
                                 self.cancel_token = None;
                             }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Handle user keyboard events from terminal
-                Some(Ok(event)) = event_stream.next() => {
-                    if let Event::Key(key_event) = event {
-                        if key_event.kind == KeyEventKind::Release {
-                            continue;
-                        }
-
-                        // Modal is active — intercept keyboard navigation
-                        if self.modal.is_active() {
-                            self.handle_modal_key(key_event, &control_tx).await;
-                            continue;
-                        }
-
-                        // Ctrl+T toggles embedded PTY terminal drawer
-                        if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                            self.pty_drawer.toggle();
-                            continue;
-                        }
-
-                        // When PTY drawer is open, route keystrokes into drawer
-                        if self.pty_drawer.is_open {
-                            match key_event.code {
-                                KeyCode::Esc => {
-                                    self.pty_drawer.is_open = false;
+                            AgentEvent::GitCommit { hash, message, .. } => {
+                                self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
+                            }
+                            AgentEvent::ApprovalRequest { turn_id, tool_id, tool, args, .. } => {
+                                let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
+                                    turn_id,
+                                    &tool_id,
+                                    &tool,
+                                    &args,
+                                    &self.theme,
+                                );
+                                self.modal = crate::ui::modal::ModalState::Approval(approval_state);
+                            }
+                            AgentEvent::Error { message, retrying, .. } => {
+                                if retrying {
+                                    self.timeline.add_status(message);
+                                } else {
+                                    self.timeline.append_assistant_delta(&format!("\n✗ Error: {}\n", message));
+                                    self.is_working = false;
+                                    self.work_start = None;
+                                    self.cancel_token = None;
                                 }
-                                KeyCode::Enter => {
-                                    if let Some(cmd) = self.pty_drawer.submit_command() {
-                                        let ws = self.workspace_root.clone();
-                                        match crate::tools::exec::exec_cmd(&ws, &cmd, Some(60)).await {
-                                            Ok(out) => {
-                                                for line in out.lines() {
-                                                    self.pty_drawer.append_output(line);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Handle user keyboard and mouse events from terminal
+                    Some(Ok(event)) = event_stream.next() => {
+                        match event {
+                            Event::Mouse(mouse_event) => {
+                                match mouse_event.kind {
+                                    MouseEventKind::ScrollUp => {
+                                        if self.pty_drawer.is_open {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(3);
+                                        } else {
+                                            self.timeline.scroll_up(3);
+                                        }
+                                    }
+                                    MouseEventKind::ScrollDown => {
+                                        if self.pty_drawer.is_open {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(3);
+                                        } else {
+                                            self.timeline.scroll_down(3);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Event::Key(key_event) => {
+                                if key_event.kind == KeyEventKind::Release {
+                                    continue;
+                                }
+
+                                // Modal is active — intercept keyboard navigation
+                                if self.modal.is_active() {
+                                    self.handle_modal_key(key_event, &control_tx).await;
+                                    continue;
+                                }
+
+                                // Ctrl+T toggles embedded PTY terminal drawer
+                                if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.pty_drawer.toggle();
+                                    continue;
+                                }
+
+                                // When PTY drawer is open, route keystrokes into drawer
+                                if self.pty_drawer.is_open {
+                                    match key_event.code {
+                                        KeyCode::Esc => {
+                                            self.pty_drawer.is_open = false;
+                                        }
+                                        KeyCode::PageUp => {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(5);
+                                        }
+                                        KeyCode::PageDown => {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(5);
+                                        }
+                                        KeyCode::Up if key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT) => {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(2);
+                                        }
+                                        KeyCode::Down if key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT) => {
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(2);
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some(cmd) = self.pty_drawer.submit_command() {
+                                                let ws = self.workspace_root.clone();
+                                                match crate::tools::exec::exec_cmd(&ws, &cmd, Some(60)).await {
+                                                    Ok(out) => {
+                                                        for line in out.lines() {
+                                                            self.pty_drawer.append_output(line);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        self.pty_drawer.append_output(format!("Error: {}", e));
+                                                    }
                                                 }
                                             }
-                                            Err(e) => {
-                                                self.pty_drawer.append_output(format!("Error: {}", e));
-                                            }
                                         }
-                                    }
-                                }
-                                KeyCode::Backspace => {
-                                    self.pty_drawer.handle_backspace();
-                                }
-                                KeyCode::Char(c) => {
-                                    self.pty_drawer.handle_char(c);
-                                }
-                                _ => {}
-                            }
-                            continue;
-                        }
-
-                        // Check for Ctrl+C or Esc to interrupt or exit
-                        if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
-                            if self.is_working {
-                                if let Some(token) = self.cancel_token.take() {
-                                    token.cancel();
-                                }
-                                self.is_working = false;
-                                self.work_start = None;
-                                self.timeline.add_status("⏹ Turn interrupted by user".to_string());
-                            } else {
-                                break;
-                            }
-                        }
-
-                        // Check PageUp / PageDown for timeline scrolling
-                        if key_event.code == KeyCode::PageUp {
-                            self.timeline.auto_scroll = false;
-                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_sub(crate::constants::PAGE_SCROLL_LINES);
-                            continue;
-                        }
-                        if key_event.code == KeyCode::PageDown {
-                            self.timeline.scroll_offset = self.timeline.scroll_offset.saturating_add(crate::constants::PAGE_SCROLL_LINES);
-                            if self.timeline.scroll_offset == 0 {
-                                self.timeline.auto_scroll = true;
-                            }
-                            continue;
-                        }
-
-                        // Send input to input dock
-                        if let Some(raw_prompt) = self.input_dock.handle_key(key_event) {
-                            let prompt = raw_prompt.trim().to_string();
-                            if prompt.is_empty() {
-                                continue;
-                            }
-
-                            if prompt == "/exit" || prompt == "/quit" {
-                                break;
-                            }
-
-                            if prompt == "/terminal" {
-                                self.pty_drawer.toggle();
-                                continue;
-                            }
-
-                            if prompt == "/clear" {
-                                self.timeline.entries.clear();
-                                continue;
-                            }
-
-                            if prompt == "/help" {
-                                self.modal = ModalState::Help;
-                                continue;
-                            }
-
-                            if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
-                                self.modal = ModalState::new_provider_select();
-                                continue;
-                            }
-
-                            if prompt == "/undo" {
-                                match rollback_turn(&self.workspace_root) {
-                                    Ok(res) if res.restored_count > 0 || res.deleted_count > 0 => {
-                                        self.timeline.add_status(format!(
-                                            "✔ Reverted turn #{}: restored {} file(s), deleted {} file(s)",
-                                            res.turn_id, res.restored_count, res.deleted_count
-                                        ));
-                                    }
-                                    Ok(_) => {
-                                        self.timeline.add_status("ℹ No changes found to undo in previous turn".to_string());
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!("✗ Undo failed: {}", e));
-                                    }
-                                }
-                                continue;
-                            }
-
-                            if prompt == "/tokens" {
-                                let model_limit = crate::agent::models::get_model_context_limit(&self.config.provider.model);
-                                let card = format!(
-                                    "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Last Turn Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
-                                    self.config.provider.default,
-                                    self.config.provider.model,
-                                    model_limit,
-                                    self.last_turn_tokens,
-                                    self.config.agent.warning_threshold * 100.0
-                                );
-                                self.timeline.add_status(card);
-                                continue;
-                            }
-
-                            if prompt == "/map" {
-                                let mut graph = crate::context::graph::CodeGraph::new();
-                                if let Err(e) = graph.build_graph(&self.workspace_root) {
-                                    self.timeline.add_status(format!("✗ Failed to build repo map: {}", e));
-                                } else {
-                                    let repomap = graph.format_repomap(&self.workspace_root, &[], self.config.agent.map_tokens);
-                                    self.timeline.add_status(format!("🗺️ AST PageRank Repository Map:\n\n{}", repomap));
-                                }
-                                continue;
-                            }
-
-                            if prompt == "/compact" {
-                                self.timeline.add_status("✔ Context compaction requested".to_string());
-                                continue;
-                            }
-
-                            if prompt.starts_with("/save") {
-                                let target_path = prompt.trim_start_matches("/save").trim();
-                                let export_file = if target_path.is_empty() {
-                                    let export_dir = self.workspace_root.join(".minicode").join("exports");
-                                    let _ = std::fs::create_dir_all(&export_dir);
-                                    export_dir.join(format!("session_{}.md", chrono::Utc::now().format("%Y%m%d_%H%M%S")))
-                                } else {
-                                    self.workspace_root.join(target_path)
-                                };
-                                let mut md = format!("# minicode Session Export — {}\n\n", chrono::Utc::now().to_rfc3339());
-                                for entry in &self.timeline.entries {
-                                    match entry {
-                                        crate::ui::view::TimelineEntry::UserPrompt(text) => {
-                                            md.push_str(&format!("### 👤 User\n{}\n\n", text));
+                                        KeyCode::Backspace => {
+                                            self.pty_drawer.handle_backspace();
                                         }
-                                        crate::ui::view::TimelineEntry::AssistantMarkdown(text) => {
-                                            md.push_str(&format!("### 🤖 Assistant\n{}\n\n", text));
-                                        }
-                                        crate::ui::view::TimelineEntry::ToolStart { name, command_or_path } => {
-                                            md.push_str(&format!("*🔧 Tool Started:* `{}` (`{}`)\n\n", name, command_or_path));
-                                        }
-                                        crate::ui::view::TimelineEntry::ToolFinished { name, command_or_path, success, output, .. } => {
-                                            md.push_str(&format!("*🔧 Tool Finished:* `{}` (`{}` - {})\n```\n{}\n```\n\n", name, command_or_path, if *success { "success" } else { "failure" }, output));
-                                        }
-                                        crate::ui::view::TimelineEntry::SystemStatus(text) => {
-                                            md.push_str(&format!("*ℹ Status:* {}\n\n", text));
+                                        KeyCode::Char(c) => {
+                                            self.pty_drawer.handle_char(c);
                                         }
                                         _ => {}
                                     }
-                                }
-                                if let Err(e) = std::fs::write(&export_file, md) {
-                                    self.timeline.add_status(format!("✗ Failed to save session: {}", e));
-                                } else {
-                                    self.timeline.add_status(format!("✔ Saved conversation export to {}", export_file.display()));
-                                }
-                                continue;
-                            }
-
-                            if prompt.starts_with("/load") {
-                                let target_id = prompt.trim_start_matches("/load").trim();
-                                let store = crate::session::store::SessionStore::new();
-                                if target_id.is_empty() {
-                                    match store.list_sessions() {
-                                        Ok(sessions) if !sessions.is_empty() => {
-                                            let mut list_msg = format!("📂 Available Sessions ({}):\n", sessions.len());
-                                            for s in sessions.iter().take(10) {
-                                                list_msg.push_str(&format!("  • {} ({})\n", s.id, s.created_at));
-                                            }
-                                            list_msg.push_str("\nUse `/load <session_id>` to view a session.");
-                                            self.timeline.add_status(list_msg);
-                                        }
-                                        Ok(_) => {
-                                            self.timeline.add_status("ℹ No past sessions found".to_string());
-                                        }
-                                        Err(e) => {
-                                            self.timeline.add_status(format!("✗ Failed to list sessions: {}", e));
-                                        }
-                                    }
-                                } else {
-                                    match store.load_session(target_id) {
-                                        Ok(events) => {
-                                            self.timeline.entries.clear();
-                                            self.hydrate_session(&events);
-                                            self.timeline.add_status(format!("✔ Loaded session '{}' with {} events", target_id, events.len()));
-                                        }
-                                        Err(e) => {
-                                            self.timeline.add_status(format!("✗ Failed to load session '{}': {}", target_id, e));
-                                        }
-                                    }
-                                }
-                                continue;
-                            }
-
-                            let prompt_to_run = if prompt == "/retry" {
-                                if let Some(ref last) = self.last_user_prompt {
-                                    self.timeline.add_status(format!("🔄 Retrying last prompt: \"{}\"", last));
-                                    last.clone()
-                                } else {
-                                    self.timeline.add_status("ℹ No previous user prompt to retry".to_string());
                                     continue;
                                 }
-                            } else {
-                                self.last_user_prompt = Some(prompt.clone());
-                                prompt
-                            };
 
-                            self.timeline.add_user_message(prompt_to_run.clone());
-                            self.is_working = true;
-                            self.work_start = Some(Instant::now());
+                                // Check for Ctrl+C or Esc to interrupt or exit
+                                if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
+                                    if self.is_working {
+                                        if let Some(token) = self.cancel_token.take() {
+                                            token.cancel();
+                                        }
+                                        self.is_working = false;
+                                        self.work_start = None;
+                                        self.timeline.add_status("⏹ Turn interrupted by user".to_string());
+                                    } else {
+                                        break;
+                                    }
+                                }
 
-                            let cancel = tokio_util::sync::CancellationToken::new();
-                            self.cancel_token = Some(cancel.clone());
+                                // Dedicated timeline scroll keys: PageUp / PageDown / Home / End / Shift+Up / Shift+Down / Ctrl+Up / Ctrl+Down / Alt+Up / Alt+Down
+                                if key_event.code == KeyCode::PageUp {
+                                    self.timeline.scroll_page_up(20);
+                                    continue;
+                                }
+                                if key_event.code == KeyCode::PageDown {
+                                    self.timeline.scroll_page_down(20);
+                                    continue;
+                                }
+                                if key_event.code == KeyCode::Home && (key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
+                                    self.timeline.scroll_to_top();
+                                    continue;
+                                }
+                                if key_event.code == KeyCode::End && (key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
+                                    self.timeline.scroll_to_bottom();
+                                    continue;
+                                }
+                                if (key_event.code == KeyCode::Up) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
+                                    self.timeline.scroll_up(3);
+                                    continue;
+                                }
+                                if (key_event.code == KeyCode::Down) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
+                                    self.timeline.scroll_down(3);
+                                    continue;
+                                }
 
-                            // Dispatch asynchronously to agent background actor
-                            if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt_to_run, Some(cancel))) {
-                                tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
-                                self.is_working = false;
-                                self.work_start = None;
-                                self.cancel_token = None;
-                                self.timeline.add_status(format!("❌ Agent communication failure: {}", e));
+                                // If input dock has no matching slash suggestions and textarea is single-line empty, Up/Down scroll timeline
+                                let is_input_empty = self.input_dock.textarea.lines().len() <= 1 && self.input_dock.textarea.lines().first().map(|l| l.is_empty()).unwrap_or(true);
+                                let has_slash_matching = !self.input_dock.matching_slash_commands().is_empty();
+                                if is_input_empty && !has_slash_matching {
+                                    if key_event.code == KeyCode::Up {
+                                        self.timeline.scroll_up(3);
+                                        continue;
+                                    }
+                                    if key_event.code == KeyCode::Down {
+                                        self.timeline.scroll_down(3);
+                                        continue;
+                                    }
+                                }
+
+                            // Send input to input dock
+                            if let Some(raw_prompt) = self.input_dock.handle_key(key_event) {
+                                let prompt = raw_prompt.trim().to_string();
+                                if prompt.is_empty() {
+                                    continue;
+                                }
+
+                                if prompt == "/exit" || prompt == "/quit" {
+                                    break;
+                                }
+
+                                if prompt == "/terminal" {
+                                    self.pty_drawer.toggle();
+                                    continue;
+                                }
+
+                                if prompt == "/clear" {
+                                    self.timeline.entries.clear();
+                                    continue;
+                                }
+
+                                if prompt == "/help" {
+                                    self.modal = ModalState::Help;
+                                    continue;
+                                }
+
+                                if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
+                                    self.modal = ModalState::new_provider_select();
+                                    continue;
+                                }
+
+                                if prompt == "/undo" {
+                                    match rollback_turn(&self.workspace_root) {
+                                        Ok(res) if res.restored_count > 0 || res.deleted_count > 0 => {
+                                            self.timeline.add_status(format!(
+                                                "✔ Reverted turn #{}: restored {} file(s), deleted {} file(s)",
+                                                res.turn_id, res.restored_count, res.deleted_count
+                                            ));
+                                        }
+                                        Ok(_) => {
+                                            self.timeline.add_status("ℹ No changes found to undo in previous turn".to_string());
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Undo failed: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                if prompt == "/tokens" {
+                                    let model_limit = crate::agent::models::get_model_context_limit(&self.config.provider.model);
+                                    let card = format!(
+                                        "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Last Turn Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
+                                        self.config.provider.default,
+                                        self.config.provider.model,
+                                        model_limit,
+                                        self.last_turn_tokens,
+                                        self.config.agent.warning_threshold * 100.0
+                                    );
+                                    self.timeline.add_status(card);
+                                    continue;
+                                }
+
+                                if prompt == "/map" {
+                                    let mut graph = crate::context::graph::CodeGraph::new();
+                                    if let Err(e) = graph.build_graph(&self.workspace_root) {
+                                        self.timeline.add_status(format!("✗ Failed to build repo map: {}", e));
+                                    } else {
+                                        let repomap = graph.format_repomap(&self.workspace_root, &[], self.config.agent.map_tokens);
+                                        self.timeline.add_status(format!("🗺️ AST PageRank Repository Map:\n\n{}", repomap));
+                                    }
+                                    continue;
+                                }
+
+                                if prompt == "/compact" {
+                                    self.timeline.add_status("✔ Context compaction requested".to_string());
+                                    continue;
+                                }
+
+                                if prompt.starts_with("/save") {
+                                    let target_path = prompt.trim_start_matches("/save").trim();
+                                    let export_file = if target_path.is_empty() {
+                                        let export_dir = self.workspace_root.join(".minicode").join("exports");
+                                        let _ = std::fs::create_dir_all(&export_dir);
+                                        export_dir.join(format!("session_{}.md", chrono::Utc::now().format("%Y%m%d_%H%M%S")))
+                                    } else {
+                                        self.workspace_root.join(target_path)
+                                    };
+                                    let mut md = format!("# minicode Session Export — {}\n\n", chrono::Utc::now().to_rfc3339());
+                                    for entry in &self.timeline.entries {
+                                        match entry {
+                                            crate::ui::view::TimelineEntry::UserPrompt(text) => {
+                                                md.push_str(&format!("### 👤 User\n{}\n\n", text));
+                                            }
+                                            crate::ui::view::TimelineEntry::AssistantMarkdown(text) => {
+                                                md.push_str(&format!("### 🤖 Assistant\n{}\n\n", text));
+                                            }
+                                            crate::ui::view::TimelineEntry::ToolStart { name, command_or_path } => {
+                                                md.push_str(&format!("*🔧 Tool Started:* `{}` (`{}`)\n\n", name, command_or_path));
+                                            }
+                                            crate::ui::view::TimelineEntry::ToolFinished { name, command_or_path, success, output, .. } => {
+                                                md.push_str(&format!("*🔧 Tool Finished:* `{}` (`{}` - {})\n```\n{}\n```\n\n", name, command_or_path, if *success { "success" } else { "failure" }, output));
+                                            }
+                                            crate::ui::view::TimelineEntry::SystemStatus(text) => {
+                                                md.push_str(&format!("*ℹ Status:* {}\n\n", text));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if let Err(e) = std::fs::write(&export_file, md) {
+                                        self.timeline.add_status(format!("✗ Failed to save session: {}", e));
+                                    } else {
+                                        self.timeline.add_status(format!("✔ Saved conversation export to {}", export_file.display()));
+                                    }
+                                    continue;
+                                }
+
+                                if prompt.starts_with("/load") {
+                                    let target_id = prompt.trim_start_matches("/load").trim();
+                                    let store = crate::session::store::SessionStore::new();
+                                    if target_id.is_empty() {
+                                        match store.list_sessions() {
+                                            Ok(sessions) if !sessions.is_empty() => {
+                                                let mut list_msg = format!("📂 Available Sessions ({}):\n", sessions.len());
+                                                for s in sessions.iter().take(10) {
+                                                    list_msg.push_str(&format!("  • {} ({})\n", s.id, s.created_at));
+                                                }
+                                                list_msg.push_str("\nUse `/load <session_id>` to view a session.");
+                                                self.timeline.add_status(list_msg);
+                                            }
+                                            Ok(_) => {
+                                                self.timeline.add_status("ℹ No past sessions found".to_string());
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("✗ Failed to list sessions: {}", e));
+                                            }
+                                        }
+                                    } else {
+                                        match store.load_session(target_id) {
+                                            Ok(events) => {
+                                                self.timeline.entries.clear();
+                                                self.hydrate_session(&events);
+                                                self.timeline.add_status(format!("✔ Loaded session '{}' with {} events", target_id, events.len()));
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("✗ Failed to load session '{}': {}", target_id, e));
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                let prompt_to_run = if prompt == "/retry" {
+                                    if let Some(ref last) = self.last_user_prompt {
+                                        self.timeline.add_status(format!("🔄 Retrying last prompt: \"{}\"", last));
+                                        last.clone()
+                                    } else {
+                                        self.timeline.add_status("ℹ No previous user prompt to retry".to_string());
+                                        continue;
+                                    }
+                                } else {
+                                    self.last_user_prompt = Some(prompt.clone());
+                                    prompt
+                                };
+
+                                self.timeline.add_user_message(prompt_to_run.clone());
+                                self.is_working = true;
+                                self.work_start = Some(Instant::now());
+
+                                let cancel = tokio_util::sync::CancellationToken::new();
+                                self.cancel_token = Some(cancel.clone());
+
+                                // Dispatch asynchronously to agent background actor
+                                if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt_to_run, Some(cancel))) {
+                                    tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
+                                    self.is_working = false;
+                                    self.work_start = None;
+                                    self.cancel_token = None;
+                                    self.timeline.add_status(format!("❌ Agent communication failure: {}", e));
+                                }
                             }
                         }
+                        _ => {}
                     }
                 }
             }
@@ -538,7 +601,11 @@ impl<'a> App<'a> {
         // Abort background task and cleanup terminal state cleanly
         agent_task.abort();
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         Ok(())

@@ -304,6 +304,27 @@ impl ModalState {
                         ),
                     ]),
                     Line::from(vec![
+                        Span::styled("  PgUp / PgDn", Style::default().fg(theme.warning)),
+                        Span::styled(
+                            "Scroll timeline (or Shift+↑/↓, Mouse wheel)",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  Home / End ", Style::default().fg(theme.warning)),
+                        Span::styled(
+                            "Scroll directly to top / bottom of timeline",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  Ctrl+T     ", Style::default().fg(theme.warning)),
+                        Span::styled(
+                            "Toggle embedded PTY terminal drawer",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
                         Span::styled("  Esc        ", Style::default().fg(theme.warning)),
                         Span::styled(
                             "Interrupt running execution / close modal",

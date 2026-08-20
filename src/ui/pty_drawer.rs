@@ -152,7 +152,8 @@ impl PtyDrawer {
         let num_lines = visible_lines.len();
         let height = inner_chunks[0].height as usize;
         let scroll_y = if num_lines > height {
-            (num_lines - height) as u16
+            let max_scroll = (num_lines - height) as u16;
+            max_scroll.saturating_sub(self.scroll_offset as u16)
         } else {
             0
         };
