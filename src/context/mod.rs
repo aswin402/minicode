@@ -3,6 +3,7 @@ pub mod ast_transform;
 pub mod compressor;
 pub mod decay;
 pub mod dedup;
+pub mod governance;
 pub mod graph;
 pub mod index;
 pub mod memory;

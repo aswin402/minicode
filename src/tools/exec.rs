@@ -133,7 +133,8 @@ pub async fn exec_cmd(
         .code()
         .unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
     let exit_code = status.code();
-    let compacted = super::compactor::compact_tool_output(command_str, &combined, exit_code);
+    let rtk_res = super::rtk_filter::RtkFilter::filter(command_str, &combined, exit_code);
+    let compacted = super::compactor::compact_tool_output(command_str, &rtk_res.content, exit_code);
 
     if !status.success() {
         return Ok(format!(

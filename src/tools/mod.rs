@@ -2,6 +2,7 @@ pub mod browser;
 pub mod compactor;
 pub mod exec;
 pub mod fs;
+pub mod rtk_filter;
 pub mod search;
 pub mod web;
 pub mod web_search;
@@ -824,6 +825,14 @@ impl ToolRegistry {
                         }
                     },
                     "required": ["file_path"]
+                }),
+            },
+            ToolSchema {
+                name: "check_architecture".to_string(),
+                description: "Run architectural governance sensor across the codebase to validate DAG acyclicity, detect circular dependency cycles, check layer boundaries, and compute modularity score.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {}
                 }),
             },
             ToolSchema {
@@ -1937,6 +1946,12 @@ impl ToolRegistry {
 
                 Ok(report.format_markdown())
             }
+            "check_architecture" => {
+                let report = crate::context::governance::ArchitectureGovernor::scan_workspace(
+                    workspace_root,
+                )?;
+                Ok(report.format_markdown())
+            }
             "prune_context" => {
                 Ok("✔ Multi-turn observation deduplication and pruning applied.".to_string())
             }
@@ -2034,8 +2049,9 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 49);
+        assert_eq!(schemas.len(), 50);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"check_architecture"));
         assert!(names.contains(&"ast_diff"));
         assert!(names.contains(&"explore_hypotheses"));
         assert!(names.contains(&"evaluate_branch"));

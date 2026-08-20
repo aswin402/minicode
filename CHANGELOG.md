@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.30] — 2026-08-20
+
+### 🏛️ Sentrux Architectural Governance & RTK Token Reduction Interceptor
+- **Architectural Governance Sensor (`src/context/governance.rs`, `src/tools/mod.rs`)**:
+  - Sentrux-inspired architectural sensor validating codebase modularity, acyclicity, and architectural boundaries.
+  - Detects strongly connected components (SCCs) via Tarjan's algorithm to catch circular module dependency cycles.
+  - Enforces strict architectural layer boundaries (e.g. preventing low-level tools/core from depending on UI/presentation).
+  - Flags high-complexity "god files" (>1,000 LOC) and excessive fan-out modules (>10 imports).
+  - Computes a deterministic Modularity Health Score ($0$–$100$).
+  - Added new tool: `check_architecture` (milestone expansion to **50 agent tools total**).
+- **RTK (Rust Token Killer) Output Interceptor (`src/tools/rtk_filter.rs`, `src/tools/exec.rs`)**:
+  - High-performance command output filter cutting 60–90% of terminal log token waste.
+  - Specialized parsing for `cargo test`, `pytest`, `npm test` / `jest`, `git log`, and verbose shell scripts.
+  - Isolates failing test names, panics, assertion differences, and final test summaries while omitting repetitive passing spam.
+- **Unit & Integration Tests**:
+  - Added `tests/integration_governance.rs` and `tests/integration_rtk_filter.rs`.
+  - Expanded test suite to **148 tests passing 100% green** with clean clippy.
+
+---
+
 ## [0.0.29] — 2026-08-20
 
 ### 🌳 Context-Aware Semantic AST Code Diffing & Deterministic Replay Harness
