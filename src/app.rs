@@ -50,6 +50,8 @@ pub struct App<'a> {
     last_user_prompt: Option<String>,
     last_turn_tokens: usize,
     total_cost_usd: f64,
+    /// Handle to the agent's in-flight approval requests.
+    approvals: crate::agent::types::ApprovalRegistry,
 }
 
 impl<'a> App<'a> {
@@ -70,6 +72,7 @@ impl<'a> App<'a> {
             last_user_prompt: None,
             last_turn_tokens: 0,
             total_cost_usd: 0.0,
+            approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -115,6 +118,8 @@ impl<'a> App<'a> {
         let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
+        // Bind to the live agent's approval registry before it moves into the actor.
+        self.approvals = agent.approval_registry();
         // Spawn background non-blocking Agent actor
         let agent_task = tokio::spawn(async move {
             while let Some(cmd) = control_rx.recv().await {
@@ -284,14 +289,25 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
                             }
                             AgentEvent::ApprovalRequest { turn_id, tool_id, tool, args, .. } => {
-                                let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
-                                    turn_id,
-                                    &tool_id,
-                                    &tool,
-                                    &args,
-                                    &self.theme,
-                                );
-                                self.modal = crate::ui::modal::ModalState::Approval(approval_state);
+                                if self.config.agent.auto_approve {
+                                    self.resolve_approval(
+                                        &tool_id,
+                                        crate::agent::types::ApprovalDecision::Approve,
+                                    );
+                                    self.timeline.add_status(format!(
+                                        "⚙ Auto-approved {} (session policy)",
+                                        tool
+                                    ));
+                                } else {
+                                    let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
+                                        turn_id,
+                                        &tool_id,
+                                        &tool,
+                                        &args,
+                                        &self.theme,
+                                    );
+                                    self.modal = crate::ui::modal::ModalState::Approval(approval_state);
+                                }
                             }
                             AgentEvent::Error { message, retrying, .. } => {
                                 if retrying {
@@ -720,6 +736,44 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// Resolves a pending approval by tool_id, if one is registered.
+    fn resolve_approval(&self, tool_id: &str, decision: crate::agent::types::ApprovalDecision) {
+        if let Some(sender) = self
+            .approvals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(tool_id)
+        {
+            let _ = sender.send(decision);
+        }
+    }
+
+    /// Pushes the current config (e.g. after AllowSession) into the agent actor
+    /// so the approval gate observes the updated `auto_approve` policy.
+    fn propagate_session_config(&self, control_tx: &mpsc::UnboundedSender<AgentCommand>) {
+        match self.config.get_api_key(&self.config.provider.default) {
+            Ok(key) => {
+                match crate::agent::provider::create_provider_with_base_url(
+                    &self.config.provider.default,
+                    &key,
+                    None,
+                ) {
+                    Ok(new_prov) => {
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "AllowSession: provider rebuild failed; auto_approve applies next turn"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "AllowSession: API key unavailable"),
+        }
+    }
+
     /// Handles keyboard interaction within in-TUI modal dialogs
     async fn handle_modal_key(
         &mut self,
@@ -998,6 +1052,11 @@ impl<'a> App<'a> {
             }
             ModalState::Approval(ref mut approval_state) => match key.code {
                 KeyCode::Esc => {
+                    let pending_tool_id = approval_state.tool_id.clone();
+                    self.resolve_approval(
+                        &pending_tool_id,
+                        crate::agent::types::ApprovalDecision::Reject,
+                    );
                     self.modal = ModalState::None;
                     self.timeline
                         .add_status("ℹ Action cancelled by user".to_string());
@@ -1015,26 +1074,45 @@ impl<'a> App<'a> {
                     approval_state.handle_char(c);
                 }
                 KeyCode::Enter => {
+                    let pending_tool_id = approval_state.tool_id.clone();
                     if let Some(resp) = approval_state.confirm_selection() {
                         match resp {
                             crate::ui::approval::ApprovalResponse::Accept => {
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Approve,
+                                );
                                 self.timeline
                                     .add_status("✔ Action approved & applied".to_string());
                                 self.modal = ModalState::None;
                             }
                             crate::ui::approval::ApprovalResponse::Reject => {
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Reject,
+                                );
                                 self.timeline
                                     .add_status("✗ Action rejected by user".to_string());
                                 self.modal = ModalState::None;
                             }
                             crate::ui::approval::ApprovalResponse::AllowSession => {
                                 self.config.agent.auto_approve = true;
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Approve,
+                                );
                                 self.timeline.add_status(
                                     "✔ Auto-approve enabled for this session".to_string(),
                                 );
+                                self.propagate_session_config(&control_tx);
                                 self.modal = ModalState::None;
                             }
                             crate::ui::approval::ApprovalResponse::CustomFeedback(feedback) => {
+                                // The old turn's pending gate must not hang.
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Reject,
+                                );
                                 self.timeline
                                     .add_status(format!("💬 User feedback sent: \"{}\"", feedback));
                                 self.modal = ModalState::None;
