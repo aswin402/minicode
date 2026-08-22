@@ -28,7 +28,7 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     pub fn new(workspace_root: &Path, config: Config, provider: Box<dyn Provider>) -> Self {
-        let session_store = SessionStore::new();
+        let session_store = SessionStore::with_workspace(workspace_root);
         let session_id = session_store
             .create_session(workspace_root)
             .unwrap_or_else(|_| "ephemeral-session".to_string());

@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.37] — 2026-08-22
+
+### Workspace-Local Session Storage & Interactive Session Browser (`/sessions`)
+
+- **Workspace-Local Session Storage (`src/session/store.rs`)**:
+  - Added `SessionStore::with_workspace(workspace_root)` constructor.
+  - Sessions now stored in `<workspace>/.minicode/sessions/` when the `.minicode/` directory exists — scoped per project, exactly like Codex and Claude Code.
+  - Graceful fallback to `~/.config/minicode/sessions/` when no `.minicode/` dir is present.
+  - `AgentLoop::new()`, `--continue`, and `--resume` all switched to workspace-local store.
+- **Session Metadata Enrichment (`src/session/store.rs`)**:
+  - Added `event_count` and `preview` fields to `SessionMetadata` (zero-cost via `#[serde(default)]`).
+  - Added `list_sessions_rich()` that reads JSONL files to populate event counts for the modal display.
+- **Interactive Session Browser Modal (`/sessions`)**:
+  - Type `/sessions` (or `/history`) to open a full-height TUI modal.
+  - Shows each session with: relative time (`2h ago`, `3d ago`), shortened workspace path (`…/project/dir`), and event count.
+  - Session ID shown below in muted style.
+  - Navigate with `↑`/`↓`, `Enter` loads and hydrates the selected session into the timeline, `Esc` cancels.
+  - Added `/sessions` to autocomplete slash command list and `/help` modal.
+- **Verification & Testing**:
+  - Added 7 integration tests in `tests/integration_session_browser.rs`: workspace-local path, global fallback, sorted list, rich event count, round-trip load, not-found error, and latest session ID.
+  - 3 new unit tests in `src/session/store.rs`: `test_with_workspace_uses_minicode_dir`, `test_list_sessions_rich_returns_event_count`.
+  - All tests passing with zero compiler or clippy warnings.
+
 ## [0.0.36] — 2026-08-21
 
 ### Zero-Leak Secret Redaction Proxy (`src/sandbox/redact.rs`)

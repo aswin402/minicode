@@ -585,6 +585,19 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/sessions" || prompt == "/history" {
+                                    let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
+                                    match store.list_sessions_rich() {
+                                        Ok(sessions) => {
+                                            self.modal = ModalState::new_session_browser(sessions);
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to list sessions: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt.starts_with("/save") {
                                     let target_path = prompt.trim_start_matches("/save").trim();
                                     let export_file = if target_path.is_empty() {
@@ -927,6 +940,49 @@ impl<'a> App<'a> {
                             "✔ Active theme switched to '{}' and saved to config",
                             chosen_name
                         ));
+                    }
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::SessionBrowser {
+                ref sessions,
+                ref mut selected_index,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < sessions.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if !sessions.is_empty() && *selected_index < sessions.len() {
+                        let target_id = sessions[*selected_index].id.clone();
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        match store.load_session(&target_id) {
+                            Ok(events) => {
+                                let count = events.len();
+                                self.timeline.entries.clear();
+                                self.hydrate_session(&events);
+                                self.timeline.add_status(format!(
+                                    "✔ Loaded session '{}' ({} events)",
+                                    target_id, count
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline.add_status(format!(
+                                    "✗ Failed to load session '{}': {}",
+                                    target_id, e
+                                ));
+                            }
+                        }
                     }
                     self.modal = ModalState::None;
                 }

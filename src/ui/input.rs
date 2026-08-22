@@ -38,6 +38,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "export conversation history to a file",
     },
     SlashCommand {
+        name: "/sessions",
+        description: "browse past session history for this workspace",
+    },
+    SlashCommand {
         name: "/load",
         description: "load and display past session history",
     },

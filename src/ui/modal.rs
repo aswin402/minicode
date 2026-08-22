@@ -59,6 +59,10 @@ pub enum ModalState {
         themes: Vec<crate::ui::theme::ThemeInfo>,
         selected_index: usize,
     },
+    SessionBrowser {
+        sessions: Vec<crate::session::store::SessionMetadata>,
+        selected_index: usize,
+    },
     Help,
     Approval(crate::ui::approval::ApprovalModalState),
 }
@@ -128,6 +132,13 @@ impl ModalState {
         ModalState::ThemeSelect {
             themes,
             selected_index,
+        }
+    }
+
+    pub fn new_session_browser(sessions: Vec<crate::session::store::SessionMetadata>) -> Self {
+        ModalState::SessionBrowser {
+            sessions,
+            selected_index: 0,
         }
     }
 
@@ -614,6 +625,155 @@ impl ModalState {
                     footer_area,
                 );
             }
+            ModalState::SessionBrowser {
+                sessions,
+                selected_index,
+            } => {
+                let popup_area = centered_rect(78, 70, area);
+                frame.render_widget(Clear, popup_area);
+
+                let outer_block = Block::default()
+                    .title(" Session History ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = outer_block.inner(popup_area);
+                frame.render_widget(outer_block, popup_area);
+
+                // Split inner: list | footer
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(3), Constraint::Length(1)])
+                    .split(inner_area);
+
+                if sessions.is_empty() {
+                    let empty = Paragraph::new(Line::from(vec![Span::styled(
+                        "  No past sessions found in this workspace.",
+                        Style::default().fg(theme.muted),
+                    )]))
+                    .alignment(Alignment::Left);
+                    frame.render_widget(empty, chunks[0]);
+                } else {
+                    let items: Vec<ListItem> = sessions
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            let is_selected = i == *selected_index;
+                            let time_ago = format_time_ago(&s.created_at);
+
+                            // Shorten workspace to last 2 path segments
+                            let ws_short = {
+                                let parts: Vec<&str> =
+                                    s.workspace.split('/').filter(|p| !p.is_empty()).collect();
+                                if parts.len() >= 2 {
+                                    format!(
+                                        "…/{}/{}",
+                                        parts[parts.len() - 2],
+                                        parts[parts.len() - 1]
+                                    )
+                                } else {
+                                    s.workspace.clone()
+                                }
+                            };
+
+                            let event_label = if s.event_count == 0 {
+                                String::new()
+                            } else {
+                                format!(" • {} events", s.event_count)
+                            };
+
+                            let id_short = if s.id.len() > 20 {
+                                format!("{}…", &s.id[..20])
+                            } else {
+                                s.id.clone()
+                            };
+
+                            let line1 = if is_selected {
+                                Line::from(vec![
+                                    Span::styled(
+                                        format!(" › {} ", time_ago),
+                                        Style::default()
+                                            .fg(theme.bg_primary)
+                                            .bg(theme.brand_accent)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        format!(" {}{}", ws_short, event_label),
+                                        Style::default()
+                                            .fg(theme.bg_primary)
+                                            .bg(theme.brand_accent),
+                                    ),
+                                ])
+                            } else {
+                                Line::from(vec![
+                                    Span::styled(
+                                        format!("   {} ", time_ago),
+                                        Style::default()
+                                            .fg(theme.warning)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        format!(" {}{}", ws_short, event_label),
+                                        Style::default().fg(theme.text_primary),
+                                    ),
+                                ])
+                            };
+
+                            let id_style = if is_selected {
+                                Style::default()
+                                    .fg(theme.bg_elevated)
+                                    .bg(theme.brand_accent)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            };
+                            let line2 = Line::from(vec![Span::styled(
+                                format!("     {}", id_short),
+                                id_style,
+                            )]);
+
+                            ListItem::new(vec![line1, line2])
+                        })
+                        .collect();
+
+                    let list = List::new(items);
+                    frame.render_widget(list, chunks[0]);
+                }
+
+                // Footer hints
+                let footer_text = vec![
+                    Span::styled(
+                        "[↑↓] ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Navigate   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Enter] ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Load Session   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Esc] ",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
+                ];
+                frame.render_widget(
+                    Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
+                    chunks[1],
+                );
+            }
             ModalState::Help => {
                 let popup_area = centered_rect(60, 50, area);
                 frame.render_widget(Clear, popup_area);
@@ -644,6 +804,13 @@ impl ModalState {
                         Span::styled("  /undo      ", Style::default().fg(theme.success)),
                         Span::styled(
                             "Revert all file modifications from previous turn",
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("  /sessions  ", Style::default().fg(theme.success)),
+                        Span::styled(
+                            "Browse & reload past workspace session history",
                             Style::default().fg(theme.text_primary),
                         ),
                     ]),

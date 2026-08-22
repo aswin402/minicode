@@ -212,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         // Interactive mode (Aura TUI or Plain REPL)
         let resume_session_id = if cli.continue_session {
-            let store = session::store::SessionStore::new();
+            let store = session::store::SessionStore::with_workspace(&workspace_canonical);
             store.get_last_session_id()
         } else {
             cli.resume
@@ -389,7 +389,7 @@ async fn run_interactive_mode(
     let agent = AgentLoop::new(workspace, config.clone(), provider);
 
     let past_events = if let Some(sid) = resume_session_id {
-        let store = session::store::SessionStore::new();
+        let store = session::store::SessionStore::with_workspace(workspace);
         match store.load_session(sid) {
             Ok(events) => {
                 tracing::info!(

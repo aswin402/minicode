@@ -25,10 +25,7 @@ fn test_redactor_masks_github_token_in_git_output() {
     let r = SecretRedactor::global();
     let simulated_output = "remote: Invalid credentials for 'https://ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij1234@github.com/user/repo.git'";
     let result = r.redact(simulated_output);
-    assert!(
-        !result.contains("ghp_ABCDEF"),
-        "GitHub PAT must be masked"
-    );
+    assert!(!result.contains("ghp_ABCDEF"), "GitHub PAT must be masked");
 }
 
 #[test]
@@ -58,10 +55,7 @@ fn test_redactor_masks_bearer_in_curl_output() {
 > Accept: application/json
 < HTTP/2 200 OK"#;
     let result = r.redact(simulated_output);
-    assert!(
-        !result.contains("eyJhbGciOi"),
-        "Bearer JWT must be masked"
-    );
+    assert!(!result.contains("eyJhbGciOi"), "Bearer JWT must be masked");
     assert!(result.contains("Bearer [REDACTED]"));
     assert!(result.contains("GET /api/data"));
     assert!(result.contains("HTTP/2 200 OK"));
