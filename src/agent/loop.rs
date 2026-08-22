@@ -207,6 +207,7 @@ impl AgentLoop {
         let max_iterations = DEFAULT_MAX_TOOL_ITERATIONS; // Prevent infinite tool loops
         let mut iteration = 0;
         let mut heal_attempts = 0;
+        let mut was_cancelled = false;
 
         let options = CompletionOptions {
             model: self.config.provider.model.clone(),
@@ -219,9 +220,10 @@ impl AgentLoop {
 
         while iteration < max_iterations {
             // Check cancellation before each LLM call
-            if let Some(ref cancel) = cancel_token {
+            if let Some(cancel) = &cancel_token {
                 if cancel.is_cancelled() {
                     tracing::info!("Turn #{} cancelled before LLM request", turn_id);
+                    was_cancelled = true;
                     break;
                 }
             }
@@ -235,6 +237,7 @@ impl AgentLoop {
 
             let mut success = false;
             while !success && retry_count <= max_retries {
+                let completions_before = cumulative_completion_tokens;
                 let mut stream = match self
                     .provider
                     .stream_completion(&self.messages, &tools, &options)
@@ -263,6 +266,7 @@ impl AgentLoop {
                             iteration_text.clear();
                             pending_tool_calls.clear();
                             turn_response.truncate(turn_response_len_before);
+                            cumulative_completion_tokens = completions_before;
                             continue;
                         }
                         return Err(e);
@@ -337,6 +341,7 @@ impl AgentLoop {
 
                 if cancelled {
                     tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
+                    was_cancelled = true;
                     break;
                 }
 
@@ -362,6 +367,7 @@ impl AgentLoop {
                         iteration_text.clear();
                         pending_tool_calls.clear();
                         turn_response.truncate(turn_response_len_before);
+                        cumulative_completion_tokens = completions_before;
                         continue;
                     }
                     return Err(err);
@@ -379,14 +385,23 @@ impl AgentLoop {
 
                 for tool_call in pending_tool_calls {
                     // Check cancellation before each tool execution
-                    if let Some(ref cancel) = cancel_token {
+                    if let Some(cancel) = &cancel_token {
                         if cancel.is_cancelled() {
+                            was_cancelled = true;
                             tracing::info!(
                                 "Turn #{} cancelled before tool dispatch: {}",
                                 turn_id,
                                 tool_call.name
                             );
-                            break;
+                            Self::emit_rejected_tool_result(
+                                self,
+                                &event_sender,
+                                turn_id,
+                                &tool_call,
+                                "cancelled before dispatch",
+                                &mut turn_tool_results,
+                            );
+                            continue;
                         }
                     }
 
@@ -622,10 +637,14 @@ impl AgentLoop {
                 }
             }
         }
-
         let end_event = AgentEvent::TurnEnd {
             turn_id,
-            status: "complete".to_string(),
+            status: if was_cancelled {
+                "cancelled"
+            } else {
+                "complete"
+            }
+            .to_string(),
             total_tokens_used: turn_tokens_used,
             files_modified: turn_files_modified.clone(),
         };
@@ -817,6 +836,84 @@ mod tests {
         assert_eq!(turn.tool_results.len(), 1);
         assert!(!turn.tool_results[0].success);
         assert!(turn.tool_results[0].output.contains("rejected by user"));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn cancelled_while_awaiting_approval_cleans_registry_and_reports_cancelled() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(ToolCallProvider {
+            call: ToolCall {
+                id: "call_cancel_1".into(),
+                name: "exec_cmd".into(),
+                arguments: serde_json::json!({"command": "echo hi"}),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        agent_loop.set_interactive_approvals(true); // exec_cmd gates on approval
+        let reg = agent_loop.approval_registry();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cancel_for_task = cancel.clone();
+        let turn_task = tokio::spawn(async move {
+            agent_loop
+                .execute_turn("run echo", tx, Some(cancel_for_task))
+                .await
+        });
+
+        // Wait until the gate registers the pending approval.
+        loop {
+            match rx.recv().await {
+                Some(AgentEvent::ApprovalRequest { .. }) => break,
+                Some(_) => {}
+                None => panic!("stream ended before ApprovalRequest"),
+            }
+        }
+        cancel.cancel();
+
+        let turn = turn_task.await.expect("join ok").expect("turn completes");
+        assert!(
+            reg.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
+            "registry must not leak entries after cancellation"
+        );
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(!turn.tool_results[0].success);
+        assert!(turn.tool_results[0].output.contains("cancelled"));
+
+        // TurnEnd must report cancelled, not complete.
+        let saw_cancelled = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+            matches!(
+                e,
+                AgentEvent::TurnEnd { ref status, .. } if status == "cancelled"
+            )
+        });
+        assert!(saw_cancelled, "expected TurnEnd status=cancelled");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn precancelled_turn_emits_cancelled_turnend() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, Box::new(DummyProvider));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _ = agent_loop.execute_turn("hi", tx, Some(cancel)).await;
+        let saw_cancelled = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+            matches!(
+                e,
+                AgentEvent::TurnEnd { ref status, .. } if status == "cancelled"
+            )
+        });
+        assert!(saw_cancelled, "expected TurnEnd status=cancelled");
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
