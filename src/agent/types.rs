@@ -94,6 +94,22 @@ pub struct ToolResult {
     pub duration_ms: u64,
 }
 
+/// A user's decision on a pending tool-approval request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    Approve,
+    Reject,
+}
+
+/// Shared map of in-flight approval requests: tool_id → responder.
+/// The agent inserts a sender before emitting `ApprovalRequest`; the host
+/// (TUI modal or NDJSON stdin loop) removes it by key and sends the decision.
+pub type ApprovalRegistry = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>,
+    >,
+>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Turn {
     pub turn_id: usize,

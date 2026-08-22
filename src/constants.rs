@@ -295,6 +295,10 @@ pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 /// List of built-in tool names that modify workspace files
 pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file"];
 
+// === Approval Enforcement ===
+/// Tools that require user approval before dispatch when running in strict mode
+pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &["write_file", "patch_file", "exec_cmd"];
+
 // === Security Limits ===
 /// Maximum allowed web response size in bytes (10 MB) to prevent OOM
 #[allow(dead_code)]
