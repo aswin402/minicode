@@ -84,6 +84,81 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "browser_click".to_string(),
+            description: "Click an interactive element identified by its ARIA reference (@v1:e1) and return the updated page accessibility tree snapshot immediately in the same turn.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "The ARIA element reference identifier to click (e.g. '@v1:e1' or '@e1')"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["ref"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_fill".to_string(),
+            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2) and return the updated page accessibility tree snapshot.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "The ARIA element reference identifier to fill (e.g. '@v1:e2')"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The text string to type into the form element"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["ref", "text"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_scroll".to_string(),
+            description: "Scroll the browser viewport in a given direction ('up', 'down', 'top', 'bottom').".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Scroll direction (default: 'down')"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_debug_logs".to_string(),
+            description: "Inspect live browser runtime diagnostics including console logs (errors/warnings), uncaught JS exceptions, and failed HTTP network requests (4xx/5xx).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "browser_eval".to_string(),
             description: "Evaluate arbitrary JavaScript code in the browser context (e.g. inspecting window state, cookies, local storage, or React/DOM properties) and return the output.".to_string(),
             parameters: json!({
@@ -199,6 +274,78 @@ pub async fn dispatch(
                 };
                 let report = BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
+            }
+            .await,
+        ),
+        "browser_click" => Some(
+            async {
+                let target_ref =
+                    args["ref"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "browser_click".to_string(),
+                            reason: "Missing 'ref'".to_string(),
+                        })?;
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_fill" => Some(
+            async {
+                let target_ref =
+                    args["ref"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "browser_fill".to_string(),
+                            reason: "Missing 'ref'".to_string(),
+                        })?;
+                let text = args["text"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_fill".to_string(),
+                        reason: "Missing 'text'".to_string(),
+                    })?;
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_scroll" => Some(
+            async {
+                let direction = args
+                    .get("direction")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("down");
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::scroll(direction, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_debug_logs" => Some(
+            async {
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::get_debug_logs(mode, workspace_root).await
             }
             .await,
         ),

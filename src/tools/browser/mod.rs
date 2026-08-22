@@ -1,11 +1,20 @@
+pub mod accessibility;
+pub mod debug;
 pub mod driver;
 pub mod engine;
+pub mod interaction;
 pub mod manager;
 
+#[allow(unused_imports)]
+pub use accessibility::AccessibilityManager;
+#[allow(unused_imports)]
+pub use debug::{ConsoleEntry, DebugCollector, LogLevel, NetworkErrorEntry};
 #[allow(unused_imports)]
 pub use driver::CdpClient;
 #[allow(unused_imports)]
 pub use engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
+#[allow(unused_imports)]
+pub use interaction::BrowserInteractor;
 #[allow(unused_imports)]
 pub use manager::{BrowserManager, EngineProcess};
 
@@ -98,6 +107,98 @@ impl BrowserController {
         let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
         snapshot.engine_used = "HTTP Reader (No browser binary on PATH)".to_string();
         Ok(snapshot)
+    }
+
+    /// Clicks an element by ARIA reference and returns the updated page snapshot
+    pub async fn click_and_snapshot(
+        target_ref: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
+            ToolError::CommandExec(
+                "No browser engine found on PATH to interact with web element".to_string(),
+            )
+        })?;
+
+        let mut proc = BrowserManager::spawn_engine(&config).await?;
+        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
+
+        let current_html = cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = AccessibilityManager::new();
+        acc_mgr.update_from_html(&current_html);
+
+        let res = BrowserInteractor::click_element(&cdp, target_ref, &mut acc_mgr).await;
+        let _ = proc.shutdown().await;
+        res
+    }
+
+    /// Fills text into an input or textarea element and returns the updated page snapshot
+    pub async fn fill_and_snapshot(
+        target_ref: &str,
+        text: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
+            ToolError::CommandExec(
+                "No browser engine found on PATH to fill form element".to_string(),
+            )
+        })?;
+
+        let mut proc = BrowserManager::spawn_engine(&config).await?;
+        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
+
+        let current_html = cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = AccessibilityManager::new();
+        acc_mgr.update_from_html(&current_html);
+
+        let res = BrowserInteractor::fill_element(&cdp, target_ref, text, &mut acc_mgr).await;
+        let _ = proc.shutdown().await;
+        res
+    }
+
+    /// Scrolls the active browser viewport in the given direction
+    pub async fn scroll(
+        direction: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
+            ToolError::CommandExec("No browser engine found on PATH to scroll viewport".to_string())
+        })?;
+
+        let mut proc = BrowserManager::spawn_engine(&config).await?;
+        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
+        let res = BrowserInteractor::scroll_page(&cdp, direction).await;
+        let _ = proc.shutdown().await;
+        res
+    }
+
+    /// Retrieves diagnostic logs (console errors, unhandled exceptions, and failed HTTP requests)
+    pub async fn get_debug_logs(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
+            ToolError::CommandExec(
+                "No browser engine found on PATH to fetch diagnostics".to_string(),
+            )
+        })?;
+
+        let mut proc = BrowserManager::spawn_engine(&config).await?;
+        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
+
+        let collector = DebugCollector::new();
+        // Check for any uncaught JS errors via evaluation
+        if let Ok(js_errors) = cdp
+            .evaluate_js("window.__minicode_errors ? JSON.stringify(window.__minicode_errors) : ''")
+            .await
+        {
+            if !js_errors.is_empty() && js_errors != "\"\"" {
+                collector.record_console(LogLevel::Error, &js_errors);
+            }
+        }
+
+        let _ = proc.shutdown().await;
+        Ok(collector.format_report())
     }
 
     /// Evaluates JavaScript in the browser context and returns result

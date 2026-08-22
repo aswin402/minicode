@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.41] — 2026-08-23
+
+### Interactive Browser Automation & Live Dev-Server Debugger (`src/tools/browser/`)
+
+- **Versioned Accessibility Tree & Stale Reference Guards (`src/tools/browser/accessibility.rs`)**:
+  - `AccessibilityManager`: assigns versioned `@v{rev}:e{idx}` references to all interactive elements in DOM source order.
+  - Automatically increments revision counter across state-changing actions and page navigations.
+  - Rejects stale element references (e.g. attempting to click `@v1:e2` after the page mutated to revision `v2`) with actionable feedback.
+  - Supports both exact (`@v1:e1`) and shorthand (`@e1`) reference resolution.
+- **Interactive Actions with Immediate Snapshot Return (`src/tools/browser/interaction.rs`)**:
+  - `BrowserInteractor::click_element()`: scrolls element into view, dispatches click events, waits for DOM settling, and returns the **updated ARIA tree snapshot in the same turn** (saving an entire LLM roundtrip).
+  - `BrowserInteractor::fill_element()`: focuses inputs/textareas, types text, fires synthetic `input` and `change` events, and returns the updated ARIA tree snapshot.
+  - `BrowserInteractor::scroll_page()`: scrolls the active viewport (`up`, `down`, `top`, `bottom`).
+- **Live Diagnostics Collector (`src/tools/browser/debug.rs`)**:
+  - `DebugCollector`: captures browser console logs (`INFO`, `WARN`, `ERROR`), uncaught runtime exceptions, and failed HTTP requests (`4xx`/`5xx`).
+  - `format_report()`: generates chronological markdown reports ideal for inspecting localhost dev servers (`http://localhost:3000`).
+- **Agent Tool Registry (`src/tools/registry/web_tools.rs`)**:
+  - `browser_click`: `{ ref: "@v1:e1", mode?: "headless" | "gui" }`
+  - `browser_fill`: `{ ref: "@v1:e2", text: "...", mode?: "headless" | "gui" }`
+  - `browser_scroll`: `{ direction: "down", mode?: "headless" | "gui" }`
+  - `browser_debug_logs`: `{ mode?: "headless" | "gui" }`
+- **Verification**:
+  - 5 integration tests in `tests/integration_browser_interaction.rs` and 9 tests in `tests/integration_browser_engine.rs` (14 total browser integration tests passing).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.40] — 2026-08-23
 
 ### Dual-Mode Browser Engine Core & Multi-Browser Manager (`src/tools/browser/`)

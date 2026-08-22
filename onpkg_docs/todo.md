@@ -666,3 +666,24 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_browser_engine.rs` (9 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_engine`
+
+---
+
+## ✅ Phase 31: Interactive Browser Automation & Live Dev-Server Debugger (v0.0.41)
+- [x] **Task 1: Versioned ARIA Tree & Stale Reference Guards (`src/tools/browser/accessibility.rs`)**
+  - [x] Implement `AccessibilityManager` with `@v{rev}:e{idx}` numbering
+  - [x] Sort interactive elements by document position to maintain DOM source order
+  - [x] Stale reference detector rejecting outdated revision actions
+- [x] **Task 2: Actions with Immediate Snapshot Return (`src/tools/browser/interaction.rs`)**
+  - [x] Implement `BrowserInteractor::click_element()` with instant updated snapshot
+  - [x] Implement `BrowserInteractor::fill_element()` with input/change events
+  - [x] Implement `BrowserInteractor::scroll_page()` with directional scroll
+- [x] **Task 3: Live Dev-Server Debugger (`src/tools/browser/debug.rs`)**
+  - [x] Implement `DebugCollector` recording console logs, uncaught exceptions, and HTTP 4xx/5xx errors
+  - [x] Format clean Markdown diagnostic report
+- [x] **Task 4: Public Facade & Tool Registration (`src/tools/browser/mod.rs`, `web_tools.rs`)**
+  - [x] Expose `click_and_snapshot()`, `fill_and_snapshot()`, `scroll()`, `get_debug_logs()`
+  - [x] Register `browser_click`, `browser_fill`, `browser_scroll`, `browser_debug_logs`
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_browser_interaction.rs` (5 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_interaction`
