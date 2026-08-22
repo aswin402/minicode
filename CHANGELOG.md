@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.38] — 2026-08-22
+
+### Tool Middleware Pipeline (`src/tools/middleware.rs`)
+
+- **`ToolMiddleware` trait** (`src/tools/middleware.rs`):
+  - Composable `after(&ctx, result) -> ToolResult` hook applied to every tool execution (built-in and MCP).
+  - `ToolContext` carries `tool_name`, `workspace_root`, and raw JSON `args` for each call.
+  - `ToolPipeline` runs middlewares in declaration order via `Iterator::fold`.
+- **Three built-in middlewares**:
+  - `TimingMiddleware` — emits `tracing::debug!` span with tool name, success, duration, and output size on every execution.
+  - `RedactMiddleware` — wraps the existing `SecretRedactor::global().redact()` call; replaces the inline ad-hoc hook in `agent/loop.rs`.
+  - `CheckpointMiddleware` — emits `tracing::info!` for every `write_file`/`patch_file` invocation with file path and result, providing an immutable audit trail.
+- **`AgentLoop` integration**:
+  - Added `tool_pipeline: ToolPipeline` field initialized with `ToolPipeline::default()`.
+  - Replaced the four-line inline redaction block in `src/agent/loop.rs` with a single `self.tool_pipeline.run(...)` call.
+- **Verification & Testing**:
+  - 8 unit tests in `src/tools/middleware.rs` covering each middleware individually and composed pipeline.
+  - 12 integration tests in `tests/integration_tool_middleware.rs` covering redaction correctness, identity transforms, metadata preservation, and failure flag propagation.
+  - All 190+ tests passing, 0 clippy warnings.
+
 ## [0.0.37] — 2026-08-22
 
 ### Workspace-Local Session Storage & Interactive Session Browser (`/sessions`)

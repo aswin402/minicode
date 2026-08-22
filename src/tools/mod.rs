@@ -2,6 +2,7 @@ pub mod browser;
 pub mod compactor;
 pub mod exec;
 pub mod fs;
+pub mod middleware;
 pub mod registry;
 pub mod rtk_filter;
 pub mod search;

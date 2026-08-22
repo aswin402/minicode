@@ -22,6 +22,8 @@ pub struct AgentLoop {
     session_id: String,
     backup_manager: BackupManager,
     mcp_client: McpClientManager,
+    /// Composable middleware pipeline applied to every tool result.
+    tool_pipeline: crate::tools::middleware::ToolPipeline,
     messages: Vec<Message>,
     current_turn_id: usize,
 }
@@ -47,6 +49,7 @@ impl AgentLoop {
             session_id,
             backup_manager: BackupManager::new(workspace_root),
             mcp_client,
+            tool_pipeline: crate::tools::middleware::ToolPipeline::default(),
             messages: Vec::new(),
             current_turn_id: 0,
         }
@@ -409,12 +412,13 @@ impl AgentLoop {
                         .await
                     };
 
-                    // === Secret Redaction: sanitize tool output before any sink ===
-                    let tool_result = crate::agent::types::ToolResult {
-                        output: crate::sandbox::redact::SecretRedactor::global()
-                            .redact(&tool_result.output),
-                        ..tool_result
-                    };
+                    // === Tool Middleware Pipeline: timing → redact → checkpoint ===
+                    let tool_result = self.tool_pipeline.run(
+                        tool_result,
+                        &tool_call.name,
+                        &self.workspace_root,
+                        &tool_call.arguments,
+                    );
 
                     let res_event = AgentEvent::ToolResult {
                         turn_id,
