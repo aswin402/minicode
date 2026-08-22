@@ -550,13 +550,96 @@ impl TimelineView {
                         Span::styled(command_or_path, Style::default().fg(theme.warning)),
                     ]));
 
-                    let trimmed = output.trim();
-                    if trimmed.is_empty() {
+                    // Check for inline diff block
+                    let diff_marker = crate::tools::middleware::DIFF_MARKER;
+                    let (diff_section, regular_output) =
+                        if let Some(rest) = output.strip_prefix(diff_marker) {
+                            // Split on first blank line separating diff from tool output
+                            if let Some(split_pos) = rest.find("\n\n") {
+                                (&rest[..split_pos + 1], rest[split_pos + 2..].trim())
+                            } else {
+                                (rest, "")
+                            }
+                        } else {
+                            ("", output.trim())
+                        };
+
+                    // Render diff lines with +/- colouring
+                    if !diff_section.is_empty() {
+                        let mut diff_line_count = 0;
+                        for diff_line in diff_section.lines() {
+                            if diff_line.starts_with("---") || diff_line.starts_with("+++") {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  ", Style::default()),
+                                    Span::styled(
+                                        diff_line,
+                                        Style::default()
+                                            .fg(theme.muted)
+                                            .add_modifier(Modifier::ITALIC),
+                                    ),
+                                ]));
+                            } else if let Some(rest) = diff_line.strip_prefix("+ ") {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        "+",
+                                        Style::default()
+                                            .fg(theme.success)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        format!(" {}", rest),
+                                        Style::default().fg(theme.success),
+                                    ),
+                                ]));
+                                diff_line_count += 1;
+                            } else if let Some(rest) = diff_line.strip_prefix("- ") {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        "-",
+                                        Style::default()
+                                            .fg(theme.destructive)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        format!(" {}", rest),
+                                        Style::default().fg(theme.destructive),
+                                    ),
+                                ]));
+                                diff_line_count += 1;
+                            } else if let Some(rest) = diff_line.strip_prefix("  ") {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  ", Style::default()),
+                                    Span::styled(
+                                        rest.to_string(),
+                                        Style::default().fg(theme.muted),
+                                    ),
+                                ]));
+                            }
+                            if diff_line_count > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
+                                let remaining = diff_section
+                                    .lines()
+                                    .filter(|l| l.starts_with("+ ") || l.starts_with("- "))
+                                    .count()
+                                    .saturating_sub(diff_line_count);
+                                if remaining > 0 {
+                                    lines.push(Line::from(vec![Span::styled(
+                                        format!("    ... +{} diff lines (folded)", remaining),
+                                        Style::default().fg(theme.border),
+                                    )]));
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    // Render regular tool output (summary after diff)
+                    let trimmed = regular_output;
+                    if trimmed.is_empty() && diff_section.is_empty() {
                         lines.push(Line::from(vec![Span::styled(
                             "  └ (no output)",
                             Style::default().fg(theme.muted),
                         )]));
-                    } else {
+                    } else if !trimmed.is_empty() {
                         let mut first = true;
                         for out_line in trimmed
                             .lines()
@@ -565,7 +648,6 @@ impl TimelineView {
                             let prefix = if first { "  └ " } else { "    " };
                             first = false;
 
-                            // Colorize diff lines or test outputs
                             let line_color = if out_line.starts_with('+') {
                                 theme.success
                             } else if out_line.starts_with('-') {

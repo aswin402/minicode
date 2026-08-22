@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.39] — 2026-08-22
+
+### Inline Diff Preview for File-Modifying Tools (`src/tools/diff.rs`)
+
+- **Diff Engine (`src/tools/diff.rs`)**:
+  - `compute_diff(old, new)` using the `similar` crate (`TextDiff::from_lines`).
+  - `has_changes()` — returns `true` only when additions or deletions exist.
+  - `format_diff_plain()` — produces unified-style diff string for export/session save.
+  - Line cap at 60 diff lines to prevent timeline flood; trailing context trimmed.
+- **`DiffMiddleware` (`src/tools/middleware.rs`)**:
+  - 4th stage in the default pipeline: `Timing → Redact → Checkpoint → Diff`.
+  - Snapshots file content **before** dispatch (in `loop.rs`), passes it via new `ToolContext::file_before` field.
+  - Reads new file content from disk after successful execution and computes diff.
+  - Embeds diff in tool output using `MINICODE_DIFF_BLOCK:` marker prefix — transparent to non-TUI consumers.
+  - No-ops for failed tools, read-only tools, and unchanged files.
+- **TUI Renderer (`src/ui/view.rs`)**:
+  - `ToolFinished` block detects `MINICODE_DIFF_BLOCK:` prefix and renders diff section before regular output.
+  - `---`/`+++` headers rendered in muted italic.
+  - Addition lines (`+ line`) rendered in `theme.success` (green) with bold `+`.
+  - Deletion lines (`- line`) rendered in `theme.destructive` (red) with bold `-`.
+  - Context lines rendered in muted text.
+  - Excess diff lines folded with count summary.
+- **Verification & Testing**:
+  - 5 unit tests in `src/tools/diff.rs` covering additions, deletions, no-change, new-file, and plain formatting.
+  - 8 unit tests updated in `src/tools/middleware.rs` for new `file_before` field.
+  - 11 integration tests in `tests/integration_inline_diff.rs`: diff engine, middleware skip conditions, real filesystem diff attachment, no-diff-when-unchanged, and pipeline signature.
+  - All 200+ tests passing, 0 clippy warnings.
+
 ## [0.0.38] — 2026-08-22
 
 ### Tool Middleware Pipeline (`src/tools/middleware.rs`)

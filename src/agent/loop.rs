@@ -376,6 +376,20 @@ impl AgentLoop {
                         }
                     }
 
+                    // Snapshot file content before dispatch for inline diff preview
+                    let file_before: Option<String> =
+                        if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                            tool_call
+                                .arguments
+                                .get("path")
+                                .and_then(|p| p.as_str())
+                                .and_then(|rel| {
+                                    std::fs::read_to_string(self.workspace_root.join(rel)).ok()
+                                })
+                        } else {
+                            None
+                        };
+
                     // Execute tool (MCP vs Built-in)
                     let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {
                         let start = std::time::Instant::now();
@@ -412,12 +426,13 @@ impl AgentLoop {
                         .await
                     };
 
-                    // === Tool Middleware Pipeline: timing → redact → checkpoint ===
+                    // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
                     let tool_result = self.tool_pipeline.run(
                         tool_result,
                         &tool_call.name,
                         &self.workspace_root,
                         &tool_call.arguments,
+                        file_before.as_deref(),
                     );
 
                     let res_event = AgentEvent::ToolResult {
