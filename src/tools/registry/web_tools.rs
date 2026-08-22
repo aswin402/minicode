@@ -1,8 +1,11 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::{Result, ToolError};
+use crate::tools::browser::{BrowserController, BrowserMode};
 use crate::tools::parse_u64_param;
 use crate::tools::web;
 use serde_json::json;
+use std::path::Path;
+use std::str::FromStr;
 
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
@@ -40,13 +43,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_navigate".to_string(),
-            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) and extract an interactive ARIA accessibility tree with numbered element references (@e1, @e2).".to_string(),
+            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (Obscura -> Firefox -> Chrome) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
                         "description": "The web URL or localhost address to navigate to"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode: 'headless' (default, fast/clean background) or 'gui' (visible window for live inspection)"
                     }
                 },
                 "required": ["url"]
@@ -65,15 +73,61 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "html": {
                         "type": "string",
                         "description": "Raw HTML string to parse into accessibility tree (optional)"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode if fetching live URL"
                     }
                 },
                 "required": ["url"]
             }),
         },
+        ToolSchema {
+            name: "browser_eval".to_string(),
+            description: "Evaluate arbitrary JavaScript code in the browser context (e.g. inspecting window state, cookies, local storage, or React/DOM properties) and return the output.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "script": {
+                        "type": "string",
+                        "description": "The JavaScript expression or code snippet to execute"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode to evaluate in ('headless' or 'gui')"
+                    }
+                },
+                "required": ["script"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_screenshot".to_string(),
+            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional relative path in workspace to save the screenshot image"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
     ]
 }
 
-pub async fn dispatch(tool_name: &str, args: &serde_json::Value) -> Option<Result<String>> {
+pub async fn dispatch(
+    tool_name: &str,
+    args: &serde_json::Value,
+    workspace_root: &Path,
+) -> Option<Result<String>> {
     match tool_name {
         "fetch_or_browse" => Some(
             async {
@@ -110,9 +164,15 @@ pub async fn dispatch(tool_name: &str, args: &serde_json::Value) -> Option<Resul
                         name: "browser_navigate".to_string(),
                         reason: "Missing 'url'".to_string(),
                     })?;
-                let snapshot = crate::tools::browser::BrowserController::navigate(url).await?;
-                let report =
-                    crate::tools::browser::BrowserController::format_snapshot_report(&snapshot);
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                let snapshot =
+                    BrowserController::navigate_and_snapshot(url, mode, workspace_root).await?;
+                let report = BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
             }
             .await,
@@ -125,15 +185,52 @@ pub async fn dispatch(tool_name: &str, args: &serde_json::Value) -> Option<Resul
                         name: "browser_snapshot".to_string(),
                         reason: "Missing 'url'".to_string(),
                     })?;
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
                 let html_opt = args["html"].as_str();
                 let snapshot = if let Some(html) = html_opt {
-                    crate::tools::browser::BrowserController::parse_html_to_aria_snapshot(url, html)
+                    BrowserController::parse_html_to_aria_snapshot(url, html)
                 } else {
-                    crate::tools::browser::BrowserController::navigate(url).await?
+                    BrowserController::navigate_and_snapshot(url, mode, workspace_root).await?
                 };
-                let report =
-                    crate::tools::browser::BrowserController::format_snapshot_report(&snapshot);
+                let report = BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
+            }
+            .await,
+        ),
+        "browser_eval" => Some(
+            async {
+                let script =
+                    args["script"]
+                        .as_str()
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "browser_eval".to_string(),
+                            reason: "Missing 'script'".to_string(),
+                        })?;
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::evaluate_js(script, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_screenshot" => Some(
+            async {
+                let path_opt = args.get("path").and_then(|p| p.as_str());
+                let mode_str = args
+                    .get("mode")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("headless");
+                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+
+                BrowserController::take_screenshot(mode, workspace_root, path_opt).await
             }
             .await,
         ),

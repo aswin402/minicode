@@ -598,3 +598,71 @@
   - [x] Create `tests/integration_secret_redaction.rs` (7 tests)
   - [x] 20 unit tests in `src/sandbox/redact.rs`
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test` (all tests passing, 0 warnings)
+
+---
+
+## ✅ Phase 27: Workspace-Local Sessions & Interactive Session Browser (v0.0.37)
+- [x] **Task 1: Workspace-Local Session Storage Engine (`src/session/store.rs`)**
+  - [x] Implement `SessionStore::with_workspace(workspace_root)` directing sessions to `.minicode/sessions/`
+  - [x] Implement `list_sessions_rich()` with token statistics, turn counts, preview snippets, and active session flag
+- [x] **Task 2: `/sessions` Interactive Browser Modal (`src/ui/modal.rs`)**
+  - [x] Implement `ModalState::SessionBrowser` with rich status summary and formatted date badges
+  - [x] Wire `Up`, `Down`, `Enter` (session switch and hydration), and `Esc`
+- [x] **Task 3: Slash Command & Autocomplete Wiring (`src/app.rs`, `src/ui/input.rs`)**
+  - [x] Wire `/sessions` and `/history` commands to open `ModalState::SessionBrowser`
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_session_browser.rs` (7 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test`
+
+---
+
+## ✅ Phase 28: Composable Tool Middleware Pipeline (v0.0.38)
+- [x] **Task 1: `ToolMiddleware` Trait & `ToolPipeline` (`src/tools/middleware.rs`)**
+  - [x] Implement `ToolMiddleware` trait with `before()` and `after()` hooks
+  - [x] Implement `TimingMiddleware` measuring precise tool execution latency
+  - [x] Implement `RedactMiddleware` executing zero-leak credential masking
+  - [x] Implement `CheckpointMiddleware` logging file backup manifests
+- [x] **Task 2: Pipeline Integration (`src/agent/loop.rs`)**
+  - [x] Replace inline redaction with `tool_pipeline.run()` in main ReAct loop
+- [x] **Task 3: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_tool_middleware.rs` (9 tests)
+  - [x] 8 unit tests in `src/tools/middleware.rs`
+
+---
+
+## ✅ Phase 29: Inline Unified Diff Preview on File Edits (v0.0.39)
+- [x] **Task 1: Diff Engine (`src/tools/diff.rs`)**
+  - [x] Implement `compute_diff(old, new)`, `has_changes()`, `format_diff_plain()` using `similar` crate
+- [x] **Task 2: `DiffMiddleware` Pipeline Stage (`src/tools/middleware.rs`)**
+  - [x] Snapshot file before dispatch in `loop.rs`, attach diff with `MINICODE_DIFF_BLOCK:` prefix
+- [x] **Task 3: TUI Timeline Rendering (`src/ui/view.rs`)**
+  - [x] Render `+` additions in green and `-` deletions in red inside `ToolFinished` blocks
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_inline_diff.rs` (11 tests)
+  - [x] 5 unit tests in `src/tools/diff.rs`
+
+---
+
+## ✅ Phase 30: Dual-Mode Browser Engine Core & Multi-Browser Manager (v0.0.40)
+- [x] **Task 1: Engine Types & Priorities (`src/tools/browser/engine.rs`)**
+  - [x] Implement `BrowserEngine` (`Obscura`, `Firefox`, `Chrome`), `BrowserMode` (`Headless`, `Gui`)
+  - [x] Implement `HEADLESS_PRIORITY` (`Obscura` $\rightarrow$ `Firefox` $\rightarrow$ `Chrome`)
+  - [x] Implement `GUI_PRIORITY` (`Firefox` $\rightarrow$ `Chrome`)
+- [x] **Task 2: Process Supervisor & Sandbox Profiles (`src/tools/browser/manager.rs`)**
+  - [x] Binary discovery via `which` across system PATH
+  - [x] Profile isolation under `.minicode/browser_profiles/<engine>_<mode>/`
+  - [x] Engine argument generator with stealth, file access, and debugging ports
+  - [x] Process spawning with `kill_on_drop(true)` and `process_group(0)`
+  - [x] CDP readiness polling against `/json/version`
+- [x] **Task 3: Page-Target CDP WebSocket Driver (`src/tools/browser/driver.rs`)**
+  - [x] Lightweight async CDP client using `tokio-tungstenite`
+  - [x] Page Target WebSocket discovery via `GET /json/list` / `PUT /json/new`
+  - [x] Auto-dismissal of JavaScript alert dialogs (`Page.javascriptDialogOpening`)
+  - [x] Implement `navigate()`, `get_document_html()`, `evaluate_js()`, `take_screenshot()`
+- [x] **Task 4: Public Facade & Tool Registration (`src/tools/browser/mod.rs`, `web_tools.rs`)**
+  - [x] Expose `navigate_and_snapshot(url, mode, workspace_root)`
+  - [x] Permit loopback/`localhost` for dev server debugging while blocking cloud metadata
+  - [x] Register `browser_navigate`, `browser_snapshot`, `browser_eval`, `browser_screenshot`
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_browser_engine.rs` (9 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_engine`

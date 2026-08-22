@@ -128,7 +128,7 @@ impl ToolRegistry {
         }
 
         // 7. Web & Browser Tools
-        if let Some(res) = registry::web_tools::dispatch(tool_name, args).await {
+        if let Some(res) = registry::web_tools::dispatch(tool_name, args, workspace_root).await {
             return res;
         }
 

@@ -349,6 +349,12 @@ pub const SSRF_BLOCKED_HOSTS: &[&str] = &[
     "0.0.0.0",
     "169.254.169.254",
 ];
+/// Hostnames blocked from browser navigation (cloud metadata services, while permitting localhost dev servers)
+pub const BROWSER_BLOCKED_HOSTS: &[&str] = &[
+    "169.254.169.254",
+    "metadata.google.internal",
+    "instance-data",
+];
 
 // === Search Index & Process Limits ===
 /// Maximum cached file symbol mappings in SearchIndex before FIFO eviction
@@ -408,3 +414,21 @@ pub const MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS: f32 = 3600.0;
 pub const MEMORY_DECAY_MILESTONE_HALF_LIFE_SECS: f32 = 7.0 * 24.0 * 3600.0;
 /// Stability step multiplier per memory reinforcement
 pub const MEMORY_DECAY_STABILITY_STEP: f32 = 0.5;
+
+// === Browser Engine & CDP Automation ===
+/// Default base port for Browser CDP debugging
+pub const BROWSER_CDP_BASE_PORT: u16 = 9222;
+/// Timeout in milliseconds for browser process startup and CDP readiness
+pub const BROWSER_STARTUP_TIMEOUT_MS: u64 = 8000;
+/// Timeout in milliseconds for page navigation
+pub const BROWSER_NAVIGATE_TIMEOUT_MS: u64 = 15000;
+/// Maximum console error lines to retain in debug collector
+#[allow(dead_code)]
+pub const BROWSER_MAX_CONSOLE_LINES: usize = 50;
+/// Maximum screenshot size in bytes (2 MB)
+#[allow(dead_code)]
+pub const BROWSER_MAX_SCREENSHOT_BYTES: usize = 2 * 1024 * 1024;
+/// Relative directory inside workspace for browser isolated profiles
+pub const BROWSER_PROFILES_DIR: &str = ".minicode/browser_profiles";
+/// Relative directory inside workspace for browser screenshots
+pub const BROWSER_SCREENSHOTS_DIR: &str = ".minicode/screenshots";

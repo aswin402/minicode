@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.39"
+version = "0.0.40"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -67,7 +67,9 @@ lsp-types = "0.97"
 # Web, HTML Extraction & Browser Automation
 scraper = "0.20"
 url = "2.5"
-chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+which = "7.0"
+htmd = "0.1"
 
 # Session Persistence & Security
 # (JSONL via serde_json — no additional crate needed)
@@ -88,7 +90,6 @@ uuid = { version = "1.10", features = ["v4"] }
 
 [features]
 default = []
-browser = ["dep:chromiumoxide"]
 
 [dev-dependencies]
 tempfile = "3.12"

@@ -5,6 +5,38 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.40] — 2026-08-23
+
+### Dual-Mode Browser Engine Core & Multi-Browser Manager (`src/tools/browser/`)
+
+- **Multi-Engine Priority Chains (`src/tools/browser/engine.rs`)**:
+  - `HEADLESS_PRIORITY`: `Obscura` (Pure-Rust V8 engine, ~30MB RAM, <85ms boot) $\rightarrow$ `Firefox Headless` (Gecko) $\rightarrow$ `Chrome Headless` (Chromium).
+  - `GUI_PRIORITY`: `Firefox GUI` (visible window) $\rightarrow$ `Chrome GUI` (fallback visible window).
+  - Strongly typed `BrowserEngine`, `BrowserMode`, and `EngineConfig` structs with mode string parsing.
+- **Process Supervisor & Isolated Profile Sandbox (`src/tools/browser/manager.rs`)**:
+  - Runtime binary discovery via `which` crate across system PATH for candidate executables.
+  - Dedicated profile isolation under `.minicode/browser_profiles/<engine>_<mode>/` preventing desktop browser instance collision and process hijacking.
+  - Generates engine-specific arguments (`--stealth`, `--allow-file-access`, `--remote-debugging-port`, `--headless=new`, `--user-data-dir`).
+  - Child process spawning with `kill_on_drop(true)` and Unix process group isolation (`process_group(0)`).
+  - Port readiness polling against `http://127.0.0.1:{port}/json/version`.
+- **Page-Target CDP WebSocket Driver (`src/tools/browser/driver.rs`)**:
+  - Lightweight async CDP client using `tokio-tungstenite` over raw WebSocket frames.
+  - Resolves direct Page Target WebSocket URLs via `GET /json/list` / `PUT /json/new`.
+  - Automatic JavaScript dialog dismissal for `Page.javascriptDialogOpening` preventing automation lockups.
+  - Core CDP capabilities: `navigate(url)`, `get_document_html()`, `evaluate_js(expr)`, `take_screenshot()`.
+- **Public Controller Facade & SSRF Security (`src/tools/browser/mod.rs`)**:
+  - Migrated and structured `PageSnapshot` and `AriaElement` models.
+  - Controlled SSRF policy (`BROWSER_BLOCKED_HOSTS`) allowing loopback/`localhost` testing on dev servers while blocking cloud metadata endpoints (`169.254.169.254`).
+  - Graceful zero-browser HTTP fallback for CI environments without local browser binaries.
+- **Agent Tool Registry (`src/tools/registry/web_tools.rs`)**:
+  - `browser_navigate`: accepts optional `mode: "headless" | "gui"`.
+  - `browser_snapshot`: extracts ARIA accessibility tree with numbered versioned references (`@v1:e1`).
+  - `browser_eval`: evaluates arbitrary JavaScript in the active browser context.
+  - `browser_screenshot`: captures viewport PNGs and saves them to `.minicode/screenshots/`.
+- **Verification**:
+  - 9 integration tests in `tests/integration_browser_engine.rs` covering engine priorities, mode parsing, launch arguments, ARIA parsing, URL validation, and tool schemas.
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted (`cargo fmt`).
+
 ## [0.0.39] — 2026-08-22
 
 ### Inline Diff Preview for File-Modifying Tools (`src/tools/diff.rs`)
