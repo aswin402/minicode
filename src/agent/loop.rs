@@ -1,6 +1,6 @@
 use crate::agent::prompt::PromptBuilder;
 use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
-use crate::agent::types::{AgentEvent, Message, ToolCall, Turn};
+use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
     CONTEXT_MIN_PRESERVED_MESSAGES, CONTEXT_WINDOW_PRUNE_THRESHOLD, DEFAULT_MAX_RETRIES,
@@ -10,6 +10,7 @@ use crate::error::Result;
 use crate::mcp::McpClientManager;
 use crate::session::backup::BackupManager;
 use crate::session::store::SessionStore;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -26,6 +27,10 @@ pub struct AgentLoop {
     tool_pipeline: crate::tools::middleware::ToolPipeline,
     messages: Vec<Message>,
     current_turn_id: usize,
+    /// In-flight approval requests: tool_id → oneshot responder.
+    pending_approvals: super::types::ApprovalRegistry,
+    /// Whether a live host can answer approval requests (false in headless mode).
+    interactive_approvals: bool,
 }
 
 impl AgentLoop {
@@ -52,9 +57,28 @@ impl AgentLoop {
             tool_pipeline: crate::tools::middleware::ToolPipeline::default(),
             messages: Vec::new(),
             current_turn_id: 0,
+            pending_approvals: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            interactive_approvals: true,
         }
     }
 
+    /// Returns a handle to the in-flight approval registry for hosts (TUI/NDJSON).
+    pub fn approval_registry(&self) -> super::types::ApprovalRegistry {
+        self.pending_approvals.clone()
+    }
+
+    /// Disables blocking approval waits (headless mode): dangerous tools are
+    /// rejected immediately unless `config.agent.auto_approve` is set.
+    pub fn set_interactive_approvals(&mut self, enabled: bool) {
+        self.interactive_approvals = enabled;
+    }
+
+    /// True when this dispatch must pause for an approval decision first.
+    fn requires_approval(&self, tool_name: &str) -> bool {
+        crate::constants::APPROVAL_REQUIRED_TOOLS.contains(&tool_name)
+            && !self.config.agent.auto_approve
+            && self.interactive_approvals
+    }
     #[allow(dead_code)]
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -376,6 +400,63 @@ impl AgentLoop {
                         }
                     }
 
+                    // === Approval gate: pause for user decision on dangerous tools ===
+                    if self.requires_approval(&tool_call.name) {
+                        let (resp_tx, resp_rx) =
+                            tokio::sync::oneshot::channel::<ApprovalDecision>();
+                        self.pending_approvals
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(tool_call.id.clone(), resp_tx);
+
+                        let req_event = AgentEvent::ApprovalRequest {
+                            turn_id,
+                            tool_id: tool_call.id.clone(),
+                            tool: tool_call.name.clone(),
+                            args: tool_call.arguments.clone(),
+                            reason: "requires user approval in strict mode".to_string(),
+                        };
+                        if let Err(e) = self
+                            .session_store
+                            .append_event(&self.session_id, &req_event)
+                        {
+                            tracing::warn!("Failed to persist ApprovalRequest event: {}", e);
+                        }
+                        if event_sender.send(req_event).is_err() {
+                            tracing::debug!("Failed to send ApprovalRequest event");
+                        }
+
+                        let decision = if let Some(cancel) = &cancel_token {
+                            tokio::select! {
+                                _ = cancel.cancelled() => None,
+                                r = resp_rx => r.ok(),
+                            }
+                        } else {
+                            resp_rx.await.ok()
+                        };
+                        self.pending_approvals
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(&tool_call.id);
+
+                        if decision != Some(ApprovalDecision::Approve) {
+                            let reason = if decision.is_none() {
+                                "cancelled while awaiting approval"
+                            } else {
+                                "rejected by user"
+                            };
+                            Self::emit_rejected_tool_result(
+                                self,
+                                &event_sender,
+                                turn_id,
+                                &tool_call,
+                                reason,
+                                &mut turn_tool_results,
+                            );
+                            continue;
+                        }
+                    }
+
                     // Snapshot file content before dispatch for inline diff preview
                     let file_before: Option<String> =
                         if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
@@ -581,6 +662,47 @@ impl AgentLoop {
             );
         }
     }
+
+    /// Emits events, session records, and LLM-visible messages for a denied
+    /// or cancelled tool call so function-call/result pairing stays valid.
+    fn emit_rejected_tool_result(
+        &mut self,
+        event_sender: &mpsc::UnboundedSender<AgentEvent>,
+        turn_id: usize,
+        tool_call: &ToolCall,
+        reason: &str,
+        turn_tool_results: &mut Vec<crate::agent::types::ToolResult>,
+    ) {
+        let output = format!(
+            "Execution of '{}' was {}: approve via the prompt, or rerun with --yes.",
+            tool_call.name, reason
+        );
+        let rejected = crate::agent::types::ToolResult {
+            tool_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            success: false,
+            output: output.clone(),
+            duration_ms: 0,
+        };
+        let res_event = AgentEvent::ToolResult {
+            turn_id,
+            tool_id: rejected.tool_id.clone(),
+            tool: rejected.tool_name.clone(),
+            success: false,
+            output: output.clone(),
+            duration_ms: 0,
+        };
+        let _ = self
+            .session_store
+            .append_event(&self.session_id, &res_event);
+        let _ = event_sender.send(res_event);
+        self.messages.push(Message::tool_result(
+            tool_call.id.clone(),
+            tool_call.name.clone(),
+            output,
+        ));
+        turn_tool_results.push(rejected);
+    }
 }
 
 #[cfg(test)]
@@ -608,6 +730,94 @@ mod tests {
             let stream = tokio_stream::empty();
             Ok(Box::pin(stream))
         }
+    }
+
+    /// Streams exactly one scripted tool call, then Done on every later call
+    /// (models see the rejection and stop calling tools).
+    struct ToolCallProvider {
+        call: ToolCall,
+        spent: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Provider for ToolCallProvider {
+        fn name(&self) -> &str {
+            "dummy-toolcall"
+        }
+        fn default_model(&self) -> &str {
+            "dummy-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let stream = tokio_stream::iter(vec![Ok(StreamChunk::Done)]);
+                return Ok(Box::pin(stream));
+            }
+            let stream = tokio_stream::iter(vec![
+                Ok(StreamChunk::ToolCallChunk(self.call.clone())),
+                Ok(StreamChunk::Done),
+            ]);
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_approval_produces_failed_tool_result_without_hang() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default(); // agent.auto_approve == false
+        let provider = Box::new(ToolCallProvider {
+            call: ToolCall {
+                id: "call_gate_1".into(),
+                name: "write_file".into(),
+                arguments: serde_json::json!({"path": "gate.txt", "content": "hi"}),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        agent_loop.set_interactive_approvals(true);
+        let reg = agent_loop.approval_registry();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let turn_task =
+            tokio::spawn(async move { agent_loop.execute_turn("make a file", tx, None).await });
+
+        // Gate must block: wait for the ApprovalRequest event.
+        let mut requested_tool_id = None;
+        for _ in 0..50 {
+            match rx.recv().await {
+                Some(AgentEvent::ApprovalRequest { tool_id, .. }) => {
+                    requested_tool_id = Some(tool_id);
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("event stream ended before ApprovalRequest"),
+            }
+        }
+        let tool_id = requested_tool_id.expect("ApprovalRequest must be emitted");
+        assert!(
+            !turn_task.is_finished(),
+            "turn must block awaiting decision"
+        );
+
+        // Reject through the registry by key.
+        let sender = reg
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&tool_id)
+            .expect("pending approval must be registered under its tool_id");
+        assert!(sender.send(ApprovalDecision::Reject).is_ok());
+
+        let turn = turn_task.await.expect("join ok").expect("turn completes");
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(!turn.tool_results[0].success);
+        assert!(turn.tool_results[0].output.contains("rejected by user"));
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
