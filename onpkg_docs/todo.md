@@ -687,3 +687,19 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_browser_interaction.rs` (5 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_interaction`
+
+---
+
+## ✅ Phase 32: Fit Markdown & Intelligent Documentation Ingestion (v0.0.42)
+- [x] **Task 1: 3-Step Smart Markdown Pipeline (`src/tools/browser/markdown.rs`)**
+  - [x] Implement Step 1: Content negotiation with `Accept: text/markdown`
+  - [x] Implement Step 2: `llms.txt` and `llms-full.txt` hierarchy probing
+  - [x] Implement Step 3: Fast HTML to Markdown via `htmd` + noise pruning (stripping scripts, nav, footers)
+  - [x] Implement query-based paragraph ranking and filtering
+- [x] **Task 2: Upgrade `fetch_or_browse` Tool (`src/tools/web.rs`, `web_tools.rs`)**
+  - [x] Route web documentation extraction through `SmartMarkdownExtractor`
+  - [x] Support optional `query` parameter for filtered search
+  - [x] Preserve strict SSRF protection on all fetch requests
+- [x] **Task 3: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_browser_markdown.rs` (4 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_markdown`

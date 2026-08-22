@@ -11,13 +11,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "fetch_or_browse".to_string(),
-            description: "Fetch web documentation or public web pages and convert HTML to readable Markdown.".to_string(),
+            description: "Fetch web documentation or public web pages and convert HTML to readable Markdown using smart 3-step pipeline (Accept negotiation, llms.txt probing, and Fit Markdown distillation).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
                         "description": "The full HTTP/HTTPS URL to fetch"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search keywords to focus and filter relevant documentation sections"
                     }
                 },
                 "required": ["url"]
@@ -212,7 +216,8 @@ pub async fn dispatch(
                         reason: "Missing required argument 'url'".to_string(),
                     }
                 })?;
-                web::fetch_or_browse(url).await
+                let query_opt = args.get("query").and_then(|q| q.as_str());
+                web::fetch_or_browse(url, query_opt).await
             }
             .await,
         ),

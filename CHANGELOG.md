@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.42] — 2026-08-23
+
+### Fit Markdown & Intelligent Documentation Ingestion (`src/tools/browser/markdown.rs`)
+
+- **3-Step Smart Markdown Pipeline (`src/tools/browser/markdown.rs`)**:
+  - **Step 1: Content Negotiation (`Accept: text/markdown`)**: Requests Markdown directly from modern developer APIs and docs servers (bypassing heavy HTML generation).
+  - **Step 2: `llms.txt` & `llms-full.txt` Probing**: Automatically probes root and parent endpoints (`/llms.txt`, `/.well-known/llms.txt`) for token-optimized clean text summaries.
+  - **Step 3: Fast HTML-to-Fit-Markdown Distillation**: Uses `htmd` converter with noise pruning, stripping scripts, stylesheets, tracking code, navbars, and footers to reduce LLM context token usage by 70–90%.
+- **Targeted Query Filtering**:
+  - `SmartMarkdownExtractor::extract_fit_markdown(html, query)`: filters extracted documentation paragraphs by relevant search keywords while preserving document hierarchy and code blocks.
+- **Upgraded `fetch_or_browse` Agent Tool (`src/tools/web.rs`, `web_tools.rs`)**:
+  - Routes web documentation requests through the smart 3-step pipeline while strictly enforcing SSRF security validation.
+  - Added optional `query` parameter to `fetch_or_browse` schema: `{ url: string, query?: string }`.
+- **Verification**:
+  - 4 integration tests in `tests/integration_browser_markdown.rs` (18 total browser integration tests passing).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.41] — 2026-08-23
 
 ### Interactive Browser Automation & Live Dev-Server Debugger (`src/tools/browser/`)

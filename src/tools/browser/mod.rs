@@ -4,6 +4,7 @@ pub mod driver;
 pub mod engine;
 pub mod interaction;
 pub mod manager;
+pub mod markdown;
 
 #[allow(unused_imports)]
 pub use accessibility::AccessibilityManager;
@@ -17,6 +18,8 @@ pub use engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLES
 pub use interaction::BrowserInteractor;
 #[allow(unused_imports)]
 pub use manager::{BrowserManager, EngineProcess};
+#[allow(unused_imports)]
+pub use markdown::SmartMarkdownExtractor;
 
 use crate::constants::{BROWSER_BLOCKED_HOSTS, BROWSER_SCREENSHOTS_DIR};
 use crate::error::{Result, SecurityError, ToolError};

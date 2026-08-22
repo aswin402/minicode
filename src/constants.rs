@@ -297,6 +297,7 @@ pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file"];
 
 // === Security Limits ===
 /// Maximum allowed web response size in bytes (10 MB) to prevent OOM
+#[allow(dead_code)]
 pub const MAX_WEB_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 // === Model Provider Endpoints & Timeouts ===
