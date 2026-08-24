@@ -66,6 +66,24 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "search_symbols_semantic".to_string(),
+            description: "Semantically search specifically for AST symbol definitions (functions, structs, classes, interfaces) matching an intent or concept.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Symbol name or concept description"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of symbols to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolSchema {
             name: "ast_query".to_string(),
             description: "Query Tree-sitter AST syntax tree nodes for a file (e.g. functions, structs, classes, impls) with optional kind and name filters.".to_string(),
             parameters: json!({
@@ -201,6 +219,49 @@ pub fn dispatch(
                         r.file_path,
                         r.start_line,
                         r.end_line,
+                        r.similarity_score,
+                        r.snippet.trim()
+                    ));
+                }
+                Ok(out)
+            }
+        })()),
+        "search_symbols_semantic" => Some((|| {
+            let query = args["query"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "search_symbols_semantic".to_string(),
+                    reason: "Missing 'query'".to_string(),
+                })?;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+            let mut index = crate::context::semantic::SemanticIndex::new();
+            let _ = index.build_index(workspace_root)?;
+            let results = index.search_symbols(query, limit);
+
+            if results.is_empty() {
+                Ok(format!(
+                    "ℹ No semantic symbol matches found for `{}`.",
+                    query
+                ))
+            } else {
+                let mut out = format!(
+                    "🔍 Semantic Symbol Search Results for `{}` ({} matches):\n\n",
+                    query,
+                    results.len()
+                );
+                for (i, r) in results.iter().enumerate() {
+                    let sym_tag = match (&r.symbol_kind, &r.symbol_name) {
+                        (Some(k), Some(n)) => format!(" [{}:{}]", k, n),
+                        _ => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "{}. `{}:{}-{}`{} (Score: {:.2})\n```\n{}\n```\n\n",
+                        i + 1,
+                        r.file_path,
+                        r.start_line,
+                        r.end_line,
+                        sym_tag,
                         r.similarity_score,
                         r.snippet.trim()
                     ));

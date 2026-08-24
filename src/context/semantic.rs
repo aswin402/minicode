@@ -1,3 +1,4 @@
+use crate::context::repomap::RepoMapExtractor;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 const VECTOR_DIM: usize = 128;
 
-/// A localized source code chunk with line numbers and dense embedding vector.
+/// A localized source code chunk with line numbers, AST symbol metadata, and dense embedding vector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CodeChunk {
     pub file_path: String,
@@ -14,6 +15,10 @@ pub struct CodeChunk {
     pub end_line: usize,
     pub content: String,
     pub vector: Vec<f32>,
+    #[serde(default)]
+    pub symbol_name: Option<String>,
+    #[serde(default)]
+    pub symbol_kind: Option<String>,
 }
 
 /// A search result from semantic code search.
@@ -24,6 +29,8 @@ pub struct SemanticSearchResult {
     pub end_line: usize,
     pub similarity_score: f32,
     pub snippet: String,
+    pub symbol_name: Option<String>,
+    pub symbol_kind: Option<String>,
 }
 
 /// Persistent cache format for the semantic vector index.
@@ -113,6 +120,7 @@ impl SemanticIndex {
         let mut indexed_count = 0;
         let rel_files =
             crate::context::walker::WorkspaceWalker::new(workspace_root).collect_relative_files();
+        let mut repomap = RepoMapExtractor::new();
 
         for rel_path in rel_files {
             let path = workspace_root.join(&rel_path);
@@ -142,9 +150,9 @@ impl SemanticIndex {
             // Remove old chunks for this file
             self.chunks.retain(|c| c.file_path != rel_path);
 
-            // Read and chunk file
+            // Read and chunk file using AST-aware symbol chunker
             if let Ok(content) = fs::read_to_string(&path) {
-                let chunks = chunk_source_code(&rel_path, &content);
+                let chunks = chunk_source_code_ast(&rel_path, &content, &mut repomap, &path);
                 self.chunks.extend(chunks);
                 self.file_hashes.insert(rel_path, mtime);
                 indexed_count += 1;
@@ -179,6 +187,50 @@ impl SemanticIndex {
                 end_line: chunk.end_line,
                 similarity_score: score,
                 snippet: chunk.content.clone(),
+                symbol_name: chunk.symbol_name.clone(),
+                symbol_kind: chunk.symbol_kind.clone(),
+            })
+            .collect()
+    }
+
+    /// Specifically searches for AST symbol definitions (functions, classes, structs) matching the query.
+    pub fn search_symbols(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
+        let query_vec = Self::embed(query);
+        let mut scored: Vec<(f32, &CodeChunk)> = self
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.symbol_name.is_some())
+            .map(|chunk| {
+                let base_score = Self::cosine_similarity(&query_vec, &chunk.vector);
+                // Exact name matching boost
+                let name_boost = if let Some(ref sym) = chunk.symbol_name {
+                    if sym.eq_ignore_ascii_case(query) {
+                        0.4
+                    } else if sym.to_lowercase().contains(&query.to_lowercase()) {
+                        0.2
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+                (base_score + name_boost, chunk)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(score, chunk)| SemanticSearchResult {
+                file_path: chunk.file_path.clone(),
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
+                similarity_score: score,
+                snippet: chunk.content.clone(),
+                symbol_name: chunk.symbol_name.clone(),
+                symbol_kind: chunk.symbol_kind.clone(),
             })
             .collect()
     }
@@ -213,8 +265,55 @@ impl SemanticIndex {
     }
 }
 
-/// Splits source code into sliding chunks of ~20–30 lines with line-number tracking.
-fn chunk_source_code(file_path: &str, content: &str) -> Vec<CodeChunk> {
+/// Splits source code into AST symbol chunks if supported, falling back to sliding window chunking.
+pub fn chunk_source_code_ast(
+    file_path: &str,
+    content: &str,
+    extractor: &mut RepoMapExtractor,
+    abs_path: &Path,
+) -> Vec<CodeChunk> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    // Try AST symbol extraction
+    if let Ok(symbols) = extractor.extract_file_symbols(abs_path) {
+        if !symbols.is_empty() {
+            let mut chunks = Vec::new();
+            for sym in symbols {
+                let start = sym.line_number.saturating_sub(1).min(lines.len());
+                let end = sym.end_line.min(lines.len()).max(start + 1);
+                let chunk_lines = &lines[start..end];
+                let chunk_text = chunk_lines.join("\n");
+
+                // Boost vector embedding with symbol name and signature
+                let boost_text = format!(
+                    "{} {} {}\n{}",
+                    sym.kind, sym.name, sym.signature, chunk_text
+                );
+                let vector = SemanticIndex::embed(&boost_text);
+
+                chunks.push(CodeChunk {
+                    file_path: file_path.to_string(),
+                    start_line: start + 1,
+                    end_line: end,
+                    content: chunk_text,
+                    vector,
+                    symbol_name: Some(sym.name),
+                    symbol_kind: Some(sym.kind),
+                });
+            }
+            return chunks;
+        }
+    }
+
+    // Fallback to sliding window chunking for non-AST or unstructured files
+    chunk_source_code_sliding(file_path, content)
+}
+
+/// Splits source code into sliding chunks of ~25 lines with line-number tracking.
+pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChunk> {
     let lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() {
         return Vec::new();
@@ -237,6 +336,8 @@ fn chunk_source_code(file_path: &str, content: &str) -> Vec<CodeChunk> {
             end_line: end,
             content: chunk_text,
             vector,
+            symbol_name: None,
+            symbol_kind: None,
         });
 
         if end == lines.len() {
@@ -332,5 +433,9 @@ mod tests {
         let results = index.search("how to log in or authenticate user", 5);
         assert!(!results.is_empty());
         assert_eq!(results[0].file_path, "src/auth.rs");
+
+        let sym_results = index.search_symbols("login", 5);
+        assert!(!sym_results.is_empty());
+        assert_eq!(sym_results[0].symbol_name.as_deref(), Some("login"));
     }
 }

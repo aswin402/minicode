@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.51] — 2026-08-25
+
+### Semantic AST Code-Chunk Semantic Embedder & Symbol Indexer (`src/context/semantic.rs`, `search_tools.rs`)
+
+- **Tree-sitter AST Symbol Chunking (`chunk_source_code_ast`)**:
+  - Replaces rigid line-window chunking with AST-aware symbol boundary chunking (`functions`, `structs`, `classes`, `traits`, `enums`, `interfaces`).
+  - Seamlessly falls back to sliding line chunking for plain text, Markdown, or non-AST files.
+- **Symbol Name & Signature Embedding Boost (`SemanticIndex::search_symbols`)**:
+  - Boosts symbol names and type signatures during vector embedding to drastically improve direct function and type recall.
+- **New Search Tool & Schemas (`src/tools/registry/search_tools.rs`)**:
+  - `search_symbols_semantic`: Semantically search specifically for AST symbol definitions matching concepts or function intent.
+- **Verification**:
+  - 2 integration tests in `tests/integration_ast_semantic_indexer.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.50] — 2026-08-25
 
 ### Milestone v0.0.50: Resilient Stream Re-Connection & Network Circuit Breaker (`src/agent/circuit_breaker.rs`, `provider.rs`)

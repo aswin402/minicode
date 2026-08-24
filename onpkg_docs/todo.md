@@ -827,3 +827,17 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_resilient_network.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_resilient_network`
+
+---
+
+## ✅ Phase 41: Semantic AST Code-Chunk Semantic Embedder & Symbol Indexer (v0.0.51)
+- [x] **Task 1: AST-Aware Symbol Chunking (`src/context/semantic.rs`)**
+  - [x] Implement `chunk_source_code_ast` with Tree-sitter symbol boundaries
+  - [x] Implement symbol signature boost during vector embedding
+- [x] **Task 2: Semantic Symbol Search Engine (`src/context/semantic.rs`)**
+  - [x] Implement `SemanticIndex::search_symbols`
+- [x] **Task 3: Search Tool & Schemas (`src/tools/registry/search_tools.rs`)**
+  - [x] Register `search_symbols_semantic` tool schema and dispatch
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_ast_semantic_indexer.rs` (2 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_ast_semantic_indexer`
