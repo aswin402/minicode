@@ -41,6 +41,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.53] — 2026-08-25
+
+### Deep Recursive Web Crawler & Documentation Ingestion Engine (`src/tools/crawler/`, `web_tools.rs`)
+
+- **Bounded BFS Crawler Engine (`CrawlerEngine`)**:
+  - Recursively crawls documentation sites with strict domain boundaries (`same_origin` / `path_prefix`), depth limits, and max page caps.
+  - Controls concurrency via `tokio::sync::Semaphore` (4 parallel fetches) with anti-loop visited deduplication.
+- **Sitemap XML & `llms.txt` Auto-Discovery (`SitemapParser`)**:
+  - Automatically probes and parses `/sitemap.xml`, `/sitemap_index.xml`, and `/llms.txt` / `/llms-full.txt` endpoints to seed documentation frontiers.
+- **Fit-Markdown Boilerplate Distillation (`MarkdownDistiller`)**:
+  - Strips noisy navigation sidebars, footers, headers, ads, and cookie banners to extract high-density GFM Markdown, saving 80–90% of tokens.
+  - Automatically caches crawled documentation to `.minicode/crawled/` for sub-second offline recall.
+- **New Web Tools & Schemas (`src/tools/registry/web_tools.rs`)**:
+  - `crawl_documentation`: Recursively crawl and distill documentation into a structured report.
+  - `crawl_sitemap`: Auto-extract documentation routes from XML sitemaps.
+  - `search_crawled_docs`: Search cached documentation locally in workspace.
+- **Verification**:
+  - 4 integration tests in `tests/integration_doc_crawler.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.52] — 2026-08-25
 
 ### Subagent Shared Scratchpad & Inter-Worker Messaging Bus (`src/agent/subagent/scratchpad.rs`, `agent_tools.rs`)

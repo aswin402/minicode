@@ -1,5 +1,6 @@
 pub mod browser;
 pub mod compactor;
+pub mod crawler;
 pub mod diff;
 pub mod exec;
 pub mod fs;

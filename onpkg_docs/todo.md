@@ -859,24 +859,24 @@
 
 ---
 
-## ⏳ Phase 44: Deep Recursive Web Crawler & Documentation Ingestion Engine (v0.0.53)
-- [ ] **Task 1: Core Crawler Engine & Types (`src/tools/crawler/`)**
-  - [ ] Implement `CrawledPage`, `CrawlReport`, and `CrawlerConfig` in `src/tools/crawler/types.rs`
-  - [ ] Implement BFS queue with domain and path-prefix boundary restrictions in `src/tools/crawler/mod.rs`
-  - [ ] Implement `tokio::sync::Semaphore` bounded concurrency (3-5 simultaneous fetches)
-- [ ] **Task 2: Sitemap & llms.txt Discovery (`src/tools/crawler/sitemap.rs`)**
-  - [ ] Auto-discover `/sitemap.xml`, `/sitemap_index.xml`, and `/llms.txt` / `/llms-full.txt`
-  - [ ] Parse XML route URLs and seed the BFS crawler frontier
-- [ ] **Task 3: Fit-Markdown Boilerplate Distiller (`src/tools/crawler/markdown.rs`)**
-  - [ ] Extract primary semantic content (`main`, `article`, `.markdown-body`, `.content`)
-  - [ ] Strip boilerplate (`<nav>`, `<header>`, `<footer>`, `<aside>`, ads, cookie modals)
-  - [ ] Convert clean HTML to GitHub Flavored Markdown (GFM)
-- [ ] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/web_tools.rs`)**
-  - [ ] Register `crawl_documentation`, `crawl_sitemap`, `search_crawled_docs`
-  - [ ] Implement disk persistence in `.minicode/crawled/`
-- [ ] **Task 5: Integration Tests & Quality Gates**
-  - [ ] Create `tests/integration_doc_crawler.rs`
-  - [ ] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_doc_crawler`
+## ✅ Phase 44: Deep Recursive Web Crawler & Documentation Ingestion Engine (v0.0.53)
+- [x] **Task 1: Core Crawler Engine & Types (`src/tools/crawler/`)**
+  - [x] Implement `CrawledPage`, `CrawlReport`, and `CrawlerConfig` in `src/tools/crawler/types.rs`
+  - [x] Implement BFS queue with domain and path-prefix boundary restrictions in `src/tools/crawler/engine.rs`
+  - [x] Implement `tokio::sync::Semaphore` bounded concurrency (4 simultaneous fetches)
+- [x] **Task 2: Sitemap & llms.txt Discovery (`src/tools/crawler/sitemap.rs`)**
+  - [x] Auto-discover `/sitemap.xml`, `/sitemap_index.xml`, and `/llms.txt` / `/llms-full.txt`
+  - [x] Parse XML route URLs and seed the BFS crawler frontier
+- [x] **Task 3: Fit-Markdown Boilerplate Distiller (`src/tools/crawler/markdown.rs`)**
+  - [x] Extract primary semantic content (`main`, `article`, `.markdown-body`, `.content`)
+  - [x] Strip boilerplate (`<nav>`, `<header>`, `<footer>`, `<aside>`, ads, cookie modals)
+  - [x] Convert clean HTML to GitHub Flavored Markdown (GFM)
+- [x] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/web_tools.rs`)**
+  - [x] Register `crawl_documentation`, `crawl_sitemap`, `search_crawled_docs`
+  - [x] Implement disk persistence in `.minicode/crawled/`
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_doc_crawler.rs` (4 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_doc_crawler`
 
 ---
 

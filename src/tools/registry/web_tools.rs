@@ -199,6 +199,68 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "crawl_documentation".to_string(),
+            description: "Recursively crawl a documentation site with domain boundaries, depth limits, and max page caps, extracting clean Fit-Markdown into a structured knowledge report and caching to .minicode/crawled/.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Root URL of the documentation site (e.g. 'https://docs.rs/tokio/latest/tokio/')"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum BFS recursion depth (default: 2)"
+                    },
+                    "max_pages": {
+                        "type": "integer",
+                        "description": "Maximum total pages to crawl and distill (default: 8, max: 25)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search keyword to prioritize and filter relevant documentation sections"
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
+        ToolSchema {
+            name: "crawl_sitemap".to_string(),
+            description: "Discover and parse a website's sitemap.xml or /llms.txt to index all available documentation endpoints.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The base website URL or sitemap.xml endpoint"
+                    },
+                    "max_links": {
+                        "type": "integer",
+                        "description": "Maximum number of sitemap links to list (default: 20)"
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
+        ToolSchema {
+            name: "search_crawled_docs".to_string(),
+            description: "Search across all locally cached crawled documentation reports in the workspace without making external network calls.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords or search term to look up across previously crawled pages"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of page matches to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -383,6 +445,172 @@ pub async fn dispatch(
                 let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
 
                 BrowserController::take_screenshot(mode, workspace_root, path_opt).await
+            }
+            .await,
+        ),
+        "crawl_documentation" => Some(
+            async {
+                let url = args["url"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "crawl_documentation".to_string(),
+                        reason: "Missing required argument 'url'".to_string(),
+                    })?;
+
+                let max_depth =
+                    crate::tools::parse_u64_param(args.get("max_depth")).unwrap_or(2) as usize;
+                let max_pages = crate::tools::parse_u64_param(args.get("max_pages"))
+                    .unwrap_or(8)
+                    .min(25) as usize;
+                let query_filter = args
+                    .get("query")
+                    .and_then(|q| q.as_str())
+                    .map(|s| s.to_string());
+
+                let config = crate::tools::crawler::CrawlerConfig {
+                    max_depth,
+                    max_pages,
+                    max_concurrency: 4,
+                    timeout_secs: 15,
+                    query_filter,
+                };
+
+                let engine = crate::tools::crawler::CrawlerEngine::new();
+                let report = engine.crawl(url, config).await?;
+                let saved_path = engine.save_to_disk(&report, workspace_root)?;
+
+                let mut out = format!(
+                    "🌐 Crawled {} page(s) from `{}` ({} total chars, took {}ms)\n",
+                    report.total_pages_crawled,
+                    report.root_url,
+                    report.total_chars,
+                    report.duration_ms
+                );
+                out.push_str(&format!(
+                    "💾 Cached locally to `{}`\n\n",
+                    saved_path.display()
+                ));
+
+                for (i, p) in report.pages.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{}. [{}]({}) — (depth {}, {} chars)\n",
+                        i + 1,
+                        p.title,
+                        p.url,
+                        p.depth,
+                        p.char_count
+                    ));
+                }
+
+                if let Some(first) = report.pages.first() {
+                    let preview = if first.markdown.len() > 1200 {
+                        format!(
+                            "{}...\n*(truncated, {} total chars)*",
+                            &first.markdown[..1200],
+                            first.char_count
+                        )
+                    } else {
+                        first.markdown.clone()
+                    };
+                    out.push_str(&format!(
+                        "\n### Preview of Root Page (`{}`):\n\n{}\n",
+                        first.title, preview
+                    ));
+                }
+
+                Ok(out)
+            }
+            .await,
+        ),
+        "crawl_sitemap" => Some(
+            async {
+                let url = args["url"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "crawl_sitemap".to_string(),
+                        reason: "Missing required argument 'url'".to_string(),
+                    })?;
+                let max_links =
+                    crate::tools::parse_u64_param(args.get("max_links")).unwrap_or(20) as usize;
+
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .user_agent("Mozilla/5.0 (compatible; minicode-agent/0.0.53)")
+                    .build()
+                    .unwrap_or_default();
+
+                let entries =
+                    crate::tools::crawler::SitemapParser::fetch_sitemap(&client, url).await?;
+                let mut out = format!(
+                    "🗺 Sitemap Endpoints for `{}` ({} total links):\n\n",
+                    url,
+                    entries.len()
+                );
+
+                for (i, entry) in entries.iter().take(max_links).enumerate() {
+                    let mod_str = entry.lastmod.as_deref().unwrap_or("unknown");
+                    out.push_str(&format!(
+                        "{}. `{}` (lastmod: {})\n",
+                        i + 1,
+                        entry.loc,
+                        mod_str
+                    ));
+                }
+
+                if entries.len() > max_links {
+                    out.push_str(&format!(
+                        "\n*...and {} more endpoints.*",
+                        entries.len() - max_links
+                    ));
+                }
+
+                Ok(out)
+            }
+            .await,
+        ),
+        "search_crawled_docs" => Some(
+            async {
+                let query = args["query"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "search_crawled_docs".to_string(),
+                        reason: "Missing required argument 'query'".to_string(),
+                    })?;
+                let limit = crate::tools::parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
+
+                let results = crate::tools::crawler::CrawlerEngine::search_cached_docs(
+                    workspace_root,
+                    query,
+                    limit,
+                );
+                if results.is_empty() {
+                    Ok(format!(
+                        "ℹ No cached documentation matches found for `{}` in `.minicode/crawled/`.",
+                        query
+                    ))
+                } else {
+                    let mut out = format!(
+                        "🔍 Cached Documentation Search Results for `{}` ({} match(es)):\n\n",
+                        query,
+                        results.len()
+                    );
+                    for (i, (page, score)) in results.iter().enumerate() {
+                        let snippet = if page.markdown.len() > 300 {
+                            format!("{}...", &page.markdown[..300])
+                        } else {
+                            page.markdown.clone()
+                        };
+                        out.push_str(&format!(
+                            "{}. **{}** — `{}` (Score: {:.1})\n```markdown\n{}\n```\n\n",
+                            i + 1,
+                            page.title,
+                            page.url,
+                            score,
+                            snippet.trim()
+                        ));
+                    }
+                    Ok(out)
+                }
             }
             .await,
         ),
