@@ -41,6 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.50] — 2026-08-25
+
+### Milestone v0.0.50: Resilient Stream Re-Connection & Network Circuit Breaker (`src/agent/circuit_breaker.rs`, `provider.rs`)
+
+- **Network Circuit Breaker (`CircuitBreaker`, `CircuitState`)**:
+  - Implements three-state circuit breaker protection (`Closed`, `Open`, `HalfOpen`) for all upstream LLM provider API streams.
+  - Automatically trips to `Open` upon reaching failure threshold (default: 3 network/API errors), fast-failing subsequent requests to prevent API hammering.
+  - Transitions to `HalfOpen` after cooldown (10s) and automatically recovers to `Closed` on consecutive successful canary streams.
+- **Exponential Backoff & Retry Policy (`RetryPolicy`)**:
+  - Automatically retries transient network errors (HTTP 429 rate limits, 502/503/504 server errors, connection resets) with jittered exponential backoff.
+  - Prevents retrying non-transient errors (400 Bad Request, 401 Unauthorized, 403 Forbidden).
+- **Resilient Provider Wrapper (`ResilientProvider<P>`)**:
+  - Transparently decorates any `Provider` implementation with circuit breaker protection and auto-retry logic.
+- **Verification**:
+  - 3 integration tests in `tests/integration_resilient_network.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.49] — 2026-08-24
 
 ### Speculative Multi-Branch Hypothesis Auto-Pruner & Parallel Evaluator (`src/agent/hypothesis.rs`, `agent_tools.rs`)

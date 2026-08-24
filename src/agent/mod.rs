@@ -1,3 +1,4 @@
+pub mod circuit_breaker;
 pub mod complexity;
 pub mod critic;
 pub mod hypothesis;

@@ -102,6 +102,12 @@ pub enum ProviderError {
     #[allow(dead_code)]
     #[error("Context window exceeded: prompt uses {used} tokens, max is {limit}")]
     ContextWindowExceeded { used: usize, limit: usize },
+
+    #[error("Circuit breaker is OPEN: {0}")]
+    CircuitOpen(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
 }
 
 #[derive(Error, Debug)]

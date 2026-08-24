@@ -813,3 +813,17 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_hypothesis_pruner.rs` (2 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_hypothesis_pruner`
+
+---
+
+## ✅ Phase 40: Milestone v0.0.50 — Resilient Stream Re-Connection & Network Circuit Breaker (v0.0.50)
+- [x] **Task 1: Network Circuit Breaker (`src/agent/circuit_breaker.rs`)**
+  - [x] Implement `CircuitBreaker`, `CircuitState` (`Closed`, `Open`, `HalfOpen`)
+  - [x] Implement cooldown timeout and canary probe recovery
+- [x] **Task 2: Retry Policy with Exponential Backoff (`src/agent/circuit_breaker.rs`)**
+  - [x] Implement `RetryPolicy` with transient error classification (429, 502/503/504, network reset)
+- [x] **Task 3: Resilient Provider Wrapper (`src/agent/provider.rs`)**
+  - [x] Implement `ResilientProvider<P>` decorator for LLM stream completion
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_resilient_network.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_resilient_network`
