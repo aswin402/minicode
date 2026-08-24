@@ -41,6 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.54] — 2026-08-25
+
+### Native GitHub Integration & CI Workflow Diagnoser (`src/tools/github/`, `git_tools.rs`)
+
+- **Hybrid `gh` CLI + REST API Engine (`GitHubClient`)**:
+  - Auto-detects local `gh` CLI credentials for zero-friction authentication without token management.
+  - Seamlessly falls back to `GITHUB_TOKEN` / `GH_TOKEN` for REST API endpoints.
+  - Auto-detects GitHub repository owner/slug from `git remote origin`.
+- **Closed-Loop Issue & Pull Request Toolkit (`GitHubService`)**:
+  - `github_issue_view`: Read issue description, labels, and discussion thread comments.
+  - `github_issue_list`: Search and list open/closed repository issues.
+  - `github_issue_create`: Create structured issues with titles, markdown descriptions, and labels.
+  - `github_pr_view`: View PR details, target branches, and addition/deletion statistics.
+  - `github_pr_diff`: Fetch raw or unified diffs for any pull request.
+  - `github_pr_create`: Open a pull request from the current branch against base with conventional summary.
+- **GitHub Actions CI Failure Diagnoser (`GitHubService`)**:
+  - `github_ci_status`: Query GitHub Actions workflow run statuses (success, failure, in_progress).
+  - `github_ci_logs`: Pull and compact failed job and step error logs for automatic build break remediation.
+- **Verification**:
+  - 3 integration tests in `tests/integration_github_tools.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.53] — 2026-08-25
 
 ### Deep Recursive Web Crawler & Documentation Ingestion Engine (`src/tools/crawler/`, `web_tools.rs`)

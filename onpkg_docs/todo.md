@@ -880,19 +880,19 @@
 
 ---
 
-## ⏳ Phase 45: Native GitHub Integration & CI Workflow Diagnoser (v0.0.54)
-- [ ] **Task 1: GitHub Client & Auth Discovery (`src/tools/github/client.rs`)**
-  - [ ] Detect `gh` CLI credentials (`gh auth status`) with JSON subprocess fallback
-  - [ ] Implement REST API client using `GITHUB_TOKEN` / `GH_TOKEN` env vars
-  - [ ] Auto-detect repository name and owner from git remote origin
-- [ ] **Task 2: Issue & PR Operations (`src/tools/github/mod.rs`)**
-  - [ ] Implement `github_issue_view`, `github_issue_list`, `github_issue_create`
-  - [ ] Implement `github_pr_view`, `github_pr_diff`, `github_pr_create`, `github_pr_review_comments`
-- [ ] **Task 3: GitHub Actions CI Diagnoser (`src/tools/github/ci.rs`)**
-  - [ ] Implement `github_ci_status` (workflow run states: success, failure, running)
-  - [ ] Implement `github_ci_logs` (fetch and compact failing job/step error logs)
-- [ ] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/git_tools.rs`)**
-  - [ ] Register all GitHub schemas and dispatch handlers
-- [ ] **Task 5: Integration Tests & Quality Gates**
-  - [ ] Create `tests/integration_github_tools.rs`
-  - [ ] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_github_tools`
+## ✅ Phase 45: Native GitHub Integration & CI Workflow Diagnoser (v0.0.54)
+- [x] **Task 1: GitHub Client & Auth Discovery (`src/tools/github/client.rs`)**
+  - [x] Detect `gh` CLI credentials (`gh auth status`) with JSON subprocess fallback
+  - [x] Implement REST API client using `GITHUB_TOKEN` / `GH_TOKEN` env vars
+  - [x] Auto-detect repository name and owner from git remote origin
+- [x] **Task 2: Issue & PR Operations (`src/tools/github/mod.rs`)**
+  - [x] Implement `github_issue_view`, `github_issue_list`, `github_issue_create`
+  - [x] Implement `github_pr_view`, `github_pr_diff`, `github_pr_create`, `github_pr_review_comments`
+- [x] **Task 3: GitHub Actions CI Diagnoser (`src/tools/github/mod.rs`)**
+  - [x] Implement `github_ci_status` (workflow run states: success, failure, running)
+  - [x] Implement `github_ci_logs` (fetch and compact failing job/step error logs)
+- [x] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/git_tools.rs`)**
+  - [x] Register all GitHub schemas and dispatch handlers
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_github_tools.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_github_tools`

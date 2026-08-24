@@ -94,6 +94,178 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["title", "body"]
             }),
         },
+        ToolSchema {
+            name: "github_issue_view".to_string(),
+            description: "View a GitHub issue's title, body, state, author, labels, and discussion comments.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "issue_number": {
+                        "type": "integer",
+                        "description": "The issue number to view"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo'). Defaults to current workspace repository."
+                    }
+                },
+                "required": ["issue_number"]
+            }),
+        },
+        ToolSchema {
+            name: "github_issue_list".to_string(),
+            description: "List issues in a GitHub repository with state and limit filters.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "enum": ["open", "closed", "all"],
+                        "description": "State filter (default: 'open')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum issues to return (default: 10)"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "github_issue_create".to_string(),
+            description: "Create a new issue in a GitHub repository with title, markdown body, and labels.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Title of the issue"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Markdown body of the issue"
+                    },
+                    "labels": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of label names"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                },
+                "required": ["title", "body"]
+            }),
+        },
+        ToolSchema {
+            name: "github_pr_view".to_string(),
+            description: "View details of a GitHub pull request including branches, additions/deletions, and description.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pr_number": {
+                        "type": "integer",
+                        "description": "The pull request number"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                },
+                "required": ["pr_number"]
+            }),
+        },
+        ToolSchema {
+            name: "github_pr_diff".to_string(),
+            description: "Fetch the raw unified git diff of a GitHub pull request.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pr_number": {
+                        "type": "integer",
+                        "description": "The pull request number"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                },
+                "required": ["pr_number"]
+            }),
+        },
+        ToolSchema {
+            name: "github_pr_create".to_string(),
+            description: "Open a pull request from the current branch against a base branch in GitHub.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Pull request title"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Markdown formatted description of the pull request"
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "Target base branch (default: 'main')"
+                    },
+                    "draft": {
+                        "type": "boolean",
+                        "description": "Whether to create as draft (default: false)"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                },
+                "required": ["title", "body"]
+            }),
+        },
+        ToolSchema {
+            name: "github_ci_status".to_string(),
+            description: "Inspect GitHub Actions CI workflow runs (success, failure, running) for the repository or branch.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "branch": {
+                        "type": "string",
+                        "description": "Optional branch name to filter workflow runs"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum workflow runs to return (default: 5)"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "github_ci_logs".to_string(),
+            description: "Fetch failed job error logs for a specific GitHub Actions workflow run to diagnose and fix CI breaks.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "integer",
+                        "description": "The workflow run ID"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Optional GitHub repository slug ('owner/repo')"
+                    }
+                },
+                "required": ["run_id"]
+            }),
+        },
     ]
 }
 
@@ -264,6 +436,149 @@ pub async fn dispatch(
                 }
                 let pr_url = git.create_pull_request(title, body, base, draft).await?;
                 Ok(format!("✔ Created Pull Request: {}", pr_url))
+            }
+            .await,
+        ),
+        "github_issue_view" => Some(
+            async {
+                let issue_num = parse_u64_param(args.get("issue_number")).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_issue_view".to_string(),
+                        reason: "Missing required argument 'issue_number'".to_string(),
+                    }
+                })?;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::view_issue(workspace_root, repo, issue_num)
+                    .await
+            }
+            .await,
+        ),
+        "github_issue_list" => Some(
+            async {
+                let state = args.get("state").and_then(|v| v.as_str());
+                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::list_issues(workspace_root, repo, state, limit)
+                    .await
+            }
+            .await,
+        ),
+        "github_issue_create" => Some(
+            async {
+                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_issue_create".to_string(),
+                        reason: "Missing required argument 'title'".to_string(),
+                    }
+                })?;
+                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_issue_create".to_string(),
+                        reason: "Missing required argument 'body'".to_string(),
+                    }
+                })?;
+                let labels: Vec<String> = args
+                    .get("labels")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::create_issue(
+                    workspace_root,
+                    repo,
+                    title,
+                    body,
+                    &labels,
+                )
+                .await
+            }
+            .await,
+        ),
+        "github_pr_view" => Some(
+            async {
+                let pr_num = parse_u64_param(args.get("pr_number")).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_pr_view".to_string(),
+                        reason: "Missing required argument 'pr_number'".to_string(),
+                    }
+                })?;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::view_pr(workspace_root, repo, pr_num).await
+            }
+            .await,
+        ),
+        "github_pr_diff" => Some(
+            async {
+                let pr_num = parse_u64_param(args.get("pr_number")).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_pr_diff".to_string(),
+                        reason: "Missing required argument 'pr_number'".to_string(),
+                    }
+                })?;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::view_pr_diff(workspace_root, repo, pr_num)
+                    .await
+            }
+            .await,
+        ),
+        "github_pr_create" => Some(
+            async {
+                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_pr_create".to_string(),
+                        reason: "Missing required argument 'title'".to_string(),
+                    }
+                })?;
+                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_pr_create".to_string(),
+                        reason: "Missing required argument 'body'".to_string(),
+                    }
+                })?;
+                let base = args.get("base").and_then(|v| v.as_str()).unwrap_or("main");
+                let draft = args.get("draft").and_then(|v| v.as_bool()).unwrap_or(false);
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::create_pr(
+                    workspace_root,
+                    repo,
+                    title,
+                    body,
+                    base,
+                    draft,
+                )
+                .await
+            }
+            .await,
+        ),
+        "github_ci_status" => Some(
+            async {
+                let branch = args.get("branch").and_then(|v| v.as_str());
+                let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::get_ci_status(
+                    workspace_root,
+                    repo,
+                    branch,
+                    limit,
+                )
+                .await
+            }
+            .await,
+        ),
+        "github_ci_logs" => Some(
+            async {
+                let run_id = parse_u64_param(args.get("run_id")).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "github_ci_logs".to_string(),
+                        reason: "Missing required argument 'run_id'".to_string(),
+                    }
+                })?;
+                let repo = args.get("repo").and_then(|v| v.as_str());
+                crate::tools::github::GitHubService::get_ci_logs(workspace_root, repo, run_id).await
             }
             .await,
         ),

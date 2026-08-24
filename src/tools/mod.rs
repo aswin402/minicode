@@ -4,6 +4,7 @@ pub mod crawler;
 pub mod diff;
 pub mod exec;
 pub mod fs;
+pub mod github;
 pub mod middleware;
 pub mod registry;
 pub mod rtk_filter;
