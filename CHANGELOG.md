@@ -5,6 +5,44 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Approval Enforcement (Security) (`src/agent/loop.rs`, `src/app.rs`, `src/main.rs`)
+
+- **Real tool-approval gating**: `AgentLoop` now pauses before dispatching dangerous tools
+  (`write_file`, `patch_file`, `exec_cmd`) when running in strict mode, emits the existing
+  `approval_request` NDJSON event, and awaits a decision through a new shared
+  `ApprovalRegistry` (`tokio::sync::oneshot` keyed by `tool_id`).
+- **TUI wiring**: the approval modal's Accept/Esc-Reject now actually resolve the pending gate;
+  "Allow Session" propagates the updated config to the agent actor; auto-approve skips the modal.
+- **NDJSON protocol**: `tool_response` decisions (`approve`/`reject`) are routed to the pending
+  gate by `tool_id`; stdin stays readable while turns block on approval.
+- **Headless policy change**: one-shot mode refuses destructive tools with guidance unless
+  `--yes` / `MINICODE_AUTO_APPROVE` is set.
+- Rejected/cancelled tools produce paired failed tool results so LLM message history never
+  contains unmatched function calls.
+
+### Fixed
+
+- **NDJSON command parsing** (`src/main.rs`): stdin commands are parsed via buffered
+  `serde_json::Value` → `from_value`; the adjacent-tag streaming deserializer mis-reported
+  "missing field `params`" for valid input. Bare `{"method":"abort"}` is also tolerated.
+- **Cancelled turns** now emit `turn_end.status = "cancelled"` (was `"complete"`), keep
+  tool-call/result pairing, clean up registry entries, and roll back partial completion-token
+  counts on retry.
+- **SSRF hardening** (`src/tools/web.rs`): literal-IP check now handles bracketed IPv6 and
+  IPv4-mapped forms (`[::ffff:10.0.0.5]`); hostnames are re-checked after DNS resolution to
+  defeat rebinding hosts (e.g. `localtest.me` → 127.0.0.1).
+- Stale `ToolPipeline` integration test updated for the `file_before` parameter; stale
+  tool-schema count assertion fixed (51 → 57).
+
+### Changed
+
+- `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
+  `dirty_commit = true` stages all workspace changes (`git add -A`);
+  `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+- Provider default models centralized in `constants.rs`; file-before-diff snapshots use async I/O.
+
 ## [0.0.42] — 2026-08-23
 
 ### Fit Markdown & Intelligent Documentation Ingestion (`src/tools/browser/markdown.rs`)
