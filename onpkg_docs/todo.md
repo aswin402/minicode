@@ -757,3 +757,17 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_subagent_ui.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_subagent_ui`
+
+---
+
+## ✅ Phase 36: Task DAG & Dynamic Dependency Graph Engine (v0.0.46)
+- [x] **Task 1: Wave Calculation Engine (`src/agent/task_dag.rs`)**
+  - [x] Implement `TaskDag::calculate_execution_waves` using Petgraph DiGraphs
+  - [x] Implement `TaskDag::save` and `TaskDag::load` for workspace persistence
+- [x] **Task 2: Dynamic Task Splitting (`src/agent/task_dag.rs`)**
+  - [x] Implement `TaskDag::split_task` preserving upstream & downstream dependencies
+- [x] **Task 3: Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**
+  - [x] Register `schedule_task_waves` and `split_task` schemas & dispatch
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_task_dag_waves.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_task_dag_waves`

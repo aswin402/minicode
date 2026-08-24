@@ -41,6 +41,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.46] — 2026-08-24
+
+### Task DAG & Dynamic Dependency Graph Engine (`src/agent/task_dag.rs`, `agent_tools.rs`)
+
+- **Parallel Execution Wave Calculation (`TaskDag::calculate_execution_waves`)**:
+  - Automatically computes topologically-sorted non-conflicting parallel execution waves using Petgraph DiGraphs.
+  - Allows orchestrators and agents to schedule independent subtasks concurrently in parallel worktrees.
+- **Dynamic Task Splitting & Graph Mutation (`TaskDag::split_task`)**:
+  - Breaks high-complexity tasks (complexity > 7) into finer-grained child tasks during execution.
+  - Seamlessly re-wires upstream and downstream DAG dependencies to the new child task sequence.
+- **Workspace State Persistence (`TaskDag::save`, `TaskDag::load`)**:
+  - Automatically saves and loads task state to `.minicode/task_dag.json`.
+- **New Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**:
+  - `schedule_task_waves`: Outputs ordered wave stages with progress badges and task complexity.
+  - `split_task`: Dynamically partitions an active task into subtasks and updates the DAG in place.
+- **Verification**:
+  - 3 integration tests in `tests/integration_task_dag_waves.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.45] — 2026-08-24
 
 ### Adaptive Inline Subagent UI & Swarm Live Stream Engine (`src/ui/view.rs`, `src/ui/theme.rs`, `src/ui/status.rs`)

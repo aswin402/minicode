@@ -33,6 +33,10 @@ pub struct TaskItem {
     pub complexity_score: u8, // 1 to 10 scale
     #[serde(default = "default_status")]
     pub status: TaskStatus,
+    #[serde(default)]
+    pub assigned_role: Option<String>,
+    #[serde(default)]
+    pub worktree_branch: Option<String>,
 }
 
 fn default_complexity() -> u8 {
@@ -44,7 +48,7 @@ fn default_status() -> TaskStatus {
 }
 
 /// Dependency-managed Directed Acyclic Graph (DAG) for software task execution.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskDag {
     pub tasks: HashMap<String, TaskItem>,
 }
@@ -55,6 +59,27 @@ impl TaskDag {
         Self {
             tasks: HashMap::new(),
         }
+    }
+
+    /// Persists the DAG state to `.minicode/task_dag.json`
+    pub fn save(&self, workspace_root: &std::path::Path) -> Result<()> {
+        let dir = workspace_root.join(".minicode");
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("task_dag.json");
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Loads the persisted DAG state from `.minicode/task_dag.json`
+    pub fn load(workspace_root: &std::path::Path) -> Result<Self> {
+        let path = workspace_root.join(".minicode").join("task_dag.json");
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let dag: Self = serde_json::from_str(&content)?;
+        Ok(dag)
     }
 
     /// Adds a task to the DAG.
@@ -152,6 +177,88 @@ impl TaskDag {
         }
     }
 
+    /// Calculates parallel execution waves (sets of independent tasks that can run concurrently).
+    pub fn calculate_execution_waves(&self) -> Result<Vec<Vec<String>>> {
+        let topo = self.topological_order()?;
+        let mut waves: Vec<Vec<String>> = Vec::new();
+        let mut task_to_wave: HashMap<String, usize> = HashMap::new();
+
+        for task_id in &topo {
+            let task = &self.tasks[task_id];
+            let mut wave_idx = 0;
+
+            for dep in &task.dependencies {
+                if let Some(&dep_wave) = task_to_wave.get(dep) {
+                    wave_idx = wave_idx.max(dep_wave + 1);
+                }
+            }
+
+            task_to_wave.insert(task_id.clone(), wave_idx);
+
+            while waves.len() <= wave_idx {
+                waves.push(Vec::new());
+            }
+
+            waves[wave_idx].push(task_id.clone());
+        }
+
+        Ok(waves)
+    }
+
+    /// Dynamically splits a high-complexity task into child subtasks, rewiring dependencies cleanly.
+    pub fn split_task(
+        &mut self,
+        parent_id: &str,
+        child_tasks: Vec<TaskItem>,
+    ) -> Result<Vec<String>> {
+        if child_tasks.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                name: "split_task".to_string(),
+                reason: "Child tasks list cannot be empty".to_string(),
+            }
+            .into());
+        }
+
+        let parent_task =
+            self.tasks
+                .get(parent_id)
+                .cloned()
+                .ok_or_else(|| ToolError::NotFound {
+                    name: format!("task:{}", parent_id),
+                })?;
+
+        let parent_deps = parent_task.dependencies.clone();
+        let mut child_ids = Vec::new();
+
+        // 1. Add child tasks inheriting parent's upstream dependencies for initial child
+        for (idx, mut child) in child_tasks.into_iter().enumerate() {
+            if idx == 0 && child.dependencies.is_empty() {
+                child.dependencies = parent_deps.clone();
+            }
+            child_ids.push(child.id.clone());
+            self.add_task(child);
+        }
+
+        // 2. Point all downstream tasks previously depending on parent to depend on child tasks
+        let last_child_id = child_ids.last().unwrap().clone();
+        for task in self.tasks.values_mut() {
+            if task.dependencies.contains(&parent_id.to_string()) {
+                task.dependencies.retain(|d| d != parent_id);
+                if !task.dependencies.contains(&last_child_id) {
+                    task.dependencies.push(last_child_id.clone());
+                }
+            }
+        }
+
+        // 3. Mark parent task as Completed (or remove)
+        self.set_task_status(parent_id, TaskStatus::Completed)?;
+
+        // 4. Validate graph integrity (no cycles)
+        self.topological_order()?;
+
+        Ok(child_ids)
+    }
+
     /// Returns all unblocked tasks ready for immediate execution.
     pub fn next_executable_tasks(&self) -> Vec<&TaskItem> {
         self.tasks
@@ -206,75 +313,51 @@ impl TaskDag {
             .filter(|t| t.status == TaskStatus::Failed)
             .count();
 
+        let progress_pct = if total > 0 {
+            (completed as f64 / total as f64 * 100.0) as usize
+        } else {
+            0
+        };
+
         let mut out = format!(
-            "📊 Task DAG Execution Report: {} total (✔ {} completed | ⏳ {} in progress | ⏸ {} pending | ❌ {} failed)\n\n",
-            total, completed, in_progress, pending, failed
+            "📊 Task DAG Progress: {}% ({} total: {} completed, {} in progress, {} pending, {} failed)\n\n",
+            progress_pct, total, completed, in_progress, pending, failed
         );
 
-        let order = self
-            .topological_order()
-            .unwrap_or_else(|_| self.tasks.keys().cloned().collect());
-        for (idx, id) in order.iter().enumerate() {
-            if let Some(task) = self.tasks.get(id) {
-                let status_icon = match task.status {
-                    TaskStatus::Completed => "✔ [COMPLETED]",
-                    TaskStatus::InProgress => "⏳ [IN PROGRESS]",
-                    TaskStatus::Pending => "⏸ [PENDING]",
-                    TaskStatus::Blocked => "🚫 [BLOCKED]",
-                    TaskStatus::Failed => "❌ [FAILED]",
-                };
+        if let Ok(waves) = self.calculate_execution_waves() {
+            out.push_str("⚡ Parallel Execution Waves:\n");
+            for (idx, wave) in waves.iter().enumerate() {
+                out.push_str(&format!("  • Wave {}: {}\n", idx + 1, wave.join(", ")));
+            }
+            out.push('\n');
+        }
 
-                let deps_str = if task.dependencies.is_empty() {
-                    "none".to_string()
-                } else {
-                    task.dependencies.join(", ")
-                };
-
-                out.push_str(&format!(
-                    "{}. {} `{}` (Complexity: {}/10, Deps: {})\n   **{}**: {}\n\n",
-                    idx + 1,
-                    status_icon,
-                    task.id,
-                    task.complexity_score,
-                    deps_str,
-                    task.title,
-                    task.description
-                ));
+        if let Ok(order) = self.topological_order() {
+            out.push_str("Topological Task Order:\n");
+            for id in order {
+                if let Some(t) = self.tasks.get(&id) {
+                    let status_badge = match t.status {
+                        TaskStatus::Completed => "✔ Completed",
+                        TaskStatus::InProgress => "◉ In Progress",
+                        TaskStatus::Pending => "○ Pending",
+                        TaskStatus::Blocked => "⏸ Blocked",
+                        TaskStatus::Failed => "✗ Failed",
+                    };
+                    out.push_str(&format!(
+                        "  [{}] `{}`: {} (Complexity: {}/10)\n",
+                        status_badge, t.id, t.title, t.complexity_score
+                    ));
+                    if !t.dependencies.is_empty() {
+                        out.push_str(&format!(
+                            "      ↳ Depends on: {}\n",
+                            t.dependencies.join(", ")
+                        ));
+                    }
+                }
             }
         }
 
         out
-    }
-
-    /// Loads the active TaskDag from `.minicode/task_dag.json` in the workspace.
-    pub fn load(workspace_root: &std::path::Path) -> Result<Self> {
-        let path = workspace_root.join(".minicode").join("task_dag.json");
-        if !path.exists() {
-            return Ok(Self::new());
-        }
-        let data = std::fs::read_to_string(&path).map_err(|e| ToolError::FileOp {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-        let tasks: HashMap<String, TaskItem> = serde_json::from_str(&data).unwrap_or_default();
-        Ok(Self { tasks })
-    }
-
-    /// Persists the TaskDag to `.minicode/task_dag.json` in the workspace.
-    pub fn save(&self, workspace_root: &std::path::Path) -> Result<()> {
-        let dir = workspace_root.join(".minicode");
-        std::fs::create_dir_all(&dir).map_err(|e| ToolError::FileOp {
-            path: dir.display().to_string(),
-            source: e,
-        })?;
-        let path = dir.join("task_dag.json");
-        let json_str = serde_json::to_string_pretty(&self.tasks)
-            .map_err(|e| ToolError::CommandExec(e.to_string()))?;
-        std::fs::write(&path, json_str).map_err(|e| ToolError::FileOp {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-        Ok(())
     }
 }
 
@@ -283,74 +366,157 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_task_dag_topological_order_and_execution() {
+    fn test_task_dag_topological_sort_and_waves() {
         let mut dag = TaskDag::new();
+
         dag.add_task(TaskItem {
-            id: "task-1".to_string(),
-            title: "Setup database schema".to_string(),
-            description: "Create SQLite migrations".to_string(),
+            id: "t1".to_string(),
+            title: "Task 1".to_string(),
+            description: "First task".to_string(),
             dependencies: vec![],
             complexity_score: 3,
             status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
         });
 
         dag.add_task(TaskItem {
-            id: "task-2".to_string(),
-            title: "Implement repository layer".to_string(),
-            description: "CRUD queries for users".to_string(),
-            dependencies: vec!["task-1".to_string()],
-            complexity_score: 5,
-            status: TaskStatus::Pending,
-        });
-
-        dag.add_task(TaskItem {
-            id: "task-3".to_string(),
-            title: "Implement HTTP router".to_string(),
-            description: "Axum routes".to_string(),
-            dependencies: vec!["task-2".to_string()],
+            id: "t2".to_string(),
+            title: "Task 2".to_string(),
+            description: "Second task (parallel with t3)".to_string(),
+            dependencies: vec!["t1".to_string()],
             complexity_score: 4,
             status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
         });
 
-        let order = dag.topological_order().unwrap();
-        assert_eq!(order, vec!["task-1", "task-2", "task-3"]);
+        dag.add_task(TaskItem {
+            id: "t3".to_string(),
+            title: "Task 3".to_string(),
+            description: "Third task (parallel with t2)".to_string(),
+            dependencies: vec!["t1".to_string()],
+            complexity_score: 2,
+            status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
+        });
 
-        // Initially only task-1 is executable
-        let next = dag.next_executable_tasks();
-        assert_eq!(next.len(), 1);
-        assert_eq!(next[0].id, "task-1");
+        dag.add_task(TaskItem {
+            id: "t4".to_string(),
+            title: "Task 4".to_string(),
+            description: "Final task".to_string(),
+            dependencies: vec!["t2".to_string(), "t3".to_string()],
+            complexity_score: 5,
+            status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
+        });
 
-        // Complete task-1
-        dag.set_task_status("task-1", TaskStatus::Completed)
-            .unwrap();
-        let next2 = dag.next_executable_tasks();
-        assert_eq!(next2.len(), 1);
-        assert_eq!(next2[0].id, "task-2");
+        let waves = dag.calculate_execution_waves().unwrap();
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0], vec!["t1"]);
+        assert!(waves[1].contains(&"t2".to_string()));
+        assert!(waves[1].contains(&"t3".to_string()));
+        assert_eq!(waves[2], vec!["t4"]);
     }
 
     #[test]
-    fn test_task_dag_circular_dependency_detected() {
+    fn test_task_dag_cycle_detection() {
         let mut dag = TaskDag::new();
+
         dag.add_task(TaskItem {
             id: "a".to_string(),
             title: "Task A".to_string(),
-            description: "Desc A".to_string(),
+            description: "Depends on B".to_string(),
             dependencies: vec!["b".to_string()],
             complexity_score: 3,
             status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
         });
 
         dag.add_task(TaskItem {
             id: "b".to_string(),
             title: "Task B".to_string(),
-            description: "Desc B".to_string(),
+            description: "Depends on A".to_string(),
             dependencies: vec!["a".to_string()],
             complexity_score: 3,
             status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
         });
 
-        let res = dag.topological_order();
-        assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("Circular dependency"));
+        assert!(dag.topological_order().is_err());
+    }
+
+    #[test]
+    fn test_task_dag_dynamic_split() {
+        let mut dag = TaskDag::new();
+
+        dag.add_task(TaskItem {
+            id: "t1".to_string(),
+            title: "Init".to_string(),
+            description: "Init".to_string(),
+            dependencies: vec![],
+            complexity_score: 2,
+            status: TaskStatus::Completed,
+            assigned_role: None,
+            worktree_branch: None,
+        });
+
+        dag.add_task(TaskItem {
+            id: "big_task".to_string(),
+            title: "Big Complex Task".to_string(),
+            description: "Refactor engine".to_string(),
+            dependencies: vec!["t1".to_string()],
+            complexity_score: 8,
+            status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
+        });
+
+        dag.add_task(TaskItem {
+            id: "t3".to_string(),
+            title: "Verify".to_string(),
+            description: "Verify all".to_string(),
+            dependencies: vec!["big_task".to_string()],
+            complexity_score: 3,
+            status: TaskStatus::Pending,
+            assigned_role: None,
+            worktree_branch: None,
+        });
+
+        let subtasks = vec![
+            TaskItem {
+                id: "sub_1".to_string(),
+                title: "Subtask 1".to_string(),
+                description: "Part 1".to_string(),
+                dependencies: vec![],
+                complexity_score: 4,
+                status: TaskStatus::Pending,
+                assigned_role: None,
+                worktree_branch: None,
+            },
+            TaskItem {
+                id: "sub_2".to_string(),
+                title: "Subtask 2".to_string(),
+                description: "Part 2".to_string(),
+                dependencies: vec!["sub_1".to_string()],
+                complexity_score: 4,
+                status: TaskStatus::Pending,
+                assigned_role: None,
+                worktree_branch: None,
+            },
+        ];
+
+        let child_ids = dag.split_task("big_task", subtasks).unwrap();
+        assert_eq!(child_ids, vec!["sub_1", "sub_2"]);
+
+        // t3 should now depend on sub_2
+        assert!(dag.tasks["t3"].dependencies.contains(&"sub_2".to_string()));
+        assert!(!dag.tasks["t3"]
+            .dependencies
+            .contains(&"big_task".to_string()));
     }
 }

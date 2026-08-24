@@ -84,6 +84,43 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "schedule_task_waves".to_string(),
+            description: "Calculate parallel execution waves from the active Task DAG to execute non-conflicting tasks concurrently.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolSchema {
+            name: "split_task".to_string(),
+            description: "Dynamically split a high-complexity task into multiple subtasks, preserving upstream and downstream DAG dependencies.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "parent_task_id": {
+                        "type": "string",
+                        "description": "The ID of the parent task to split"
+                    },
+                    "subtasks": {
+                        "type": "array",
+                        "description": "List of child subtasks replacing the parent",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "title": { "type": "string" },
+                                "description": { "type": "string" },
+                                "dependencies": { "type": "array", "items": { "type": "string" } },
+                                "complexity_score": { "type": "integer" }
+                            },
+                            "required": ["id", "title", "description"]
+                        }
+                    }
+                },
+                "required": ["parent_task_id", "subtasks"]
+            }),
+        },
+        ToolSchema {
             name: "critic_review".to_string(),
             description: "Run an automated Actor-Critic evaluation pass over current workspace changes (compiler diagnostics, linter warnings, git status) to verify code quality.".to_string(),
             parameters: json!({
@@ -392,6 +429,67 @@ pub async fn dispatch(
                 task_id,
                 status,
                 next_desc,
+                dag.generate_report()
+            ))
+        })()),
+        "schedule_task_waves" => Some((|| {
+            let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
+            if dag.tasks.is_empty() {
+                return Ok("ℹ No active Task DAG found in workspace. Use 'create_task_dag' to initialize one.".to_string());
+            }
+
+            let waves = dag.calculate_execution_waves()?;
+            let mut out = format!("⚡ Parallel Task Execution Waves ({} waves, {} total tasks):\n\n", waves.len(), dag.tasks.len());
+            for (idx, wave) in waves.iter().enumerate() {
+                out.push_str(&format!("### Wave {}:\n", idx + 1));
+                for task_id in wave {
+                    if let Some(t) = dag.tasks.get(task_id) {
+                        let status_emoji = match t.status {
+                            crate::agent::task_dag::TaskStatus::Completed => "✔",
+                            crate::agent::task_dag::TaskStatus::InProgress => "◉",
+                            _ => "○",
+                        };
+                        out.push_str(&format!("  • {} `{}`: **{}** (Complexity: {}/10)\n", status_emoji, t.id, t.title, t.complexity_score));
+                    }
+                }
+                out.push('\n');
+            }
+            Ok(out)
+        })()),
+        "split_task" => Some((|| {
+            let parent_id = args.get("parent_task_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "split_task".to_string(),
+                    reason: "Missing required argument 'parent_task_id'".to_string(),
+                }
+            })?;
+            let subtasks_array = args.get("subtasks").and_then(|v| v.as_array()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "split_task".to_string(),
+                    reason: "Missing required argument 'subtasks' array".to_string(),
+                }
+            })?;
+
+            let mut dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
+            let mut child_tasks = Vec::new();
+            for item in subtasks_array {
+                let task: crate::agent::task_dag::TaskItem = serde_json::from_value(item.clone()).map_err(|e| {
+                    ToolError::InvalidArguments {
+                        name: "split_task".to_string(),
+                        reason: format!("Invalid subtask schema: {}", e),
+                    }
+                })?;
+                child_tasks.push(task);
+            }
+
+            let child_ids = dag.split_task(parent_id, child_tasks)?;
+            dag.save(workspace_root)?;
+
+            Ok(format!(
+                "✔ Split task `{}` into {} child tasks: {}\n\n{}",
+                parent_id,
+                child_ids.len(),
+                child_ids.join(", "),
                 dag.generate_report()
             ))
         })()),
