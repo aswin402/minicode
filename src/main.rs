@@ -318,17 +318,29 @@ fn emit_invalid_command(message: &str) {
 /// Headless NDJSON agent loop over stdin/stdout for AI orchestrators
 async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     tracing::info!("Starting minicode in NDJSON streaming mode");
+    // Resolve provider BEFORE announcing readiness: a misconfigured host must
+    // receive an error event, not a "ready" heartbeat followed by death.
+    let api_key = match config.get_api_key(&config.provider.default) {
+        Ok(key) => key,
+        Err(e) => {
+            emit_invalid_command(&format!(
+                "Startup failed: {}. Fix the configuration, then reconnect.",
+                e
+            ));
+            return Err(e);
+        }
+    };
+    let provider = create_provider(&config.provider.default, &api_key)?;
+    let agent = AgentLoop::new(workspace, config.clone(), provider);
+    let approvals = agent.approval_registry();
+    let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
+
     let ready_event = AgentEvent::Heartbeat {
         timestamp: chrono::Utc::now().to_rfc3339(),
         status: "ready".to_string(),
         turn_id: None,
     };
     println!("{}", serde_json::to_string(&ready_event)?);
-    let api_key = config.get_api_key(&config.provider.default)?;
-    let provider = create_provider(&config.provider.default, &api_key)?;
-    let agent = AgentLoop::new(workspace, config.clone(), provider);
-    let approvals = agent.approval_registry();
-    let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
 
     // Read commands from stdin line-by-line
     use tokio::io::AsyncBufReadExt;
