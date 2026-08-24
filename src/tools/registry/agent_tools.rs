@@ -398,29 +398,7 @@ pub async fn dispatch(
         "critic_review" => Some(async {
             let report =
                 crate::agent::critic::CriticValidator::review_workspace(workspace_root).await?;
-            let verdict_str = if report.is_approved {
-                "✔ [CRITIC APPROVED]"
-            } else {
-                "❌ [CRITIC REJECTED]"
-            };
-
-            let mut out = format!("🔍 Critic Evaluation Summary: {}\n\n", verdict_str);
-            out.push_str(&format!("• Status: {}\n", report.suggested_feedback));
-            out.push_str(&format!("• Compiler Errors: {}\n", report.compiler_errors));
-            out.push_str(&format!(
-                "• Compiler Warnings: {}\n",
-                report.compiler_warnings
-            ));
-            if !report.uncommitted_files.is_empty() {
-                out.push_str(&format!(
-                    "• Modified Files ({}):\n",
-                    report.uncommitted_files.len()
-                ));
-                for file in &report.uncommitted_files {
-                    out.push_str(&format!("    - {}\n", file));
-                }
-            }
-            Ok(out)
+            Ok(report.format_for_agent())
         }.await),
         "sequential_thinking" => Some((|| {
             let thought_node: crate::agent::sequential_thinking::ThoughtNode =

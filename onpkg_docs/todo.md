@@ -727,3 +727,17 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_subagent_swarm.rs` (6 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_subagent_swarm`
+
+---
+
+## ✅ Phase 34: Actor-Critic Dual-Agent Code Verification Loop (v0.0.44)
+- [x] **Task 1: Multi-Dimensional Critic Engine (`src/agent/critic.rs`)**
+  - [x] Implement compiler diagnostics inspection with structured `CriticIssue` findings
+  - [x] Implement anti-pattern scanning (detecting `println!` in non-test library code)
+  - [x] Implement zero-leak secret detection via `SecretRedactor` integration
+  - [x] Implement structured `CriticVerdict` (`Approved`, `ApprovedWithWarnings`, `Rejected`)
+- [x] **Task 2: Critic Tool & Registry Wiring (`src/tools/registry/agent_tools.rs`)**
+  - [x] Update `critic_review` tool schema and dispatch with rich multi-axis Markdown report
+- [x] **Task 3: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_actor_critic.rs` (4 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_actor_critic`
