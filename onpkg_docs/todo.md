@@ -771,3 +771,16 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_task_dag_waves.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_task_dag_waves`
+
+---
+
+## ✅ Phase 37: RTK-Style Token Output Compactor & Multi-Language Diagnostic Distiller (v0.0.47)
+- [x] **Task 1: Multi-Language Distillers (`src/tools/compactor.rs`)**
+  - [x] Implement Pytest & Unittest compaction
+  - [x] Implement Go test pass & failure traces compaction
+  - [x] Enhance Rust compiler error diagnostic extraction
+- [x] **Task 2: Compaction Metrics & Token Savings Tracker (`src/tools/compactor.rs`)**
+  - [x] Implement `calculate_compaction_stats` (measuring raw vs compact byte reduction)
+- [x] **Task 3: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_token_compactor.rs` (4 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_token_compactor`

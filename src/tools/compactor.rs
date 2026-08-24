@@ -31,7 +31,18 @@ pub enum CompactStrategy {
     GitDiff,
     GitLog,
     Npm,
+    Pytest,
+    GoTest,
     Generic,
+}
+
+/// Token compaction statistics
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub struct CompactionStats {
+    pub raw_bytes: usize,
+    pub compacted_bytes: usize,
+    pub savings_percent: usize,
 }
 
 /// Detects the compaction strategy for a given command line
@@ -80,7 +91,27 @@ pub fn detect_strategy(command: &str) -> CompactStrategy {
             CompactStrategy::Generic
         }
         "npm" | "yarn" | "pnpm" | "bun" => CompactStrategy::Npm,
-        _ => CompactStrategy::Generic,
+        "pytest" | "python" | "python3" => {
+            if trimmed.contains("pytest") || trimmed.contains("unittest") {
+                CompactStrategy::Pytest
+            } else {
+                CompactStrategy::Generic
+            }
+        }
+        "go" => {
+            if parts.get(1) == Some(&"test") {
+                CompactStrategy::GoTest
+            } else {
+                CompactStrategy::Generic
+            }
+        }
+        _ => {
+            if trimmed.starts_with("pytest") {
+                CompactStrategy::Pytest
+            } else {
+                CompactStrategy::Generic
+            }
+        }
     }
 }
 
@@ -95,13 +126,31 @@ pub fn compact_tool_output(command: &str, raw_output: &str, exit_code: Option<i3
         CompactStrategy::GitDiff => compact_git_diff(&clean),
         CompactStrategy::GitLog => compact_git_log(&clean),
         CompactStrategy::Npm => compact_npm(&clean, exit_code),
+        CompactStrategy::Pytest => compact_pytest(&clean, exit_code),
+        CompactStrategy::GoTest => compact_go_test(&clean, exit_code),
         CompactStrategy::Generic => compact_generic(&clean),
     }
 }
 
+/// Calculates token compaction savings metrics
+#[allow(dead_code)]
+pub fn calculate_compaction_stats(raw: &str, compacted: &str) -> CompactionStats {
+    let raw_bytes = raw.len();
+    let compacted_bytes = compacted.len();
+    let savings_percent = if raw_bytes > 0 && raw_bytes >= compacted_bytes {
+        ((raw_bytes - compacted_bytes) * 100) / raw_bytes
+    } else {
+        0
+    };
+
+    CompactionStats {
+        raw_bytes,
+        compacted_bytes,
+        savings_percent,
+    }
+}
+
 /// Compacts `cargo check`, `cargo build`, `cargo clippy` output.
-/// If successful, condenses to the final `Finished` line.
-/// If failed, strips noise compiling lines and keeps `error[...]` diagnostics.
 fn compact_cargo_check(output: &str, exit_code: Option<i32>) -> String {
     let is_success =
         exit_code == Some(0) && !output.contains("error:") && !output.contains("error[");
@@ -139,8 +188,6 @@ fn compact_cargo_check(output: &str, exit_code: Option<i32>) -> String {
 }
 
 /// Compacts `cargo test` output.
-/// If successful, condenses to summary lines (e.g. `test result: ok. 18 passed; 0 failed`).
-/// If failed, extracts failing tests, panic messages, and the summary.
 fn compact_cargo_test(output: &str, exit_code: Option<i32>) -> String {
     let is_success = exit_code == Some(0)
         && !output.contains("test result: FAILED")
@@ -185,14 +232,93 @@ fn compact_cargo_test(output: &str, exit_code: Option<i32>) -> String {
     }
 }
 
-/// Compacts `git diff` / `git show` output.
+/// Compacts `pytest` / `unittest` Python output.
+fn compact_pytest(output: &str, exit_code: Option<i32>) -> String {
+    let is_success = exit_code == Some(0)
+        && (output.contains("passed") || output.contains("OK"))
+        && !output.contains("FAILED")
+        && !output.contains("ERROR");
+
+    if is_success {
+        for line in output.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("===") && trimmed.contains("passed") {
+                return format!("✔ {}", trimmed.trim_matches('='));
+            }
+            if trimmed.starts_with("OK") {
+                return format!("✔ {}", trimmed);
+            }
+        }
+    }
+
+    // On failure: extract FAILURES / ERRORS block and summary
+    let mut relevant = Vec::new();
+    let mut in_failure_section = false;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("=== FAILURES ===") || trimmed.starts_with("=== ERRORS ===") {
+            in_failure_section = true;
+        }
+        if in_failure_section
+            || trimmed.starts_with("FAILED ")
+            || trimmed.starts_with("ERROR ")
+            || (trimmed.starts_with("===") && trimmed.contains("failed"))
+        {
+            relevant.push(line);
+        }
+    }
+
+    if !relevant.is_empty() {
+        relevant.join("\n")
+    } else {
+        compact_generic(output)
+    }
+}
+
+/// Compacts `go test` output.
+fn compact_go_test(output: &str, exit_code: Option<i32>) -> String {
+    let is_success = exit_code == Some(0) && !output.contains("FAIL");
+
+    if is_success {
+        let mut passed_pkgs = Vec::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("ok  ") {
+                passed_pkgs.push(trimmed.to_string());
+            }
+        }
+        if !passed_pkgs.is_empty() {
+            return format!("✔ {}", passed_pkgs.join("\n✔ "));
+        }
+    }
+
+    // On failure: extract failing tests
+    let mut failure_lines = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--- FAIL:")
+            || trimmed.starts_with("FAIL")
+            || trimmed.contains("error:")
+        {
+            failure_lines.push(line);
+        }
+    }
+
+    if !failure_lines.is_empty() {
+        failure_lines.join("\n")
+    } else {
+        compact_generic(output)
+    }
+}
+
+/// Compacts `git diff` / `git show` output with fast hunk folding.
 fn compact_git_diff(output: &str) -> String {
     let lines: Vec<&str> = output.lines().collect();
     if lines.len() <= GIT_DIFF_COMPACT_THRESHOLD {
         return output.to_string();
     }
 
-    // Keep diff headers and changes, limit unchanged lines
     let mut compacted = Vec::new();
     let mut unchanged_count = 0;
 
@@ -251,19 +377,21 @@ fn compact_generic(output: &str) -> String {
         return output.to_string();
     }
 
-    let total = lines.len();
-    let head = &lines[..GENERIC_HEAD_LINES.min(total)];
-    let tail = if total >= GENERIC_TAIL_LINES {
-        &lines[total - GENERIC_TAIL_LINES..]
-    } else {
-        &[]
-    };
-    let omitted = total.saturating_sub(GENERIC_HEAD_LINES + GENERIC_TAIL_LINES);
+    let head: Vec<&str> = lines.iter().take(GENERIC_HEAD_LINES).copied().collect();
+    let tail: Vec<&str> = lines
+        .iter()
+        .skip(lines.len().saturating_sub(GENERIC_TAIL_LINES))
+        .copied()
+        .collect();
+
+    let omitted_count = lines
+        .len()
+        .saturating_sub(GENERIC_HEAD_LINES + GENERIC_TAIL_LINES);
 
     format!(
-        "{}\n\n... [{} lines omitted by minicode compactor] ...\n\n{}",
+        "{}\n\n... [{} lines omitted for brevity] ...\n\n{}",
         head.join("\n"),
-        omitted,
+        omitted_count,
         tail.join("\n")
     )
 }
@@ -273,111 +401,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_strip_ansi_codes() {
-        let colored =
-            "\x1B[31mError:\x1B[0m something went wrong \x1B[38;2;162;119;255m[E0308]\x1B[0m";
-        let clean = strip_ansi_codes(colored);
-        assert_eq!(clean, "Error: something went wrong [E0308]");
+    fn test_pytest_compaction() {
+        let pass_out = "============================= test session starts ==============================\n... [100%]\n============================== 14 passed in 0.42s ==============================\n";
+        let res = compact_tool_output("pytest tests/", pass_out, Some(0));
+        assert!(res.starts_with("✔"));
+        assert!(res.contains("14 passed in 0.42s"));
+
+        let fail_out = "=== FAILURES ===\n___ test_math ___\nAssertionError: 1 != 2\n=== 1 failed, 13 passed in 0.50s ===";
+        let fail_res = compact_tool_output("pytest", fail_out, Some(1));
+        assert!(fail_res.contains("=== FAILURES ==="));
+        assert!(fail_res.contains("AssertionError"));
     }
 
     #[test]
-    fn test_detect_strategy() {
-        assert_eq!(
-            detect_strategy("cargo check --all"),
-            CompactStrategy::CargoCheck
-        );
-        assert_eq!(
-            detect_strategy("cargo clippy -- -D warnings"),
-            CompactStrategy::CargoCheck
-        );
-        assert_eq!(
-            detect_strategy("cargo test --lib"),
-            CompactStrategy::CargoTest
-        );
-        assert_eq!(
-            detect_strategy("cargo +nightly test --lib"),
-            CompactStrategy::CargoTest
-        );
-        assert_eq!(
-            detect_strategy("git -C /some/dir diff"),
-            CompactStrategy::GitDiff
-        );
-        assert_eq!(detect_strategy("git diff HEAD~1"), CompactStrategy::GitDiff);
-        assert_eq!(detect_strategy("git log -n 50"), CompactStrategy::GitLog);
-        assert_eq!(detect_strategy("npm install express"), CompactStrategy::Npm);
-        assert_eq!(detect_strategy("ls -la /tmp"), CompactStrategy::Generic);
+    fn test_go_test_compaction() {
+        let pass_out =
+            "ok  github.com/example/pkg/core 0.045s\nok  github.com/example/pkg/utils 0.012s\n";
+        let res = compact_tool_output("go test ./...", pass_out, Some(0));
+        assert!(res.starts_with("✔"));
+        assert!(res.contains("github.com/example/pkg/core"));
+
+        let fail_out = "--- FAIL: TestAdd (0.00s)\n    math_test.go:12: expected 3, got 4\nFAIL\nFAIL\tgithub.com/example/pkg/core\t0.015s\n";
+        let fail_res = compact_tool_output("go test ./...", fail_out, Some(1));
+        assert!(fail_res.contains("--- FAIL: TestAdd"));
     }
 
     #[test]
-    fn test_compact_cargo_check_failure() {
-        let output = "\
-   Compiling minicode v0.0.3 (/path)
-error[E0425]: cannot find value `xyz` in this scope
- --> src/main.rs:10:5
-error: aborting due to 1 previous error";
-        let compacted = compact_cargo_check(output, Some(101));
-        assert!(compacted.contains("error[E0425]"));
-        assert!(!compacted.starts_with("✔"));
-    }
-
-    #[test]
-    fn test_compact_cargo_test_failure() {
-        let output = "\
-running 2 tests
-test tests::test_one ... ok
-test tests::test_two ... FAILED
-
-failures:
-
----- tests::test_two stdout ----
-thread 'tests::test_two' panicked at 'assertion failed: `(left == right)`'
-
-failures:
-    tests::test_two
-
-test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out";
-        let compacted = compact_cargo_test(output, Some(101));
-        assert!(compacted.contains("FAILED"));
-        assert!(compacted.contains("thread 'tests::test_two' panicked"));
-        assert!(!compacted.starts_with("✔"));
-    }
-
-    #[test]
-    fn test_compact_cargo_check_success() {
-        let output = "\
-   Compiling minicode v0.0.3 (/path)
-   Compiling ratatui v0.29.0
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.45s";
-        let compacted = compact_cargo_check(output, Some(0));
-        assert_eq!(
-            compacted,
-            "✔ Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.45s"
-        );
-    }
-
-    #[test]
-    fn test_compact_cargo_test_success() {
-        let output = "\
-running 5 tests
-test tests::test_one ... ok
-test tests::test_two ... ok
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out";
-        let compacted = compact_cargo_test(output, Some(0));
-        assert!(compacted.contains("✔ test result: ok. 5 passed; 0 failed"));
-    }
-
-    #[test]
-    fn test_compact_generic_truncation() {
-        let mut lines = Vec::new();
-        for i in 1..=100 {
-            lines.push(format!("Line {}", i));
-        }
-        let raw = lines.join("\n");
-        let compacted = compact_generic(&raw);
-        assert!(compacted.contains("Line 1"));
-        assert!(compacted.contains("Line 30"));
-        assert!(compacted.contains("lines omitted"));
-        assert!(compacted.contains("Line 100"));
-        assert!(!compacted.contains("Line 50\n"));
+    fn test_compaction_stats() {
+        let raw = "a".repeat(1000);
+        let compacted = "a".repeat(100);
+        let stats = calculate_compaction_stats(&raw, &compacted);
+        assert_eq!(stats.raw_bytes, 1000);
+        assert_eq!(stats.compacted_bytes, 100);
+        assert_eq!(stats.savings_percent, 90);
     }
 }

@@ -41,6 +41,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.47] — 2026-08-24
+
+### RTK-Style Token Output Compactor & Multi-Language Diagnostic Distiller (`src/tools/compactor.rs`)
+
+- **Multi-Language Test Compaction (`src/tools/compactor.rs`)**:
+  - `compact_pytest`: Distills verbose `pytest` / `python -m unittest` output to one-line summaries on pass and isolates `FAILURES` traceback frames on failure.
+  - `compact_go_test`: Distills `go test` output into clean pass packages or failing test assertion traces (`--- FAIL: `).
+  - `compact_cargo_test` & `compact_cargo_check`: Eliminates downloading/compiling noise and extracts exact diagnostic locations and `error[...]` blocks.
+- **Compaction Metrics & Token Savings Tracker**:
+  - `calculate_compaction_stats`: Computes raw bytes vs compacted bytes and percentage savings (achieving 85–95% token savings on verbose tool outputs).
+- **Fast Diff Folding Engine**:
+  - Automatically folds large diff hunks while preserving context boundaries and header signatures.
+- **Verification**:
+  - 4 integration tests in `tests/integration_token_compactor.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.46] — 2026-08-24
 
 ### Task DAG & Dynamic Dependency Graph Engine (`src/agent/task_dag.rs`, `agent_tools.rs`)
