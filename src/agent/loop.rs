@@ -475,13 +475,15 @@ impl AgentLoop {
                     // Snapshot file content before dispatch for inline diff preview
                     let file_before: Option<String> =
                         if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                            tool_call
-                                .arguments
-                                .get("path")
-                                .and_then(|p| p.as_str())
-                                .and_then(|rel| {
-                                    std::fs::read_to_string(self.workspace_root.join(rel)).ok()
-                                })
+                            match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                                Some(rel) => {
+                                    // Async read: avoids blocking the runtime on large files.
+                                    tokio::fs::read_to_string(self.workspace_root.join(rel))
+                                        .await
+                                        .ok()
+                                }
+                                None => None,
+                            }
                         } else {
                             None
                         };

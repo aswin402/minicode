@@ -331,6 +331,12 @@ pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
 /// Ollama default API base URL
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
+/// OpenRouter default model used when config omits one
+pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
+/// OpenAI default model used when config omits one
+pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
+/// DeepSeek default model used when config omits one
+pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-coder";
 
 // === Context, Search & Channel Tuning ===
 /// Weight factor for prefix token match in BM25 scoring

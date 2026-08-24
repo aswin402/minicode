@@ -426,14 +426,19 @@ impl OpenAiCompatibleProvider {
             "openrouter",
             api_key,
             crate::constants::OPENROUTER_BASE_URL,
-            "anthropic/claude-3.5-sonnet",
+            crate::constants::OPENROUTER_DEFAULT_MODEL,
         )
     }
 
     pub fn openai(api_key: impl Into<String>) -> Self {
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| crate::constants::OPENAI_DEFAULT_BASE_URL.to_string());
-        Self::new("openai", api_key, base_url, "gpt-4o")
+        Self::new(
+            "openai",
+            api_key,
+            base_url,
+            crate::constants::OPENAI_DEFAULT_MODEL,
+        )
     }
 
     fn format_messages(
@@ -758,7 +763,10 @@ pub fn create_provider_with_base_url(
         "openai" => {
             if let Some(url) = custom_base_url {
                 Ok(Box::new(OpenAiCompatibleProvider::new(
-                    "openai", api_key, url, "gpt-4o",
+                    "openai",
+                    api_key,
+                    url,
+                    crate::constants::OPENAI_DEFAULT_MODEL,
                 )))
             } else {
                 Ok(Box::new(OpenAiCompatibleProvider::openai(api_key)))
@@ -768,7 +776,7 @@ pub fn create_provider_with_base_url(
             "deepseek",
             api_key,
             custom_base_url.unwrap_or(crate::constants::DEEPSEEK_BASE_URL),
-            "deepseek-coder",
+            crate::constants::DEEPSEEK_DEFAULT_MODEL,
         ))),
         "groq" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "groq",

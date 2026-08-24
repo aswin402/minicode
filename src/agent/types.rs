@@ -274,3 +274,19 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod repro_tests {
+    use super::StdinCommand;
+
+    #[test]
+    fn repro_exact_binary_input() {
+        let raw = "{\"method\":\"user_input\",\"params\":{\"text\":\"hi\"}}";
+        assert_eq!(raw.len(), 46);
+        let parsed: std::result::Result<StdinCommand, _> = serde_json::from_str(raw);
+        match parsed {
+            Ok(StdinCommand::UserInput { text }) => assert_eq!(text, "hi"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}

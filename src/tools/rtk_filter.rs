@@ -4,7 +4,9 @@ use std::sync::OnceLock;
 static ANSI_REGEX: OnceLock<Regex> = OnceLock::new();
 
 fn get_ansi_regex() -> &'static Regex {
-    ANSI_REGEX.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap())
+    ANSI_REGEX.get_or_init(|| {
+        Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("ANSI escape regex must compile")
+    })
 }
 
 /// Strip ANSI escape codes from output
