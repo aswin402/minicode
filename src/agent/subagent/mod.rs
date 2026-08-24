@@ -1,23 +1,31 @@
+pub mod pool;
+pub mod types;
+pub mod worker;
+
+#[allow(unused_imports)]
+pub use pool::SubagentPool;
+pub use types::SubagentResult as SubAgentResult;
+#[allow(unused_imports)]
+pub use types::{SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState};
+#[allow(unused_imports)]
+pub use worker::SubagentWorker;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::OnceLock;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
+
+static GLOBAL_POOL: OnceLock<SubagentPool> = OnceLock::new();
+
+/// Returns a reference to the global SubagentPool for the workspace
+pub fn get_global_subagent_pool(workspace_root: &Path) -> &'static SubagentPool {
+    GLOBAL_POOL.get_or_init(|| SubagentPool::new(workspace_root))
+}
 
 use crate::agent::types::AgentEvent;
 use crate::error::{MinicodeError, Result};
 use crate::git::worktree::WorktreeManager;
-
-/// Summary result from an executed SubAgent task
-#[derive(Debug, Clone)]
-pub struct SubAgentResult {
-    pub task_id: String,
-    pub success: bool,
-    pub final_response: String,
-    pub files_modified: Vec<String>,
-    pub tokens_used: usize,
-    pub worktree_branch: Option<String>,
-}
 
 /// Executes an autonomous subagent in an isolated Git Worktree using machine-readable NDJSON streaming.
 pub struct SubAgent {
@@ -44,7 +52,7 @@ impl SubAgent {
     }
 
     /// Executes the subagent task prompt and yields the final outcome.
-    pub async fn run_task(&self, task_prompt: &str) -> Result<SubAgentResult> {
+    pub async fn run_task(&self, task_prompt: &str) -> Result<SubagentResult> {
         let worktree_manager = WorktreeManager::new(&self.workspace_root);
         let target_dir = if self.use_worktree {
             worktree_manager
@@ -101,17 +109,21 @@ impl SubAgent {
                                 }
                             }
                             AgentEvent::TurnEnd {
-                                total_tokens_used, ..
+                                total_tokens_used,
+                                files_modified: modified,
+                                ..
                             } => {
                                 tokens_used = total_tokens_used;
-                            }
-                            AgentEvent::Error {
-                                message, retrying, ..
-                            } => {
-                                if !retrying {
-                                    final_response.push_str(&format!("\nError: {}", message));
-                                    success = false;
+                                for f in modified {
+                                    if !files_modified.contains(&f) {
+                                        files_modified.push(f);
+                                    }
                                 }
+                                break;
+                            }
+                            AgentEvent::Error { message, .. } => {
+                                tracing::error!(message = %message, "Subagent encountered error");
+                                success = false;
                             }
                             _ => {}
                         }
@@ -119,25 +131,14 @@ impl SubAgent {
                 }
             };
 
-            let timeout_dur = Duration::from_secs(self.timeout_secs);
-            if tokio::time::timeout(timeout_dur, run_future).await.is_err() {
-                let _ = child.kill().await;
-                return Ok(SubAgentResult {
-                    task_id: self.task_id.clone(),
-                    success: false,
-                    final_response: format!("Subagent task timed out after {}s", self.timeout_secs),
-                    files_modified,
-                    tokens_used,
-                    worktree_branch: if self.use_worktree {
-                        Some(format!("subagent/{}", self.task_id))
-                    } else {
-                        None
-                    },
-                });
-            }
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(self.timeout_secs),
+                run_future,
+            )
+            .await;
         }
 
-        let _ = child.wait().await;
+        let _ = child.kill().await;
 
         let worktree_branch = if self.use_worktree {
             Some(format!("subagent/{}", self.task_id))
@@ -145,12 +146,16 @@ impl SubAgent {
             None
         };
 
-        Ok(SubAgentResult {
+        Ok(SubagentResult {
+            id: self.task_id.clone(),
             task_id: self.task_id.clone(),
+            role: SubagentRole::Custom("worktree_worker".to_string()),
             success,
-            final_response,
-            files_modified,
+            final_summary: final_response,
             tokens_used,
+            turns_executed: 1,
+            files_inspected: Vec::new(),
+            files_modified,
             worktree_branch,
         })
     }

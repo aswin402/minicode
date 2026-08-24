@@ -703,3 +703,27 @@
 - [x] **Task 3: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_browser_markdown.rs` (4 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_browser_markdown`
+
+---
+
+## ✅ Phase 33: Subagent Swarm Core Engine & Capability Sandboxing (v0.0.43)
+- [x] **Task 1: Types & Role Presets (`src/agent/subagent/types.rs`)**
+  - [x] Implement `SubagentRole` presets (`Researcher`, `CodeReviewer`, `TestEngineer`, `SecurityAuditor`, `Custom`)
+  - [x] Implement role-specific capability tool whitelists, token budgets, and max turns
+  - [x] Implement `SubagentState`, `SubagentConfig`, `SubagentInfo`, and `SubagentResult`
+- [x] **Task 2: Scoped Worker Task & Isolation (`src/agent/subagent/worker.rs`)**
+  - [x] Implement `SubagentWorker` with private message history
+  - [x] Implement role-specific system prompts
+  - [x] Enforce tool capability whitelisting on every turn
+  - [x] Implement token counting via `tiktoken-rs` with budget enforcement
+- [x] **Task 3: Supervisor Pool & Lifecycle Manager (`src/agent/subagent/pool.rs`, `mod.rs`)**
+  - [x] Implement `SubagentPool` worker registry
+  - [x] Implement `run_subagent`, `list_subagents`, `get_subagent`, `kill_subagent`, `kill_all`
+  - [x] Implement `format_swarm_summary` Markdown generator
+- [x] **Task 4: New Agent Tools & Registry Wiring (`src/tools/registry/agent_tools.rs`)**
+  - [x] Register `invoke_subagent` schema and dispatch
+  - [x] Register `send_message` schema and dispatch
+  - [x] Register `manage_subagents` schema and dispatch
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_subagent_swarm.rs` (6 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_subagent_swarm`

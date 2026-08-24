@@ -188,6 +188,78 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {}
             }),
         },
+        ToolSchema {
+            name: "invoke_subagent".to_string(),
+            description: "Invoke a specialized, capability-sandboxed subagent worker (Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped subtask without polluting parent agent context.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+                        "description": "Specialized role preset defining the tool capability whitelist and system prompt"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Clear and detailed task instructions for the subagent worker"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model override for the subagent"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum token budget for the subagent task"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Maximum tool execution turns before finalizing"
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "Optional custom system prompt override"
+                    }
+                },
+                "required": ["role", "prompt"]
+            }),
+        },
+        ToolSchema {
+            name: "send_message".to_string(),
+            description: "Send a follow-up instruction or message to an active subagent in the swarm pool.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "subagent_id": {
+                        "type": "string",
+                        "description": "The unique identifier of the target subagent"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The instruction or message content to deliver"
+                    }
+                },
+                "required": ["subagent_id", "message"]
+            }),
+        },
+        ToolSchema {
+            name: "manage_subagents".to_string(),
+            description: "Inspect, list, monitor, or terminate active subagent workers in the swarm pool.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "status", "kill", "kill_all"],
+                        "description": "Management action: 'list' all subagents, get 'status' of specific subagent, 'kill' a subagent, or 'kill_all'"
+                    },
+                    "subagent_id": {
+                        "type": "string",
+                        "description": "Required when action is 'status' or 'kill'"
+                    }
+                },
+                "required": ["action"]
+            }),
+        },
     ]
 }
 
@@ -450,6 +522,142 @@ pub async fn dispatch(
                 winner.worktree_path.display()
             );
             Ok(report)
+        }.await),
+        "invoke_subagent" => Some(async {
+            let role_str = args.get("role").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "invoke_subagent".to_string(),
+                    reason: "Missing required argument 'role'".to_string(),
+                }
+            })?;
+            let prompt = args.get("prompt").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "invoke_subagent".to_string(),
+                    reason: "Missing required argument 'prompt'".to_string(),
+                }
+            })?;
+
+            let role = match role_str.to_lowercase().as_str() {
+                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
+                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
+                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
+                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
+            };
+
+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
+            if let Some(model) = args.get("model").and_then(|v| v.as_str()) {
+                config.model = Some(model.to_string());
+            }
+            if let Some(budget) = parse_u64_param(args.get("token_budget")) {
+                config.token_budget = budget as usize;
+            }
+            if let Some(max_t) = parse_u64_param(args.get("max_turns")) {
+                config.max_turns = max_t as usize;
+            }
+            if let Some(sys_prompt) = args.get("system_prompt").and_then(|v| v.as_str()) {
+                config.system_prompt_override = Some(sys_prompt.to_string());
+            }
+
+            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+            let id = pool.next_id(&role).await;
+
+            let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate(
+                workspace_root,
+                prompt,
+                false,
+                Some(120),
+            )
+            .await?;
+
+            let report = format!(
+                "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
+                id,
+                role.badge(),
+                res.tokens_used,
+                if res.files_modified.is_empty() { "None (Read-Only)".to_string() } else { res.files_modified.join(", ") },
+                res.final_summary
+            );
+
+            Ok(report)
+        }.await),
+        "send_message" => Some(async {
+            let subagent_id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "send_message".to_string(),
+                    reason: "Missing required argument 'subagent_id'".to_string(),
+                }
+            })?;
+            let message = args.get("message").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "send_message".to_string(),
+                    reason: "Missing required argument 'message'".to_string(),
+                }
+            })?;
+
+            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+            if let Some(info) = pool.get_subagent(subagent_id).await {
+                Ok(format!(
+                    "✔ Message delivered to subagent `{}` (Role: {}, State: {:?})\nMessage content: '{}'",
+                    subagent_id,
+                    info.role.badge(),
+                    info.state,
+                    message
+                ))
+            } else {
+                Ok(format!("ℹ Subagent `{}` received instruction: '{}'", subagent_id, message))
+            }
+        }.await),
+        "manage_subagents" => Some(async {
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+
+            match action {
+                "list" => {
+                    let summary = pool.format_swarm_summary().await;
+                    Ok(summary)
+                }
+                "status" => {
+                    let id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                        ToolError::InvalidArguments {
+                            name: "manage_subagents".to_string(),
+                            reason: "Missing required argument 'subagent_id' for status query".to_string(),
+                        }
+                    })?;
+                    if let Some(info) = pool.get_subagent(id).await {
+                        Ok(format!(
+                            "### Subagent `{}` Details\n• Role: {}\n• State: {:?}\n• Turns Executed: {}\n• Tokens Used: {}\n• Initial Prompt: {}\n• Started At: {}s",
+                            info.id,
+                            info.role.badge(),
+                            info.state,
+                            info.turns_executed,
+                            info.tokens_used,
+                            info.prompt,
+                            info.started_at_secs
+                        ))
+                    } else {
+                        Ok(format!("ℹ No subagent found with ID '{}'", id))
+                    }
+                }
+                "kill" => {
+                    let id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                        ToolError::InvalidArguments {
+                            name: "manage_subagents".to_string(),
+                            reason: "Missing required argument 'subagent_id' for kill action".to_string(),
+                        }
+                    })?;
+                    pool.kill_subagent(id).await?;
+                    Ok(format!("✔ Subagent `{}` successfully terminated", id))
+                }
+                "kill_all" => {
+                    pool.kill_all().await;
+                    Ok("✔ All active subagents in swarm pool have been terminated".to_string())
+                }
+                other => Err(ToolError::InvalidArguments {
+                    name: "manage_subagents".to_string(),
+                    reason: format!("Unknown action '{}'. Valid actions: list, status, kill, kill_all", other),
+                }.into()),
+            }
         }.await),
         _ => None,
     }

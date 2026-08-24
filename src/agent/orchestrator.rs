@@ -42,7 +42,7 @@ impl MultiAgentOrchestrator {
 
         out.push_str(&format!(
             "\nOutcome / Findings:\n{}",
-            result.final_response.trim()
+            result.final_summary.trim()
         ));
         out
     }

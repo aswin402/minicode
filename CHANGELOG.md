@@ -41,7 +41,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
-- Provider default models centralized in `constants.rs`; file-before-diff snapshots use async I/O.
+## [0.0.43] — 2026-08-24
+
+### Subagent Swarm Core Engine & Capability Sandboxing (`src/agent/subagent/`)
+
+- **Specialized Role Presets & Capability Sandboxing (`src/agent/subagent/types.rs`)**:
+  - `Researcher`: Read-only codebase explorer and web documentation researcher (strict ban on `write_file`, `patch_file`, and `exec_cmd`).
+  - `CodeReviewer`: Multi-axis code reviewer inspecting diffs, AST contracts, and standards.
+  - `TestEngineer`: Test runner with capability to execute test commands and write test suites under `tests/`.
+  - `SecurityAuditor`: Audit scanner for secret leaks, injection vectors, and permission boundaries.
+  - `Custom`: User-defined role with custom prompt, token limits, and tools.
+- **Isolated Token Budgeting & Worker Loop (`src/agent/subagent/worker.rs`)**:
+  - Runs in an isolated async task maintaining private message history (preventing context window inflation for parent agent).
+  - Uses `tiktoken-rs` to track token consumption against strict role budgets (e.g. 24k tokens for Researcher, 16k tokens for Reviewer).
+  - Enforces tool capability whitelisting on every turn.
+- **Supervisor Pool & Lifecycle Manager (`src/agent/subagent/pool.rs`)**:
+  - `SubagentPool`: Thread-safe worker registry tracking active states (`Idle`, `Running`, `Completed`, `Failed`, `Canceled`).
+  - Live status formatting and graceful task cancellation via `kill_subagent` and `kill_all`.
+- **New Agent Tools (`src/tools/registry/agent_tools.rs`)**:
+  - `invoke_subagent`: `{ role: "researcher" | "code_reviewer" | "test_engineer" | "security_auditor" | "custom", prompt: string, model?: string, token_budget?: integer, max_turns?: integer }`
+  - `send_message`: `{ subagent_id: string, message: string }`
+  - `manage_subagents`: `{ action: "list" | "status" | "kill" | "kill_all", subagent_id?: string }`
+- **Verification**:
+  - 6 integration tests in `tests/integration_subagent_swarm.rs` + existing worktree test in `tests/integration_subagents.rs`.
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
 
 ## [0.0.42] — 2026-08-23
 
