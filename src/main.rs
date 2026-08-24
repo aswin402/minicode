@@ -73,7 +73,7 @@ struct Cli {
     #[arg(long, global = true)]
     json_stream: bool,
 
-    /// Automatically approve file writes and shell executions
+    /// Auto-approve dangerous tools (write_file, patch_file, exec_cmd); required for them in headless mode
     #[arg(short = 'y', long, global = true)]
     yes: bool,
 
@@ -234,6 +234,9 @@ async fn run_headless_task(
     let provider = create_provider(&config.provider.default, &api_key)?;
 
     let mut agent = AgentLoop::new(workspace, config.clone(), provider);
+    // No interactive approval sink exists in one-shot mode: dangerous tools
+    // are refused unless auto_approve was set via --yes / MINICODE_AUTO_APPROVE.
+    agent.set_interactive_approvals(false);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
 
@@ -300,6 +303,17 @@ async fn run_headless_task(
 
     Ok(())
 }
+/// Prints an invalid-command NDJSON error event to stdout.
+fn emit_invalid_command(message: &str) {
+    let err_event = AgentEvent::Error {
+        turn_id: None,
+        code: "invalid_command".to_string(),
+        message: message.to_string(),
+        retrying: false,
+        retry_after_ms: None,
+    };
+    println!("{}", serde_json::to_string(&err_event).unwrap_or_default());
+}
 
 /// Headless NDJSON agent loop over stdin/stdout for AI orchestrators
 async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
@@ -310,10 +324,11 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
         turn_id: None,
     };
     println!("{}", serde_json::to_string(&ready_event)?);
-
     let api_key = config.get_api_key(&config.provider.default)?;
     let provider = create_provider(&config.provider.default, &api_key)?;
-    let mut agent = AgentLoop::new(workspace, config.clone(), provider);
+    let agent = AgentLoop::new(workspace, config.clone(), provider);
+    let approvals = agent.approval_registry();
+    let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
 
     // Read commands from stdin line-by-line
     use tokio::io::AsyncBufReadExt;
@@ -326,51 +341,96 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
             continue;
         }
 
-        match serde_json::from_str::<StdinCommand>(trimmed) {
-            Ok(StdinCommand::UserInput { text }) => {
-                let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
-                let event_consumer = tokio::spawn(async move {
-                    while let Some(event) = rx.recv().await {
-                        if let Ok(json) = serde_json::to_string(&event) {
+        // Parse via serde_json::Value first: the adjacent-tag streaming
+        // deserializer mis-reports "missing field `params`" for valid input,
+        // while buffered from_value deserialization handles it correctly.
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(e) => {
+                emit_invalid_command(&e.to_string());
+                continue;
+            }
+        };
+        // Tolerate bare {"method":"abort"} without params.
+        if value.get("method").and_then(|m| m.as_str()) == Some("abort") {
+            tracing::info!("Received abort command via stdin");
+            break;
+        }
+        let command: StdinCommand = match serde_json::from_value(value) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                emit_invalid_command(&e.to_string());
+                continue;
+            }
+        };
+
+        match command {
+            StdinCommand::UserInput { text } => {
+                // Spawn so stdin stays readable while a turn (or its approval
+                // gate) is blocked; ToolResponse lines must get through.
+                let agent = agent.clone();
+                tokio::spawn(async move {
+                    let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
+                    let event_consumer = tokio::spawn(async move {
+                        while let Some(event) = rx.recv().await {
+                            if let Ok(json) = serde_json::to_string(&event) {
+                                println!("{}", json);
+                            }
+                        }
+                    });
+
+                    let mut guard = agent.lock().await;
+                    if let Err(e) = guard.execute_turn(&text, tx, None).await {
+                        let err_event = AgentEvent::Error {
+                            turn_id: None,
+                            code: "execution_error".to_string(),
+                            message: e.to_string(),
+                            retrying: false,
+                            retry_after_ms: None,
+                        };
+                        if let Ok(json) = serde_json::to_string(&err_event) {
                             println!("{}", json);
                         }
                     }
+                    drop(guard);
+                    event_consumer.await.ok();
                 });
-
-                if let Err(e) = agent.execute_turn(&text, tx, None).await {
-                    let err_event = AgentEvent::Error {
-                        turn_id: None,
-                        code: "execution_error".to_string(),
-                        message: e.to_string(),
-                        retrying: false,
-                        retry_after_ms: None,
-                    };
-                    println!("{}", serde_json::to_string(&err_event)?);
-                }
-                event_consumer.await.ok();
             }
-            Ok(StdinCommand::Abort {}) => {
+            StdinCommand::Abort {} => {
                 tracing::info!("Received abort command via stdin");
                 break;
             }
-            Ok(StdinCommand::Configure {
-                auto_approve: _,
-                model: _,
-            }) => {
-                tracing::info!("Received runtime configure command");
+            StdinCommand::Configure {
+                auto_approve,
+                model,
+            } => {
+                tracing::info!(?auto_approve, ?model, "Received runtime configure command");
             }
-            Ok(StdinCommand::ToolResponse { .. }) => {
-                tracing::info!("Received tool approval/rejection response");
-            }
-            Err(e) => {
-                let err_event = AgentEvent::Error {
-                    turn_id: None,
-                    code: "invalid_command".to_string(),
-                    message: format!("Failed to parse stdin command: {}", e),
-                    retrying: false,
-                    retry_after_ms: None,
+            StdinCommand::ToolResponse {
+                tool_id, action, ..
+            } => {
+                let decision = match action.as_str() {
+                    "approve" => Some(crate::agent::types::ApprovalDecision::Approve),
+                    "reject" => Some(crate::agent::types::ApprovalDecision::Reject),
+                    _ => None,
                 };
-                println!("{}", serde_json::to_string(&err_event)?);
+                match decision {
+                    Some(decision) => match approvals
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&tool_id)
+                    {
+                        Some(sender) => {
+                            let _ = sender.send(decision);
+                        }
+                        None => {
+                            tracing::warn!(tool_id = %tool_id, "ToolResponse for unknown tool_id");
+                        }
+                    },
+                    None => {
+                        tracing::warn!(action = %action, "Unknown ToolResponse action");
+                    }
+                }
             }
         }
     }
