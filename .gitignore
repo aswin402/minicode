@@ -18,3 +18,7 @@ logs/
 .idea/
 *.swp
 *.swo
+
+# Local scripts
+localinstall.sh
+localupdate.sh
