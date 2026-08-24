@@ -856,3 +856,43 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_scratchpad_bus.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_scratchpad_bus`
+
+---
+
+## ⏳ Phase 44: Deep Recursive Web Crawler & Documentation Ingestion Engine (v0.0.53)
+- [ ] **Task 1: Core Crawler Engine & Types (`src/tools/crawler/`)**
+  - [ ] Implement `CrawledPage`, `CrawlReport`, and `CrawlerConfig` in `src/tools/crawler/types.rs`
+  - [ ] Implement BFS queue with domain and path-prefix boundary restrictions in `src/tools/crawler/mod.rs`
+  - [ ] Implement `tokio::sync::Semaphore` bounded concurrency (3-5 simultaneous fetches)
+- [ ] **Task 2: Sitemap & llms.txt Discovery (`src/tools/crawler/sitemap.rs`)**
+  - [ ] Auto-discover `/sitemap.xml`, `/sitemap_index.xml`, and `/llms.txt` / `/llms-full.txt`
+  - [ ] Parse XML route URLs and seed the BFS crawler frontier
+- [ ] **Task 3: Fit-Markdown Boilerplate Distiller (`src/tools/crawler/markdown.rs`)**
+  - [ ] Extract primary semantic content (`main`, `article`, `.markdown-body`, `.content`)
+  - [ ] Strip boilerplate (`<nav>`, `<header>`, `<footer>`, `<aside>`, ads, cookie modals)
+  - [ ] Convert clean HTML to GitHub Flavored Markdown (GFM)
+- [ ] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/web_tools.rs`)**
+  - [ ] Register `crawl_documentation`, `crawl_sitemap`, `search_crawled_docs`
+  - [ ] Implement disk persistence in `.minicode/crawled/`
+- [ ] **Task 5: Integration Tests & Quality Gates**
+  - [ ] Create `tests/integration_doc_crawler.rs`
+  - [ ] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_doc_crawler`
+
+---
+
+## ⏳ Phase 45: Native GitHub Integration & CI Workflow Diagnoser (v0.0.54)
+- [ ] **Task 1: GitHub Client & Auth Discovery (`src/tools/github/client.rs`)**
+  - [ ] Detect `gh` CLI credentials (`gh auth status`) with JSON subprocess fallback
+  - [ ] Implement REST API client using `GITHUB_TOKEN` / `GH_TOKEN` env vars
+  - [ ] Auto-detect repository name and owner from git remote origin
+- [ ] **Task 2: Issue & PR Operations (`src/tools/github/mod.rs`)**
+  - [ ] Implement `github_issue_view`, `github_issue_list`, `github_issue_create`
+  - [ ] Implement `github_pr_view`, `github_pr_diff`, `github_pr_create`, `github_pr_review_comments`
+- [ ] **Task 3: GitHub Actions CI Diagnoser (`src/tools/github/ci.rs`)**
+  - [ ] Implement `github_ci_status` (workflow run states: success, failure, running)
+  - [ ] Implement `github_ci_logs` (fetch and compact failing job/step error logs)
+- [ ] **Task 4: Tool Schemas & Dispatch (`src/tools/registry/git_tools.rs`)**
+  - [ ] Register all GitHub schemas and dispatch handlers
+- [ ] **Task 5: Integration Tests & Quality Gates**
+  - [ ] Create `tests/integration_github_tools.rs`
+  - [ ] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_github_tools`
