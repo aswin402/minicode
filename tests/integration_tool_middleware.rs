@@ -33,6 +33,7 @@ fn test_redact_strips_openai_key_from_output() {
         tool_name: "exec_cmd",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let r = make_result(
         "OPENAI_API_KEY=sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA result: ok",
@@ -56,6 +57,7 @@ fn test_redact_strips_anthropic_key() {
         tool_name: "exec_cmd",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let r = make_result("key: sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", true, 5);
     let out = mw.after(&ctx, r);
@@ -70,6 +72,7 @@ fn test_redact_preserves_clean_output() {
         tool_name: "read_file",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let content = "fn hello() -> &'static str { \"world\" }";
     let r = make_result(content, true, 3);
@@ -87,6 +90,7 @@ fn test_timing_middleware_is_identity() {
         tool_name: "grep_search",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let r = make_result("3 matches found", true, 99);
     let out = mw.after(&ctx, r.clone());
@@ -105,6 +109,7 @@ fn test_checkpoint_middleware_does_not_mutate_output() {
         tool_name: "write_file",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let r = make_result("written 512 bytes", true, 12);
     let out = mw.after(&ctx, r.clone());
@@ -120,6 +125,7 @@ fn test_checkpoint_read_only_tool_not_affected() {
         tool_name: "read_file",
         workspace_root: Path::new("."),
         args: &args,
+        file_before: None,
     };
     let r = make_result("// file contents", true, 2);
     let out = mw.after(&ctx, r.clone());
@@ -137,7 +143,7 @@ fn test_pipeline_redacts_and_preserves_metadata() {
         true,
         250,
     );
-    let out = pipeline.run(r, "exec_cmd", Path::new("."), &args);
+    let out = pipeline.run(r, "exec_cmd", Path::new("."), &args, None);
     assert!(out.output.contains("[REDACTED]"));
     assert!(out.success);
     assert_eq!(out.duration_ms, 250);
@@ -148,7 +154,7 @@ fn test_empty_pipeline_is_identity() {
     let pipeline = ToolPipeline::new(vec![]);
     let args = json!({});
     let r = make_result("hello world", false, 5);
-    let out = pipeline.run(r.clone(), "read_file", Path::new("."), &args);
+    let out = pipeline.run(r.clone(), "read_file", Path::new("."), &args, None);
     assert_eq!(out.output, r.output);
     assert_eq!(out.success, r.success);
     assert_eq!(out.duration_ms, r.duration_ms);
@@ -159,6 +165,6 @@ fn test_pipeline_failure_flag_preserved() {
     let pipeline = ToolPipeline::default();
     let args = json!({});
     let r = make_result("permission denied", false, 1);
-    let out = pipeline.run(r, "exec_cmd", Path::new("."), &args);
+    let out = pipeline.run(r, "exec_cmd", Path::new("."), &args, None);
     assert!(!out.success);
 }

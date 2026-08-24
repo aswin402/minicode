@@ -1104,7 +1104,7 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(
                                     "✔ Auto-approve enabled for this session".to_string(),
                                 );
-                                self.propagate_session_config(&control_tx);
+                                self.propagate_session_config(control_tx);
                                 self.modal = ModalState::None;
                             }
                             crate::ui::approval::ApprovalResponse::CustomFeedback(feedback) => {

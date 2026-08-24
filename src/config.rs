@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(config.provider.model, "gemini-2.5-pro");
         assert_eq!(config.agent.timeout, 30);
         assert_eq!(config.agent.map_tokens, 1024);
-        assert_eq!(config.ui.plain, false);
+        assert!(!config.ui.plain);
     }
 
     #[test]
@@ -705,10 +705,10 @@ mod tests {
         let config: Config = toml::from_str(toml_content).unwrap();
         assert_eq!(config.provider.default, "anthropic");
         assert_eq!(config.provider.model, "claude-3-7-sonnet");
-        assert_eq!(config.agent.auto_approve, true);
+        assert!(config.agent.auto_approve);
         assert_eq!(config.agent.timeout, 60);
         assert_eq!(config.agent.map_tokens, 2048);
-        assert_eq!(config.ui.plain, true);
+        assert!(config.ui.plain);
         assert_eq!(config.ui.theme, "dark");
     }
 
@@ -723,7 +723,7 @@ mod tests {
         "#;
         let raw: RawConfig = toml::from_str(override_toml).unwrap();
         config.merge_raw(raw);
-        assert_eq!(config.agent.auto_approve, false);
+        assert!(!config.agent.auto_approve);
     }
 
     #[test]
@@ -750,8 +750,8 @@ mod tests {
     #[test]
     fn test_config_merges_git_from_toml() {
         let mut config = Config::default();
-        assert_eq!(config.git.auto_commit, true);
-        assert_eq!(config.git.dirty_commit, false);
+        assert!(config.git.auto_commit);
+        assert!(!config.git.dirty_commit);
 
         let override_toml = r#"
             [git]
@@ -761,8 +761,8 @@ mod tests {
         "#;
         let raw: RawConfig = toml::from_str(override_toml).unwrap();
         config.merge_raw(raw);
-        assert_eq!(config.git.auto_commit, false);
-        assert_eq!(config.git.dirty_commit, true);
-        assert_eq!(config.git.ai_commit_messages, false);
+        assert!(!config.git.auto_commit);
+        assert!(config.git.dirty_commit);
+        assert!(!config.git.ai_commit_messages);
     }
 }

@@ -545,7 +545,7 @@ mod tests {
         let mut graph = CodeGraph::new();
         graph.build_graph(&temp_dir).unwrap();
 
-        let ranked = graph.compute_pagerank(&[file_b.clone()]);
+        let ranked = graph.compute_pagerank(std::slice::from_ref(&file_b));
         assert!(!ranked.is_empty());
 
         let report = graph.get_blast_radius("compute_sum", &temp_dir).unwrap();
