@@ -372,6 +372,94 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["action"]
             }),
         },
+        ToolSchema {
+            name: "scratchpad_write".to_string(),
+            description: "Write or update an entry on the shared multi-agent scratchpad blackboard for inter-worker knowledge sharing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Unique key identifier (e.g. 'api_specs', 'failing_tests', 'auth_plan')"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short descriptive title of this finding or note"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Detailed text content, code snippet, or structured findings"
+                    },
+                    "author": {
+                        "type": "string",
+                        "description": "Optional author identifier (default: 'orchestrator')"
+                    }
+                },
+                "required": ["key", "title", "content"]
+            }),
+        },
+        ToolSchema {
+            name: "scratchpad_read".to_string(),
+            description: "Read a specific entry from the shared multi-agent scratchpad blackboard by key.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Key identifier to read"
+                    }
+                },
+                "required": ["key"]
+            }),
+        },
+        ToolSchema {
+            name: "scratchpad_list".to_string(),
+            description: "List all active entries currently published on the shared multi-agent scratchpad blackboard.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolSchema {
+            name: "send_worker_message".to_string(),
+            description: "Send an asynchronous message to another subagent worker or broadcast to the entire worker swarm.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "from_worker_id": {
+                        "type": "string",
+                        "description": "Sender worker ID"
+                    },
+                    "to_worker_id": {
+                        "type": "string",
+                        "description": "Recipient worker ID (omit or leave empty to broadcast to all swarm workers)"
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "Message topic or classification (e.g. 'findings', 'error', 'sync')"
+                    },
+                    "payload": {
+                        "type": "string",
+                        "description": "Message content payload"
+                    }
+                },
+                "required": ["from_worker_id", "topic", "payload"]
+            }),
+        },
+        ToolSchema {
+            name: "read_worker_messages".to_string(),
+            description: "Fetch pending direct and broadcast messages for a specific subagent worker from the messaging bus.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Worker ID whose inbox to check"
+                    }
+                },
+                "required": ["worker_id"]
+            }),
+        },
     ]
 }
 
@@ -888,6 +976,116 @@ pub async fn dispatch(
                     name: "manage_subagents".to_string(),
                     reason: format!("Unknown action '{}'. Valid actions: list, status, kill, kill_all", other),
                 }.into()),
+            }
+        }.await),
+        "scratchpad_write" => Some(async {
+            let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "scratchpad_write".to_string(),
+                    reason: "Missing required argument 'key'".to_string(),
+                }
+            })?;
+            let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "scratchpad_write".to_string(),
+                    reason: "Missing required argument 'title'".to_string(),
+                }
+            })?;
+            let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "scratchpad_write".to_string(),
+                    reason: "Missing required argument 'content'".to_string(),
+                }
+            })?;
+            let author = args.get("author").and_then(|v| v.as_str()).unwrap_or("orchestrator");
+
+            let sp = crate::agent::subagent::get_global_scratchpad();
+            let entry = sp.write_entry(key, title, content, author);
+            let _ = sp.save_to_disk(workspace_root);
+
+            Ok(format!("✔ Scratchpad entry `{}` published successfully by `{}`.", entry.key, entry.author))
+        }.await),
+        "scratchpad_read" => Some(async {
+            let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "scratchpad_read".to_string(),
+                    reason: "Missing required argument 'key'".to_string(),
+                }
+            })?;
+
+            let sp = crate::agent::subagent::get_global_scratchpad();
+            if let Some(entry) = sp.read_entry(key) {
+                Ok(format!(
+                    "📋 Scratchpad `{}`: **{}** (by `{}` at {}s)\n\n{}",
+                    entry.key, entry.title, entry.author, entry.updated_at_secs, entry.content
+                ))
+            } else {
+                Ok(format!("ℹ Scratchpad key `{}` not found.", key))
+            }
+        }.await),
+        "scratchpad_list" => Some(async {
+            let sp = crate::agent::subagent::get_global_scratchpad();
+            let entries = sp.list_entries();
+            if entries.is_empty() {
+                Ok("ℹ Shared scratchpad blackboard is currently empty.".to_string())
+            } else {
+                let mut out = format!("📋 Shared Scratchpad Blackboard ({} entries):\n\n", entries.len());
+                for (i, e) in entries.iter().enumerate() {
+                    out.push_str(&format!("{}. `{}` — **{}** (author: `{}`)\n", i + 1, e.key, e.title, e.author));
+                }
+                Ok(out)
+            }
+        }.await),
+        "send_worker_message" => Some(async {
+            let from = args.get("from_worker_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "send_worker_message".to_string(),
+                    reason: "Missing required argument 'from_worker_id'".to_string(),
+                }
+            })?;
+            let to = args.get("to_worker_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+            let topic = args.get("topic").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "send_worker_message".to_string(),
+                    reason: "Missing required argument 'topic'".to_string(),
+                }
+            })?;
+            let payload = args.get("payload").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "send_worker_message".to_string(),
+                    reason: "Missing required argument 'payload'".to_string(),
+                }
+            })?;
+
+            let bus = crate::agent::subagent::get_global_message_bus();
+            let msg = bus.send_message(from, to, topic, payload);
+
+            let dest = to.map(|t| format!("to worker `{}`", t)).unwrap_or_else(|| "as swarm broadcast".to_string());
+            Ok(format!("✔ Message `{}` posted {} on topic `{}`.", msg.id, dest, msg.topic))
+        }.await),
+        "read_worker_messages" => Some(async {
+            let worker_id = args.get("worker_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "read_worker_messages".to_string(),
+                    reason: "Missing required argument 'worker_id'".to_string(),
+                }
+            })?;
+
+            let bus = crate::agent::subagent::get_global_message_bus();
+            let messages = bus.read_inbox(worker_id);
+
+            if messages.is_empty() {
+                Ok(format!("ℹ Inbox for worker `{}` is empty.", worker_id))
+            } else {
+                let mut out = format!("📬 Inbox for Worker `{}` ({} message(s)):\n\n", worker_id, messages.len());
+                for (i, m) in messages.iter().enumerate() {
+                    let kind = if m.to_worker_id.is_none() { "[Broadcast]" } else { "[Direct]" };
+                    out.push_str(&format!(
+                        "{}. {} from `{}` (Topic: `{}`)\n```\n{}\n```\n\n",
+                        i + 1, kind, m.from_worker_id, m.topic, m.payload
+                    ));
+                }
+                Ok(out)
             }
         }.await),
         _ => None,

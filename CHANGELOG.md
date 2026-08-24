@@ -41,6 +41,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.52] — 2026-08-25
+
+### Subagent Shared Scratchpad & Inter-Worker Messaging Bus (`src/agent/subagent/scratchpad.rs`, `agent_tools.rs`)
+
+- **Shared Scratchpad Blackboard (`SharedScratchpad`, `ScratchpadEntry`)**:
+  - Thread-safe key-value knowledge repository allowing subagent workers and orchestrators to publish intermediate findings, test failure traces, and API signatures without inflating conversational prompt context.
+  - Automatically persists to `.minicode/scratchpad.json`.
+- **Inter-Worker Messaging Bus (`WorkerMessageBus`, `WorkerMessage`)**:
+  - Asynchronous publish/subscribe message broker enabling direct worker-to-worker communication and swarm-wide broadcasts.
+  - Workers can post and inspect targeted task inboxes.
+- **New Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**:
+  - `scratchpad_write`: Publish or update an entry on the shared blackboard.
+  - `scratchpad_read`: Query an entry by key.
+  - `scratchpad_list`: Inspect all active findings on the blackboard.
+  - `send_worker_message`: Dispatch direct or broadcast messages across worker swarm.
+  - `read_worker_messages`: Fetch pending inbox messages for a worker.
+- **Verification**:
+  - 3 integration tests in `tests/integration_scratchpad_bus.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.51] — 2026-08-25
 
 ### Semantic AST Code-Chunk Semantic Embedder & Symbol Indexer (`src/context/semantic.rs`, `search_tools.rs`)

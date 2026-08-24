@@ -1,9 +1,12 @@
 pub mod pool;
+pub mod scratchpad;
 pub mod types;
 pub mod worker;
 
 #[allow(unused_imports)]
 pub use pool::SubagentPool;
+#[allow(unused_imports)]
+pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
 pub use types::SubagentResult as SubAgentResult;
 #[allow(unused_imports)]
 pub use types::{SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState};
@@ -17,10 +20,22 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 static GLOBAL_POOL: OnceLock<SubagentPool> = OnceLock::new();
+static GLOBAL_SCRATCHPAD: OnceLock<SharedScratchpad> = OnceLock::new();
+static GLOBAL_MESSAGE_BUS: OnceLock<WorkerMessageBus> = OnceLock::new();
 
 /// Returns a reference to the global SubagentPool for the workspace
 pub fn get_global_subagent_pool(workspace_root: &Path) -> &'static SubagentPool {
     GLOBAL_POOL.get_or_init(|| SubagentPool::new(workspace_root))
+}
+
+/// Returns a reference to the global SharedScratchpad
+pub fn get_global_scratchpad() -> &'static SharedScratchpad {
+    GLOBAL_SCRATCHPAD.get_or_init(SharedScratchpad::new)
+}
+
+/// Returns a reference to the global WorkerMessageBus
+pub fn get_global_message_bus() -> &'static WorkerMessageBus {
+    GLOBAL_MESSAGE_BUS.get_or_init(WorkerMessageBus::new)
 }
 
 /// Returns a reference to the global SubagentPool if already initialized

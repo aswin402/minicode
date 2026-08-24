@@ -841,3 +841,18 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_ast_semantic_indexer.rs` (2 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_ast_semantic_indexer`
+
+---
+
+## ✅ Phase 43: Subagent Shared Scratchpad & Inter-Worker Messaging Bus (v0.0.52)
+- [x] **Task 1: Shared Scratchpad Blackboard (`src/agent/subagent/scratchpad.rs`)**
+  - [x] Implement `SharedScratchpad` and `ScratchpadEntry` with thread-safe CRUD
+  - [x] Implement `.minicode/scratchpad.json` disk persistence
+- [x] **Task 2: Inter-Worker Messaging Bus (`src/agent/subagent/scratchpad.rs`)**
+  - [x] Implement `WorkerMessageBus` supporting direct and broadcast pub/sub
+- [x] **Task 3: Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**
+  - [x] Register `scratchpad_write`, `scratchpad_read`, `scratchpad_list`
+  - [x] Register `send_worker_message`, `read_worker_messages`
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_scratchpad_bus.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_scratchpad_bus`
