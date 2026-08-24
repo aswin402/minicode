@@ -23,6 +23,11 @@ pub fn get_global_subagent_pool(workspace_root: &Path) -> &'static SubagentPool 
     GLOBAL_POOL.get_or_init(|| SubagentPool::new(workspace_root))
 }
 
+/// Returns a reference to the global SubagentPool if already initialized
+pub fn try_get_global_subagent_pool() -> Option<&'static SubagentPool> {
+    GLOBAL_POOL.get()
+}
+
 use crate::agent::types::AgentEvent;
 use crate::error::{MinicodeError, Result};
 use crate::git::worktree::WorktreeManager;

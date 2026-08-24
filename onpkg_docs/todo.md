@@ -741,3 +741,19 @@
 - [x] **Task 3: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_actor_critic.rs` (4 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_actor_critic`
+
+---
+
+## ✅ Phase 35: Adaptive Inline Subagent UI & Swarm Live Stream Engine (v0.0.45)
+- [x] **Task 1: Inline Tree Hierarchy Model (`src/ui/view.rs`)**
+  - [x] Implement `SubagentItemStatus`, `SubagentTreeItem`, `SubagentTreeBlock`, `SwarmMatrixBlock`
+  - [x] Add `TimelineEntry::SubagentTree` and `TimelineEntry::SubagentSwarm` variants
+  - [x] Implement `add_subagent_tree`, `update_subagent_tree_item`, `complete_subagent_tree`, `add_subagent_swarm`, `toggle_subagent_swarm`
+- [x] **Task 2: Custom Role Theme & Palettes (`src/ui/theme.rs`)**
+  - [x] Implement `Theme::role_accent_color(role)` mapping Researcher, CodeReviewer, TestEngineer, SecurityAuditor, Custom
+  - [x] Filled ` Task ` badge styling and tree branch connectors (`├─── `, `╰─── `)
+- [x] **Task 3: Statusline Swarm Indicator (`src/ui/status.rs`)**
+  - [x] Implement `swarm:N workers` in the bottom statusbar when background subagents exist
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_subagent_ui.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_subagent_ui`

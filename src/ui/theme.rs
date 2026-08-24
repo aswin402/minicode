@@ -329,6 +329,22 @@ impl Theme {
             }
         }
     }
+
+    /// Returns the distinct accent color for a specific subagent role
+    pub fn role_accent_color(&self, role_name: &str) -> Color {
+        let lower = role_name.to_lowercase();
+        if lower.contains("researcher") || lower.contains("research") {
+            self.info // Cyan / Aqua
+        } else if lower.contains("reviewer") || lower.contains("critic") {
+            self.highlight // Pink / Magenta
+        } else if lower.contains("test") || lower.contains("qa") {
+            self.success // Green / Mint
+        } else if lower.contains("security") || lower.contains("audit") {
+            self.warning // Orange / Warm Yellow
+        } else {
+            self.brand_accent // Purple / Brand
+        }
+    }
 }
 
 /// Probed terminal color and styling capabilities

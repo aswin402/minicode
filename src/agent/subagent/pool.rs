@@ -32,6 +32,11 @@ impl SubagentPool {
         }
     }
 
+    /// Returns the number of registered workers in the pool
+    pub fn worker_count(&self) -> usize {
+        self.workers.try_read().map(|w| w.len()).unwrap_or(0)
+    }
+
     /// Generates a human-friendly subagent ID
     pub async fn next_id(&self, role: &SubagentRole) -> String {
         let mut count = self.counter.write().await;

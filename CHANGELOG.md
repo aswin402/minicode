@@ -41,6 +41,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.45] — 2026-08-24
+
+### Adaptive Inline Subagent UI & Swarm Live Stream Engine (`src/ui/view.rs`, `src/ui/theme.rs`, `src/ui/status.rs`)
+
+- **Crush & OpenCode Style Inline Tree Hierarchy (`src/ui/view.rs`)**:
+  - `TimelineEntry::SubagentTree`: Renders inline subagent trees for 1–3 workers with distinct filled role ` Task ` badges, status bullets (`◉`, `✔`, `✗`), and live tree action branches (`├─── `, `╰─── `).
+  - Multi-line indented task prompts and dedicated `Outcome: ` / `Error: ` summary blocks beneath tree branches.
+- **Adaptive Swarm Matrix Card (`TimelineEntry::SubagentSwarm`)**:
+  - Automatically condenses 4+ parallel subagents into a unified, clean inline matrix card with active worker counts, token metrics, and runtime stats.
+  - Interactive expand/collapse toggle (`toggle_subagent_swarm`) to switch between compact overview and full tree detail.
+- **Custom Theme & Role Palettes (`src/ui/theme.rs`)**:
+  - `Theme::role_accent_color(role)`: Maps Researcher (Cyan/Aqua), CodeReviewer (Magenta/Pink), TestEngineer (Green/Mint), SecurityAuditor (Warm Orange/Yellow), and Worktree/Custom (Brand Purple/Blue).
+- **Subagent Swarm Statusline Indicator (`src/ui/status.rs`)**:
+  - Renders `swarm:N workers` in the bottom statusbar when background subagents are registered.
+- **Verification**:
+  - 3 integration tests in `tests/integration_subagent_ui.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
+## [0.0.44] — 2026-08-24
+
+### Actor-Critic Dual-Agent Code Verification Loop (`src/agent/critic.rs`, `agent_tools.rs`)
+
+- **Multi-Dimensional Critic Engine (`src/agent/critic.rs`)**:
+  - Compiler Diagnostics via `FastCompilerChecker` (maps errors/warnings to exact file paths and lines).
+  - Anti-Pattern and Logging Scanner (detects raw `println!`/`eprintln!` in non-test library code).
+  - Zero-Leak Secret Scanner via `SecretRedactor` (detects hardcoded API keys and tokens).
+  - Structured `CriticVerdict` (`Approved`, `ApprovedWithWarnings`, `Rejected`) and markdown formatting.
+- **Enhanced Agent Tool (`src/tools/registry/agent_tools.rs`)**:
+  - Formats multi-axis report in `critic_review` dispatch.
+- **Verification**:
+  - 4 integration tests in `tests/integration_actor_critic.rs` (100% pass).
+
 ## [0.0.43] — 2026-08-24
 
 ### Subagent Swarm Core Engine & Capability Sandboxing (`src/agent/subagent/`)

@@ -5,6 +5,49 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+/// Execution status of a subagent tool action item
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SubagentItemStatus {
+    Running,
+    Success,
+    Failed(String),
+}
+
+/// An individual tool execution branch in a subagent tree
+#[derive(Debug, Clone)]
+pub struct SubagentTreeItem {
+    pub name: String,
+    pub detail: String,
+    pub status: SubagentItemStatus,
+}
+
+/// An inline Crush/OpenCode style subagent tree block
+#[derive(Debug, Clone)]
+pub struct SubagentTreeBlock {
+    pub id: String,
+    pub role_name: String,
+    pub task_prompt: String,
+    pub items: Vec<SubagentTreeItem>,
+    pub is_running: bool,
+    pub is_success: bool,
+    pub outcome: Option<String>,
+    pub error_message: Option<String>,
+    pub tokens_used: usize,
+    pub duration_ms: Option<u64>,
+}
+
+/// An adaptive matrix card for large multi-agent swarms (4+ parallel workers)
+#[derive(Debug, Clone)]
+pub struct SwarmMatrixBlock {
+    pub title: String,
+    pub workers: Vec<SubagentTreeBlock>,
+    pub is_expanded: bool,
+    pub total_tokens: usize,
+    pub is_running: bool,
+    pub duration_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TimelineEntry {
     UserPrompt(String),
@@ -31,6 +74,8 @@ pub enum TimelineEntry {
         #[allow(dead_code)]
         duration_ms: Option<u64>,
     },
+    SubagentTree(SubagentTreeBlock),
+    SubagentSwarm(SwarmMatrixBlock),
     SystemStatus(String),
     TurnSeparator,
 }
@@ -269,6 +314,68 @@ impl TimelineView {
 
     pub fn add_status(&mut self, status: String) {
         self.entries.push(TimelineEntry::SystemStatus(status));
+    }
+
+    /// Adds a subagent tree block to the timeline
+    #[allow(dead_code)]
+    pub fn add_subagent_tree(&mut self, block: SubagentTreeBlock) {
+        self.entries.push(TimelineEntry::SubagentTree(block));
+    }
+
+    /// Appends or updates a tool execution item on an active subagent tree block
+    #[allow(dead_code)]
+    pub fn update_subagent_tree_item(&mut self, id: &str, item: SubagentTreeItem) {
+        for entry in self.entries.iter_mut().rev() {
+            if let TimelineEntry::SubagentTree(ref mut block) = entry {
+                if block.id == id {
+                    block.items.push(item);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Completes a subagent tree block with outcome/error status
+    #[allow(dead_code)]
+    pub fn complete_subagent_tree(
+        &mut self,
+        id: &str,
+        is_success: bool,
+        outcome: Option<String>,
+        error_message: Option<String>,
+        tokens_used: usize,
+        duration_ms: Option<u64>,
+    ) {
+        for entry in self.entries.iter_mut().rev() {
+            if let TimelineEntry::SubagentTree(ref mut block) = entry {
+                if block.id == id {
+                    block.is_running = false;
+                    block.is_success = is_success;
+                    block.outcome = outcome;
+                    block.error_message = error_message;
+                    block.tokens_used = tokens_used;
+                    block.duration_ms = duration_ms;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Adds a multi-worker subagent swarm matrix block to the timeline
+    #[allow(dead_code)]
+    pub fn add_subagent_swarm(&mut self, swarm: SwarmMatrixBlock) {
+        self.entries.push(TimelineEntry::SubagentSwarm(swarm));
+    }
+
+    /// Toggles expanded/collapsed state of the active swarm card
+    #[allow(dead_code)]
+    pub fn toggle_subagent_swarm(&mut self) {
+        for entry in self.entries.iter_mut().rev() {
+            if let TimelineEntry::SubagentSwarm(ref mut swarm) = entry {
+                swarm.is_expanded = !swarm.is_expanded;
+                return;
+            }
+        }
     }
 
     /// Gets the most recent assistant response text for copying
@@ -674,6 +781,312 @@ impl TimelineView {
                             )]));
                         }
                     }
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::SubagentTree(block) => {
+                    let role_color = theme.role_accent_color(&block.role_name);
+                    let (status_bullet, status_color, header_suffix) = if block.is_running {
+                        ("◉", role_color, "".to_string())
+                    } else if block.is_success {
+                        let dur = if let Some(ms) = block.duration_ms {
+                            format!(
+                                " ({:.1}s • {} tokens)",
+                                (ms as f64) / 1000.0,
+                                block.tokens_used
+                            )
+                        } else {
+                            format!(" ({} tokens)", block.tokens_used)
+                        };
+                        ("✔", theme.success, dur)
+                    } else {
+                        let dur = if let Some(ms) = block.duration_ms {
+                            format!(
+                                " (Failed in {:.1}s • {} tokens)",
+                                (ms as f64) / 1000.0,
+                                block.tokens_used
+                            )
+                        } else {
+                            format!(" (Failed • {} tokens)", block.tokens_used)
+                        };
+                        ("✗", theme.destructive, dur)
+                    };
+
+                    // Line 1: ◉ [Researcher: researcher-1]
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", status_bullet),
+                            Style::default()
+                                .fg(status_color)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("[{}: {}]", block.role_name, block.id),
+                            Style::default().fg(role_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(header_suffix, Style::default().fg(theme.muted)),
+                    ]));
+
+                    // Empty line
+                    lines.push(Line::from(String::new()));
+
+                    // Task Badge Line
+                    let prompt_trimmed = block.task_prompt.trim();
+                    let prompt_lines: Vec<&str> = prompt_trimmed.lines().collect();
+
+                    if let Some(first_line) = prompt_lines.first() {
+                        lines.push(Line::from(vec![
+                            Span::styled("   ", Style::default()),
+                            Span::styled(
+                                " Task ",
+                                Style::default()
+                                    .fg(theme.bg_primary)
+                                    .bg(role_color)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(" ", Style::default()),
+                            Span::styled(*first_line, Style::default().fg(theme.text_primary)),
+                        ]));
+
+                        for rest_line in prompt_lines.iter().skip(1) {
+                            lines.push(Line::from(vec![
+                                Span::styled("         ", Style::default()),
+                                Span::styled(*rest_line, Style::default().fg(theme.text_primary)),
+                            ]));
+                        }
+                    }
+
+                    // Tree Branches
+                    let item_count = block.items.len();
+                    for (idx, item) in block.items.iter().enumerate() {
+                        let is_last = idx == item_count - 1;
+                        let branch = if is_last {
+                            "  ╰─── "
+                        } else {
+                            "  ├─── "
+                        };
+
+                        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                        let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
+                        let spinner = spinner_frames[frame_idx];
+
+                        let (item_bullet, item_color) = match &item.status {
+                            SubagentItemStatus::Running => (spinner, theme.warning),
+                            SubagentItemStatus::Success => ("✔", theme.success),
+                            SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled(branch, Style::default().fg(theme.border)),
+                            Span::styled(
+                                format!("{} ", item_bullet),
+                                Style::default().fg(item_color).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                format!("{} ", item.name),
+                                Style::default().fg(role_color).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(&item.detail, Style::default().fg(theme.muted)),
+                        ]));
+                    }
+
+                    // Outcome / Error
+                    if let Some(ref outcome) = block.outcome {
+                        lines.push(Line::from(String::new()));
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  Outcome: ",
+                                Style::default()
+                                    .fg(theme.success)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(outcome.trim(), Style::default().fg(theme.text_primary)),
+                        ]));
+                    } else if let Some(ref err) = block.error_message {
+                        lines.push(Line::from(String::new()));
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  Error: ",
+                                Style::default()
+                                    .fg(theme.destructive)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(err.trim(), Style::default().fg(theme.destructive)),
+                        ]));
+                    }
+
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::SubagentSwarm(swarm) => {
+                    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                    let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
+                    let spinner = spinner_frames[frame_idx];
+
+                    let top_bullet = if swarm.is_running { spinner } else { "✔" };
+                    let bullet_color = if swarm.is_running {
+                        theme.warning
+                    } else {
+                        theme.success
+                    };
+
+                    let elapsed_str = if let Some(ms) = swarm.duration_ms {
+                        format!(" • {:.1}s", (ms as f64) / 1000.0)
+                    } else {
+                        "".to_string()
+                    };
+
+                    let header_title = format!(
+                        "┌─ {} {} ({} Workers • {} tokens{}) ──",
+                        top_bullet,
+                        swarm.title,
+                        swarm.workers.len(),
+                        swarm.total_tokens,
+                        elapsed_str
+                    );
+
+                    lines.push(Line::from(vec![Span::styled(
+                        header_title,
+                        Style::default()
+                            .fg(bullet_color)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+
+                    if !swarm.is_expanded {
+                        // Collapsed Matrix Summary
+                        for worker in &swarm.workers {
+                            let role_color = theme.role_accent_color(&worker.role_name);
+                            let (w_bullet, w_color) = if worker.is_running {
+                                ("◉", role_color)
+                            } else if worker.is_success {
+                                ("✔", theme.success)
+                            } else {
+                                ("✗", theme.destructive)
+                            };
+
+                            let last_action = worker
+                                .items
+                                .last()
+                                .map(|it| format!("{} {}", it.name, it.detail))
+                                .unwrap_or_else(|| "Initializing...".to_string());
+
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(theme.border)),
+                                Span::styled(
+                                    format!("{} ", w_bullet),
+                                    Style::default().fg(w_color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("[{}] ", worker.role_name),
+                                    Style::default().fg(role_color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("{}: ", worker.id),
+                                    Style::default().fg(theme.text_primary),
+                                ),
+                                Span::styled(
+                                    format!("{} ", last_action),
+                                    Style::default().fg(theme.muted),
+                                ),
+                                Span::styled(
+                                    format!("({} tok)", worker.tokens_used),
+                                    Style::default().fg(theme.border),
+                                ),
+                            ]));
+                        }
+
+                        lines.push(Line::from(vec![Span::styled(
+                            "│ ",
+                            Style::default().fg(theme.border),
+                        )]));
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(theme.border)),
+                            Span::styled(
+                                "[Space] Expand Full Tree  •  [k] Cancel Worker",
+                                Style::default().fg(theme.muted),
+                            ),
+                        ]));
+                    } else {
+                        // Expanded Full Tree View inside Swarm Card
+                        for worker in &swarm.workers {
+                            let role_color = theme.role_accent_color(&worker.role_name);
+                            let (w_bullet, w_color) = if worker.is_running {
+                                ("◉", role_color)
+                            } else if worker.is_success {
+                                ("✔", theme.success)
+                            } else {
+                                ("✗", theme.destructive)
+                            };
+
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(theme.border)),
+                                Span::styled(
+                                    format!("▼ {} ", w_bullet),
+                                    Style::default().fg(w_color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("[{}: {}]", worker.role_name, worker.id),
+                                    Style::default().fg(role_color).add_modifier(Modifier::BOLD),
+                                ),
+                            ]));
+
+                            lines.push(Line::from(vec![
+                                Span::styled("│ ", Style::default().fg(theme.border)),
+                                Span::styled("   Task: ", Style::default().fg(role_color)),
+                                Span::styled(
+                                    worker.task_prompt.lines().next().unwrap_or(""),
+                                    Style::default().fg(theme.text_primary),
+                                ),
+                            ]));
+
+                            let item_count = worker.items.len();
+                            for (idx, item) in worker.items.iter().enumerate() {
+                                let is_last = idx == item_count - 1;
+                                let branch = if is_last {
+                                    "   ╰─── "
+                                } else {
+                                    "   ├─── "
+                                };
+                                let (i_bullet, i_color) = match &item.status {
+                                    SubagentItemStatus::Running => (spinner, theme.warning),
+                                    SubagentItemStatus::Success => ("✔", theme.success),
+                                    SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
+                                };
+
+                                lines.push(Line::from(vec![
+                                    Span::styled("│ ", Style::default().fg(theme.border)),
+                                    Span::styled(branch, Style::default().fg(theme.border)),
+                                    Span::styled(
+                                        format!("{} ", i_bullet),
+                                        Style::default().fg(i_color),
+                                    ),
+                                    Span::styled(
+                                        format!("{} ", item.name),
+                                        Style::default()
+                                            .fg(role_color)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(&item.detail, Style::default().fg(theme.muted)),
+                                ]));
+                            }
+
+                            lines.push(Line::from(vec![Span::styled(
+                                "│ ",
+                                Style::default().fg(theme.border),
+                            )]));
+                        }
+
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(theme.border)),
+                            Span::styled(
+                                "[Space] Collapse to Matrix  •  [k] Cancel Worker",
+                                Style::default().fg(theme.muted),
+                            ),
+                        ]));
+                    }
+
+                    lines.push(Line::from(vec![Span::styled(
+                        "└───────────────────────────────────────────────────────────────",
+                        Style::default().fg(theme.border),
+                    )]));
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SystemStatus(status) => {

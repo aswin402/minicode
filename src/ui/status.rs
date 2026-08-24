@@ -151,6 +151,19 @@ impl StatusWidgets {
             ));
         }
 
+        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            let count = pool.worker_count();
+            if count > 0 {
+                left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
+                left_spans.push(Span::styled(
+                    format!("swarm:{} workers", count),
+                    Style::default()
+                        .fg(ctx.theme.info)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+
         // Format right context token metrics and dollar cost (e.g., "⚡ $0.0042 • 4.2k / 128k")
         let used_str = Self::format_tokens(ctx.used_tokens);
         let max_str = Self::format_tokens(ctx.max_context);
