@@ -272,6 +272,35 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "evaluate_all_branches".to_string(),
+            description: "Concurrently evaluate all active speculative hypothesis branches using compiler diagnostics.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolSchema {
+            name: "prune_branches".to_string(),
+            description: "Automatically prune failed or low-fitness speculative hypothesis worktree branches.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "min_fitness": {
+                        "type": "number",
+                        "description": "Minimum fitness score threshold below which branches are pruned (default: 0.3)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "compare_branches".to_string(),
+            description: "Output a structured comparison matrix table of all speculative branches in the active hypothesis session.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolSchema {
             name: "invoke_subagent".to_string(),
             description: "Invoke a specialized, capability-sandboxed subagent worker (Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped subtask without polluting parent agent context.".to_string(),
             parameters: json!({
@@ -701,6 +730,30 @@ pub async fn dispatch(
             );
             Ok(report)
         }.await),
+        "evaluate_all_branches" => Some(async {
+            let evaluated = crate::agent::hypothesis::HypothesisEngine::evaluate_all_branches(workspace_root).await?;
+            let mut out = format!("✔ Evaluated {} speculative branch(es):\n\n", evaluated.len());
+            for b in &evaluated {
+                out.push_str(&format!(
+                    "• `{}`: Status: {:?}, Fitness: {:.2}, Clean: {}\n",
+                    b.id, b.status, b.fitness_score, b.compiler_clean
+                ));
+            }
+            Ok(out)
+        }.await),
+        "prune_branches" => Some(async {
+            let min_fitness = args.get("min_fitness").and_then(|v| v.as_f64()).unwrap_or(0.3) as f32;
+            let pruned = crate::agent::hypothesis::HypothesisEngine::prune_failed_branches(workspace_root, min_fitness).await?;
+            if pruned.is_empty() {
+                Ok("ℹ No branches were below the pruning threshold.".to_string())
+            } else {
+                Ok(format!("🗑 Pruned {} underperforming branch(es): {}", pruned.len(), pruned.join(", ")))
+            }
+        }.await),
+        "compare_branches" => Some((|| {
+            let session = crate::agent::hypothesis::HypothesisEngine::load_session(workspace_root)?;
+            Ok(crate::agent::hypothesis::HypothesisEngine::format_comparison_matrix(&session))
+        })()),
         "invoke_subagent" => Some(async {
             let role_str = args.get("role").and_then(|v| v.as_str()).ok_or_else(|| {
                 ToolError::InvalidArguments {

@@ -137,6 +137,86 @@ impl HypothesisEngine {
         Ok(evaluated)
     }
 
+    /// Concurrently evaluates all active branches in the active hypothesis session.
+    pub async fn evaluate_all_branches(workspace_root: &Path) -> Result<Vec<HypothesisBranch>> {
+        let session = Self::load_session(workspace_root)?;
+        let mut evaluated_branches = Vec::new();
+
+        for b in &session.branches {
+            if b.status == BranchStatus::Pending || b.status == BranchStatus::Evaluating {
+                let evaluated = Self::evaluate_branch(workspace_root, &b.id).await?;
+                evaluated_branches.push(evaluated);
+            } else {
+                evaluated_branches.push(b.clone());
+            }
+        }
+
+        Ok(evaluated_branches)
+    }
+
+    /// Automatically prunes failed or low-fitness speculative branches (< min_fitness threshold).
+    pub async fn prune_failed_branches(
+        workspace_root: &Path,
+        min_fitness: f32,
+    ) -> Result<Vec<String>> {
+        let mut session = Self::load_session(workspace_root)?;
+        let wt_mgr = WorktreeManager::new(workspace_root);
+        let mut pruned_ids = Vec::new();
+
+        for branch in &mut session.branches {
+            if branch.status == BranchStatus::Failed || branch.fitness_score < min_fitness {
+                branch.status = BranchStatus::Discarded;
+                pruned_ids.push(branch.id.clone());
+
+                if workspace_root.join(".git").exists() {
+                    let _ = wt_mgr.remove_worktree(&branch.id).await;
+                } else if branch.worktree_path.exists() {
+                    let _ = fs::remove_dir_all(&branch.worktree_path);
+                }
+            }
+        }
+
+        Self::save_session(workspace_root, &session)?;
+        Ok(pruned_ids)
+    }
+
+    /// Generates a comparison matrix markdown table of all speculative branches.
+    pub fn format_comparison_matrix(session: &HypothesisSession) -> String {
+        if session.branches.is_empty() {
+            return "ℹ No active hypothesis branches to compare.".to_string();
+        }
+
+        let mut out = format!(
+            "🧪 Hypothesis Comparison Matrix (Session `{}`):\n\n",
+            session.id
+        );
+        out.push_str("| Branch ID | Status | Fitness | Errors | Warnings | Description |\n");
+        out.push_str("|:----------|:-------|:--------|:-------|:---------|:------------|\n");
+
+        for b in &session.branches {
+            let status_badge = match b.status {
+                BranchStatus::Passed => "✔ Passed",
+                BranchStatus::Failed => "✗ Failed",
+                BranchStatus::Selected => "⭐ Selected",
+                BranchStatus::Discarded => "🗑 Discarded",
+                BranchStatus::Evaluating => "⠋ Evaluating",
+                BranchStatus::Pending => "○ Pending",
+            };
+
+            out.push_str(&format!(
+                "| `{}` | {} | {:.2} | {} | {} | {} |\n",
+                b.id,
+                status_badge,
+                b.fitness_score,
+                b.compiler_errors,
+                b.compiler_warnings,
+                b.description
+            ));
+        }
+
+        out
+    }
+
     /// Selects the highest scoring branch and cleans up temporary speculative branches.
     pub async fn select_best_branch(workspace_root: &Path) -> Result<HypothesisBranch> {
         let mut session = Self::load_session(workspace_root)?;
@@ -182,7 +262,7 @@ impl HypothesisEngine {
             .join("hypothesis_session.json")
     }
 
-    fn load_session(workspace_root: &Path) -> Result<HypothesisSession> {
+    pub fn load_session(workspace_root: &Path) -> Result<HypothesisSession> {
         let file = Self::session_file(workspace_root);
         if !file.exists() {
             return Ok(HypothesisSession {
@@ -238,6 +318,9 @@ mod tests {
             .await
             .unwrap();
         assert!(branch1.fitness_score >= 0.0);
+
+        let matrix = HypothesisEngine::format_comparison_matrix(&session);
+        assert!(matrix.contains("Hypothesis Comparison Matrix"));
 
         let winner = HypothesisEngine::select_best_branch(ws).await.unwrap();
         assert_eq!(winner.status, BranchStatus::Selected);

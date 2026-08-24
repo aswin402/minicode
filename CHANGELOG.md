@@ -41,6 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.49] — 2026-08-24
+
+### Speculative Multi-Branch Hypothesis Auto-Pruner & Parallel Evaluator (`src/agent/hypothesis.rs`, `agent_tools.rs`)
+
+- **Parallel Multi-Branch Evaluation (`HypothesisEngine::evaluate_all_branches`)**:
+  - Concurrently evaluates all active speculative hypothesis worktree branches using fast compiler diagnostics.
+- **Auto-Pruner Engine (`HypothesisEngine::prune_failed_branches`)**:
+  - Automatically discards underperforming or failing branches below a fitness score threshold, purging temporary git worktrees.
+- **Comparison Matrix Markdown Formatter (`HypothesisEngine::format_comparison_matrix`)**:
+  - Generates a structured comparison matrix comparing branch ID, status, fitness score, compiler errors/warnings, and approach descriptions.
+- **New Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**:
+  - `evaluate_all_branches`: Batch evaluation of all speculative branches.
+  - `prune_branches`: Automated cleanup of low-fitness worktrees.
+  - `compare_branches`: Table visualization of alternative implementation trade-offs.
+- **Verification**:
+  - 2 integration tests in `tests/integration_hypothesis_pruner.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.48] — 2026-08-24
 
 ### Episodic Vector Memory & Long-Term Recall Engine (`src/context/episodic.rs`, `agent_tools.rs`)

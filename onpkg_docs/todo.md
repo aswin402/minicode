@@ -799,3 +799,17 @@
 - [x] **Task 4: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_episodic_memory.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_episodic_memory`
+
+---
+
+## ✅ Phase 39: Speculative Multi-Branch Hypothesis Auto-Pruner & Parallel Evaluator (v0.0.49)
+- [x] **Task 1: Parallel Branch Evaluator (`src/agent/hypothesis.rs`)**
+  - [x] Implement `HypothesisEngine::evaluate_all_branches`
+- [x] **Task 2: Auto-Pruning & Comparison Matrix (`src/agent/hypothesis.rs`)**
+  - [x] Implement `prune_failed_branches` (worktree cleanup below min_fitness)
+  - [x] Implement `format_comparison_matrix` table formatter
+- [x] **Task 3: Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**
+  - [x] Register `evaluate_all_branches`, `prune_branches`, `compare_branches`
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_hypothesis_pruner.rs` (2 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_hypothesis_pruner`
