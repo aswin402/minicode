@@ -784,3 +784,18 @@
 - [x] **Task 3: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_token_compactor.rs` (4 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_token_compactor`
+
+---
+
+## ✅ Phase 38: Episodic Vector Memory & Long-Term Recall Engine (v0.0.48)
+- [x] **Task 1: Episodic Memory Core & Embedder (`src/context/episodic.rs`)**
+  - [x] Implement `EpisodicItem` and `EpisodicMemory`
+  - [x] Dense vector embedding via `SemanticIndex::embed`
+- [x] **Task 2: Hybrid Search & Persistence (`src/context/episodic.rs`)**
+  - [x] Implement hybrid cosine similarity (0.7) + keyword token overlap (0.3)
+  - [x] Implement `.minicode/episodic_memory.json` save / load
+- [x] **Task 3: Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**
+  - [x] Register `record_episode` and `recall_episodes` schemas & dispatch
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_episodic_memory.rs` (3 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_episodic_memory`

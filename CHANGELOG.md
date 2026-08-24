@@ -41,6 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.48] — 2026-08-24
+
+### Episodic Vector Memory & Long-Term Recall Engine (`src/context/episodic.rs`, `agent_tools.rs`)
+
+- **Episodic Knowledge Recording (`src/context/episodic.rs`)**:
+  - `EpisodicItem`: Stores session breakthroughs, bug root causes, architectural patterns, and code references.
+  - Automatically embeds episode text into 128-dimensional dense vectors using `SemanticIndex::embed`.
+- **Hybrid Semantic + Keyword Search (`EpisodicMemory::search`)**:
+  - Blends cosine vector similarity (0.7) and keyword token overlap (0.3) for resilient knowledge retrieval.
+- **Workspace State Persistence (`EpisodicMemory::save`, `EpisodicMemory::load`)**:
+  - Automatically persists episodic memory across sessions to `.minicode/episodic_memory.json`.
+- **New Agent Tools & Schemas (`src/tools/registry/agent_tools.rs`)**:
+  - `record_episode`: Saves a completed task episode with tags and code references.
+  - `recall_episodes`: Queries past historical solutions to guide future reasoning.
+- **Verification**:
+  - 3 integration tests in `tests/integration_episodic_memory.rs` (100% pass).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.47] — 2026-08-24
 
 ### RTK-Style Token Output Compactor & Multi-Language Diagnostic Distiller (`src/tools/compactor.rs`)

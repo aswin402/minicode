@@ -121,6 +121,52 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "record_episode".to_string(),
+            description: "Record a completed task episode, bug fix, or architectural breakthrough into long-term vector memory for cross-session recall.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Concise summary title of the episode/solution"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Detailed explanation of what was fixed, designed, or learned"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "description": "Search tags and keywords (e.g. ['tree-sitter', 'segfault'])",
+                        "items": { "type": "string" }
+                    },
+                    "code_references": {
+                        "type": "array",
+                        "description": "Relevant files or functions changed",
+                        "items": { "type": "string" }
+                    }
+                },
+                "required": ["title", "summary"]
+            }),
+        },
+        ToolSchema {
+            name: "recall_episodes".to_string(),
+            description: "Perform hybrid semantic and keyword search across historical session episodes to recall past architectural decisions and bug fixes.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query or problem description to recall"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of episodes to return (default: 3)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolSchema {
             name: "critic_review".to_string(),
             description: "Run an automated Actor-Critic evaluation pass over current workspace changes (compiler diagnostics, linter warnings, git status) to verify code quality.".to_string(),
             parameters: json!({
@@ -492,6 +538,62 @@ pub async fn dispatch(
                 child_ids.join(", "),
                 dag.generate_report()
             ))
+        })()),
+        "record_episode" => Some((|| {
+            let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "record_episode".to_string(),
+                    reason: "Missing required argument 'title'".to_string(),
+                }
+            })?;
+            let summary = args.get("summary").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "record_episode".to_string(),
+                    reason: "Missing required argument 'summary'".to_string(),
+                }
+            })?;
+            let tags = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+            }).unwrap_or_default();
+            let code_refs = args.get("code_references").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+            }).unwrap_or_default();
+
+            let mut mem = crate::context::episodic::EpisodicMemory::load(workspace_root)?;
+            let ep_id = mem.record_episode(title, summary, tags, code_refs, "current_session");
+            mem.save(workspace_root)?;
+
+            Ok(format!("✔ Recorded episodic memory `{}`: **{}**", ep_id, title))
+        })()),
+        "recall_episodes" => Some((|| {
+            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "recall_episodes".to_string(),
+                    reason: "Missing required argument 'query'".to_string(),
+                }
+            })?;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+
+            let mem = crate::context::episodic::EpisodicMemory::load(workspace_root)?;
+            let results = mem.search(query, limit);
+
+            if results.is_empty() {
+                return Ok(format!("ℹ No historical episodes matched query `{}`.", query));
+            }
+
+            let mut out = format!("🧠 Recalled {} Relevant Historical Episode(s) for `{}`:\n\n", results.len(), query);
+            for (idx, r) in results.iter().enumerate() {
+                out.push_str(&format!(
+                    "{}. **{}** (Score: {:.2})\n   _{}_\n   🏷 Tags: {}\n   📁 Files: {}\n\n",
+                    idx + 1,
+                    r.item.title,
+                    r.score,
+                    r.item.summary,
+                    r.item.tags.join(", "),
+                    r.item.code_references.join(", ")
+                ));
+            }
+            Ok(out)
         })()),
         "critic_review" => Some(async {
             let report =
