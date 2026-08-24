@@ -604,11 +604,16 @@ impl AgentLoop {
         if !turn_files_modified.is_empty() && self.config.git.auto_commit {
             let git = crate::git::GitService::new(self.workspace_root.clone());
             if git.is_git_repo().await {
-                let commit_svc = crate::git::GitCommitService::new(&git);
-                let commit_msg = crate::git::GitCommitService::generate_conventional_message(
-                    &turn_files_modified,
-                    Some(user_prompt),
-                );
+                let commit_svc = crate::git::GitCommitService::new(&git)
+                    .with_stage_all(self.config.git.dirty_commit);
+                let commit_msg = if self.config.git.ai_commit_messages {
+                    crate::git::GitCommitService::generate_conventional_message(
+                        &turn_files_modified,
+                        Some(user_prompt),
+                    )
+                } else {
+                    format!("chore: update {}", turn_files_modified.join(", "))
+                };
                 match commit_svc
                     .commit(&commit_msg, Some(&turn_files_modified))
                     .await

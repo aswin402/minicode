@@ -136,4 +136,32 @@ mod tests {
         let branches = commit_svc.list_branches().await.unwrap();
         assert!(branches.contains(&"feature/test-branch".to_string()));
     }
+
+    #[tokio::test]
+    async fn commit_with_stage_all_includes_unstaged_files() {
+        let (_dir, git) = init_test_git_repo().await;
+        let tracked = _dir.path().join("tracked.txt");
+        std::fs::write(&tracked, "v1").expect("write tracked");
+        let svc = GitCommitService::new(&git);
+        svc.commit("initial", Some(&["tracked.txt".to_string()]))
+            .await
+            .expect("first commit");
+
+        // Untracked file must be swept in by with_stage_all(true).
+        std::fs::write(_dir.path().join("stray.txt"), "surprise").expect("write stray");
+        let svc_all = GitCommitService::new(&git).with_stage_all(true);
+        svc_all
+            .commit("second", Some(&[]))
+            .await
+            .expect("second commit");
+
+        let out = git
+            .run_git(&["show", "--name-only", "--format=", "HEAD"])
+            .await
+            .unwrap_or_default();
+        assert!(
+            out.contains("stray.txt"),
+            "stage_all must include untracked files, got: {out}"
+        );
+    }
 }

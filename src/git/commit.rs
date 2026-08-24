@@ -5,12 +5,24 @@ use crate::git::service::GitService;
 /// Service for committing, branching, and rolling back git changes.
 pub struct GitCommitService<'a> {
     git: &'a GitService,
+    /// When true, `commit` stages ALL workspace changes (`git add -A`)
+    /// instead of only the explicitly listed paths (dirty_commit config).
+    stage_all: bool,
 }
 
 impl<'a> GitCommitService<'a> {
     /// Creates a new GitCommitService backed by the given GitService.
     pub fn new(git: &'a GitService) -> Self {
-        Self { git }
+        Self {
+            git,
+            stage_all: false,
+        }
+    }
+
+    /// Builder: stage every workspace change, not just the listed files.
+    pub fn with_stage_all(mut self, yes: bool) -> Self {
+        self.stage_all = yes;
+        self
     }
 
     /// Stages modified files and creates a git commit, returning the created commit hash.
@@ -26,7 +38,11 @@ impl<'a> GitCommitService<'a> {
         }
 
         // 1. Stage files
-        self.git.stage_files(paths).await?;
+        if self.stage_all {
+            self.git.run_git(&["add", "-A"]).await?;
+        } else {
+            self.git.stage_files(paths).await?;
+        }
 
         // 2. Execute commit
         self.git.run_git(&["commit", "-m", trimmed_msg]).await?;
