@@ -15,12 +15,22 @@ pub struct CdpClient {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     page_ws_url: String,
+    /// Flatten-session id (Target.attachToTarget); required by engines like
+    /// Obscura whose page sockets reject unattached commands, and standard
+    /// on Chrome/Firefox browser-level endpoints.
+    session_id: Mutex<Option<String>>,
 }
 
 impl CdpClient {
     /// Connects to a running browser engine via its HTTP base URL (e.g. "http://127.0.0.1:9222")
     pub async fn connect(cdp_http_url: &str) -> Result<Self> {
-        let page_ws_url = Self::resolve_page_websocket_url(cdp_http_url).await?;
+        // Prefer the browser-level endpoint + explicit target attachment:
+        // works on Chrome/Firefox and is REQUIRED by Obscura.
+        let (page_ws_url, wants_session) =
+            match Self::resolve_browser_websocket_url(cdp_http_url).await {
+                Ok(url) => (url, true),
+                Err(_) => (Self::resolve_page_websocket_url(cdp_http_url).await?, false),
+            };
 
         tracing::info!(ws_url = %page_ws_url, "Connecting to browser CDP WebSocket");
 
@@ -88,12 +98,77 @@ impl CdpClient {
             next_id: AtomicU64::new(1),
             pending,
             page_ws_url,
+            session_id: Mutex::new(None),
         };
+
+        if wants_session {
+            client.attach_fresh_page().await?;
+        }
 
         // Enable core domains
         client.enable_core_domains().await?;
 
         Ok(client)
+    }
+
+    /// Creates a blank page target and attaches with a flatten session,
+    /// storing the session id for all subsequent commands.
+    async fn attach_fresh_page(&self) -> Result<()> {
+        let created = self
+            .send_command("Target.createTarget", json!({"url": "about:blank"}))
+            .await?;
+        let target_id = created
+            .get("targetId")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("CDP createTarget returned no targetId".to_string())
+            })?
+            .to_string();
+
+        let attached = self
+            .send_command(
+                "Target.attachToTarget",
+                json!({"targetId": target_id, "flatten": true}),
+            )
+            .await?;
+        let session = attached
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("CDP attachToTarget returned no sessionId".to_string())
+            })?
+            .to_string();
+
+        *self.session_id.lock().await = Some(session);
+        Ok(())
+    }
+
+    /// Resolves the browser-level WebSocket endpoint from /json/version
+    async fn resolve_browser_websocket_url(http_base: &str) -> Result<String> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+        let ver_url = format!("{}/json/version", http_base);
+        let resp = client
+            .get(&ver_url)
+            .send()
+            .await
+            .map_err(|e| ToolError::CommandExec(format!("CDP version probe failed: {}", e)))?;
+        let ver = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| ToolError::CommandExec(format!("CDP version decode failed: {}", e)))?;
+        ver.get("webSocketDebuggerUrl")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                ToolError::CommandExec(format!(
+                    "No webSocketDebuggerUrl in /json/version of '{}'",
+                    http_base
+                ))
+                .into()
+            })
     }
 
     /// Resolves the WebSocket debugger URL for the active page target
@@ -161,11 +236,14 @@ impl CdpClient {
             map.insert(id, resp_tx);
         }
 
-        let req = json!({
+        let mut req = json!({
             "id": id,
             "method": method,
             "params": params
         });
+        if let Some(sid) = self.session_id.lock().await.as_ref() {
+            req["sessionId"] = json!(sid);
+        }
 
         self.tx
             .send(Message::Text(req.to_string()))

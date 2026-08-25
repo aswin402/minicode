@@ -103,12 +103,15 @@ user_pref("remote.active-protocols", 3);
 
         let mut args = match config.engine {
             BrowserEngine::Obscura => {
+                // Global flags must precede the `serve` subcommand.
+                // --allow-private-network matches minicode's own policy of
+                // permitting loopback dev servers in validate_browser_url.
                 vec![
+                    "--stealth".to_string(),
+                    "--allow-private-network".to_string(),
                     "serve".to_string(),
                     "--port".to_string(),
                     port_str,
-                    "--stealth".to_string(),
-                    "--allow-file-access".to_string(),
                 ]
             }
             BrowserEngine::Firefox => match config.mode {
@@ -296,11 +299,11 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "--stealth",
+                "--allow-private-network",
                 "serve",
                 "--port",
-                "9222",
-                "--stealth",
-                "--allow-file-access"
+                "9222"
             ]
         );
     }

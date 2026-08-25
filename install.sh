@@ -74,6 +74,65 @@ chmod +x "$INSTALL_DIR/minicode"
 
 echo "✨ minicode successfully installed to $INSTALL_DIR/minicode"
 
+# ── Optional: Obscura headless engine ────────────────────────────────────────
+# Preferred browser automation engine (Pure Rust, stealth). Fully optional:
+# without it, browser tools fall back to Firefox/Chrome via CDP.
+install_obscura() {
+    if command -v obscura >/dev/null 2>&1; then
+        echo "✔ Obscura already installed ($(command -v obscura))"
+        return 0
+    fi
+
+    # Map platform to Obscura release asset names ({arch}-{os}[-{variant}]).
+    local OBS_ARCH OBS_OS ASSET FILE_URL
+    case "$ARCH" in
+        x86_64)          OBS_ARCH="x86_64" ;;
+        aarch64|arm64)   OBS_ARCH="aarch64" ;;
+        *) echo "⚠️ Skipping Obscura: unsupported architecture '$ARCH'"; return 0 ;;
+    esac
+    case "$OS" in
+        linux)  OBS_OS="linux" ;;
+        darwin) OBS_OS="macos" ;;
+        *)      echo "⚠️ Skipping Obscura: unsupported OS '$OS'"; return 0 ;;
+    esac
+
+    # stealth build enables anti-bot evasion while keeping screenshot support.
+    local VARIANT="${OBSCURA_VARIANT:-stealth}"
+    local OBS_TAG
+    OBS_TAG=$(curl -s "https://api.github.com/repos/h4ckf0r0day/obscura/releases/latest" \
+        | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$OBS_TAG" ]; then
+        echo "⚠️ Skipping Obscura: could not detect latest release"
+        return 0
+    fi
+
+    ASSET="obscura-${OBS_ARCH}-${OBS_OS}-${VARIANT}.tar.gz"
+    FILE_URL="https://github.com/h4ckf0r0day/obscura/releases/download/${OBS_TAG}/${ASSET}"
+    echo "📥 Downloading Obscura ${OBS_TAG} (${ASSET})..."
+    if ! curl -fsSL "$FILE_URL" -o "$TMP_DIR/$ASSET"; then
+        echo "⚠️ Skipping Obscura: download failed (browser tools will use Firefox/Chrome)"
+        return 0
+    fi
+
+    mkdir -p "$TMP_DIR/obscura_extract"
+    tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR/obscura_extract"
+    local BIN_PATH
+    BIN_PATH=$(find "$TMP_DIR/obscura_extract" -type f -name 'obscura' | head -1)
+    if [ -z "$BIN_PATH" ]; then
+        echo "⚠️ Skipping Obscura: binary not found in archive"
+        return 0
+    fi
+    mv "$BIN_PATH" "$INSTALL_DIR/obscura"
+    chmod +x "$INSTALL_DIR/obscura"
+    echo "✨ Obscura installed to $INSTALL_DIR/obscura (engine priority: Obscura → Firefox → Chrome)"
+}
+
+if [ "${SKIP_OBSCURA:-0}" = "1" ]; then
+    echo "⏭️  SKIP_OBSCURA=1 set — not installing Obscura (Firefox/Chrome fallback will be used)"
+else
+    install_obscura || true
+fi
+
 # Check PATH
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
