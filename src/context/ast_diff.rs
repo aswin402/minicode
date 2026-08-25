@@ -286,9 +286,9 @@ impl AstDiffEngine {
         }
 
         // Sort for deterministic reporting
-        added.sort_by(|a, b| a.start_line.cmp(&b.start_line));
-        removed.sort_by(|a, b| a.start_line.cmp(&b.start_line));
-        modified.sort_by(|a, b| a.new_start_line.cmp(&b.new_start_line));
+        added.sort_by_key(|c| c.start_line);
+        removed.sort_by_key(|c| c.start_line);
+        modified.sort_by_key(|c| c.new_start_line);
 
         Ok(AstDeltaReport {
             file_path: file_path.to_string(),

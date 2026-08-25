@@ -77,7 +77,7 @@ impl SubagentPool {
             let info = handle.info.read().await;
             list.push(info.clone());
         }
-        list.sort_by(|a, b| b.started_at_secs.cmp(&a.started_at_secs));
+        list.sort_by_key(|info| std::cmp::Reverse(info.started_at_secs));
         list
     }
 

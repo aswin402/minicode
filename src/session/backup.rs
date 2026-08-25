@@ -283,7 +283,7 @@ impl BackupManager {
             }
         }
 
-        checkpoints.sort_by(|a, b| b.turn_id.cmp(&a.turn_id));
+        checkpoints.sort_by_key(|cp| std::cmp::Reverse(cp.turn_id));
         checkpoints
     }
 

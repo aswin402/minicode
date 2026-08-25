@@ -111,9 +111,8 @@ impl AccessibilityManager {
         raw_elements.sort_by_key(|el| el.abs_start);
 
         let mut elements = Vec::new();
-        let mut counter = 1;
 
-        for el in raw_elements {
+        for (counter, el) in (1..).zip(raw_elements.into_iter()) {
             elements.push(AriaElement {
                 ref_id: format!("@v{}:e{}", rev, counter),
                 tag: el.tag,
@@ -121,7 +120,6 @@ impl AccessibilityManager {
                 name: el.name,
                 attributes: el.attrs,
             });
-            counter += 1;
             if elements.len() >= 60 {
                 break;
             }

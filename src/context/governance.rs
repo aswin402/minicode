@@ -168,7 +168,7 @@ impl ArchitectureGovernor {
             .filter(|(_, &loc)| loc > 1000)
             .map(|(p, &l)| (p.clone(), l))
             .collect();
-        god_files.sort_by(|a, b| b.1.cmp(&a.1));
+        god_files.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
 
         // High Fan-out modules (>10 imports)
         let mut fan_out_spikes: Vec<(String, usize)> = file_imports
@@ -176,7 +176,7 @@ impl ArchitectureGovernor {
             .filter(|(_, imps)| imps.len() > 10)
             .map(|(p, imps)| (p.clone(), imps.len()))
             .collect();
-        fan_out_spikes.sort_by(|a, b| b.1.cmp(&a.1));
+        fan_out_spikes.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
 
         // Compute 0-100 Modularity Health Score
         let mut score = 100u32;
