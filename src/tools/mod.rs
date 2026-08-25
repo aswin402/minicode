@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 57);
+        assert_eq!(schemas.len(), 84);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"score_task_complexity"));
         assert!(names.contains(&"check_architecture"));
