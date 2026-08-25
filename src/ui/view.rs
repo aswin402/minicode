@@ -120,6 +120,11 @@ impl TimelineView {
         }
     }
 
+    /// Last rendered timeline viewport height (0 before first render).
+    pub fn timeline_viewport_height(&self) -> u16 {
+        self.selection.timeline_area.get().height
+    }
+
     /// Scrolls timeline up by a number of lines
     pub fn scroll_up(&self, lines: u16) {
         if self.auto_scroll.get() {
@@ -1123,7 +1128,7 @@ impl TimelineView {
         self.selection.cache_plain_lines(&lines);
         let lines = self.selection.apply_highlight(lines, theme);
 
-        let total_lines = lines.len() as u16;
+        let total_lines = Self::visual_row_count(&lines, area.width);
         let viewport_height = area.height;
         let max_scroll = total_lines.saturating_sub(viewport_height);
         self.max_scroll.set(max_scroll);
@@ -1144,6 +1149,22 @@ impl TimelineView {
             .scroll((scroll, 0));
 
         frame.render_widget(paragraph, area);
+    }
+
+    /// Counts visually rendered rows for `lines` at the given wrap width.
+    ///
+    /// ratatui's Paragraph::wrap expands long logical lines into multiple
+    /// visual rows; scroll math must operate on visual rows or the offset can
+    /// point past reachable content (blank screen / hidden tail).
+    fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
+        let usable = usize::from(width.max(1));
+        lines
+            .iter()
+            .map(|line| {
+                let w: usize = line.spans.iter().map(|s| s.width()).sum();
+                (w.div_ceil(usable)).max(1) as u16
+            })
+            .sum()
     }
 
     /// Renders assistant Markdown text into highlighted Ratatui lines

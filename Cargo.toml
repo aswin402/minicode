@@ -75,6 +75,9 @@ htmd = "0.1"
 # (JSONL via serde_json — no additional crate needed)
 libc = "0.2"
 
+# Display-width aware line wrapping for the TUI timeline
+unicode-width = "0.2"
+
 
 # Model Context Protocol (MCP) Support
 rmcp = { version = "3.1.2", features = ["client", "server", "macros", "schemars", "transport-child-process", "transport-io"] }
@@ -91,6 +94,7 @@ uuid = { version = "1.10", features = ["v4"] }
 # Linux-only kernel sandbox; excluded on other targets where it cannot build
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
+
 
 [features]
 default = []

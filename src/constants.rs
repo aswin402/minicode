@@ -104,8 +104,6 @@ pub const MAX_AGENTS_MD_BYTES: usize = 8192;
 // === UI ===
 /// TUI event poll tick rate in milliseconds
 pub const TICK_RATE_MS: u64 = 50;
-/// Number of lines scrolled per PageUp / PageDown keypress
-pub const PAGE_SCROLL_LINES: u16 = 4;
 /// Maximum autocomplete candidates rendered in input dock
 pub const MAX_AUTOCOMPLETE_ROWS: usize = 4;
 /// Default token budget for AST repository map
