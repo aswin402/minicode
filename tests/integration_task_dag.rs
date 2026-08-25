@@ -13,6 +13,8 @@ fn test_task_dag_dependency_resolution_and_toposort() {
         dependencies: vec![],
         complexity_score: 3,
         status: TaskStatus::Pending,
+        assigned_role: None,
+        worktree_branch: None,
     });
     dag.add_task(TaskItem {
         id: "step-2".to_string(),
@@ -21,6 +23,8 @@ fn test_task_dag_dependency_resolution_and_toposort() {
         dependencies: vec!["step-1".to_string()],
         complexity_score: 2,
         status: TaskStatus::Pending,
+        assigned_role: None,
+        worktree_branch: None,
     });
     dag.add_task(TaskItem {
         id: "step-3".to_string(),
@@ -29,6 +33,8 @@ fn test_task_dag_dependency_resolution_and_toposort() {
         dependencies: vec!["step-2".to_string()],
         complexity_score: 4,
         status: TaskStatus::Pending,
+        assigned_role: None,
+        worktree_branch: None,
     });
 
     let order = dag.topological_order().unwrap();

@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 /// A single scripted turn response for the MockProvider
 #[derive(Debug, Clone)]
 pub struct MockTurn {
+    #[allow(dead_code)]
     pub chunks: Vec<StreamChunk>,
+    #[allow(dead_code)]
     pub should_fail: Option<String>,
 }
 

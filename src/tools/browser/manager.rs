@@ -28,8 +28,6 @@ impl EngineProcess {
     }
 }
 
-/// Global supervisor managing active browser instances across modes
-
 /// Persistent engine handle shared across tool calls so page state,
 /// ARIA references, and console history survive between invocations.
 pub struct SharedEngine {

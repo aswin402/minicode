@@ -139,6 +139,8 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// Determines whether an error is transient and safe to retry.
+    // Reserved for the provider retry loop; not yet wired into the agent turn.
+    #[allow(dead_code)]
     pub fn is_retryable(error: &crate::error::MinicodeError) -> bool {
         match error {
             crate::error::MinicodeError::Provider(pe) => match pe {
@@ -156,6 +158,7 @@ impl RetryPolicy {
     }
 
     /// Calculates backoff delay for the given attempt index (0-indexed).
+    #[allow(dead_code)]
     pub fn delay_for_attempt(&self, attempt: usize) -> Duration {
         if attempt == 0 {
             return self.initial_delay;
