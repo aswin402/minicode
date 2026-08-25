@@ -15,12 +15,13 @@ use std::str::FromStr;
 fn test_browser_engine_priorities() {
     assert_eq!(HEADLESS_PRIORITY.len(), 3);
     assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
-    assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Firefox);
-    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Chrome);
+    assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
+    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
 
-    assert_eq!(GUI_PRIORITY.len(), 2);
-    assert_eq!(GUI_PRIORITY[0], BrowserEngine::Firefox);
-    assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
+    assert_eq!(GUI_PRIORITY.len(), 3);
+    assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);
+    assert_eq!(GUI_PRIORITY[1], BrowserEngine::Obscura);
+    assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
 }
 
 #[test]
@@ -48,11 +49,11 @@ fn test_launch_args_obscura() {
     assert_eq!(
         args,
         vec![
+            "--stealth",
+            "--allow-private-network",
             "serve",
             "--port",
-            "9222",
-            "--stealth",
-            "--allow-file-access"
+            "9222"
         ]
     );
 }
