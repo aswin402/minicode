@@ -112,7 +112,7 @@ impl AccessibilityManager {
 
         let mut elements = Vec::new();
 
-        for (counter, el) in (1..).zip(raw_elements.into_iter()) {
+        for (counter, el) in (1..).zip(raw_elements) {
             elements.push(AriaElement {
                 ref_id: format!("@v{}:e{}", rev, counter),
                 tag: el.tag,
