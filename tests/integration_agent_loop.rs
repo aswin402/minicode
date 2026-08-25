@@ -49,6 +49,7 @@ async fn test_autonomous_agent_read_and_patch_turn() {
     let provider = Box::new(MockProvider::new(responses));
     let mut config = Config::default();
     config.git.auto_commit = false; // no git repo needed for this basic test
+    config.agent.auto_approve = true; // scripted tools must run without the approval gate
 
     let mut agent = AgentLoop::new(&ws_path, config, provider);
 

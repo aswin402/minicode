@@ -69,6 +69,7 @@ async fn test_auto_commit_after_agent_file_modification() {
     let provider = Box::new(MockProvider::new(responses));
     let mut config = Config::default();
     config.git.auto_commit = true;
+    config.agent.auto_approve = true; // scripted tools must run without the approval gate
 
     let mut agent = AgentLoop::new(&ws_path, config, provider);
 
@@ -144,6 +145,7 @@ async fn test_git_tools_and_undo_rollback() {
     let provider = Box::new(MockProvider::new(responses));
     let mut config = Config::default();
     config.git.auto_commit = true;
+    config.agent.auto_approve = true; // scripted tools must run without the approval gate
 
     let mut agent = AgentLoop::new(&ws_path, config, provider);
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
