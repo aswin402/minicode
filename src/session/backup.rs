@@ -353,9 +353,14 @@ mod tests {
 
         let loaded = mgr.load_turn_manifest(1).unwrap();
         assert_eq!(loaded.files.len(), 1);
+        // Compare against the canonical form: on macOS /tmp is a symlink to
+        // /private/tmp, so checkpoints store the resolved absolute path.
         assert_eq!(
             loaded.files[0].original_path,
-            test_file.display().to_string()
+            std::fs::canonicalize(&test_file)
+                .unwrap()
+                .display()
+                .to_string()
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
