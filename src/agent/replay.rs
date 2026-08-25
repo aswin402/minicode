@@ -202,6 +202,10 @@ impl ReplayHarness {
         config: Config,
     ) -> Result<ReplayReport> {
         let mock_provider = tape.build_mock_provider();
+        let mut config = config;
+        // Deterministic replay re-executes recorded turns; the approval gate
+        // has no responder here and would block forever on dangerous tools.
+        config.agent.auto_approve = true;
         let mut agent = AgentLoop::new(workspace_root, config, Box::new(mock_provider));
 
         let mut passed_turns = 0;
