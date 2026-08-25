@@ -18,6 +18,11 @@ fn create_temp_workspace() -> PathBuf {
 
 #[test]
 fn test_all_theme_palettes_and_detection() {
+    // Theme::detect branches on terminal capabilities; pin a truecolor
+    // terminal so named-theme palettes resolve deterministically in CI.
+    std::env::set_var("COLORTERM", "truecolor");
+    std::env::set_var("TERM", "xterm-256color");
+
     let themes = Theme::list_themes();
     assert_eq!(themes.len(), 9);
 
