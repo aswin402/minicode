@@ -98,12 +98,25 @@ impl BrowserManager {
 
     /// Discovers an available browser binary according to priority rules
     pub fn discover_engine(mode: BrowserMode, workspace_root: &Path) -> Option<EngineConfig> {
-        let priority = match mode {
+        let default_priority = match mode {
             BrowserMode::Headless => HEADLESS_PRIORITY,
             BrowserMode::Gui => GUI_PRIORITY,
         };
 
-        for &engine in priority {
+        // MINICODE_BROWSER forces a specific engine (obscura|firefox|chrome),
+        // skipping the automatic priority chain.
+        let priority: Vec<BrowserEngine> = if let Ok(name) = std::env::var("MINICODE_BROWSER") {
+            match name.to_lowercase().as_str() {
+                "obscura" => vec![BrowserEngine::Obscura],
+                "firefox" => vec![BrowserEngine::Firefox],
+                "chrome" | "chromium" | "google-chrome" => vec![BrowserEngine::Chrome],
+                _ => default_priority.to_vec(),
+            }
+        } else {
+            default_priority.to_vec()
+        };
+
+        for &engine in &priority {
             if let Some(binary_path) = find_binary_for_engine(engine) {
                 let port = find_available_port(BROWSER_CDP_BASE_PORT);
                 let profile_dir = workspace_root.join(BROWSER_PROFILES_DIR).join(format!(
