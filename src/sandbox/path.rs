@@ -53,8 +53,23 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
 
     let normalized = normalize_path(&raw_resolved);
 
-    // Initial check: normalized path must start with canonical root
-    if !normalized.starts_with(&canonical_root) {
+    // Walk up to the nearest existing ancestor and resolve IT. Comparing
+    // canonical forms on both sides keeps symlinked roots (e.g. /tmp ->
+    // /private/tmp on macOS) working for existing AND not-yet-existing paths.
+    let mut probe = normalized.clone();
+    while !probe.exists() {
+        match probe.parent() {
+            Some(parent) => probe = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    let canonical_probe =
+        std::fs::canonicalize(&probe).map_err(|e| SecurityError::PathEscapesWorkspace {
+            path: probe.display().to_string(),
+            workspace_root: format!("Failed to canonicalize path: {}", e),
+        })?;
+
+    if !canonical_probe.starts_with(&canonical_root) {
         return Err(SecurityError::PathEscapesWorkspace {
             path: user_path.display().to_string(),
             workspace_root: canonical_root.display().to_string(),
@@ -62,50 +77,20 @@ pub fn validate_path_in_workspace(workspace_root: &Path, user_path: &Path) -> Re
         .into());
     }
 
-    // If the file/path exists, canonicalize it directly (resolves symlinks)
-    if normalized.exists() {
-        let canonical_target = std::fs::canonicalize(&normalized).map_err(|e| {
-            SecurityError::PathEscapesWorkspace {
-                path: normalized.display().to_string(),
-                workspace_root: format!("Failed to canonicalize path: {}", e),
-            }
-        })?;
-
-        if !canonical_target.starts_with(&canonical_root) {
-            return Err(SecurityError::PathEscapesWorkspace {
-                path: user_path.display().to_string(),
-                workspace_root: canonical_root.display().to_string(),
-            }
-            .into());
-        }
-
-        Ok(canonical_target)
+    if probe == normalized {
+        // Path exists: return its fully resolved form.
+        Ok(canonical_probe)
     } else {
-        // If file does not exist yet (e.g. for write_file / new file creation),
-        // canonicalize the nearest existing parent directory
-        let mut curr = normalized.as_path();
-        while let Some(parent) = curr.parent() {
-            if parent.exists() {
-                let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
-                    SecurityError::PathEscapesWorkspace {
-                        path: parent.display().to_string(),
-                        workspace_root: format!("Failed to canonicalize parent: {}", e),
-                    }
+        // Not-yet-existing path: re-anchor the non-existing tail onto the
+        // canonical ancestor (e.g. for write_file / new file creation).
+        let tail =
+            normalized
+                .strip_prefix(&probe)
+                .map_err(|_| SecurityError::PathEscapesWorkspace {
+                    path: user_path.display().to_string(),
+                    workspace_root: canonical_root.display().to_string(),
                 })?;
-
-                if !canonical_parent.starts_with(&canonical_root) {
-                    return Err(SecurityError::PathEscapesWorkspace {
-                        path: user_path.display().to_string(),
-                        workspace_root: canonical_root.display().to_string(),
-                    }
-                    .into());
-                }
-                break;
-            }
-            curr = parent;
-        }
-
-        Ok(normalized)
+        Ok(canonical_probe.join(tail))
     }
 }
 
