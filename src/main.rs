@@ -205,7 +205,7 @@ async fn main() -> anyhow::Result<()> {
     } else if let Some(Commands::Serve { dir }) = cli.command {
         // Run as MCP server over stdio
         let target_dir = dir.unwrap_or(workspace_canonical);
-        mcp::MinicodeMcpServer::run_stdio(&target_dir).await?;
+        mcp::MinicodeMcpServer::run_stdio(&target_dir, &config).await?;
     } else if cli.json_stream {
         // Headless machine-readable streaming mode over stdio
         run_ndjson_agent(&workspace_canonical, &config).await?;

@@ -83,6 +83,26 @@ impl BrowserController {
             }
         }
 
+        // Fallback: zero-browser reader. file:// URLs cannot be fetched over
+        // HTTP, so read them straight from disk.
+        if let Ok(parsed) = url::Url::parse(url) {
+            if parsed.scheme() == "file" {
+                let path = parsed.to_file_path().map_err(|_| {
+                    ToolError::CommandExec(format!("Invalid file:// URL '{}'", url))
+                })?;
+                let html = std::fs::read_to_string(&path).map_err(|e| {
+                    ToolError::CommandExec(format!(
+                        "Failed to read '{}' from disk: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                snapshot.engine_used = "File Reader (No browser binary on PATH)".to_string();
+                return Ok(snapshot);
+            }
+        }
+
         // Fallback: zero-browser HTTP fetcher
         tracing::info!(url = %url, "No browser binary found or launched; using HTTP reader");
         let client = reqwest::Client::builder()

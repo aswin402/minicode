@@ -36,18 +36,39 @@ struct JsonRpcError {
 /// Standalone MCP Server exposing minicode's coding tools over stdio
 pub struct MinicodeMcpServer {
     workspace_root: PathBuf,
+    /// When true, dangerous tools (exec_cmd, write_file, patch_file) are
+    /// rejected per the `mcp.approval_policy = "deny"` config option.
+    deny_dangerous: bool,
 }
 
 impl MinicodeMcpServer {
+    #[allow(dead_code)]
     pub fn new(workspace_root: &Path) -> Self {
+        Self::with_approval_policy(workspace_root, false)
+    }
+
+    pub fn with_approval_policy(workspace_root: &Path, deny_dangerous: bool) -> Self {
         Self {
             workspace_root: workspace_root.to_path_buf(),
+            deny_dangerous,
         }
     }
 
+    /// True when the given tool is blocked by the approval policy.
+    fn blocked_by_policy(&self, tool_name: &str) -> bool {
+        self.deny_dangerous && crate::constants::APPROVAL_REQUIRED_TOOLS.contains(&tool_name)
+    }
+
     /// Runs the MCP stdio JSON-RPC server loop
-    pub async fn run_stdio(workspace_root: &Path) -> anyhow::Result<()> {
-        let server = Self::new(workspace_root);
+    pub async fn run_stdio(
+        workspace_root: &Path,
+        config: &crate::config::Config,
+    ) -> anyhow::Result<()> {
+        let deny_dangerous = config
+            .mcp
+            .effective_approval_policy()
+            .eq_ignore_ascii_case("deny");
+        let server = Self::with_approval_policy(workspace_root, deny_dangerous);
         let stdin = tokio::io::stdin();
         let mut stdout = tokio::io::stdout();
         let mut reader = BufReader::new(stdin).lines();
@@ -97,6 +118,9 @@ impl MinicodeMcpServer {
             if req.jsonrpc == JSONRPC_VERSION && req.method == "tools/call" {
                 if let Some(params) = req.params {
                     if let Some(name) = params.get("name").and_then(|v| v.as_str()) {
+                        if self.blocked_by_policy(name) {
+                            return None;
+                        }
                         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
                         let res = crate::tools::ToolRegistry::dispatch(
                             &self.workspace_root,
@@ -200,6 +224,23 @@ impl MinicodeMcpServer {
                         }),
                     });
                 };
+                if self.blocked_by_policy(name) {
+                    return Some(JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id,
+                        result: Some(json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!(
+                                    "Tool '{}' is blocked by MCP approval policy. Set [mcp] approval_policy = \"allow\" in config.toml to enable it.",
+                                    name
+                                )
+                            }],
+                            "isError": true
+                        })),
+                        error: None,
+                    });
+                }
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
                 if !arguments.is_object() {
                     return Some(JsonRpcResponse {

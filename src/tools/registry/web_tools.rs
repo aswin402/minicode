@@ -89,7 +89,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_click".to_string(),
-            description: "Click an interactive element identified by its ARIA reference (@v1:e1) and return the updated page accessibility tree snapshot immediately in the same turn.".to_string(),
+            description: "Click an interactive element identified by its ARIA reference (@v1:e1) and return the updated page accessibility tree snapshot immediately in the same turn. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -108,7 +108,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_fill".to_string(),
-            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2) and return the updated page accessibility tree snapshot.".to_string(),
+            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2) and return the updated page accessibility tree snapshot. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -131,7 +131,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_scroll".to_string(),
-            description: "Scroll the browser viewport in a given direction ('up', 'down', 'top', 'bottom').".to_string(),
+            description: "Scroll the browser viewport in a given direction ('up', 'down', 'top', 'bottom'). Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -150,7 +150,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_debug_logs".to_string(),
-            description: "Inspect live browser runtime diagnostics including console logs (errors/warnings), uncaught JS exceptions, and failed HTTP network requests (4xx/5xx).".to_string(),
+            description: "Inspect live browser runtime diagnostics including console logs (errors/warnings), uncaught JS exceptions, and failed HTTP network requests (4xx/5xx). Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -164,7 +164,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_eval".to_string(),
-            description: "Evaluate arbitrary JavaScript code in the browser context (e.g. inspecting window state, cookies, local storage, or React/DOM properties) and return the output.".to_string(),
+            description: "Evaluate arbitrary JavaScript code in the browser context (e.g. inspecting window state, cookies, local storage, or React/DOM properties) and return the output. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -183,7 +183,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_screenshot".to_string(),
-            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory.".to_string(),
+            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

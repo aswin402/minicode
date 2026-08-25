@@ -201,6 +201,12 @@ fn default_log_file() -> bool {
 pub struct McpConfig {
     #[serde(default)]
     pub servers: std::collections::HashMap<String, McpServerConfig>,
+
+    /// Policy for dangerous tools (exec_cmd, write_file, patch_file) when
+    /// minicode runs as an MCP server: Some("deny") blocks them; None/Some
+    /// ("allow") permits everything.
+    #[serde(default)]
+    pub approval_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -283,6 +289,13 @@ impl Default for GitConfig {
 
 fn default_mcp_transport() -> McpTransport {
     McpTransport::Stdio
+}
+
+impl McpConfig {
+    /// Resolved approval policy for dangerous tools in MCP serve mode.
+    pub fn effective_approval_policy(&self) -> &str {
+        self.approval_policy.as_deref().unwrap_or("allow")
+    }
 }
 
 fn default_true() -> bool {
@@ -567,6 +580,9 @@ impl Config {
         }
         if let Some(ai_commit_messages) = other.git.ai_commit_messages {
             self.git.ai_commit_messages = ai_commit_messages;
+        }
+        if let Some(policy) = other.mcp.approval_policy {
+            self.mcp.approval_policy = Some(policy);
         }
         for (name, srv) in other.mcp.servers {
             self.mcp.servers.insert(name, srv);
