@@ -1,5 +1,6 @@
 use crate::error::{Result, ToolError};
 use crate::sandbox::env::build_sanitized_command;
+#[cfg(target_os = "linux")]
 use crate::sandbox::landlock::apply_landlock_sandbox;
 use std::path::Path;
 use std::time::Duration;

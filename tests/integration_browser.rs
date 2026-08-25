@@ -39,7 +39,7 @@ fn test_browser_aria_accessibility_tree_extraction() {
 
     let report = BrowserController::format_snapshot_report(&snapshot);
     assert!(report.contains("Admin Portal"));
-    assert!(report.contains("@e"));
+    assert!(report.contains("@v1:e"));
     assert!(report.contains("Save Changes"));
 }
 
@@ -65,5 +65,5 @@ async fn test_browser_snapshot_tool_dispatch() {
     assert!(res.success);
     assert!(res.output.contains("Test App"));
     assert!(res.output.contains("Click Me"));
-    assert!(res.output.contains("@e1"));
+    assert!(res.output.contains("@v1:e1"));
 }
