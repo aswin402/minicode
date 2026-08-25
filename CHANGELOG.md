@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Browser Engines
+
+- **Engine priority reordered: Obscura → Chrome → Firefox** (headless) and
+  **Chrome → Obscura → Firefox** (GUI). Mozilla removed CDP in Firefox 141,
+  so the Firefox fallback now only works with Firefox ≤ 140 ESR and the
+  `remote.active-protocols` preference (auto-written to the profile).
+- New `MINICODE_BROWSER=obscura|firefox|chrome` environment variable forces a
+  specific engine, bypassing the automatic priority chain.
+
 ### Approval Enforcement (Security) (`src/agent/loop.rs`, `src/app.rs`, `src/main.rs`)
 
 - **Real tool-approval gating**: `AgentLoop` now pauses before dispatching dangerous tools

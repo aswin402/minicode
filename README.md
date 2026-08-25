@@ -29,6 +29,11 @@
 * **Dynamic Skill Creation & Hot-Reloading**: Create, validate, and hot-load project-specific skill packages (`.minicode/skills/<name>/SKILL.md`) with YAML frontmatter without restarting the session.
 * **Interactive Embedded PTY Drawer (`Ctrl+T`)**: Embedded bottom terminal pane inside Ratatui with a 1000-line bounded ring buffer to run live shell commands, watch dev servers, and test REPLs without leaving the TUI.
 * **ARIA Web Browser & Local UI Dev Inspector**: Pure-Rust accessibility tree generator and page inspector that maps interactive elements into numbered references (`@e1`, `@e2`) to test and debug local web applications (`http://localhost:3000`).
+
+**Browser engine priority: Obscura → Chrome → Firefox.**
+- **Obscura** (recommended): pure-Rust stealth headless engine, auto-installed by `install.sh` (`SKIP_OBSCURA=1` to skip; `OBSCURA_VARIANT` selects the build).
+- **Chrome/Chromium/Brave**: full CDP fallback.
+- **Firefox**: last resort only — Mozilla removed CDP in Firefox 141, so this requires Firefox ≤ 140 ESR with the `remote.active-protocols` preference (auto-written to the profile). Force an engine with `MINICODE_BROWSER=obscura|firefox|chrome`.
 * **Cognitive Memory Decay & Repository Knowledge Wiki**: Biological Ebbinghaus exponential memory retention math combined with a persistent Markdown repository knowledge wiki (`.minicode/wiki/`) and automated index cataloging.
 * **Sequential Thinking & Graph of Thoughts (GoT)**: Petgraph-tracked dynamic hypothesis branching, revision tracking, confidence scoring, and solution synthesis for complex architectural tasks.
 * **Topological Task DAG & Actor-Critic Loop**: Petgraph-powered dependency DAG engine with topological execution sorting, complexity scoring heuristics (1–10), and automated compiler/linter quality gates.

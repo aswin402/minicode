@@ -7,7 +7,8 @@ use std::path::PathBuf;
 pub enum BrowserEngine {
     /// Obscura: Ultra-lightweight Pure-Rust V8 engine with built-in stealth (~30MB RAM, <85ms boot)
     Obscura,
-    /// Mozilla Firefox: Gecko engine via Remote Debugging Protocol / CDP
+    /// Mozilla Firefox: LAST RESORT. Mozilla removed CDP in Firefox 141;
+    /// only works with Firefox <= 140 ESR + remote.active-protocols pref.
     Firefox,
     /// Google Chrome / Chromium / Brave: Chromium Blink engine via CDP
     Chrome,
@@ -56,15 +57,29 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: Obscura -> Firefox (fallback 1) -> Chrome (fallback 2)
+/// Priority chain for headless automation: Obscura -> Chrome -> Firefox.
+///
+/// Firefox is LAST RESORT only: Mozilla removed CDP in Firefox 141
+/// (fxdx.dev/cdp-retirement-in-firefox), so it only works with Firefox 140 ESR
+/// or older plus the `remote.active-protocols` preference (written into the
+/// profile's user.js automatically). Modern Firefox installs will fail CDP
+/// startup and fall through to the HTTP reader. Full Firefox support requires
+/// a WebDriver BiDi client (future work).
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
     BrowserEngine::Obscura,
-    BrowserEngine::Firefox,
     BrowserEngine::Chrome,
+    BrowserEngine::Firefox,
 ];
 
-/// Priority chain for GUI windowed automation: Firefox -> Chrome (fallback)
-pub const GUI_PRIORITY: &[BrowserEngine] = &[BrowserEngine::Firefox, BrowserEngine::Chrome];
+/// Priority chain for GUI windowed automation: Chrome -> Obscura -> Firefox.
+///
+/// Chrome is preferred for GUI mode: full CDP + real rendering. Obscura's
+/// rendering pipeline suits snapshots; Firefox has the CDP caveat above.
+pub const GUI_PRIORITY: &[BrowserEngine] = &[
+    BrowserEngine::Chrome,
+    BrowserEngine::Obscura,
+    BrowserEngine::Firefox,
+];
 
 /// Launch configuration resolved for a specific browser engine
 #[derive(Debug, Clone)]
@@ -117,11 +132,12 @@ mod tests {
     #[test]
     fn test_priority_chains() {
         assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
-        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Firefox);
-        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
 
-        assert_eq!(GUI_PRIORITY[0], BrowserEngine::Firefox);
-        assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);
+        assert_eq!(GUI_PRIORITY[1], BrowserEngine::Obscura);
+        assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
     }
 
     #[test]
