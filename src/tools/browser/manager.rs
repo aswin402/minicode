@@ -1,3 +1,4 @@
+use super::driver::CdpClient;
 use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
 use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_PROFILES_DIR, BROWSER_STARTUP_TIMEOUT_MS};
 use crate::error::{Result, ToolError};
@@ -28,6 +29,59 @@ impl EngineProcess {
 }
 
 /// Global supervisor managing active browser instances across modes
+
+/// Persistent engine handle shared across tool calls so page state,
+/// ARIA references, and console history survive between invocations.
+pub struct SharedEngine {
+    pub process: EngineProcess,
+    pub cdp: Arc<CdpClient>,
+}
+
+static LIVE_ENGINE: tokio::sync::Mutex<Option<Arc<SharedEngine>>> =
+    tokio::sync::Mutex::const_new(None);
+
+impl BrowserManager {
+    /// Returns the pooled live engine, launching or relaunching as needed.
+    ///
+    /// The engine stays alive across tool calls; the child process is killed
+    /// automatically (`kill_on_drop`) when the host process exits.
+    pub async fn get_or_launch(
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<Arc<SharedEngine>> {
+        let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(existing) = guard.as_ref() {
+            let alive = existing
+                .cdp
+                .send_command("Target.getTargets", serde_json::json!({}))
+                .await
+                .is_ok();
+            if alive {
+                return Ok(Arc::clone(existing));
+            }
+            tracing::warn!("Pooled browser engine died; relaunching");
+            guard.take(); // Dropping the last Arc kills the child via kill_on_drop.
+        }
+
+        let config = Self::discover_engine(mode, workspace_root).ok_or_else(|| {
+            ToolError::CommandExec(
+                "No browser engine (Obscura, Firefox, Chrome) found on PATH".to_string(),
+            )
+        })?;
+        let mut proc = Self::spawn_engine(&config).await?;
+        let cdp = match CdpClient::connect(&proc.cdp_http_url).await {
+            Ok(cdp) => Arc::new(cdp),
+            Err(e) => {
+                let _ = proc.shutdown().await;
+                return Err(e);
+            }
+        };
+        tracing::info!(engine = %config.engine, "Browser engine ready (persistent session)");
+        let handle = Arc::new(SharedEngine { process: proc, cdp });
+        *guard = Some(Arc::clone(&handle));
+        Ok(handle)
+    }
+}
 #[derive(Clone, Default)]
 pub struct BrowserManager {
     #[allow(dead_code)]

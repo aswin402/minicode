@@ -59,34 +59,27 @@ impl BrowserController {
         validate_browser_url(url)?;
 
         // Try launching preferred browser engine according to priority chain
-        if let Some(config) = BrowserManager::discover_engine(mode, workspace_root) {
-            let engine_name = format!("{} ({})", config.engine, mode);
-            tracing::info!(engine = %engine_name, url = %url, "Navigating via browser engine");
+        match BrowserManager::get_or_launch(mode, workspace_root).await {
+            Ok(engine) => {
+                let engine_name = format!("{} ({})", engine.process.config.engine, mode);
+                tracing::info!(engine = %engine_name, url = %url, "Navigating via browser engine");
 
-            match BrowserManager::spawn_engine(&config).await {
-                Ok(mut proc) => {
-                    let cdp_res = async {
-                        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-                        cdp.navigate(url).await?;
-                        let html = cdp.get_document_html().await?;
-                        Ok::<_, crate::error::MinicodeError>(html)
-                    }
-                    .await;
-
-                    // Clean up child process
-                    let _ = proc.shutdown().await;
-
-                    if let Ok(html) = cdp_res {
-                        let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
-                        snapshot.engine_used = engine_name;
-                        return Ok(snapshot);
-                    } else if let Err(e) = cdp_res {
-                        tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
-                    }
+                let cdp_res = async {
+                    engine.cdp.navigate(url).await?;
+                    engine.cdp.get_document_html().await
                 }
-                Err(e) => {
-                    tracing::warn!(error = ?e, "Failed to spawn browser; falling back to HTTP");
+                .await;
+
+                if let Ok(html) = cdp_res {
+                    let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                    snapshot.engine_used = engine_name;
+                    return Ok(snapshot);
+                } else if let Err(e) = cdp_res {
+                    tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
                 }
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to launch browser; falling back to HTTP");
             }
         }
 
@@ -118,22 +111,13 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine found on PATH to interact with web element".to_string(),
-            )
-        })?;
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-
-        let current_html = cdp.get_document_html().await.unwrap_or_default();
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
         let mut acc_mgr = AccessibilityManager::new();
         acc_mgr.update_from_html(&current_html);
 
-        let res = BrowserInteractor::click_element(&cdp, target_ref, &mut acc_mgr).await;
-        let _ = proc.shutdown().await;
-        res
+        BrowserInteractor::click_element(&engine.cdp, target_ref, &mut acc_mgr).await
     }
 
     /// Fills text into an input or textarea element and returns the updated page snapshot
@@ -143,22 +127,13 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine found on PATH to fill form element".to_string(),
-            )
-        })?;
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-
-        let current_html = cdp.get_document_html().await.unwrap_or_default();
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
         let mut acc_mgr = AccessibilityManager::new();
         acc_mgr.update_from_html(&current_html);
 
-        let res = BrowserInteractor::fill_element(&cdp, target_ref, text, &mut acc_mgr).await;
-        let _ = proc.shutdown().await;
-        res
+        BrowserInteractor::fill_element(&engine.cdp, target_ref, text, &mut acc_mgr).await
     }
 
     /// Scrolls the active browser viewport in the given direction
@@ -167,40 +142,50 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec("No browser engine found on PATH to scroll viewport".to_string())
-        })?;
-
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-        let res = BrowserInteractor::scroll_page(&cdp, direction).await;
-        let _ = proc.shutdown().await;
-        res
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        BrowserInteractor::scroll_page(&engine.cdp, direction).await
     }
 
     /// Retrieves diagnostic logs (console errors, unhandled exceptions, and failed HTTP requests)
     pub async fn get_debug_logs(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine found on PATH to fetch diagnostics".to_string(),
-            )
-        })?;
-
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
         let collector = DebugCollector::new();
-        // Check for any uncaught JS errors via evaluation
-        if let Ok(js_errors) = cdp
-            .evaluate_js("window.__minicode_errors ? JSON.stringify(window.__minicode_errors) : ''")
+
+        // Real console history captured live from Runtime.consoleAPICalled /
+        // Runtime.exceptionThrown / Log.entryAdded CDP events.
+        for entry in engine.cdp.drain_console().await {
+            let level = if entry.starts_with("[error]") || entry.starts_with("[exception]") {
+                LogLevel::Error
+            } else if entry.starts_with("[warning]") {
+                LogLevel::Warn
+            } else {
+                LogLevel::Info
+            };
+            collector.record_console(level, &entry);
+        }
+
+        // In-page console buffer installed at session start (engine-agnostic).
+        if let Ok(entries) = engine
+            .cdp
+            .evaluate_js("(window.__minicode_console || []).join('\\n')")
             .await
         {
-            if !js_errors.is_empty() && js_errors != "\"\"" {
-                collector.record_console(LogLevel::Error, &js_errors);
+            let text = entries;
+            if !text.is_empty() {
+                for line in text.lines().filter(|l| !l.is_empty()) {
+                    let level = if line.starts_with("[error]") {
+                        LogLevel::Error
+                    } else if line.starts_with("[warn]") {
+                        LogLevel::Warn
+                    } else {
+                        LogLevel::Info
+                    };
+                    collector.record_console(level, line);
+                }
             }
         }
 
-        let _ = proc.shutdown().await;
         Ok(collector.format_report())
     }
 
@@ -210,18 +195,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine (Obscura, Firefox, Chrome) found on PATH to evaluate JavaScript"
-                    .to_string(),
-            )
-        })?;
-
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-        let result = cdp.evaluate_js(script).await;
-        let _ = proc.shutdown().await;
-        result
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        engine.cdp.evaluate_js(script).await
     }
 
     /// Captures a screenshot and saves it to `.minicode/screenshots/`
@@ -230,16 +205,8 @@ impl BrowserController {
         workspace_root: &Path,
         custom_path: Option<&str>,
     ) -> Result<String> {
-        let config = BrowserManager::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine found on PATH to capture screenshot".to_string(),
-            )
-        })?;
-
-        let mut proc = BrowserManager::spawn_engine(&config).await?;
-        let cdp = CdpClient::connect(&proc.cdp_http_url).await?;
-        let png_bytes = cdp.take_screenshot().await?;
-        let _ = proc.shutdown().await;
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let png_bytes = engine.cdp.take_screenshot().await?;
 
         let target_path = if let Some(p) = custom_path {
             workspace_root.join(p)
@@ -249,7 +216,6 @@ impl BrowserController {
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
             dir.join(format!("screenshot_{}.png", timestamp))
         };
-
         if let Some(parent) = target_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

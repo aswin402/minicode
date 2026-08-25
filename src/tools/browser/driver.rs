@@ -9,6 +9,10 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Console-capture shim: wraps console.* and window.onerror into an in-page
+/// buffer. Re-installed after every navigation (new document = new window).
+const CONSOLE_SHIM_JS: &str = r#"(function(){if(window.__minicode_console)return;window.__minicode_console=[];['log','info','warn','error'].forEach(function(m){var orig=console[m]?console[m].bind(console):function(){};console[m]=function(){try{window.__minicode_console.push('['+m+'] '+Array.prototype.map.call(arguments,function(a){try{return typeof a==='object'?JSON.stringify(a):String(a)}catch(e){return String(a)}}).join(' '))}catch(e){}orig.apply(null,arguments)}});window.addEventListener('error',function(e){window.__minicode_console.push('[error] '+(e.message||'unknown'))})})()"#;
+
 /// Client for bidirectional Chrome DevTools Protocol (CDP) communication over WebSockets
 pub struct CdpClient {
     tx: mpsc::UnboundedSender<Message>,
@@ -19,6 +23,8 @@ pub struct CdpClient {
     /// Obscura whose page sockets reject unattached commands, and standard
     /// on Chrome/Firefox browser-level endpoints.
     session_id: Mutex<Option<String>>,
+    /// Captured console output and runtime exceptions for diagnostics.
+    console_log: Arc<Mutex<Vec<String>>>,
 }
 
 impl CdpClient {
@@ -51,7 +57,9 @@ impl CdpClient {
         let pending_clone = pending.clone();
         let tx_clone = tx.clone();
 
-        // Writer task
+        let console_log = Arc::new(Mutex::new(Vec::new()));
+        let console_clone = Arc::clone(&console_log);
+
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 if write.send(msg).await.is_err() {
@@ -70,19 +78,80 @@ impl CdpClient {
                             if let Some(id) = val.get("id").and_then(|v| v.as_u64()) {
                                 let mut map = pending_clone.lock().await;
                                 if let Some(sender) = map.remove(&id) {
-                                    let _ = sender.send(val);
+                                    let _ = sender.send(val.clone());
                                 }
                             } else if let Some(method) = val.get("method").and_then(|v| v.as_str())
                             {
-                                // Auto-handle modal alerts and dialogs
-                                if method == "Page.javascriptDialogOpening" {
-                                    tracing::info!("Auto-dismissing browser JavaScript dialog");
-                                    let dismiss_cmd = json!({
-                                        "id": 999_999,
-                                        "method": "Page.handleJavaScriptDialog",
-                                        "params": { "accept": true }
-                                    });
-                                    let _ = tx_clone.send(Message::Text(dismiss_cmd.to_string()));
+                                match method {
+                                    // Capture console output for browser_debug_logs
+                                    "Runtime.consoleAPICalled" => {
+                                        if let Some(args) =
+                                            val.pointer("/params/args").and_then(|a| a.as_array())
+                                        {
+                                            let parts: Vec<String> = args
+                                                .iter()
+                                                .map(|a| {
+                                                    a.pointer("/value")
+                                                        .map(|v| v.to_string())
+                                                        .or_else(|| {
+                                                            a.get("description")
+                                                                .and_then(|d| d.as_str())
+                                                                .map(str::to_string)
+                                                        })
+                                                        .unwrap_or_default()
+                                                })
+                                                .collect();
+                                            let entry_type = val
+                                                .pointer("/params/type")
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("log");
+                                            console_clone.lock().await.push(format!(
+                                                "[console.{}] {}",
+                                                entry_type,
+                                                parts.join(" ")
+                                            ));
+                                        }
+                                    }
+                                    "Runtime.exceptionThrown" => {
+                                        let text = val
+                                            .pointer("/params/exceptionDetails/exception/detail")
+                                            .or_else(|| {
+                                                val.pointer("/params/exceptionDetails/text")
+                                            })
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("Unhandled exception")
+                                            .to_string();
+                                        console_clone
+                                            .lock()
+                                            .await
+                                            .push(format!("[exception] {}", text));
+                                    }
+                                    "Log.entryAdded" => {
+                                        let level = val
+                                            .pointer("/params/entry/level")
+                                            .and_then(|l| l.as_str())
+                                            .unwrap_or("info");
+                                        let text = val
+                                            .pointer("/params/entry/text")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("");
+                                        console_clone
+                                            .lock()
+                                            .await
+                                            .push(format!("[{}] {}", level, text));
+                                    }
+                                    // Auto-handle modal alerts and dialogs
+                                    "Page.javascriptDialogOpening" => {
+                                        tracing::info!("Auto-dismissing browser JavaScript dialog");
+                                        let dismiss_cmd = json!({
+                                            "id": 999_999,
+                                            "method": "Page.handleJavaScriptDialog",
+                                            "params": { "accept": true }
+                                        });
+                                        let _ =
+                                            tx_clone.send(Message::Text(dismiss_cmd.to_string()));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -93,12 +162,14 @@ impl CdpClient {
             }
         });
 
+        let console_log = Arc::new(Mutex::new(Vec::new()));
         let client = Self {
             tx,
             next_id: AtomicU64::new(1),
             pending,
             page_ws_url,
             session_id: Mutex::new(None),
+            console_log: Arc::clone(&console_log),
         };
 
         if wants_session {
@@ -107,6 +178,10 @@ impl CdpClient {
 
         // Enable core domains
         client.enable_core_domains().await?;
+
+        // Wrap console.* into an in-page buffer: some engines (Obscura) do not
+        // emit Runtime.consoleAPICalled events, so capture at the source.
+        let _ = client.evaluate_js(CONSOLE_SHIM_JS).await;
 
         Ok(client)
     }
@@ -276,6 +351,18 @@ impl CdpClient {
     }
 
     /// Enables standard DevTools domains
+    /// Returns and clears captured console output and runtime exceptions.
+    pub async fn drain_console(&self) -> Vec<String> {
+        std::mem::take(&mut *self.console_log.lock().await)
+    }
+
+    /// Returns captured console output without clearing it.
+    #[allow(dead_code)]
+    pub async fn peek_console(&self) -> Vec<String> {
+        self.console_log.lock().await.clone()
+    }
+
+    /// Enables standard DevTools domains
     pub async fn enable_core_domains(&self) -> Result<()> {
         let _ = self.send_command("Page.enable", json!({})).await;
         let _ = self.send_command("Runtime.enable", json!({})).await;
@@ -291,6 +378,8 @@ impl CdpClient {
             .await?;
         // Allow time for client-side JavaScript / SPA hydration to settle
         tokio::time::sleep(Duration::from_millis(600)).await;
+        // New document => reinstall the console shim.
+        let _ = self.evaluate_js(CONSOLE_SHIM_JS).await;
         Ok(())
     }
 
