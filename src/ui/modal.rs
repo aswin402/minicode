@@ -63,6 +63,12 @@ pub enum ModalState {
         sessions: Vec<crate::session::store::SessionMetadata>,
         selected_index: usize,
     },
+    StackSelect {
+        stacks: Vec<crate::tools::onpkg::stacks::Stack>,
+        filtered_indices: Vec<usize>,
+        selected_index: usize,
+        filter: String,
+    },
     Help,
     Approval(crate::ui::approval::ApprovalModalState),
 }
@@ -142,6 +148,17 @@ impl ModalState {
         }
     }
 
+    pub fn new_stack_select() -> Self {
+        let stacks = crate::tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+        let count = stacks.len();
+        ModalState::StackSelect {
+            stacks,
+            filtered_indices: (0..count).collect(),
+            selected_index: 0,
+            filter: String::new(),
+        }
+    }
+
     pub fn update_filter(&mut self) {
         if let ModalState::ModelSelect {
             models,
@@ -160,6 +177,33 @@ impl ModalState {
                         true
                     } else {
                         m.id.to_lowercase().contains(&f) || m.name.to_lowercase().contains(&f)
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if *selected_index >= filtered_indices.len() {
+                *selected_index = filtered_indices.len().saturating_sub(1);
+            }
+        } else if let ModalState::StackSelect {
+            stacks,
+            filtered_indices,
+            selected_index,
+            filter,
+        } = self
+        {
+            let f = filter.to_lowercase();
+            *filtered_indices = stacks
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    if f.is_empty() {
+                        true
+                    } else {
+                        s.name.to_lowercase().contains(&f)
+                            || s.runtime.to_lowercase().contains(&f)
+                            || s.description.to_lowercase().contains(&f)
+                            || s.packages.iter().any(|p| p.to_lowercase().contains(&f))
                     }
                 })
                 .map(|(i, _)| i)
@@ -905,6 +949,196 @@ impl ModalState {
 
                 let p = Paragraph::new(help_text).block(block);
                 frame.render_widget(p, popup_area);
+            }
+            ModalState::StackSelect {
+                stacks,
+                filtered_indices,
+                selected_index,
+                filter,
+            } => {
+                let popup_area = centered_rect(84, 76, area);
+                frame.render_widget(Clear, popup_area);
+
+                let outer_block = Block::default()
+                    .title(" 📦 Native onpkg Stack Wizard ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = outer_block.inner(popup_area);
+                frame.render_widget(outer_block, popup_area);
+
+                let v_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Filter search input
+                        Constraint::Min(6),    // 2-column main area
+                        Constraint::Length(1), // Footer
+                    ])
+                    .split(inner_area);
+
+                // Search box
+                let search_text = format!(" Filter: {}█", filter);
+                let search_box = Paragraph::new(search_text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme.border))
+                            .title(" Search Stacks by name / tech / runtime "),
+                    )
+                    .style(Style::default().fg(theme.text_primary));
+                frame.render_widget(search_box, v_chunks[0]);
+
+                // Split middle area horizontally (List vs Preview)
+                let h_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                    .split(v_chunks[1]);
+
+                // Left: Stacks List
+                let items: Vec<ListItem> = filtered_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(visual_idx, &real_idx)| {
+                        let s = &stacks[real_idx];
+                        let is_selected = visual_idx == *selected_index;
+                        let prefix = if is_selected { " › " } else { "   " };
+
+                        let runtime_badge = format!(" [{}]", s.runtime);
+                        let file_info = format!(" ({} files)", s.files.len());
+
+                        let spans = vec![
+                            Span::raw(prefix),
+                            Span::styled(
+                                &s.name,
+                                if is_selected {
+                                    Style::default()
+                                        .fg(theme.bg_primary)
+                                        .bg(theme.brand_accent)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(theme.text_primary)
+                                },
+                            ),
+                            Span::styled(
+                                runtime_badge,
+                                if is_selected {
+                                    Style::default().fg(theme.bg_primary).bg(theme.brand_accent)
+                                } else {
+                                    Style::default().fg(theme.brand_accent)
+                                },
+                            ),
+                            Span::styled(
+                                file_info,
+                                if is_selected {
+                                    Style::default().fg(theme.bg_primary).bg(theme.brand_accent)
+                                } else {
+                                    Style::default().fg(theme.muted)
+                                },
+                            ),
+                        ];
+
+                        let item_style = if is_selected {
+                            Style::default().bg(theme.brand_accent)
+                        } else {
+                            Style::default()
+                        };
+
+                        ListItem::new(Line::from(spans)).style(item_style)
+                    })
+                    .collect();
+
+                let list_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(format!(" Stacks ({}) ", filtered_indices.len()));
+                let list = List::new(items).block(list_block);
+                frame.render_widget(list, h_chunks[0]);
+
+                // Right: Preview of Selected Stack
+                let preview_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(" Stack Preview ");
+
+                let mut preview_lines = Vec::new();
+                if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
+                    let s = &stacks[filtered_indices[*selected_index]];
+
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("📦 ", Style::default()),
+                        Span::styled(
+                            &s.name,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  (Runtime: {})", s.runtime),
+                            Style::default().fg(theme.success),
+                        ),
+                    ]));
+                    preview_lines.push(Line::from(""));
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("📝 ", Style::default()),
+                        Span::styled(&s.description, Style::default().fg(theme.text_primary)),
+                    ]));
+                    preview_lines.push(Line::from(""));
+
+                    let pkgs_str = if s.packages.is_empty() {
+                        "none".to_string()
+                    } else {
+                        s.packages.join(", ")
+                    };
+                    preview_lines.push(Line::from(vec![
+                        Span::styled(
+                            "⚡ Packages: ",
+                            Style::default()
+                                .fg(theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(pkgs_str, Style::default().fg(theme.text_primary)),
+                    ]));
+                    preview_lines.push(Line::from(""));
+
+                    preview_lines.push(Line::from(vec![Span::styled(
+                        format!("📁 File Structure ({} files):", s.files.len()),
+                        Style::default().fg(theme.brand_accent),
+                    )]));
+
+                    for f in s.files.iter().take(12) {
+                        preview_lines.push(Line::from(vec![
+                            Span::styled("  ├── ", Style::default().fg(theme.muted)),
+                            Span::styled(&f.path, Style::default().fg(theme.text_primary)),
+                        ]));
+                    }
+                    if s.files.len() > 12 {
+                        preview_lines.push(Line::from(vec![Span::styled(
+                            format!("  ╰── ... and {} more files", s.files.len() - 12),
+                            Style::default().fg(theme.muted),
+                        )]));
+                    }
+                } else {
+                    preview_lines.push(Line::from(Span::styled(
+                        "No stack selected",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+
+                let preview_p = Paragraph::new(preview_lines).block(preview_block);
+                frame.render_widget(preview_p, h_chunks[1]);
+
+                // Footer hints
+                let footer =
+                    Paragraph::new(" [↑/↓] Navigate  [Enter] Scaffold Stack  [Esc] Close ")
+                        .style(Style::default().fg(theme.muted))
+                        .alignment(Alignment::Center);
+                frame.render_widget(footer, v_chunks[2]);
             }
             ModalState::Approval(approval_state) => {
                 approval_state.render(frame, area, theme);

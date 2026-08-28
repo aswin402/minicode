@@ -50,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.57] — 2026-08-28
+
+### Interactive TUI Stack Wizard & Autonomous Goal/Plan Slash Commands (`/stack`, `/plan`, `/goal`)
+
+- **Interactive TUI Stack Wizard (`ModalState::StackSelect`, `/stack`)**:
+  - Implemented visual 2-column modal in Ratatui TUI with live search filtering across all embedded and custom stacks.
+  - Live preview panel displaying runtime badges, tech tags, descriptions, package dependencies, and file layout trees.
+  - One-click native scaffolding with `Enter` and real-time timeline status reporting.
+- **Autonomous Goal & Planning Slash Commands (`/plan`, `/goal`)**:
+  - `/plan [prompt]`: Automatically analyzes workspace architecture, breaks work into verifiable milestones, and maintains `onpkg_docs/todo.md` and `onpkg_docs/implementation.md`.
+  - `/goal [prompt]`: Initiates self-directed autonomous execution loop with automated tests and verification checkpoints until all tasks are marked complete (`[x]`).
+- **Autonomous Intent Protocols in System Prompt (`src/agent/prompt.rs`)**:
+  - Enhanced `DEFAULT_SYSTEM_PROMPT` to automatically map user natural language requests to native tools (`onpkg_stack_list`, `onpkg_stack_add`, `semantic_search`, `locate_symbol`, `onpkg_sync`).
+- **Slash Commands Autocomplete Registry (`src/ui/input.rs`)**:
+  - Registered `/stack`, `/plan`, `/goal` with instant fuzzy autocomplete recommendations in `InputDock`.
+- **Verification**:
+  - 8 integration tests in `tests/integration_onpkg_tools.rs`.
+  - 18/18 total integration tests passing (100%).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.56] — 2026-08-28
 
 ### Embedded Native onpkg Template Engine & Autonomous Spec Syncer (`src/tools/onpkg/`)

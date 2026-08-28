@@ -14,6 +14,18 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/stack",
+        description: "interactive multi-runtime stack wizard & template scaffolder",
+    },
+    SlashCommand {
+        name: "/plan",
+        description: "break complex feature into verifiable milestones in todo.md",
+    },
+    SlashCommand {
+        name: "/goal",
+        description: "run autonomous self-directed goal execution loop until complete",
+    },
+    SlashCommand {
         name: "/model",
         description: "choose what model and reasoning effort to use",
     },

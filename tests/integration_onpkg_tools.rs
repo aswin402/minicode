@@ -1,11 +1,12 @@
-/// Integration tests for Phase 46: Full Native onpkg Integration in minicode
-///
-/// Tests embedded stack templates, scaffolder, sync engine, skills manager, and diagnostics.
+/// Integration tests for Phase 46 & 47: Native onpkg Engine, Interactive Stack Wizard, and Autonomous Goal/Plan Commands
+use minicode::agent::prompt::DEFAULT_SYSTEM_PROMPT;
 use minicode::tools::onpkg::doctor::OnpkgDoctor;
 use minicode::tools::onpkg::scaffolder::OnpkgScaffolder;
 use minicode::tools::onpkg::sync::OnpkgSyncEngine;
 use minicode::tools::registry::onpkg_tools;
 use minicode::tools::ToolRegistry;
+use minicode::ui::input::SLASH_COMMANDS;
+use minicode::ui::modal::ModalState;
 use tempfile::tempdir;
 
 #[test]
@@ -93,4 +94,46 @@ fn test_native_doctor_diagnostics() {
     assert!(report.contains("Multi-Runtime Diagnostics"));
     assert!(report.contains("Rust / Cargo"));
     assert!(report.contains("Git"));
+}
+
+#[test]
+fn test_slash_commands_contain_stack_plan_goal() {
+    let cmd_names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
+    assert!(cmd_names.contains(&"/stack"));
+    assert!(cmd_names.contains(&"/plan"));
+    assert!(cmd_names.contains(&"/goal"));
+}
+
+#[test]
+fn test_stack_select_modal_state_and_filter() {
+    let mut modal = ModalState::new_stack_select();
+    if let ModalState::StackSelect {
+        ref stacks,
+        ref filtered_indices,
+        ref mut filter,
+        ..
+    } = modal
+    {
+        assert!(!stacks.is_empty());
+        assert_eq!(filtered_indices.len(), stacks.len());
+
+        // Test filtering
+        *filter = "fastapi".to_string();
+    }
+    modal.update_filter();
+
+    if let ModalState::StackSelect {
+        ref filtered_indices,
+        ..
+    } = modal
+    {
+        assert_eq!(filtered_indices.len(), 1);
+    }
+}
+
+#[test]
+fn test_system_prompt_autonomous_protocols() {
+    assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_stack_add"));
+    assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_docs/todo.md"));
+    assert!(DEFAULT_SYSTEM_PROMPT.contains("semantic_search"));
 }

@@ -919,3 +919,22 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create comprehensive `tests/integration_onpkg_tools.rs` (5 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_onpkg_tools`
+
+---
+
+## ✅ Phase 47: Interactive TUI Stack Wizard & Autonomous Goal/Plan Commands (v0.0.57)
+- [x] **Task 1: Interactive TUI Stack Wizard (`src/ui/modal.rs`)**
+  - [x] Implement `ModalState::StackSelect` with 2-column live stack browser and file tree preview
+  - [x] Implement real-time fuzzy filtering by stack name, runtime, and technology tags
+  - [x] Native asynchronous background scaffolding on `Enter`
+- [x] **Task 2: Slash Commands Registry & Autocomplete (`src/ui/input.rs`)**
+  - [x] Register `/stack`, `/plan`, `/goal` in `SLASH_COMMANDS`
+  - [x] Add instant recommendations and tab-completion in `InputDock`
+- [x] **Task 3: Autonomous Goal & Planning Dispatch (`src/app.rs`)**
+  - [x] Handle `/plan` command with structured milestone breakdown in `onpkg_docs/todo.md`
+  - [x] Handle `/goal` command with autonomous self-directed execution loop
+- [x] **Task 4: Autonomous Intent Protocols in Agent Prompt (`src/agent/prompt.rs`)**
+  - [x] Update `DEFAULT_SYSTEM_PROMPT` for autonomous natural language mapping
+- [x] **Task 5: Integration Tests & Release Verification**
+  - [x] Add unit and integration tests in `tests/integration_onpkg_tools.rs` (8 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test`

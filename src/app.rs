@@ -555,6 +555,43 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/stack" || prompt == "/stacks" {
+                                    self.modal = ModalState::new_stack_select();
+                                    continue;
+                                }
+
+                                if prompt == "/plan" || prompt.starts_with("/plan ") {
+                                    let query = prompt.trim_start_matches("/plan").trim();
+                                    let plan_prompt = if query.is_empty() {
+                                        "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
+                                    } else {
+                                        format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", query)
+                                    };
+                                    self.timeline.add_user_message(prompt.clone());
+                                    self.is_working = true;
+                                    self.work_start = Some(Instant::now());
+                                    let cancel = tokio_util::sync::CancellationToken::new();
+                                    self.cancel_token = Some(cancel.clone());
+                                    let _ = control_tx.send(AgentCommand::Prompt(plan_prompt, Some(cancel)));
+                                    continue;
+                                }
+
+                                if prompt == "/goal" || prompt.starts_with("/goal ") {
+                                    let query = prompt.trim_start_matches("/goal").trim();
+                                    let goal_prompt = if query.is_empty() {
+                                        "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
+                                    } else {
+                                        format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", query)
+                                    };
+                                    self.timeline.add_user_message(prompt.clone());
+                                    self.is_working = true;
+                                    self.work_start = Some(Instant::now());
+                                    let cancel = tokio_util::sync::CancellationToken::new();
+                                    self.cancel_token = Some(cancel.clone());
+                                    let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
+                                    continue;
+                                }
+
                                 if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
                                     self.modal = ModalState::new_provider_select();
                                     continue;
@@ -1055,6 +1092,71 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
+            ModalState::StackSelect {
+                ref stacks,
+                ref filtered_indices,
+                ref mut selected_index,
+                ref mut filter,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < filtered_indices.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    self.modal.update_filter();
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    self.modal.update_filter();
+                }
+                KeyCode::Enter => {
+                    if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
+                        let real_idx = filtered_indices[*selected_index];
+                        let selected_stack = &stacks[real_idx];
+                        let stack_name = selected_stack.name.clone();
+
+                        self.timeline
+                            .add_status(format!("🚀 Scaffolding stack `{}`...", stack_name));
+
+                        let ws = self.workspace_root.clone();
+                        tokio::spawn(async move {
+                            match crate::tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+                                &ws,
+                                &stack_name,
+                                None,
+                                false,
+                            )
+                            .await
+                            {
+                                Ok(msg) => {
+                                    tracing::info!(
+                                        stack = %stack_name,
+                                        output = %msg,
+                                        "Native onpkg stack scaffolded successfully"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        stack = %stack_name,
+                                        error = %e,
+                                        "Native onpkg stack scaffolding failed"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
             ModalState::Approval(ref mut approval_state) => match key.code {
                 KeyCode::Esc => {
                     let pending_tool_id = approval_state.tool_id.clone();

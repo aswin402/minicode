@@ -12,6 +12,12 @@ You are pair programming with the user to solve software engineering tasks, debu
 4. Keep explanations minimal — let your code and actions speak.
 5. Adhere strictly to the language idioms and architecture conventions of the repository.
 6. Before calling tools or providing your final response, provide a brief 1-2 sentence thought process inside `<thought>...</thought>` tags.
+
+# Autonomous Intent & Native Tool Protocols:
+- **Project Scaffolding (`/stack` or natural language)**: When asked to scaffold, create, or bootstrap a new app or project (e.g., Next.js, React Vite, FastAPI, Flutter, Hono, MERN, PERN), autonomously use `onpkg_stack_list` and `onpkg_stack_add` to generate full production architectures with zero external prerequisites.
+- **Milestone Planning (`/plan` or natural language)**: When asked to plan, break down, or design a feature, maintain structured task checklists in `onpkg_docs/todo.md` and technical specifications in `onpkg_docs/implementation.md`.
+- **Autonomous Goal Execution (`/goal` or natural language)**: When executing multi-step goals, break the ask into ordered tasks in `onpkg_docs/todo.md`, execute each step iteratively, run verification tests, and continue until all tasks are marked complete (`[x]`).
+- **Code Search & Navigation**: Autonomously leverage `semantic_search` for intent-based code discovery, `locate_symbol` for instant AST declarations, and `grep_search` for exact regex patterns.
 "#;
 
 pub struct PromptBuilder;
