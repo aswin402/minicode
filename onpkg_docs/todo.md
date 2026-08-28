@@ -896,3 +896,23 @@
 - [x] **Task 5: Integration Tests & Quality Gates**
   - [x] Create `tests/integration_github_tools.rs` (3 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_github_tools`
+
+---
+
+## ✅ Phase 46: Native onpkg Tool Suite & Multi-Runtime Stack Scaffolder (v0.0.55)
+- [x] **Task 1: onpkg Client & Binary Discovery (`src/tools/onpkg/client.rs`)**
+  - [x] Implement robust binary discovery (`which`, `~/.cargo/bin/onpkg`, `~/.local/bin/onpkg`, `/usr/local/bin/onpkg`)
+  - [x] Implement safe subcommand execution with JSON parsing and human-readable fallback
+- [x] **Task 2: Stack & Skill Service Operations (`src/tools/onpkg/mod.rs`)**
+  - [x] Implement `list_stacks` and `show_stack`
+  - [x] Implement `add_stack` with target directory and multi-runtime online installer (`bun`, `uv`, `cargo`, `flutter`)
+  - [x] Implement `list_skills` and `install_skill`
+  - [x] Implement `sync_project` and `run_doctor`
+- [x] **Task 3: Tool Schemas & Registry Integration (`src/tools/registry/onpkg_tools.rs`)**
+  - [x] Register `onpkg_stack_list`, `onpkg_stack_show`, `onpkg_stack_add`
+  - [x] Register `onpkg_skill_list`, `onpkg_skill_install`
+  - [x] Register `onpkg_sync`, `onpkg_doctor`
+  - [x] Integrate into `ToolRegistry::get_tool_schemas()` and `dispatch_tool()` in `src/tools/mod.rs`
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create `tests/integration_onpkg_tools.rs` (4 tests)
+  - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_onpkg_tools`

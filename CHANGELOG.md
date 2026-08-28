@@ -50,6 +50,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.55] — 2026-08-28
+
+### Native onpkg Tool Suite & Multi-Runtime Stack Scaffolder (`src/tools/onpkg/`, `onpkg_tools.rs`)
+
+- **High-Performance `onpkg` Client Engine (`OnpkgClient`)**:
+  - Automatically discovers `onpkg` binary via `which` and standard system paths (`~/.cargo/bin/onpkg`, `~/.local/bin/onpkg`, `/usr/local/bin/onpkg`).
+  - Executes commands with structured JSON output parsing, rich human-readable fallback, and graceful error diagnostics.
+- **7 New Native `onpkg` Tools & Schemas (`src/tools/registry/onpkg_tools.rs`)**:
+  - `onpkg_stack_list`: Query and list all built-in and custom application stacks with categories, technology tags, and file counts.
+  - `onpkg_stack_show`: Inspect the detailed manifest, package dependencies, and file structure of any stack.
+  - `onpkg_stack_add`: Instantly scaffold complete, production-grade application stacks into the target folder with automatic online dependency installation (`bun`, `uv`, `cargo`, `flutter`) and `onpkg_docs/` / `AGENTS.md` generation.
+  - `onpkg_skill_list`: Discover all installed and available domain-specific AI agent skills.
+  - `onpkg_skill_install`: Install specialized markdown skills into `.minicode/skills/` or `onpkg_docs/`.
+  - `onpkg_sync`: Recursively scan project files and dependencies to update `onpkg.json`, synchronize `AGENTS.md`, and refresh spec-driven workflow documents (`prd.md`, `design.md`, `todo.md`).
+  - `onpkg_doctor`: Run multi-runtime environment health diagnostics (Bun, Node.js, UV/Python, Cargo, Flutter).
+- **Verification**:
+  - 4 integration tests in `tests/integration_onpkg_tools.rs` (100% pass).
+  - 14/14 tests across all suites passing.
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.54] — 2026-08-25
 
 ### Native GitHub Integration & CI Workflow Diagnoser (`src/tools/github/`, `git_tools.rs`)

@@ -6,6 +6,7 @@ pub mod exec;
 pub mod fs;
 pub mod github;
 pub mod middleware;
+pub mod onpkg;
 pub mod registry;
 pub mod rtk_filter;
 pub mod search;
@@ -32,7 +33,7 @@ pub struct ToolRegistry;
 impl ToolRegistry {
     /// Returns the schemas of all built-in tools partitioned across domain submodules.
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
-        let mut schemas = Vec::with_capacity(55);
+        let mut schemas = Vec::with_capacity(65);
         schemas.extend(registry::fs_tools::get_schemas());
         schemas.extend(registry::exec_tools::get_schemas());
         schemas.extend(registry::search_tools::get_schemas());
@@ -40,6 +41,7 @@ impl ToolRegistry {
         schemas.extend(registry::agent_tools::get_schemas());
         schemas.extend(registry::context_tools::get_schemas());
         schemas.extend(registry::web_tools::get_schemas());
+        schemas.extend(registry::onpkg_tools::get_schemas());
         schemas
     }
 
@@ -131,6 +133,11 @@ impl ToolRegistry {
 
         // 7. Web & Browser Tools
         if let Some(res) = registry::web_tools::dispatch(tool_name, args, workspace_root).await {
+            return res;
+        }
+
+        // 8. onpkg Stack Scaffolding & Sync Tools
+        if let Some(res) = registry::onpkg_tools::dispatch(tool_name, args, workspace_root).await {
             return res;
         }
 
