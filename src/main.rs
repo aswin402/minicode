@@ -127,6 +127,76 @@ enum Commands {
         #[arg(short = 'd', long)]
         dir: Option<PathBuf>,
     },
+
+    /// Manage, list, and scaffold native onpkg architecture stacks
+    Stack {
+        #[command(subcommand)]
+        action: Option<StackCommands>,
+
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect formatted or machine-readable git diffs
+    Diff {
+        /// Only show staged changes (--cached)
+        #[arg(short = 's', long)]
+        staged: bool,
+
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Perform a multi-agent adversarial code review on git changes
+    Review {
+        /// Only review staged changes
+        #[arg(short = 's', long)]
+        staged: bool,
+
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run multi-runtime environment health checks and diagnostics
+    Doctor,
+
+    /// Synchronize onpkg.json and AGENTS.md with current workspace
+    Sync,
+
+    /// Generate an autonomous milestone implementation plan in onpkg_docs/todo.md
+    Plan {
+        /// The feature or task specification to plan
+        prompt: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum StackCommands {
+    /// List all available built-in and custom stacks
+    List,
+
+    /// Show detailed metadata and package list for a stack
+    Show {
+        /// Name of the stack (e.g. 'fastapi', 'react-vite-gsap', 'next-template')
+        name: String,
+    },
+
+    /// Scaffold a stack into the current workspace or target subdirectory
+    Add {
+        /// Name of the stack to scaffold
+        name: String,
+
+        /// Target subdirectory to create
+        #[arg(short = 'd', long)]
+        dir: Option<String>,
+
+        /// Skip post-scaffold package manager installation
+        #[arg(long)]
+        no_install: bool,
+    },
 }
 
 /// Installs a panic hook to restore the terminal if the application crashes in TUI mode
@@ -199,27 +269,185 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // 5. Dispatch execution mode
-    if let Some(Commands::Run { task }) = cli.command {
-        // Headless one-shot task mode
-        run_headless_task(&workspace_canonical, &config, &task, cli.json_stream).await?;
-    } else if let Some(Commands::Serve { dir }) = cli.command {
-        // Run as MCP server over stdio
-        let target_dir = dir.unwrap_or(workspace_canonical);
-        mcp::MinicodeMcpServer::run_stdio(&target_dir, &config).await?;
-    } else if cli.json_stream {
-        // Headless machine-readable streaming mode over stdio
-        run_ndjson_agent(&workspace_canonical, &config).await?;
-    } else {
-        // Interactive mode (Aura TUI or Plain REPL)
-        let resume_session_id = if cli.continue_session {
-            let store = session::store::SessionStore::with_workspace(&workspace_canonical);
-            store.get_last_session_id()
-        } else {
-            cli.resume
-        };
-        run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref()).await?;
+    match cli.command {
+        Some(Commands::Configure) => unreachable!(), // Handled earlier
+        Some(Commands::Run { task }) => {
+            run_headless_task(&workspace_canonical, &config, &task, cli.json_stream).await?;
+        }
+        Some(Commands::Serve { dir }) => {
+            let target_dir = dir.unwrap_or(workspace_canonical);
+            mcp::MinicodeMcpServer::run_stdio(&target_dir, &config).await?;
+        }
+        Some(Commands::Stack { action, json }) => {
+            handle_stack_cli(&workspace_canonical, action, json).await?;
+        }
+        Some(Commands::Diff { staged, json }) => {
+            handle_diff_cli(&workspace_canonical, staged, json).await?;
+        }
+        Some(Commands::Review { staged, json }) => {
+            handle_review_cli(&workspace_canonical, staged, json).await?;
+        }
+        Some(Commands::Doctor) => {
+            let report = tools::onpkg::doctor::OnpkgDoctor::diagnose();
+            println!("{}", report);
+        }
+        Some(Commands::Sync) => {
+            match tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical) {
+                Ok(msg) => println!("✔ {}", msg),
+                Err(e) => eprintln!("✗ Sync failed: {}", e),
+            }
+        }
+        Some(Commands::Plan { prompt }) => {
+            let plan_task = if let Some(p) = prompt {
+                format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", p)
+            } else {
+                "Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
+            };
+            run_headless_task(&workspace_canonical, &config, &plan_task, cli.json_stream).await?;
+        }
+        None => {
+            if cli.json_stream {
+                run_ndjson_agent(&workspace_canonical, &config).await?;
+            } else {
+                let resume_session_id = if cli.continue_session {
+                    let store = session::store::SessionStore::with_workspace(&workspace_canonical);
+                    store.get_last_session_id()
+                } else {
+                    cli.resume
+                };
+                run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref())
+                    .await?;
+            }
+        }
     }
 
+    Ok(())
+}
+
+async fn handle_stack_cli(
+    workspace: &Path,
+    action: Option<StackCommands>,
+    json_mode: bool,
+) -> anyhow::Result<()> {
+    match action {
+        None | Some(StackCommands::List) => {
+            let stacks = tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+            if json_mode {
+                println!("{}", serde_json::to_string_pretty(&stacks)?);
+            } else {
+                println!(
+                    "\n📦 Built-in & Available Architecture Stacks ({})\n",
+                    stacks.len()
+                );
+                for s in &stacks {
+                    println!(
+                        "  • \x1b[1m\x1b[38;2;162;119;255m{:<24}\x1b[0m [{}] ({} files)",
+                        s.name,
+                        s.runtime,
+                        s.files.len()
+                    );
+                    println!("    \x1b[38;2;140;140;150m{}\x1b[0m", s.description);
+                }
+                println!("\n💡 Run `minicode stack add <name> [--dir <path>]` to scaffold.\n");
+            }
+        }
+        Some(StackCommands::Show { name }) => {
+            let stacks = tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+            if let Some(s) = stacks
+                .into_iter()
+                .find(|s| s.name.eq_ignore_ascii_case(&name))
+            {
+                if json_mode {
+                    println!("{}", serde_json::to_string_pretty(&s)?);
+                } else {
+                    println!(
+                        "\n📦 Stack: \x1b[1m\x1b[38;2;162;119;255m{}\x1b[0m (Runtime: {})",
+                        s.name, s.runtime
+                    );
+                    println!("📝 {}", s.description);
+                    println!(
+                        "⚡ Packages: {}",
+                        if s.packages.is_empty() {
+                            "none".to_string()
+                        } else {
+                            s.packages.join(", ")
+                        }
+                    );
+                    println!("📁 Files ({} files):", s.files.len());
+                    for f in &s.files {
+                        println!("  ├── {}", f.path);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "✗ Stack `{}` not found. Run `minicode stack list` for all available stacks.",
+                    name
+                );
+            }
+        }
+        Some(StackCommands::Add {
+            name,
+            dir,
+            no_install,
+        }) => {
+            let res = tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+                workspace,
+                &name,
+                dir.as_deref(),
+                no_install,
+            )
+            .await?;
+            println!("{}", res);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_diff_cli(workspace: &Path, staged: bool, json_mode: bool) -> anyhow::Result<()> {
+    let diff_files = git::diff_viewer::GitDiffViewer::load_diffs(workspace, staged).await?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&diff_files)?);
+    } else {
+        let view_name = if staged {
+            "Staged (--cached)"
+        } else {
+            "Working Tree (unstaged)"
+        };
+        if diff_files.is_empty() {
+            println!("✔ {} is clean — no diffs found.", view_name);
+        } else {
+            println!(
+                "\n🔍 Git Diff ({}) — {} modified file(s):\n",
+                view_name,
+                diff_files.len()
+            );
+            for f in &diff_files {
+                println!(
+                    "  • \x1b[1m{}\x1b[0m [{}] (+{} -{})",
+                    f.path, f.status_char, f.additions, f.deletions
+                );
+                for l in &f.lines {
+                    match l.tag {
+                        '+' => println!("\x1b[38;2;97;255;202m+ {}\x1b[0m", l.content),
+                        '-' => println!("\x1b[38;2;255;107;128m- {}\x1b[0m", l.content),
+                        '@' => println!("\x1b[38;2;162;119;255m{}\x1b[0m", l.content),
+                        _ => println!("  {}", l.content),
+                    }
+                }
+                println!();
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_review_cli(workspace: &Path, staged: bool, json_mode: bool) -> anyhow::Result<()> {
+    let report = git::reviewer::GitReviewer::review_workspace(workspace, staged).await?;
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{}", git::reviewer::GitReviewer::format_report(&report));
+    }
     Ok(())
 }
 

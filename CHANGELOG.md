@@ -50,6 +50,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.59] — 2026-08-28
+
+### Dual-Mode CLI Interoperability for Humans, Scripts & External AI Agents
+
+- **Native CLI Subcommands (`minicode stack`, `minicode diff`, `minicode review`, `minicode doctor`, `minicode sync`, `minicode plan`)**:
+  - `minicode stack list [--json]`: Lists all built-in & custom architecture stacks with runtime, package counts, and descriptions.
+  - `minicode stack show <name> [--json]`: Displays full file layout tree and dependency list for a specific stack.
+  - `minicode stack add <name> [--dir <path>] [--no-install]`: Direct CLI scaffolding of stacks into projects.
+  - `minicode diff [--staged] [--json]`: Prints syntax-colored unified diff or structured JSON diff for CI/scripts/agents.
+  - `minicode review [--staged] [--json]`: Executes 5-pillar adversarial code review directly from CLI with scorecards or JSON payload.
+  - `minicode doctor`: Runs multi-runtime health checks and diagnostics from terminal.
+  - `minicode sync`: Synchronizes `onpkg.json` manifest and `AGENTS.md` docs.
+  - `minicode plan [prompt]`: Runs autonomous milestone planning non-interactively.
+- **Machine-Readable Dual-Mode Protocols**:
+  - Derived `serde::Serialize` and `serde::Deserialize` on `GitDiffFile`, `GitDiffLine`, `ReviewReport`, and `ReviewFinding`.
+  - All tools and review pipelines are 100% interoperable across Ratatui TUI, Headless NDJSON streaming (`--json-stream`), MCP stdio server (`minicode serve`), and direct CLI subcommands.
+
 ## [0.0.58] — 2026-08-28
 
 ### Interactive TUI Git Diff Viewer & Multi-Agent Code Reviewer (`/diff`, `/review`, `Ctrl+D`)

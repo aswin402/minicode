@@ -3,7 +3,7 @@ use crate::git::service::GitService;
 use std::path::Path;
 
 /// A single line in a git unified diff
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GitDiffLine {
     /// Line prefix/type: `+` (addition), `-` (deletion), ` ` (context), `@` (hunk header)
     pub tag: char,
@@ -16,7 +16,7 @@ pub struct GitDiffLine {
 }
 
 /// A modified file and its parsed diff lines
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GitDiffFile {
     /// Relative path to modified file
     pub path: String,

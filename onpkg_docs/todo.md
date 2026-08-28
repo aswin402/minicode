@@ -959,3 +959,19 @@
   - [x] Create comprehensive `tests/integration_git_diff_review.rs` (5 tests)
   - [x] 23/23 tests passing across all 5 integration test suites
   - [x] 0 clippy warnings (`cargo clippy -- -D warnings`)
+
+---
+
+## ✅ Phase 49: Dual-Mode CLI Subcommands for Humans & AI Agents (v0.0.59)
+- [x] **Task 1: First-Class CLI Subcommands (`src/main.rs`)**
+  - [x] Implement `minicode stack [list | show | add]` with `--json` option
+  - [x] Implement `minicode diff [--staged] [--json]`
+  - [x] Implement `minicode review [--staged] [--json]`
+  - [x] Implement `minicode doctor`, `minicode sync`, `minicode plan [prompt]`
+- [x] **Task 2: Machine-Readable Serde Interoperability (`src/git/reviewer.rs`, `src/git/diff_viewer.rs`)**
+  - [x] Derive `serde::Serialize` and `serde::Deserialize` on `GitDiffFile`, `GitDiffLine`, `ReviewReport`, `ReviewFinding`
+- [x] **Task 3: MCP Server & Headless Streaming Compatibility (`src/mcp/server.rs`)**
+  - [x] Verify MCP stdio JSON-RPC server exposes all tools
+- [x] **Task 4: Verification & Release**
+  - [x] 23/23 integration tests passing across all 5 suites
+  - [x] 0 clippy warnings
