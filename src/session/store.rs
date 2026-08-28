@@ -109,8 +109,21 @@ impl SessionStore {
         Ok(session_id)
     }
 
+    fn validate_session_id(&self, session_id: &str) -> Result<()> {
+        if session_id.is_empty()
+            || session_id.contains('/')
+            || session_id.contains('\\')
+            || session_id.contains("..")
+            || session_id.contains('\0')
+        {
+            return Err(SessionError::InvalidId(session_id.to_string()).into());
+        }
+        Ok(())
+    }
+
     /// Appends an AgentEvent to the session's JSONL file in O(1) time.
     pub fn append_event(&self, session_id: &str, event: &AgentEvent) -> Result<()> {
+        self.validate_session_id(session_id)?;
         let session_path = self.session_file_path(session_id);
         let mut file = OpenOptions::new()
             .create(true)
@@ -125,6 +138,7 @@ impl SessionStore {
 
     /// Reads all events from a session's JSONL file.
     pub fn load_session(&self, session_id: &str) -> Result<Vec<AgentEvent>> {
+        self.validate_session_id(session_id)?;
         let session_path = self.session_file_path(session_id);
         if !session_path.exists() {
             return Err(SessionError::NotFound {
@@ -238,21 +252,20 @@ impl SessionStore {
                         continue;
                     }
                     count += 1;
-                    // Extract the first TurnStart prompt as preview
+                    // Extract the model or first stream delta as preview
                     if meta.preview.is_empty() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                            if val.get("TurnStart").is_some() {
-                                // Will be filled from subsequent Prompt event
-                            }
-                            // Look for a StreamDelta containing user content or a prompt marker
-                            if let Some(obj) = val.as_object() {
-                                if obj.contains_key("TurnStart") {
-                                    if let Some(m) = obj
-                                        .get("TurnStart")
-                                        .and_then(|v| v.get("model"))
-                                        .and_then(|v| v.as_str())
-                                    {
+                            if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
+                                if event_type == "turn_start" {
+                                    if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
                                         meta.preview = format!("model: {}", m);
+                                    }
+                                } else if event_type == "stream_delta" {
+                                    if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                                        let d_trim = d.trim();
+                                        if !d_trim.is_empty() {
+                                            meta.preview = truncate_safe(d_trim, 60, "...");
+                                        }
                                     }
                                 }
                             }
@@ -269,8 +282,12 @@ impl SessionStore {
         self.sessions_dir.join(format!("{}.jsonl", session_id))
     }
 
-    /// Computes an in-depth analytical summary for a given session.
-    pub fn get_session_summary(&self, session_id: &str) -> Result<SessionSummary> {
+    /// Computes an in-depth analytical summary for a given session, returning both summary and events.
+    pub fn get_session_summary_with_events(
+        &self,
+        session_id: &str,
+    ) -> Result<(SessionSummary, Vec<AgentEvent>)> {
+        self.validate_session_id(session_id)?;
         let events = self.load_session(session_id)?;
         let mut model = "unknown".to_string();
         let mut total_turns = 0usize;
@@ -304,6 +321,8 @@ impl SessionStore {
                     if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
                         files_set.insert(path.to_string());
                     } else if let Some(path) = args.get("target_path").and_then(|v| v.as_str()) {
+                        files_set.insert(path.to_string());
+                    } else if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
                         files_set.insert(path.to_string());
                     }
                 }
@@ -353,10 +372,23 @@ impl SessionStore {
             }
         }
 
+        // If first_prompt is still empty, scan events for the first non-empty StreamDelta
+        if first_prompt.is_empty() {
+            for event in &events {
+                if let AgentEvent::StreamDelta { delta, .. } = event {
+                    let trimmed = delta.trim();
+                    if !trimmed.is_empty() {
+                        first_prompt = truncate_safe(trimmed, 120, "...");
+                        break;
+                    }
+                }
+            }
+        }
+
         let mut tools_used: Vec<(String, usize)> = tool_counts.into_iter().collect();
         tools_used.sort_by(|a, b| b.1.cmp(&a.1));
 
-        Ok(SessionSummary {
+        let summary = SessionSummary {
             id: session_id.to_string(),
             created_at,
             workspace,
@@ -369,24 +401,39 @@ impl SessionStore {
             last_response,
             tools_used,
             files_touched: files_set.into_iter().collect(),
-        })
+        };
+
+        Ok((summary, events))
+    }
+
+    /// Computes an in-depth analytical summary for a given session.
+    pub fn get_session_summary(&self, session_id: &str) -> Result<SessionSummary> {
+        self.get_session_summary_with_events(session_id)
+            .map(|(s, _)| s)
     }
 
     /// Forks an existing session into a new session with cloned history and a fresh ID.
     pub fn fork_session(&self, source_id: &str, workspace: &Path) -> Result<String> {
+        self.validate_session_id(source_id)?;
         let events = self.load_session(source_id)?;
         let new_id = self.create_session(workspace)?;
+        let session_path = self.session_file_path(&new_id);
+        let file = OpenOptions::new().append(true).open(&session_path)?;
+        let mut writer = std::io::BufWriter::new(file);
         for event in &events {
-            self.append_event(&new_id, event)?;
+            let line = serde_json::to_string(event)?;
+            writeln!(writer, "{}", line)?;
         }
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
         tracing::info!(source = source_id, target = %new_id, "Forked session successfully");
         Ok(new_id)
     }
 
     /// Exports a session's trajectory to a formatted GitHub-Flavored Markdown file.
     pub fn export_markdown(&self, session_id: &str, output_path: &Path) -> Result<PathBuf> {
-        let summary = self.get_session_summary(session_id)?;
-        let events = self.load_session(session_id)?;
+        self.validate_session_id(session_id)?;
+        let (summary, events) = self.get_session_summary_with_events(session_id)?;
 
         let mut md = String::new();
         md.push_str(&format!(
@@ -406,7 +453,7 @@ impl SessionStore {
             summary.total_tokens
         ));
         md.push_str(&format!(
-            "- **Duration:** {:.2}s\n\n",
+            "- **Tool Execution Time:** {:.2}s\n\n",
             summary.total_duration_ms as f64 / 1000.0
         ));
 
@@ -478,7 +525,7 @@ impl SessionStore {
                         tool, status, duration_ms
                     ));
                     let preview = if output.len() > 1000 {
-                        format!("{}...\n[truncated]", &output[..1000])
+                        truncate_safe(&output, 1000, "...\n[truncated]")
                     } else {
                         output
                     };
@@ -491,10 +538,10 @@ impl SessionStore {
                     md.push_str(&format!("📝 *File {}*: `{}`\n\n", action, path));
                 }
                 AgentEvent::GitCommit { hash, message, .. } => {
+                    let hash_short = truncate_safe(&hash, 7, "");
                     md.push_str(&format!(
                         "📦 **Git Commit:** `{}` — *{}*\n\n",
-                        &hash[..7.min(hash.len())],
-                        message
+                        hash_short, message
                     ));
                 }
                 _ => {}
@@ -506,6 +553,9 @@ impl SessionStore {
             md.push_str("\n\n");
         }
 
+        if let Some(parent) = output_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         std::fs::write(output_path, md)?;
         tracing::info!(
             session = session_id,
@@ -517,15 +567,27 @@ impl SessionStore {
 
     /// Deletes a session JSONL file from disk.
     pub fn delete_session(&self, session_id: &str) -> Result<bool> {
+        self.validate_session_id(session_id)?;
         let path = self.session_file_path(session_id);
-        if path.exists() {
-            std::fs::remove_file(&path)?;
-            tracing::info!(session = session_id, "Deleted session file");
-            Ok(true)
-        } else {
-            Ok(false)
+        match std::fs::remove_file(&path) {
+            Ok(_) => {
+                tracing::info!(session = session_id, "Deleted session file");
+                Ok(true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
         }
     }
+}
+
+/// Truncates a string to at most `max_bytes` without slicing through UTF-8 character boundaries.
+/// If truncated, appends `suffix`.
+pub fn truncate_safe(s: &str, max_bytes: usize, suffix: &str) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let safe_end = s.floor_char_boundary(max_bytes);
+    format!("{}{}", &s[..safe_end], suffix)
 }
 
 /// Analytical summary of a completed or active conversation session

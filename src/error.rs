@@ -163,6 +163,9 @@ pub enum SessionError {
     #[error("Session '{id}' not found at {path}")]
     NotFound { id: String, path: String },
 
+    #[error("Invalid session ID '{0}': path traversal or invalid characters detected")]
+    InvalidId(String),
+
     #[error("Failed to write session checkpoint: {0}")]
     WriteCheckpoint(String),
 

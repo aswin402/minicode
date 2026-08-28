@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.61] — 2026-08-28
+
+### Session History Hardening & Quality Improvements
+
+- **UTF-8 Slicing Panic Protection (`truncate_safe`, `src/session/store.rs`, `src/ui/modal.rs`)**:
+  - Replaced unsafe byte slicing with `floor_char_boundary`-based `truncate_safe` across session export, commit rendering, and TUI response previews, preventing runtime panics on emojis, CJK text, and multi-byte unicode.
+- **SessionStore Hardening & Security (`src/session/store.rs`, `src/error.rs`)**:
+  - Added path traversal protection (`validate_session_id`) rejecting malicious paths containing `..`, `/`, `\`, or null bytes with `SessionError::InvalidId`.
+  - Fixed TOCTOU race condition in `delete_session()` via direct `remove_file` matching on `io::ErrorKind::NotFound`.
+  - Optimized `fork_session()` with buffered batch writes (`BufWriter`) and single sync flush.
+- **StreamDelta & AI Transcript Persistence (`src/agent/loop.rs`, `src/session/store.rs`)**:
+  - Persisted `StreamDelta` events directly to session JSONL, ensuring exported transcripts and session summaries preserve all assistant thinking and responses.
+  - Fixed `list_sessions_rich()` serde tag parsing (`turn_start` and `stream_delta`) to accurately extract model info and prompt previews.
+- **UI & Slash Command Enhancements (`src/ui/modal.rs`, `src/app.rs`)**:
+  - Added viewport windowing to `ModalState::SessionBrowser` so long session lists scroll smoothly without overflowing terminal bounds.
+  - Fixed `/export` fallback behavior when no sessions exist, preventing confusing "current session not found" errors.
+  - Scoped `/load` to the workspace session store (`.minicode/sessions/`) matching `/sessions` and `/history`.
+  - Improved `d` (delete) key in SessionBrowser with immediate in-memory item removal and user status feedback.
+  - Renamed duration metric to "Tool Execution Time" / "Tool Time" for clarity.
+- **Expanded Test Suite (`tests/integration_session_history.rs`)**:
+  - Added 4 new integration tests (8 total in suite, 31 total across 6 test suites) covering UTF-8 safe truncation, path traversal rejection, corrupted JSONL resilience, and empty session summaries.
+
 ## [0.0.60] — 2026-08-28
 
 ### Interactive Visual Session History & Time-Travel Explorer

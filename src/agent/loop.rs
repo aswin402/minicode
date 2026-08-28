@@ -297,6 +297,12 @@ impl AgentLoop {
                                 turn_id,
                                 delta: delta.clone(),
                             };
+                            if let Err(e) = self
+                                .session_store
+                                .append_event(&self.session_id, &delta_event)
+                            {
+                                tracing::debug!("Failed to persist StreamDelta event: {}", e);
+                            }
                             if let Err(e) = event_sender.send(delta_event) {
                                 tracing::debug!(error = %e, "Failed to send stream delta event");
                             }

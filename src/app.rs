@@ -408,9 +408,15 @@ impl<'a> App<'a> {
                                 // Ctrl+H toggles interactive Session History & Time-Travel modal
                                 if key_event.code == KeyCode::Char('h') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
-                                    let sessions = store.list_sessions_rich().unwrap_or_default();
-                                    let initial_summary = sessions.first().and_then(|s| store.get_session_summary(&s.id).ok());
-                                    self.modal = ModalState::new_session_browser(sessions, initial_summary);
+                                    match store.list_sessions_rich() {
+                                        Ok(sessions) => {
+                                            let initial_summary = sessions.first().and_then(|s| store.get_session_summary(&s.id).ok());
+                                            self.modal = ModalState::new_session_browser(sessions, initial_summary);
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to load session history: {}", e));
+                                        }
+                                    }
                                     continue;
                                 }
 
@@ -710,16 +716,26 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                if prompt.starts_with("/export") {
-                                    let target_path = prompt.trim_start_matches("/export").trim();
+                                if prompt == "/export" || prompt.starts_with("/export ") {
+                                    let target_path = prompt.strip_prefix("/export").unwrap_or("").trim();
                                     let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
-                                    let session_id = store.get_last_session_id().unwrap_or_else(|| "current".to_string());
+                                    let session_id = match store.get_last_session_id() {
+                                        Some(id) => id,
+                                        None => {
+                                            self.timeline.add_status("ℹ No recorded sessions to export in this workspace.".to_string());
+                                            continue;
+                                        }
+                                    };
                                     let export_file = if target_path.is_empty() {
                                         let export_dir = self.workspace_root.join(".minicode").join("exports");
                                         let _ = std::fs::create_dir_all(&export_dir);
                                         export_dir.join(format!("{}.md", session_id))
                                     } else {
-                                        self.workspace_root.join(target_path)
+                                        let p = self.workspace_root.join(target_path);
+                                        if let Some(parent) = p.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
+                                        p
                                     };
                                     match store.export_markdown(&session_id, &export_file) {
                                         Ok(p) => {
@@ -770,9 +786,9 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                if prompt.starts_with("/load") {
-                                    let target_id = prompt.trim_start_matches("/load").trim();
-                                    let store = crate::session::store::SessionStore::new();
+                                if prompt == "/load" || prompt.starts_with("/load ") {
+                                    let target_id = prompt.strip_prefix("/load").unwrap_or("").trim();
+                                    let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
                                     if target_id.is_empty() {
                                         match store.list_sessions() {
                                             Ok(sessions) if !sessions.is_empty() => {
@@ -1227,11 +1243,11 @@ impl<'a> App<'a> {
                         let store = crate::session::store::SessionStore::with_workspace(
                             &self.workspace_root,
                         );
-                        if let Ok(true) = store.delete_session(&target_id) {
-                            self.timeline
-                                .add_status(format!("🗑️ Deleted session '{}'", target_id));
-                            if let Ok(new_sessions) = store.list_sessions_rich() {
-                                *sessions = new_sessions;
+                        match store.delete_session(&target_id) {
+                            Ok(true) => {
+                                self.timeline
+                                    .add_status(format!("🗑️ Deleted session '{}'", target_id));
+                                sessions.remove(*selected_index);
                                 if *selected_index >= sessions.len() && *selected_index > 0 {
                                     *selected_index = sessions.len() - 1;
                                 }
@@ -1240,6 +1256,18 @@ impl<'a> App<'a> {
                                 } else {
                                     *cached_summary = None;
                                 }
+                            }
+                            Ok(false) => {
+                                self.timeline.add_status(format!(
+                                    "ℹ Session '{}' not found on disk",
+                                    target_id
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline.add_status(format!(
+                                    "✗ Failed to delete session '{}': {}",
+                                    target_id, e
+                                ));
                             }
                         }
                     }

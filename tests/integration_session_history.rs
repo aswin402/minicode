@@ -170,5 +170,149 @@ async fn test_session_deletion() {
     let sessions_after = store.list_sessions().unwrap();
     assert_eq!(sessions_after.len(), 0);
 
+    // Deleting again should return Ok(false)
+    let deleted_again = store.delete_session(&session_id).unwrap();
+    assert!(!deleted_again);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_utf8_safe_truncation_and_markdown_export() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_utf8_test_{}", uuid::Uuid::new_v4()));
+    let store = SessionStore::with_dir(temp_dir.clone());
+    let session_id = store.create_session(&temp_dir).unwrap();
+
+    // Multi-byte Unicode (emojis, CJK characters, math symbols)
+    let unicode_text = "🚀 Rust agent 🦀 探索智能代理 🧮 ∫(x)dx 🌟 ".repeat(60);
+    let event1 = AgentEvent::TurnStart {
+        turn_id: 1,
+        timestamp: "2026-08-28T12:00:00Z".to_string(),
+        model: "claude-3-7-sonnet".to_string(),
+        context_tokens: 1500,
+    };
+    let event2 = AgentEvent::StreamDelta {
+        turn_id: 1,
+        delta: unicode_text.clone(),
+    };
+    let event3 = AgentEvent::ToolResult {
+        turn_id: 1,
+        tool_id: "call_utf8".to_string(),
+        tool: "exec_cmd".to_string(),
+        success: true,
+        output: unicode_text.clone(),
+        duration_ms: 250,
+    };
+    let event4 = AgentEvent::GitCommit {
+        turn_id: 1,
+        hash: "a1b2c3d4e5f67890".to_string(),
+        message: "feat: ✨ unicode commit message".to_string(),
+        files: vec!["src/main.rs".to_string()],
+    };
+
+    store.append_event(&session_id, &event1).unwrap();
+    store.append_event(&session_id, &event2).unwrap();
+    store.append_event(&session_id, &event3).unwrap();
+    store.append_event(&session_id, &event4).unwrap();
+
+    let summary = store.get_session_summary(&session_id).unwrap();
+    assert!(!summary.first_prompt.is_empty());
+    assert!(!summary.last_response.is_empty());
+
+    let export_path = temp_dir.join("unicode_export.md");
+    let exported = store.export_markdown(&session_id, &export_path).unwrap();
+    assert!(exported.exists());
+
+    let content = std::fs::read_to_string(&exported).unwrap();
+    assert!(content.contains("Tool Execution Time"));
+    assert!(content.contains("[truncated]"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_path_traversal_rejection() {
+    let temp_dir = std::env::temp_dir().join(format!("minicode_sec_test_{}", uuid::Uuid::new_v4()));
+    let store = SessionStore::with_dir(temp_dir.clone());
+
+    let malicious_ids = vec![
+        "../escape",
+        "../../etc/passwd",
+        "nested/sub/id",
+        "back\\slash",
+        "",
+    ];
+
+    for bad_id in malicious_ids {
+        assert!(store.load_session(bad_id).is_err());
+        assert!(store.delete_session(bad_id).is_err());
+        assert!(store.get_session_summary(bad_id).is_err());
+        assert!(store.fork_session(bad_id, &temp_dir).is_err());
+        assert!(store
+            .export_markdown(bad_id, &temp_dir.join("out.md"))
+            .is_err());
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_corrupted_jsonl_resilience() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_corrupt_test_{}", uuid::Uuid::new_v4()));
+    let store = SessionStore::with_dir(temp_dir.clone());
+    let session_id = store.create_session(&temp_dir).unwrap();
+
+    let valid_event = AgentEvent::TurnStart {
+        turn_id: 1,
+        timestamp: "2026-08-28T10:00:00Z".to_string(),
+        model: "gemini-2.5-pro".to_string(),
+        context_tokens: 500,
+    };
+    store.append_event(&session_id, &valid_event).unwrap();
+
+    // Manually inject invalid JSON lines into the session file
+    let file_path = temp_dir.join(format!("{}.jsonl", session_id));
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&file_path)
+        .unwrap();
+    writeln!(file, "{{not_valid_json: 123}}").unwrap();
+    writeln!(file, "random garbage line").unwrap();
+
+    let valid_event2 = AgentEvent::StreamDelta {
+        turn_id: 1,
+        delta: "Valid delta after corruption".to_string(),
+    };
+    let line = serde_json::to_string(&valid_event2).unwrap();
+    writeln!(file, "{}", line).unwrap();
+
+    // load_session should gracefully skip corrupted lines and load valid events
+    let events = store.load_session(&session_id).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0], valid_event);
+    assert_eq!(events[1], valid_event2);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_empty_session_summary() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_empty_test_{}", uuid::Uuid::new_v4()));
+    let store = SessionStore::with_dir(temp_dir.clone());
+    let session_id = store.create_session(&temp_dir).unwrap();
+
+    let summary = store.get_session_summary(&session_id).unwrap();
+    assert_eq!(summary.id, session_id);
+    assert_eq!(summary.total_events, 0);
+    assert_eq!(summary.total_turns, 0);
+    assert_eq!(summary.total_tokens, 0);
+    assert_eq!(summary.total_duration_ms, 0);
+    assert!(summary.tools_used.is_empty());
+    assert!(summary.files_touched.is_empty());
+
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

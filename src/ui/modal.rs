@@ -1,4 +1,5 @@
 use crate::agent::models::ModelInfo;
+use crate::session::store::truncate_safe;
 use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -730,18 +731,25 @@ impl ModalState {
                     .alignment(Alignment::Left);
                     frame.render_widget(empty, body_chunks[0]);
                 } else {
-                    let items: Vec<ListItem> = sessions
+                    let available_height = body_chunks[0].height as usize;
+                    let max_visible = (available_height / 2).max(1);
+                    let scroll_offset = if *selected_index >= max_visible {
+                        *selected_index - max_visible + 1
+                    } else {
+                        0
+                    };
+                    let visible_sessions = sessions
                         .iter()
                         .enumerate()
+                        .skip(scroll_offset)
+                        .take(max_visible);
+
+                    let items: Vec<ListItem> = visible_sessions
                         .map(|(i, s)| {
                             let is_selected = i == *selected_index;
                             let time_ago = format_time_ago(&s.created_at);
 
-                            let id_short = if s.id.len() > 18 {
-                                format!("{}…", &s.id[..18])
-                            } else {
-                                s.id.clone()
-                            };
+                            let id_short = truncate_safe(&s.id, 18, "…");
 
                             let event_badge = if s.event_count == 0 {
                                 String::new()
@@ -847,7 +855,7 @@ impl ModalState {
                             format!("~{}   ", summary.total_tokens),
                             Style::default().fg(theme.text_primary),
                         ),
-                        Span::styled("Duration: ", Style::default().fg(theme.muted)),
+                        Span::styled("Tool Time: ", Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("{:.2}s", summary.total_duration_ms as f64 / 1000.0),
                             Style::default().fg(theme.text_primary),
@@ -905,11 +913,7 @@ impl ModalState {
                     }
 
                     if !summary.last_response.is_empty() {
-                        let snippet = if summary.last_response.len() > 180 {
-                            format!("{}...", &summary.last_response[..180])
-                        } else {
-                            summary.last_response.clone()
-                        };
+                        let snippet = truncate_safe(&summary.last_response, 180, "...");
                         preview_lines.push(Line::from(vec![
                             Span::styled("Last Response: ", Style::default().fg(theme.muted)),
                             Span::styled(

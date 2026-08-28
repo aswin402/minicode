@@ -997,3 +997,47 @@
   - [x] 4 new integration tests covering summaries, forking isolation, markdown exports, and deletion
   - [x] 27/27 tests passing across all 6 test suites
   - [x] 0 clippy warnings (`cargo clippy -- -D warnings`)
+
+---
+
+## ✅ Phase 51: Session History Hardening & Quality Fixes (v0.0.61)
+> Fixes all 20 issues from the Phase 50 code review. Informed by research on Codex CLI, Claude Code, Aider, Cline, and Zed AI session architectures.
+
+- [x] **Task 1: UTF-8 Safe Truncation (`src/session/store.rs`, `src/ui/modal.rs`)**
+  - [x] Add `truncate_safe(s, max_bytes, suffix)` helper using `str::floor_char_boundary()`
+  - [x] Fix `export_markdown()` — replace `&output[..1000]` with safe truncation (prevents panic on non-ASCII)
+  - [x] Fix `modal.rs` — replace `&summary.last_response[..180]` with safe truncation
+  - [x] Fix `modal.rs` — replace `&s.id[..18]` with safe truncation
+  - [x] Fix `store.rs` — replace `&hash[..7.min(hash.len())]` with safe truncation
+- [x] **Task 2: Session Store Hardening (`src/session/store.rs`, `src/error.rs`)**
+  - [x] Add `InvalidId` variant to `SessionError` enum
+  - [x] Add `validate_session_id()` — reject `session_id` containing `/`, `\`, `..`, or null bytes
+  - [x] Fix TOCTOU race in `delete_session()` — use `remove_file()` + match `NotFound` pattern
+  - [x] Optimize `fork_session()` — use `BufWriter` for batch write with single `sync_all()`
+  - [x] Wire `validate_session_id()` into `load_session()`, `delete_session()`, `get_session_summary()`, `export_markdown()`, `fork_session()`
+- [x] **Task 3: Persist StreamDelta Events (`src/agent/loop.rs`, `src/session/store.rs`)**
+  - [x] Persist `AgentEvent::StreamDelta` to session JSONL in the agent loop (like ToolCall already is)
+  - [x] Fix `first_prompt` — extract from first StreamDelta content instead of metadata header
+  - [x] Fix `list_sessions_rich()` serde tag mismatch — use `val.get("event")` not `val.get("TurnStart")`
+- [x] **Task 4: Slash Command & CLI Fixes (`src/app.rs`)**
+  - [x] Fix `/export` fallback — show "no sessions" message instead of using `"current"` as session ID
+  - [x] Fix `/export` prefix overreach — use `prompt == "/export" || prompt.starts_with("/export ")`
+  - [x] Fix `/load` store mismatch — use `SessionStore::with_workspace()` instead of `SessionStore::new()`
+- [x] **Task 5: SessionBrowser UX Improvements (`src/ui/modal.rs`, `src/app.rs`)**
+  - [x] Add viewport scrolling to SessionBrowser using `scroll_offset` (like ThemeSelect/UndoCheckpoint modals)
+  - [x] Show error status on Ctrl+H instead of silent `unwrap_or_default()`
+  - [x] Add error feedback on delete failure — show message for `Ok(false)` and `Err(e)` cases
+  - [x] Use `sessions.remove(*selected_index)` instead of re-listing from disk on delete
+- [x] **Task 6: Performance & Label Fixes (`src/session/store.rs`)**
+  - [x] Add `get_session_summary_with_events()` to avoid triple file read in `export_markdown()`
+  - [x] Label `total_duration_ms` as "Tool Execution Time" instead of "Duration" in export and UI
+- [x] **Task 7: Expanded Test Coverage (`tests/integration_session_history.rs`)**
+  - [x] `test_utf8_safe_truncation_and_markdown_export` — emoji/CJK content in StreamDelta, verify no panic
+  - [x] `test_session_summary_analytics` — multi-event analytics, tool counts, touched files
+  - [x] `test_corrupted_jsonl_resilience` — invalid JSON lines, verify graceful skip
+  - [x] `test_empty_session_summary` — session with no events, verify sane defaults
+  - [x] `test_path_traversal_rejection` — `"../etc/passwd"` as session_id, verify error
+  - [x] `test_delete_nonexistent_session` — verify returns `Ok(false)`
+  - [x] `test_session_forking_and_isolation` — fork session and verify isolation
+  - [x] `test_session_export_markdown_transcript` — markdown export verification
+
