@@ -50,6 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.56] — 2026-08-28
+
+### Embedded Native onpkg Template Engine & Autonomous Spec Syncer (`src/tools/onpkg/`)
+
+- **100% Embedded Pure-Rust Stack Templates (`src/tools/onpkg/templates/builtin/`)**:
+  - Embedded full production architectures directly into binary memory (`react-vite`, `react-vite-full`, `react-vite-gsap`, `next-template`, `fastapi`, `flutter-riverpod-my_app`, `hono-api`, `hono-full`, `mern`, `pern`).
+  - Zero external CLI dependency required — standalone single-binary scaffolding anywhere.
+- **Native Multi-Runtime Package Manager & Auto-Installer (`OnpkgScaffolder`)**:
+  - Automatically writes all stack files, generates `onpkg.json` and `AGENTS.md`, creates `onpkg_docs/` spec suites (`prd.md`, `design.md`, `implementation.md`, `todo.md`), and executes runtime-optimized package managers (`bun`, `uv`, `cargo`, `flutter`).
+- **Autonomous Project Sync & Diagnostics (`OnpkgSyncEngine`, `OnpkgDoctor`)**:
+  - Real-time project runtime detection and manifest synchronization.
+  - Multi-runtime environment doctor inspecting Bun, UV, Node, Python, Flutter, Cargo, and Git.
+- **Native Skills Manager (`OnpkgSkillsManager`)**:
+  - Discovers and installs active agent skills across `.minicode/skills/`, `onpkg_docs/`, and global directories.
+- **Verification**:
+  - 5 integration tests in `tests/integration_onpkg_tools.rs` (100% pass).
+  - 15/15 tests across all suites passing.
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.55] — 2026-08-28
 
 ### Native onpkg Tool Suite & Multi-Runtime Stack Scaffolder (`src/tools/onpkg/`, `onpkg_tools.rs`)

@@ -1,10 +1,12 @@
-/// Integration tests for Phase 46: Native onpkg Tool Suite & Stack Scaffolder
+/// Integration tests for Phase 46: Full Native onpkg Integration in minicode
 ///
-/// Tests onpkg schema registration, stack info deserialization, and binary resolution.
-use minicode::tools::onpkg::client::OnpkgClient;
-use minicode::tools::onpkg::types::{OnpkgSkillInfo, OnpkgStackInfo};
+/// Tests embedded stack templates, scaffolder, sync engine, skills manager, and diagnostics.
+use minicode::tools::onpkg::doctor::OnpkgDoctor;
+use minicode::tools::onpkg::scaffolder::OnpkgScaffolder;
+use minicode::tools::onpkg::sync::OnpkgSyncEngine;
 use minicode::tools::registry::onpkg_tools;
 use minicode::tools::ToolRegistry;
+use tempfile::tempdir;
 
 #[test]
 fn test_onpkg_schemas_registered_in_registry() {
@@ -19,58 +21,76 @@ fn test_onpkg_schemas_registered_in_registry() {
     assert!(names.contains(&"onpkg_sync".to_string()));
     assert!(names.contains(&"onpkg_doctor".to_string()));
 
-    // Verify presence in global ToolRegistry
+    // Global ToolRegistry check
     let global_schemas = ToolRegistry::get_tool_schemas();
     let global_names: Vec<String> = global_schemas.into_iter().map(|s| s.name).collect();
-    assert!(global_names.contains(&"onpkg_stack_list".to_string()));
-    assert!(global_names.contains(&"onpkg_sync".to_string()));
+    assert!(global_names.contains(&"onpkg_stack_add".to_string()));
 }
 
 #[test]
-fn test_onpkg_stack_info_deserialization() {
-    let raw_json = r#"[
-        {
-            "name": "next-template",
-            "category": "frontend",
-            "description": "Upgraded Next.js 16 + Bun + Tailwind CSS v4 + Prisma 7",
-            "version": "1.0.0",
-            "files_count": 61,
-            "technologies": ["next", "prisma", "tailwind"]
-        },
-        {
-            "name": "fastapi",
-            "category": "backend",
-            "description": "FastAPI + SQLAlchemy (Async) + Alembic + Pydantic v2",
-            "version": "1.0.0",
-            "files_count": 24,
-            "technologies": ["fastapi", "python"]
-        }
-    ]"#;
+fn test_native_builtin_stacks_catalogue() {
+    let stacks = OnpkgScaffolder::get_all_stacks();
+    assert!(
+        stacks.len() >= 10,
+        "Expected at least 10 built-in stacks, found {}",
+        stacks.len()
+    );
 
-    let stacks: Vec<OnpkgStackInfo> = serde_json::from_str(raw_json).unwrap();
-    assert_eq!(stacks.len(), 2);
-    assert_eq!(stacks[0].name, "next-template");
-    assert_eq!(stacks[0].files_count, 61);
-    assert_eq!(stacks[0].technologies.len(), 3);
-    assert_eq!(stacks[1].category, "backend");
+    let names: Vec<String> = stacks.into_iter().map(|s| s.name).collect();
+    assert!(names.contains(&"react-vite".to_string()));
+    assert!(names.contains(&"react-vite-gsap".to_string()));
+    assert!(names.contains(&"next-template".to_string()));
+    assert!(names.contains(&"fastapi".to_string()));
+    assert!(names.contains(&"hono-full".to_string()));
+    assert!(names.contains(&"mern".to_string()));
+    assert!(names.contains(&"pern".to_string()));
+    assert!(names.contains(&"flutter-riverpod-my_app".to_string()));
+}
+
+#[tokio::test]
+async fn test_native_scaffolding_end_to_end() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // Scaffold FastAPI stack natively without network install
+    let res = OnpkgScaffolder::scaffold(workspace, "fastapi", Some("my_api"), true)
+        .await
+        .unwrap();
+
+    assert!(res.contains("✔ Successfully scaffolded stack `fastapi`"));
+
+    let api_dir = workspace.join("my_api");
+    assert!(api_dir.join("app/main.py").exists());
+    assert!(api_dir.join("alembic.ini").exists());
+    assert!(api_dir.join("justfile").exists());
+    assert!(api_dir.join("onpkg.json").exists());
+    assert!(api_dir.join("AGENTS.md").exists());
+    assert!(api_dir.join("onpkg_docs/prd.md").exists());
+    assert!(api_dir.join("onpkg_docs/todo.md").exists());
 }
 
 #[test]
-fn test_onpkg_skill_info_deserialization() {
-    let skill = OnpkgSkillInfo {
-        name: "tailwind-patterns".to_string(),
-        version: "1.0.0".to_string(),
-        description: "Tailwind CSS v4 design tokens and modern patterns".to_string(),
-    };
+fn test_native_runtime_detection_and_sync() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
 
-    let serialized = serde_json::to_string(&skill).unwrap();
-    let deserialized: OnpkgSkillInfo = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(deserialized.name, "tailwind-patterns");
+    // Simulate Rust project
+    std::fs::write(workspace.join("Cargo.toml"), "[package]\nname=\"test\"\n").unwrap();
+    let (runtime, pm) = OnpkgSyncEngine::detect_runtime(workspace);
+    assert_eq!(runtime, "rust");
+    assert_eq!(pm, "cargo");
+
+    // Perform sync
+    let sync_res = OnpkgSyncEngine::sync(workspace).unwrap();
+    assert!(sync_res.contains("Synchronized `"));
+    assert!(workspace.join("onpkg.json").exists());
+    assert!(workspace.join("AGENTS.md").exists());
 }
 
 #[test]
-fn test_onpkg_client_binary_check() {
-    // Should gracefully execute without panicking
-    let _ = OnpkgClient::find_binary();
-    let _ = OnpkgClient::is_installed();
+fn test_native_doctor_diagnostics() {
+    let report = OnpkgDoctor::diagnose();
+    assert!(report.contains("Multi-Runtime Diagnostics"));
+    assert!(report.contains("Rust / Cargo"));
+    assert!(report.contains("Git"));
 }

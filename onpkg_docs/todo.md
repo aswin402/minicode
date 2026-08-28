@@ -899,20 +899,23 @@
 
 ---
 
-## ✅ Phase 46: Native onpkg Tool Suite & Multi-Runtime Stack Scaffolder (v0.0.55)
-- [x] **Task 1: onpkg Client & Binary Discovery (`src/tools/onpkg/client.rs`)**
-  - [x] Implement robust binary discovery (`which`, `~/.cargo/bin/onpkg`, `~/.local/bin/onpkg`, `/usr/local/bin/onpkg`)
-  - [x] Implement safe subcommand execution with JSON parsing and human-readable fallback
-- [x] **Task 2: Stack & Skill Service Operations (`src/tools/onpkg/mod.rs`)**
-  - [x] Implement `list_stacks` and `show_stack`
-  - [x] Implement `add_stack` with target directory and multi-runtime online installer (`bun`, `uv`, `cargo`, `flutter`)
-  - [x] Implement `list_skills` and `install_skill`
-  - [x] Implement `sync_project` and `run_doctor`
-- [x] **Task 3: Tool Schemas & Registry Integration (`src/tools/registry/onpkg_tools.rs`)**
+## ✅ Phase 46: Embedded Native onpkg Template Engine & Autonomous Spec Syncer (v0.0.56)
+- [x] **Task 1: 100% Embedded Pure-Rust Stack Templates (`src/tools/onpkg/templates/builtin/`, `src/tools/onpkg/stacks.rs`)**
+  - [x] Embed built-in stacks in memory: React Vite, React Vite Full, React Vite GSAP, Next.js 16, FastAPI, Flutter Riverpod, Hono API, Hono Full, MERN, PERN
+  - [x] Implement `OnpkgScaffolder` with zero external binary dependencies
+- [x] **Task 2: Native Multi-Runtime Scaffolder & Auto-Installer (`src/tools/onpkg/scaffolder.rs`)**
+  - [x] Scaffolding with atomic directory and file creation
+  - [x] Automatic generation of `onpkg.json`, `AGENTS.md`, and `onpkg_docs/` (`prd.md`, `design.md`, `implementation.md`, `todo.md`)
+  - [x] Multi-runtime post-scaffold auto-installer (`bun install`, `uv sync`, `cargo check`, `flutter pub get`)
+- [x] **Task 3: Autonomous Spec Syncer, Skills Manager & Diagnostics (`src/tools/onpkg/`)**
+  - [x] Implement `OnpkgSyncEngine` in `src/tools/onpkg/sync.rs`
+  - [x] Implement `OnpkgDoctor` multi-runtime environment health checks in `src/tools/onpkg/doctor.rs`
+  - [x] Implement `OnpkgSkillsManager` in `src/tools/onpkg/skills.rs`
+- [x] **Task 4: Tool Schemas & Registry Integration (`src/tools/registry/onpkg_tools.rs`)**
   - [x] Register `onpkg_stack_list`, `onpkg_stack_show`, `onpkg_stack_add`
   - [x] Register `onpkg_skill_list`, `onpkg_skill_install`
   - [x] Register `onpkg_sync`, `onpkg_doctor`
   - [x] Integrate into `ToolRegistry::get_tool_schemas()` and `dispatch_tool()` in `src/tools/mod.rs`
-- [x] **Task 4: Integration Tests & Quality Gates**
-  - [x] Create `tests/integration_onpkg_tools.rs` (4 tests)
+- [x] **Task 5: Integration Tests & Quality Gates**
+  - [x] Create comprehensive `tests/integration_onpkg_tools.rs` (5 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test --test integration_onpkg_tools`
