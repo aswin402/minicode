@@ -54,12 +54,20 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "re-submit the last prompt to the agent",
     },
     SlashCommand {
-        name: "/save",
-        description: "export conversation history to a file",
+        name: "/history",
+        description: "interactive session history, preview & time-travel explorer (Ctrl+H)",
     },
     SlashCommand {
         name: "/sessions",
-        description: "browse past session history for this workspace",
+        description: "browse past session history for this workspace (Ctrl+H)",
+    },
+    SlashCommand {
+        name: "/export",
+        description: "export session trajectory to a markdown report (/export [path])",
+    },
+    SlashCommand {
+        name: "/save",
+        description: "export conversation history to a file",
     },
     SlashCommand {
         name: "/load",

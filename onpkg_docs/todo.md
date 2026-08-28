@@ -975,3 +975,25 @@
 - [x] **Task 4: Verification & Release**
   - [x] 23/23 integration tests passing across all 5 suites
   - [x] 0 clippy warnings
+
+---
+
+## ✅ Phase 50: Interactive Visual Session History & Time-Travel Explorer (v0.0.60)
+- [x] **Task 1: SessionStore Analytical & Manipulation Engine (`src/session/store.rs`)**
+  - [x] Implement `SessionSummary` with model, turns, events, tokens, duration, tool call map, files touched, and conversation excerpts
+  - [x] Implement `get_session_summary(&self, session_id: &str)`
+  - [x] Implement `fork_session(&self, source_id: &str, workspace: &Path)` for time-travel branching
+  - [x] Implement `export_markdown(&self, session_id: &str, output_path: &Path)`
+  - [x] Implement `delete_session(&self, session_id: &str)`
+- [x] **Task 2: 2-Column Visual History & Analytical Inspector (`src/ui/modal.rs`, `src/app.rs`)**
+  - [x] Implement 2-column split `ModalState::SessionBrowser` (36% session list, 64% analytical preview)
+  - [x] Render live preview with model, turns, token metrics, duration, tool distribution, and touched files
+  - [x] Wire hotkeys: <kbd>Enter</kbd> Load, <kbd>f</kbd> Fork, <kbd>e</kbd> Export MD, <kbd>d</kbd> Delete, <kbd>j</kbd>/<kbd>k</kbd> Scroll
+  - [x] Bind <kbd>Ctrl+H</kbd> and register `/history` & `/export` in `src/ui/input.rs`
+- [x] **Task 3: Dual-Mode CLI Subcommands (`src/main.rs`)**
+  - [x] Implement `minicode history [--json]`
+  - [x] Implement `minicode export [session_id] [-o output.md]`
+- [x] **Task 4: Integration Tests & Quality Gates (`tests/integration_session_history.rs`)**
+  - [x] 4 new integration tests covering summaries, forking isolation, markdown exports, and deletion
+  - [x] 27/27 tests passing across all 6 test suites
+  - [x] 0 clippy warnings (`cargo clippy -- -D warnings`)

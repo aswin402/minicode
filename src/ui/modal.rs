@@ -3,7 +3,7 @@ use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 #[derive(Debug, Clone)]
@@ -62,6 +62,7 @@ pub enum ModalState {
     SessionBrowser {
         sessions: Vec<crate::session::store::SessionMetadata>,
         selected_index: usize,
+        cached_summary: Option<crate::session::store::SessionSummary>,
     },
     StackSelect {
         stacks: Vec<crate::tools::onpkg::stacks::Stack>,
@@ -147,10 +148,14 @@ impl ModalState {
         }
     }
 
-    pub fn new_session_browser(sessions: Vec<crate::session::store::SessionMetadata>) -> Self {
+    pub fn new_session_browser(
+        sessions: Vec<crate::session::store::SessionMetadata>,
+        cached_summary: Option<crate::session::store::SessionSummary>,
+    ) -> Self {
         ModalState::SessionBrowser {
             sessions,
             selected_index: 0,
+            cached_summary,
         }
     }
 
@@ -687,12 +692,13 @@ impl ModalState {
             ModalState::SessionBrowser {
                 sessions,
                 selected_index,
+                cached_summary,
             } => {
-                let popup_area = centered_rect(78, 70, area);
+                let popup_area = centered_rect(84, 76, area);
                 frame.render_widget(Clear, popup_area);
 
                 let outer_block = Block::default()
-                    .title(" Session History ")
+                    .title(" 📜 Session History & Time-Travel Explorer ")
                     .title_alignment(Alignment::Center)
                     .borders(Borders::ALL)
                     .border_style(
@@ -705,11 +711,16 @@ impl ModalState {
                 let inner_area = outer_block.inner(popup_area);
                 frame.render_widget(outer_block, popup_area);
 
-                // Split inner: list | footer
-                let chunks = Layout::default()
+                // Split inner: body (2-column) | footer
+                let root_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Min(3), Constraint::Length(1)])
                     .split(inner_area);
+
+                let body_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
+                    .split(root_chunks[0]);
 
                 if sessions.is_empty() {
                     let empty = Paragraph::new(Line::from(vec![Span::styled(
@@ -717,7 +728,7 @@ impl ModalState {
                         Style::default().fg(theme.muted),
                     )]))
                     .alignment(Alignment::Left);
-                    frame.render_widget(empty, chunks[0]);
+                    frame.render_widget(empty, body_chunks[0]);
                 } else {
                     let items: Vec<ListItem> = sessions
                         .iter()
@@ -726,31 +737,16 @@ impl ModalState {
                             let is_selected = i == *selected_index;
                             let time_ago = format_time_ago(&s.created_at);
 
-                            // Shorten workspace to last 2 path segments
-                            let ws_short = {
-                                let parts: Vec<&str> =
-                                    s.workspace.split('/').filter(|p| !p.is_empty()).collect();
-                                if parts.len() >= 2 {
-                                    format!(
-                                        "…/{}/{}",
-                                        parts[parts.len() - 2],
-                                        parts[parts.len() - 1]
-                                    )
-                                } else {
-                                    s.workspace.clone()
-                                }
-                            };
-
-                            let event_label = if s.event_count == 0 {
-                                String::new()
-                            } else {
-                                format!(" • {} events", s.event_count)
-                            };
-
-                            let id_short = if s.id.len() > 20 {
-                                format!("{}…", &s.id[..20])
+                            let id_short = if s.id.len() > 18 {
+                                format!("{}…", &s.id[..18])
                             } else {
                                 s.id.clone()
+                            };
+
+                            let event_badge = if s.event_count == 0 {
+                                String::new()
+                            } else {
+                                format!(" ({} evt)", s.event_count)
                             };
 
                             let line1 = if is_selected {
@@ -763,7 +759,7 @@ impl ModalState {
                                             .add_modifier(Modifier::BOLD),
                                     ),
                                     Span::styled(
-                                        format!(" {}{}", ws_short, event_label),
+                                        event_badge,
                                         Style::default()
                                             .fg(theme.bg_primary)
                                             .bg(theme.brand_accent),
@@ -777,10 +773,7 @@ impl ModalState {
                                             .fg(theme.warning)
                                             .add_modifier(Modifier::BOLD),
                                     ),
-                                    Span::styled(
-                                        format!(" {}{}", ws_short, event_label),
-                                        Style::default().fg(theme.text_primary),
-                                    ),
+                                    Span::styled(event_badge, Style::default().fg(theme.muted)),
                                 ])
                             };
 
@@ -800,37 +793,183 @@ impl ModalState {
                         })
                         .collect();
 
-                    let list = List::new(items);
-                    frame.render_widget(list, chunks[0]);
+                    let list_block = Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(theme.border));
+                    let list = List::new(items).block(list_block);
+                    frame.render_widget(list, body_chunks[0]);
+                }
+
+                // Right Pane: Live Analytical Preview
+                let preview_block =
+                    Block::default().padding(ratatui::widgets::Padding::new(1, 1, 0, 0));
+                let preview_inner = preview_block.inner(body_chunks[1]);
+                frame.render_widget(preview_block, body_chunks[1]);
+
+                if let Some(summary) = cached_summary {
+                    let mut preview_lines = Vec::new();
+
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("Session: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            &summary.id,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("Created: ", Style::default().fg(theme.muted)),
+                        Span::styled(&summary.created_at, Style::default().fg(theme.text_primary)),
+                        Span::styled("   Model: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            &summary.model,
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("Turns: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{}   ", summary.total_turns),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                        Span::styled("Events: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{}   ", summary.total_events),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                        Span::styled("Tokens: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("~{}   ", summary.total_tokens),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                        Span::styled("Duration: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{:.2}s", summary.total_duration_ms as f64 / 1000.0),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ]));
+
+                    preview_lines.push(Line::from(""));
+
+                    if !summary.tools_used.is_empty() {
+                        let mut tool_spans =
+                            vec![Span::styled("Tools: ", Style::default().fg(theme.muted))];
+                        for (t, count) in &summary.tools_used {
+                            tool_spans.push(Span::styled(
+                                format!("[{}: {}] ", t, count),
+                                Style::default().fg(theme.brand_accent),
+                            ));
+                        }
+                        preview_lines.push(Line::from(tool_spans));
+                    }
+
+                    if !summary.files_touched.is_empty() {
+                        preview_lines.push(Line::from(vec![Span::styled(
+                            format!("Files Touched ({}) : ", summary.files_touched.len()),
+                            Style::default().fg(theme.muted),
+                        )]));
+                        for f in summary.files_touched.iter().take(4) {
+                            preview_lines.push(Line::from(vec![
+                                Span::styled("  • ", Style::default().fg(theme.success)),
+                                Span::styled(f, Style::default().fg(theme.text_primary)),
+                            ]));
+                        }
+                        if summary.files_touched.len() > 4 {
+                            preview_lines.push(Line::from(vec![Span::styled(
+                                format!("    +{} more files...", summary.files_touched.len() - 4),
+                                Style::default().fg(theme.muted),
+                            )]));
+                        }
+                    }
+
+                    preview_lines.push(Line::from(""));
+
+                    if !summary.first_prompt.is_empty() {
+                        preview_lines.push(Line::from(vec![
+                            Span::styled(
+                                "Initial Prompt: ",
+                                Style::default()
+                                    .fg(theme.warning)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                &summary.first_prompt,
+                                Style::default().fg(theme.text_primary),
+                            ),
+                        ]));
+                    }
+
+                    if !summary.last_response.is_empty() {
+                        let snippet = if summary.last_response.len() > 180 {
+                            format!("{}...", &summary.last_response[..180])
+                        } else {
+                            summary.last_response.clone()
+                        };
+                        preview_lines.push(Line::from(vec![
+                            Span::styled("Last Response: ", Style::default().fg(theme.muted)),
+                            Span::styled(
+                                snippet.replace('\n', " "),
+                                Style::default().fg(theme.muted),
+                            ),
+                        ]));
+                    }
+
+                    let preview_p = Paragraph::new(preview_lines).wrap(Wrap { trim: true });
+                    frame.render_widget(preview_p, preview_inner);
+                } else {
+                    let placeholder = Paragraph::new(Line::from(vec![Span::styled(
+                        "Select a session on the left to preview history, tool calls, and touched files.",
+                        Style::default().fg(theme.muted),
+                    )]));
+                    frame.render_widget(placeholder, preview_inner);
                 }
 
                 // Footer hints
                 let footer_text = vec![
-                    Span::styled(
-                        "[↑↓] ",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Navigate   ", Style::default().fg(theme.text_primary)),
                     Span::styled(
                         "[Enter] ",
                         Style::default()
                             .fg(theme.success)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("Load Session   ", Style::default().fg(theme.text_primary)),
+                    Span::styled("Load   ", Style::default().fg(theme.text_primary)),
                     Span::styled(
-                        "[Esc] ",
+                        "[f] ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Fork   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[e] ",
                         Style::default()
                             .fg(theme.warning)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
+                    Span::styled("Export MD   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[d] ",
+                        Style::default()
+                            .fg(theme.destructive)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Delete   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Esc/q] ",
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Close", Style::default().fg(theme.text_primary)),
                 ];
                 frame.render_widget(
                     Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
-                    chunks[1],
+                    root_chunks[1],
                 );
             }
             ModalState::Help => {

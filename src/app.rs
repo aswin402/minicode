@@ -405,6 +405,15 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+H toggles interactive Session History & Time-Travel modal
+                                if key_event.code == KeyCode::Char('h') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
+                                    let sessions = store.list_sessions_rich().unwrap_or_default();
+                                    let initial_summary = sessions.first().and_then(|s| store.get_session_summary(&s.id).ok());
+                                    self.modal = ModalState::new_session_browser(sessions, initial_summary);
+                                    continue;
+                                }
+
                                 // When PTY drawer is open, route keystrokes into drawer
                                 if self.pty_drawer.is_open {
                                     match key_event.code {
@@ -691,10 +700,33 @@ impl<'a> App<'a> {
                                     let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
                                     match store.list_sessions_rich() {
                                         Ok(sessions) => {
-                                            self.modal = ModalState::new_session_browser(sessions);
+                                            let initial_summary = sessions.first().and_then(|s| store.get_session_summary(&s.id).ok());
+                                            self.modal = ModalState::new_session_browser(sessions, initial_summary);
                                         }
                                         Err(e) => {
                                             self.timeline.add_status(format!("✗ Failed to list sessions: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                if prompt.starts_with("/export") {
+                                    let target_path = prompt.trim_start_matches("/export").trim();
+                                    let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
+                                    let session_id = store.get_last_session_id().unwrap_or_else(|| "current".to_string());
+                                    let export_file = if target_path.is_empty() {
+                                        let export_dir = self.workspace_root.join(".minicode").join("exports");
+                                        let _ = std::fs::create_dir_all(&export_dir);
+                                        export_dir.join(format!("{}.md", session_id))
+                                    } else {
+                                        self.workspace_root.join(target_path)
+                                    };
+                                    match store.export_markdown(&session_id, &export_file) {
+                                        Ok(p) => {
+                                            self.timeline.add_status(format!("📄 Exported session Markdown to {}", p.display()));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Export failed: {}", e));
                                         }
                                     }
                                     continue;
@@ -1086,18 +1118,33 @@ impl<'a> App<'a> {
                 _ => {}
             },
             ModalState::SessionBrowser {
-                ref sessions,
+                ref mut sessions,
                 ref mut selected_index,
+                ref mut cached_summary,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
                 }
-                KeyCode::Up => {
-                    *selected_index = selected_index.saturating_sub(1);
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if *selected_index > 0 {
+                        *selected_index -= 1;
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        if let Some(target) = sessions.get(*selected_index) {
+                            *cached_summary = store.get_session_summary(&target.id).ok();
+                        }
+                    }
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     if *selected_index + 1 < sessions.len() {
                         *selected_index += 1;
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        if let Some(target) = sessions.get(*selected_index) {
+                            *cached_summary = store.get_session_summary(&target.id).ok();
+                        }
                     }
                 }
                 KeyCode::Enter => {
@@ -1125,6 +1172,77 @@ impl<'a> App<'a> {
                         }
                     }
                     self.modal = ModalState::None;
+                }
+                KeyCode::Char('f') => {
+                    if !sessions.is_empty() && *selected_index < sessions.len() {
+                        let target_id = sessions[*selected_index].id.clone();
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        match store.fork_session(&target_id, &self.workspace_root) {
+                            Ok(new_id) => {
+                                self.timeline.add_status(format!(
+                                    "🌿 Forked session '{}' ➔ new branch '{}'",
+                                    target_id, new_id
+                                ));
+                                if let Ok(events) = store.load_session(&new_id) {
+                                    self.timeline.entries.clear();
+                                    self.hydrate_session(&events);
+                                }
+                            }
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to fork session: {}", e));
+                            }
+                        }
+                    }
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('e') => {
+                    if !sessions.is_empty() && *selected_index < sessions.len() {
+                        let target_id = sessions[*selected_index].id.clone();
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        let export_dir = self.workspace_root.join(".minicode").join("exports");
+                        let _ = std::fs::create_dir_all(&export_dir);
+                        let export_file = export_dir.join(format!("{}.md", target_id));
+                        match store.export_markdown(&target_id, &export_file) {
+                            Ok(p) => {
+                                self.timeline.add_status(format!(
+                                    "📄 Exported session Markdown to {}",
+                                    p.display()
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline.add_status(format!("✗ Export failed: {}", e));
+                            }
+                        }
+                    }
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('d') => {
+                    if !sessions.is_empty() && *selected_index < sessions.len() {
+                        let target_id = sessions[*selected_index].id.clone();
+                        let store = crate::session::store::SessionStore::with_workspace(
+                            &self.workspace_root,
+                        );
+                        if let Ok(true) = store.delete_session(&target_id) {
+                            self.timeline
+                                .add_status(format!("🗑️ Deleted session '{}'", target_id));
+                            if let Ok(new_sessions) = store.list_sessions_rich() {
+                                *sessions = new_sessions;
+                                if *selected_index >= sessions.len() && *selected_index > 0 {
+                                    *selected_index = sessions.len() - 1;
+                                }
+                                if let Some(target) = sessions.get(*selected_index) {
+                                    *cached_summary = store.get_session_summary(&target.id).ok();
+                                } else {
+                                    *cached_summary = None;
+                                }
+                            }
+                        }
+                    }
                 }
                 _ => {}
             },

@@ -5,7 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.0.55] — 2026-08-25
+## [0.0.60] — 2026-08-28
+
+### Interactive Visual Session History & Time-Travel Explorer
+
+- **2-Column Visual History & Analytical Inspector (`ModalState::SessionBrowser`, `/history`, `Ctrl+H`)**:
+  - Left pane (36% width): list of past sessions with active selection badge, relative time, event count, and session ID.
+  - Right pane (64% width): live analytical preview showing model, turns, token metrics, duration, tool call distribution, touched files list, and prompt/response excerpts.
+  - Hotkeys: <kbd>Enter</kbd> load, <kbd>f</kbd> fork branch, <kbd>e</kbd> export Markdown, <kbd>d</kbd> delete, <kbd>j</kbd>/<kbd>k</kbd> scroll.
+- **SessionStore Analytical & Time-Travel Manipulation Engine (`src/session/store.rs`)**:
+  - `SessionSummary`: comprehensive metrics computation across all turns and tools.
+  - `get_session_summary()`: extracts session telemetry from recorded events.
+  - `fork_session()`: forks existing session trajectory into a new branch without mutating historical recordings.
+  - `export_markdown()`: compiles session trajectory into GitHub-Flavored Markdown transcripts.
+  - `delete_session()`: safely deletes session files.
+- **Dual-Mode CLI Subcommands (`src/main.rs`)**:
+  - `minicode history [--json]`: human-readable session summary table or machine-readable JSON array.
+  - `minicode export [session_id] [-o output.md]`: exports session transcripts directly from the command line.
+- **Slash Commands & Shortcuts (`src/ui/input.rs`, `src/app.rs`)**:
+  - Added `/history` and `/export` slash commands with full autocomplete.
+  - Bound <kbd>Ctrl+H</kbd> for instant access to session history from anywhere in the TUI.
+- **Integration Tests**:
+  - Added 4 tests in `tests/integration_session_history.rs` verifying summaries, forking isolation, markdown exports, and deletion (27/27 total across all 6 test suites).
+
+## [0.0.59] — 2026-08-28
 
 ### Browser Engines
 

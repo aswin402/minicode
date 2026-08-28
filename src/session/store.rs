@@ -268,6 +268,281 @@ impl SessionStore {
     fn session_file_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir.join(format!("{}.jsonl", session_id))
     }
+
+    /// Computes an in-depth analytical summary for a given session.
+    pub fn get_session_summary(&self, session_id: &str) -> Result<SessionSummary> {
+        let events = self.load_session(session_id)?;
+        let mut model = "unknown".to_string();
+        let mut total_turns = 0usize;
+        let total_events = events.len();
+        let mut total_tokens = 0usize;
+        let mut total_duration_ms = 0u64;
+        let mut first_prompt = String::new();
+        let mut last_response = String::new();
+        let mut current_turn_response = String::new();
+        let mut tool_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut files_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        for event in &events {
+            match event {
+                AgentEvent::TurnStart {
+                    model: m, turn_id, ..
+                } => {
+                    model = m.clone();
+                    total_turns = total_turns.max(*turn_id);
+                    if !current_turn_response.is_empty() {
+                        last_response = current_turn_response.clone();
+                        current_turn_response.clear();
+                    }
+                }
+                AgentEvent::StreamDelta { delta, .. } => {
+                    current_turn_response.push_str(delta);
+                }
+                AgentEvent::ToolCall { tool, args, .. } => {
+                    *tool_counts.entry(tool.clone()).or_insert(0) += 1;
+                    if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                        files_set.insert(path.to_string());
+                    } else if let Some(path) = args.get("target_path").and_then(|v| v.as_str()) {
+                        files_set.insert(path.to_string());
+                    }
+                }
+                AgentEvent::ToolResult { duration_ms, .. } => {
+                    total_duration_ms += duration_ms;
+                }
+                AgentEvent::FileModified { path, .. } => {
+                    files_set.insert(path.clone());
+                }
+                AgentEvent::TurnEnd {
+                    total_tokens_used,
+                    files_modified,
+                    ..
+                } => {
+                    total_tokens += total_tokens_used;
+                    for f in files_modified {
+                        files_set.insert(f.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !current_turn_response.is_empty() {
+            last_response = current_turn_response;
+        }
+
+        // Also check if we have the session metadata for creation date & workspace
+        let mut created_at = String::new();
+        let mut workspace = String::new();
+        let session_path = self.session_file_path(session_id);
+        if let Ok(file) = std::fs::File::open(&session_path) {
+            let mut reader = BufReader::new(file);
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).is_ok() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first_line) {
+                    if let Some(meta_val) = val.get("session_meta") {
+                        if let Ok(meta) =
+                            serde_json::from_value::<SessionMetadata>(meta_val.clone())
+                        {
+                            created_at = meta.created_at;
+                            workspace = meta.workspace;
+                            first_prompt = meta.preview;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut tools_used: Vec<(String, usize)> = tool_counts.into_iter().collect();
+        tools_used.sort_by(|a, b| b.1.cmp(&a.1));
+
+        Ok(SessionSummary {
+            id: session_id.to_string(),
+            created_at,
+            workspace,
+            model,
+            total_turns,
+            total_events,
+            total_tokens,
+            total_duration_ms,
+            first_prompt,
+            last_response,
+            tools_used,
+            files_touched: files_set.into_iter().collect(),
+        })
+    }
+
+    /// Forks an existing session into a new session with cloned history and a fresh ID.
+    pub fn fork_session(&self, source_id: &str, workspace: &Path) -> Result<String> {
+        let events = self.load_session(source_id)?;
+        let new_id = self.create_session(workspace)?;
+        for event in &events {
+            self.append_event(&new_id, event)?;
+        }
+        tracing::info!(source = source_id, target = %new_id, "Forked session successfully");
+        Ok(new_id)
+    }
+
+    /// Exports a session's trajectory to a formatted GitHub-Flavored Markdown file.
+    pub fn export_markdown(&self, session_id: &str, output_path: &Path) -> Result<PathBuf> {
+        let summary = self.get_session_summary(session_id)?;
+        let events = self.load_session(session_id)?;
+
+        let mut md = String::new();
+        md.push_str(&format!(
+            "# minicode Session Transcript — `{}`\n\n",
+            session_id
+        ));
+        md.push_str(&format!("- **Created:** {}\n", summary.created_at));
+        md.push_str(&format!("- **Workspace:** `{}`\n", summary.workspace));
+        md.push_str(&format!("- **Model:** `{}`\n", summary.model));
+        md.push_str(&format!("- **Total Turns:** {}\n", summary.total_turns));
+        md.push_str(&format!(
+            "- **Events Recorded:** {}\n",
+            summary.total_events
+        ));
+        md.push_str(&format!(
+            "- **Tokens Consumed:** ~{}\n",
+            summary.total_tokens
+        ));
+        md.push_str(&format!(
+            "- **Duration:** {:.2}s\n\n",
+            summary.total_duration_ms as f64 / 1000.0
+        ));
+
+        if !summary.tools_used.is_empty() {
+            md.push_str("### 🛠️ Tools Invoked\n");
+            for (tool, count) in &summary.tools_used {
+                md.push_str(&format!("- **`{}`**: {} call(s)\n", tool, count));
+            }
+            md.push('\n');
+        }
+
+        if !summary.files_touched.is_empty() {
+            md.push_str("### 📁 Files Touched\n");
+            for file in &summary.files_touched {
+                md.push_str(&format!("- `{}`\n", file));
+            }
+            md.push('\n');
+        }
+
+        md.push_str("---\n\n## 📜 Conversation Timeline\n\n");
+
+        let mut assistant_buf = String::new();
+
+        for event in events {
+            match event {
+                AgentEvent::TurnStart {
+                    turn_id,
+                    timestamp,
+                    model,
+                    ..
+                } => {
+                    if !assistant_buf.is_empty() {
+                        md.push_str(&assistant_buf);
+                        md.push_str("\n\n");
+                        assistant_buf.clear();
+                    }
+                    md.push_str(&format!(
+                        "### 🎯 Turn {} (`{}` — {})\n\n",
+                        turn_id, model, timestamp
+                    ));
+                }
+                AgentEvent::StreamDelta { delta, .. } => {
+                    assistant_buf.push_str(&delta);
+                }
+                AgentEvent::ToolCall { tool, args, .. } => {
+                    if !assistant_buf.is_empty() {
+                        md.push_str(&assistant_buf);
+                        md.push_str("\n\n");
+                        assistant_buf.clear();
+                    }
+                    md.push_str(&format!("> **Tool Call:** `{}`\n", tool));
+                    md.push_str(&format!(
+                        "> ```json\n> {}\n> ```\n\n",
+                        serde_json::to_string_pretty(&args)
+                            .unwrap_or_default()
+                            .replace('\n', "\n> ")
+                    ));
+                }
+                AgentEvent::ToolResult {
+                    tool,
+                    success,
+                    output,
+                    duration_ms,
+                    ..
+                } => {
+                    let status = if success { "✔ Success" } else { "✗ Failed" };
+                    md.push_str(&format!(
+                        "> **Tool Result (`{}` — {} in {}ms):**\n",
+                        tool, status, duration_ms
+                    ));
+                    let preview = if output.len() > 1000 {
+                        format!("{}...\n[truncated]", &output[..1000])
+                    } else {
+                        output
+                    };
+                    md.push_str(&format!(
+                        "> ```\n> {}\n> ```\n\n",
+                        preview.replace('\n', "\n> ")
+                    ));
+                }
+                AgentEvent::FileModified { path, action, .. } => {
+                    md.push_str(&format!("📝 *File {}*: `{}`\n\n", action, path));
+                }
+                AgentEvent::GitCommit { hash, message, .. } => {
+                    md.push_str(&format!(
+                        "📦 **Git Commit:** `{}` — *{}*\n\n",
+                        &hash[..7.min(hash.len())],
+                        message
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if !assistant_buf.is_empty() {
+            md.push_str(&assistant_buf);
+            md.push_str("\n\n");
+        }
+
+        std::fs::write(output_path, md)?;
+        tracing::info!(
+            session = session_id,
+            path = %output_path.display(),
+            "Exported session transcript to Markdown"
+        );
+        Ok(output_path.to_path_buf())
+    }
+
+    /// Deletes a session JSONL file from disk.
+    pub fn delete_session(&self, session_id: &str) -> Result<bool> {
+        let path = self.session_file_path(session_id);
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+            tracing::info!(session = session_id, "Deleted session file");
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+/// Analytical summary of a completed or active conversation session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub created_at: String,
+    pub workspace: String,
+    pub model: String,
+    pub total_turns: usize,
+    pub total_events: usize,
+    pub total_tokens: usize,
+    pub total_duration_ms: u64,
+    pub first_prompt: String,
+    pub last_response: String,
+    pub tools_used: Vec<(String, usize)>,
+    pub files_touched: Vec<String>,
 }
 
 #[cfg(test)]

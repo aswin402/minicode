@@ -171,6 +171,23 @@ enum Commands {
         /// The feature or task specification to plan
         prompt: Option<String>,
     },
+
+    /// View conversation session history and analytical summaries
+    History {
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Export a session trajectory to a Markdown transcript
+    Export {
+        /// Session ID to export (defaults to most recent session)
+        session_id: Option<String>,
+
+        /// Output file path (defaults to .minicode/exports/<session_id>.md)
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -304,6 +321,66 @@ async fn main() -> anyhow::Result<()> {
                 "Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
             };
             run_headless_task(&workspace_canonical, &config, &plan_task, cli.json_stream).await?;
+        }
+        Some(Commands::History { json }) => {
+            let store = session::store::SessionStore::with_workspace(&workspace_canonical);
+            let sessions = store.list_sessions_rich()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions)?);
+            } else {
+                println!(
+                    "\n📜 Session History for `{}` ({})\n",
+                    workspace_canonical.display(),
+                    sessions.len()
+                );
+                if sessions.is_empty() {
+                    println!("  (No sessions recorded yet)");
+                } else {
+                    for (i, s) in sessions.iter().enumerate() {
+                        let summary = store.get_session_summary(&s.id).ok();
+                        let model_info = summary
+                            .as_ref()
+                            .map(|sm| sm.model.as_str())
+                            .unwrap_or("unknown");
+                        let turns = summary.as_ref().map(|sm| sm.total_turns).unwrap_or(0);
+                        let tokens = summary.as_ref().map(|sm| sm.total_tokens).unwrap_or(0);
+                        println!("  {}. \x1b[1m\x1b[38;2;162;119;255m{}\x1b[0m", i + 1, s.id);
+                        println!(
+                            "     Created: {} | Model: \x1b[38;2;97;255;202m{}\x1b[0m | Turns: {} | Tokens: ~{}",
+                            s.created_at, model_info, turns, tokens
+                        );
+                        if !s.preview.is_empty() {
+                            println!("     Prompt : \x1b[38;2;140;140;150m{}\x1b[0m", s.preview);
+                        }
+                    }
+                    println!(
+                        "\n💡 Run `minicode export <session-id>` to export full Markdown transcript.\n"
+                    );
+                }
+            }
+        }
+        Some(Commands::Export { session_id, output }) => {
+            let store = session::store::SessionStore::with_workspace(&workspace_canonical);
+            let target_id = match session_id {
+                Some(id) => id,
+                None => match store.get_last_session_id() {
+                    Some(id) => id,
+                    None => {
+                        eprintln!("✗ No sessions found to export in this workspace.");
+                        return Ok(());
+                    }
+                },
+            };
+            let out_path = match output {
+                Some(p) => p,
+                None => {
+                    let export_dir = workspace_canonical.join(".minicode").join("exports");
+                    let _ = std::fs::create_dir_all(&export_dir);
+                    export_dir.join(format!("{}.md", target_id))
+                }
+            };
+            let exported = store.export_markdown(&target_id, &out_path)?;
+            println!("✔ Exported session transcript to {}", exported.display());
         }
         None => {
             if cli.json_stream {
