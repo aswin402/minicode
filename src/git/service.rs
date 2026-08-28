@@ -174,6 +174,23 @@ impl GitService {
         Ok(())
     }
 
+    /// Unstages modified files (or all if none specified).
+    pub async fn unstage_files(&self, paths: Option<&[String]>) -> Result<()> {
+        if let Some(file_list) = paths {
+            if !file_list.is_empty() {
+                let mut args = vec!["restore", "--staged", "--"];
+                for p in file_list {
+                    args.push(p.as_str());
+                }
+                self.run_git(&args).await?;
+                return Ok(());
+            }
+        }
+
+        self.run_git(&["restore", "--staged", "."]).await?;
+        Ok(())
+    }
+
     /// Scans workspace files for unresolved git merge conflicts (`<<<<<<<`, `=======`, `>>>>>>>`).
     pub async fn find_conflicts(&self) -> Result<Vec<ConflictFile>> {
         let status = self.get_status().await?;

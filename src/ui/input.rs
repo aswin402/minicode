@@ -26,6 +26,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "run autonomous self-directed goal execution loop until complete",
     },
     SlashCommand {
+        name: "/diff",
+        description: "interactive split/unified git diff viewer & staging (Ctrl+D)",
+    },
+    SlashCommand {
+        name: "/review",
+        description: "run multi-dimensional code review on current git diff",
+    },
+    SlashCommand {
         name: "/model",
         description: "choose what model and reasoning effort to use",
     },

@@ -1,10 +1,14 @@
 pub mod commit;
 pub mod diff_filter;
+pub mod diff_viewer;
+pub mod reviewer;
 pub mod service;
 pub mod worktree;
 
 pub use commit::GitCommitService;
 pub use diff_filter::DiffFilter;
+pub use diff_viewer::{GitDiffFile, GitDiffLine, GitDiffViewer};
+pub use reviewer::{GitReviewer, ReviewFinding, ReviewReport};
 pub use service::{ConflictFile, GitService, GitStatus};
 pub use worktree::WorktreeManager;
 

@@ -938,3 +938,24 @@
 - [x] **Task 5: Integration Tests & Release Verification**
   - [x] Add unit and integration tests in `tests/integration_onpkg_tools.rs` (8 tests)
   - [x] Pass `cargo check && cargo fmt && cargo clippy -- -D warnings && cargo test`
+
+---
+
+## ✅ Phase 48: Interactive TUI Git Diff Viewer & Multi-Agent Code Reviewer (v0.0.58)
+- [x] **Task 1: Git Diff Parser & Data Models (`src/git/diff_viewer.rs`)**
+  - [x] Implement `GitDiffViewer` and `GitDiffFile` / `GitDiffLine` models
+  - [x] Parse additions, deletions, line numbers, and hunk headers
+  - [x] Support staged (`--cached`) and unstaged working tree diffs
+- [x] **Task 2: Multi-Agent Adversarial Code Reviewer (`src/git/reviewer.rs`, `src/tools/registry/git_tools.rs`)**
+  - [x] Implement `GitReviewer` evaluating security, correctness, architecture, and tests
+  - [x] Register `git_review` tool in `ToolRegistry`
+  - [x] Register `/review` slash command in `InputDock` and `src/app.rs`
+- [x] **Task 3: Interactive TUI Git Diff Modal (`src/ui/modal.rs`, `src/app.rs`)**
+  - [x] Implement `ModalState::GitDiff` with 2-column layout, line numbers, and syntax styling
+  - [x] Support <kbd>Tab</kbd> toggle between staged/unstaged views
+  - [x] Support <kbd>s</kbd> file staging/unstaging and <kbd>r</kbd> direct code review
+  - [x] Bind `Ctrl+D` shortcut and `/diff` command
+- [x] **Task 4: Integration Tests & Quality Gates**
+  - [x] Create comprehensive `tests/integration_git_diff_review.rs` (5 tests)
+  - [x] 23/23 tests passing across all 5 integration test suites
+  - [x] 0 clippy warnings (`cargo clippy -- -D warnings`)

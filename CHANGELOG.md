@@ -50,6 +50,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `git.dirty_commit` and `git.ai_commit_messages` config options are now honored:
   `dirty_commit = true` stages all workspace changes (`git add -A`);
   `ai_commit_messages = false` produces plain commit messages instead of conventional ones.
+## [0.0.58] — 2026-08-28
+
+### Interactive TUI Git Diff Viewer & Multi-Agent Code Reviewer (`/diff`, `/review`, `Ctrl+D`)
+
+- **Interactive TUI Git Diff Viewer (`ModalState::GitDiff`, `/diff`, `Ctrl+D`)**:
+  - Implemented visual 2-column git diff modal in Ratatui TUI with live file tree and syntax-highlighted unified diff preview.
+  - Line numbers (`old │ new`), hunk headers (`@@ ... @@`), and additions (`+`) / deletions (`-`) with theme styling.
+  - Interactive file list with change indicators (`[M]`, `[A]`, `[D]`, `[?]`) and additions/deletions counts (`+X -Y`).
+  - Hotkey actions:
+    - <kbd>Tab</kbd>: Toggle between Staged (`--cached`) and Working Tree (`unstaged`) views.
+    - <kbd>s</kbd>: Stage / Unstage current file (`git add` / `git restore --staged`).
+    - <kbd>j</kbd> / <kbd>k</kbd> & <kbd>PgUp</kbd> / <kbd>PgDn</kbd>: Scroll diff preview.
+    - <kbd>r</kbd>: Trigger multi-agent code review directly on the diff.
+    - <kbd>Esc</kbd> / <kbd>q</kbd>: Close modal.
+- **Multi-Agent Adversarial Code Reviewer (`GitReviewer`, `/review`)**:
+  - Multi-dimensional audit analyzing git changes across 5 critical dimensions:
+    1. **Security & Secret Leakage** (hardcoded keys, credential patterns, token assignments)
+    2. **Correctness & Invariant Safety** (explicit `.unwrap()`, `.expect()` panics)
+    3. **Architecture & Observability** (stdout `println!` in library code)
+    4. **Verification & Test Coverage** (code additions without associated test blocks)
+    5. **Summary & Scorecard** (0-100 quality score, finding counts, line-by-line snippets)
+  - Registered `git_review` tool in `ToolRegistry` and `/review` slash command in `InputDock`.
+- **Verification**:
+  - 5 integration tests in `tests/integration_git_diff_review.rs`.
+  - 23/23 total integration tests passing across all 5 test suites (100%).
+  - 0 clippy warnings (`cargo clippy -- -D warnings`), 100% formatted.
+
 ## [0.0.57] — 2026-08-28
 
 ### Interactive TUI Stack Wizard & Autonomous Goal/Plan Slash Commands (`/stack`, `/plan`, `/goal`)

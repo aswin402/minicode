@@ -73,6 +73,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "git_review".to_string(),
+            description: "Perform an automated multi-dimensional code review on current uncommitted or staged changes across security, correctness, architecture, and tests.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "staged_only": {
+                        "type": "boolean",
+                        "description": "If true, only review staged changes. If false, review all uncommitted changes."
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "create_pr".to_string(),
             description: "Create a GitHub pull request using the system's gh CLI with title, description, and base branch.".to_string(),
             parameters: json!({
@@ -410,6 +423,18 @@ pub async fn dispatch(
                     }
                     Ok(out)
                 }
+            }
+            .await,
+        ),
+        "git_review" => Some(
+            async {
+                let staged_only = args
+                    .get("staged_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let report =
+                    crate::git::GitReviewer::review_workspace(workspace_root, staged_only).await?;
+                Ok(crate::git::GitReviewer::format_report(&report))
             }
             .await,
         ),

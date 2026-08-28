@@ -391,6 +391,20 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+D toggles interactive Git Diff modal
+                                if key_event.code == KeyCode::Char('d') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    let ws = self.workspace_root.clone();
+                                    match crate::git::GitDiffViewer::load_diffs(&ws, false).await {
+                                        Ok(diff_files) => {
+                                            self.modal = ModalState::new_git_diff(diff_files, false);
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to load git diff: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 // When PTY drawer is open, route keystrokes into drawer
                                 if self.pty_drawer.is_open {
                                     match key_event.code {
@@ -589,6 +603,36 @@ impl<'a> App<'a> {
                                     let cancel = tokio_util::sync::CancellationToken::new();
                                     self.cancel_token = Some(cancel.clone());
                                     let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
+                                    continue;
+                                }
+
+                                if prompt == "/diff" || prompt == "/diffs" {
+                                    let ws = self.workspace_root.clone();
+                                    match crate::git::GitDiffViewer::load_diffs(&ws, false).await {
+                                        Ok(diff_files) => {
+                                            self.modal = ModalState::new_git_diff(diff_files, false);
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Failed to load git diff: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                if prompt == "/review" || prompt.starts_with("/review ") {
+                                    let staged_only = prompt.contains("--staged") || prompt.contains("-s");
+                                    self.timeline.add_user_message(prompt.clone());
+                                    self.timeline.add_status("🛡️ Running multi-agent adversarial code review...".to_string());
+
+                                    match crate::git::GitReviewer::review_workspace(&self.workspace_root, staged_only).await {
+                                        Ok(report) => {
+                                            let formatted = crate::git::GitReviewer::format_report(&report);
+                                            self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Code review error: {}", e));
+                                        }
+                                    }
                                     continue;
                                 }
 
@@ -1154,6 +1198,105 @@ impl<'a> App<'a> {
                         });
                     }
                     self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::GitDiff {
+                ref diff_files,
+                ref mut selected_file_index,
+                ref mut scroll_offset,
+                ref mut staged_view,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_file_index = selected_file_index.saturating_sub(1);
+                    *scroll_offset = 0;
+                }
+                KeyCode::Down => {
+                    if *selected_file_index + 1 < diff_files.len() {
+                        *selected_file_index += 1;
+                        *scroll_offset = 0;
+                    }
+                }
+                KeyCode::Char('j') => {
+                    *scroll_offset = scroll_offset.saturating_add(3);
+                }
+                KeyCode::Char('k') => {
+                    *scroll_offset = scroll_offset.saturating_sub(3);
+                }
+                KeyCode::PageDown => {
+                    *scroll_offset = scroll_offset.saturating_add(10);
+                }
+                KeyCode::PageUp => {
+                    *scroll_offset = scroll_offset.saturating_sub(10);
+                }
+                KeyCode::Tab => {
+                    let next_staged = !*staged_view;
+                    let ws = self.workspace_root.clone();
+                    match crate::git::GitDiffViewer::load_diffs(&ws, next_staged).await {
+                        Ok(new_diffs) => {
+                            self.modal = ModalState::new_git_diff(new_diffs, next_staged);
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Failed to reload git diffs: {}", e));
+                        }
+                    }
+                }
+                KeyCode::Char('s') => {
+                    if !diff_files.is_empty() && *selected_file_index < diff_files.len() {
+                        let path = diff_files[*selected_file_index].path.clone();
+                        let is_staged = *staged_view;
+                        let git = crate::git::GitService::new(self.workspace_root.clone());
+                        if is_staged {
+                            if let Err(e) =
+                                git.unstage_files(Some(std::slice::from_ref(&path))).await
+                            {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to unstage {}: {}", path, e));
+                            } else {
+                                self.timeline.add_status(format!("✔ Unstaged {}", path));
+                            }
+                        } else {
+                            if let Err(e) = git.stage_files(Some(std::slice::from_ref(&path))).await
+                            {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to stage {}: {}", path, e));
+                            } else {
+                                self.timeline.add_status(format!("✔ Staged {}", path));
+                            }
+                        }
+                        // Reload diffs
+                        let ws = self.workspace_root.clone();
+                        if let Ok(new_diffs) =
+                            crate::git::GitDiffViewer::load_diffs(&ws, is_staged).await
+                        {
+                            self.modal = ModalState::new_git_diff(new_diffs, is_staged);
+                        }
+                    }
+                }
+                KeyCode::Char('r') => {
+                    let is_staged = *staged_view;
+                    self.modal = ModalState::None;
+                    self.timeline.add_status(
+                        "🛡️ Running multi-agent code review on git diff...".to_string(),
+                    );
+                    match crate::git::GitReviewer::review_workspace(&self.workspace_root, is_staged)
+                        .await
+                    {
+                        Ok(report) => {
+                            let formatted = crate::git::GitReviewer::format_report(&report);
+                            self.timeline
+                                .entries
+                                .push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Code review error: {}", e));
+                        }
+                    }
                 }
                 _ => {}
             },
