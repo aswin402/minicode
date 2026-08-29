@@ -582,6 +582,11 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/commands" {
+                                    self.modal = ModalState::new_command_catalog();
+                                    continue;
+                                }
+
                                 if prompt == "/help" {
                                     self.modal = ModalState::Help;
                                     continue;
@@ -842,6 +847,15 @@ impl<'a> App<'a> {
                                 };
 
                                 self.timeline.add_user_message(prompt_to_run.clone());
+
+                                // Check for recognized autonomous intent to notify the user
+                                if let Some(m) = crate::agent::intent::match_intent(&prompt_to_run) {
+                                    if m.confidence >= 0.85 && m.intent != crate::agent::intent::AgentIntent::GeneralQuery {
+                                        let (icon, label) = m.intent.badge();
+                                        self.timeline.add_status(format!("{} Autonomous Intent: {}", icon, label));
+                                    }
+                                }
+
                                 self.is_working = true;
                                 self.work_start = Some(Instant::now());
 
@@ -1289,6 +1303,113 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
+            ModalState::CommandCatalog {
+                ref filtered_indices,
+                ref mut selected_index,
+                ref mut filter,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < filtered_indices.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    self.modal.update_filter();
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    self.modal.update_filter();
+                }
+                KeyCode::Enter => {
+                    if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
+                        let real_idx = filtered_indices[*selected_index];
+                        let selected_cmd = crate::ui::modal::COMMAND_CATALOG_ITEMS[real_idx].name;
+                        self.modal = ModalState::None;
+
+                        match selected_cmd {
+                            "/stack" => {
+                                self.modal = ModalState::new_stack_select();
+                            }
+                            "/model" | "/provider" => {
+                                self.modal = ModalState::new_provider_select();
+                            }
+                            "/theme" => {
+                                self.modal = ModalState::new_theme_select(&self.config.ui.theme);
+                            }
+                            "/diff" => {
+                                let ws = self.workspace_root.clone();
+                                match crate::git::GitDiffViewer::load_diffs(&ws, false).await {
+                                    Ok(diff_files) => {
+                                        self.modal = ModalState::new_git_diff(diff_files, false);
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!(
+                                            "✗ Failed to load git diff: {}",
+                                            e
+                                        ));
+                                    }
+                                }
+                            }
+                            "/history" | "/sessions" => {
+                                let store = crate::session::store::SessionStore::with_workspace(
+                                    &self.workspace_root,
+                                );
+                                match store.list_sessions_rich() {
+                                    Ok(sessions) => {
+                                        let initial_summary = sessions
+                                            .first()
+                                            .and_then(|s| store.get_session_summary(&s.id).ok());
+                                        self.modal = ModalState::new_session_browser(
+                                            sessions,
+                                            initial_summary,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!(
+                                            "✗ Failed to load sessions: {}",
+                                            e
+                                        ));
+                                    }
+                                }
+                            }
+                            "/undo" => {
+                                let backup_mgr = crate::session::backup::BackupManager::new(
+                                    &self.workspace_root,
+                                );
+                                let checkpoints = backup_mgr.list_checkpoints();
+                                if checkpoints.is_empty() {
+                                    self.timeline.add_status(
+                                        "ℹ No recorded checkpoints available to undo".to_string(),
+                                    );
+                                } else {
+                                    self.modal = ModalState::new_undo_checkpoint(checkpoints);
+                                }
+                            }
+                            "/help" => {
+                                self.modal = ModalState::Help;
+                            }
+                            "/terminal" => {
+                                self.pty_drawer.toggle();
+                            }
+                            other => {
+                                self.input_dock.textarea = tui_textarea::TextArea::default();
+                                self.input_dock.textarea.insert_str(other);
+                                self.input_dock.textarea.insert_char(' ');
+                            }
+                        }
+                    } else {
+                        self.modal = ModalState::None;
+                    }
+                }
+                _ => {}
+            },
             ModalState::StackSelect {
                 ref stacks,
                 ref filtered_indices,

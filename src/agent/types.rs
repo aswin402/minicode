@@ -211,6 +211,30 @@ pub enum AgentEvent {
         status: String,
         turn_id: Option<usize>,
     },
+
+    #[serde(rename = "intent_routed")]
+    IntentRouted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<usize>,
+        intent: String,
+        query: String,
+        confidence: f32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_command: Option<String>,
+    },
+
+    #[serde(rename = "command_list")]
+    CommandList { commands: Vec<CommandDescription> },
+}
+
+/// Description of a built-in slash command or autonomous intent
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommandDescription {
+    pub name: String,
+    pub category: String,
+    pub shortcut: String,
+    pub description: String,
+    pub example: String,
 }
 
 /// Commands accepted via stdin when running in bidirectional machine mode (`--json-stream`)
@@ -219,6 +243,16 @@ pub enum AgentEvent {
 pub enum StdinCommand {
     #[serde(rename = "user_input")]
     UserInput { text: String },
+
+    #[serde(rename = "execute_command")]
+    ExecuteCommand {
+        command: String,
+        #[serde(default)]
+        args: Option<String>,
+    },
+
+    #[serde(rename = "list_commands")]
+    ListCommands {},
 
     #[serde(rename = "tool_response")]
     ToolResponse {

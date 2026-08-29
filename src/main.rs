@@ -682,6 +682,70 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
         };
 
         match command {
+            StdinCommand::ListCommands {} => {
+                let commands = crate::ui::modal::COMMAND_CATALOG_ITEMS
+                    .iter()
+                    .map(|c| crate::agent::types::CommandDescription {
+                        name: c.name.to_string(),
+                        category: c.category.to_string(),
+                        shortcut: c.shortcut.to_string(),
+                        description: c.description.to_string(),
+                        example: c.example.to_string(),
+                    })
+                    .collect();
+                let event = AgentEvent::CommandList { commands };
+                if let Ok(json) = serde_json::to_string(&event) {
+                    println!("{}", json);
+                }
+            }
+            StdinCommand::ExecuteCommand { command: cmd, args } => {
+                let full_prompt = match (cmd.as_str(), args) {
+                    ("/plan", Some(q)) if !q.is_empty() => format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", q),
+                    ("/plan", _) => "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string(),
+                    ("/goal", Some(q)) if !q.is_empty() => format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", q),
+                    ("/goal", _) => "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string(),
+                    (c, Some(a)) if !a.is_empty() => format!("{} {}", c, a),
+                    (c, _) => c.to_string(),
+                };
+
+                let agent = agent.clone();
+                tokio::spawn(async move {
+                    let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
+                    let event_consumer = tokio::spawn(async move {
+                        while let Some(event) = rx.recv().await {
+                            if let Ok(json) = serde_json::to_string(&event) {
+                                println!("{}", json);
+                            }
+                        }
+                    });
+
+                    if let Some(m) = crate::agent::intent::match_intent(&full_prompt) {
+                        let _ = tx.send(AgentEvent::IntentRouted {
+                            turn_id: None,
+                            intent: format!("{:?}", m.intent),
+                            query: m.query,
+                            confidence: m.confidence,
+                            suggested_command: m.suggested_command,
+                        });
+                    }
+
+                    let mut guard = agent.lock().await;
+                    if let Err(e) = guard.execute_turn(&full_prompt, tx, None).await {
+                        let err_event = AgentEvent::Error {
+                            turn_id: None,
+                            code: "execution_error".to_string(),
+                            message: e.to_string(),
+                            retrying: false,
+                            retry_after_ms: None,
+                        };
+                        if let Ok(json) = serde_json::to_string(&err_event) {
+                            println!("{}", json);
+                        }
+                    }
+                    drop(guard);
+                    event_consumer.await.ok();
+                });
+            }
             StdinCommand::UserInput { text } => {
                 // Spawn so stdin stays readable while a turn (or its approval
                 // gate) is blocked; ToolResponse lines must get through.
@@ -695,6 +759,18 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                             }
                         }
                     });
+
+                    if let Some(m) = crate::agent::intent::match_intent(&text) {
+                        if m.confidence >= 0.85 {
+                            let _ = tx.send(AgentEvent::IntentRouted {
+                                turn_id: None,
+                                intent: format!("{:?}", m.intent),
+                                query: m.query,
+                                confidence: m.confidence,
+                                suggested_command: m.suggested_command,
+                            });
+                        }
+                    }
 
                     let mut guard = agent.lock().await;
                     if let Err(e) = guard.execute_turn(&text, tx, None).await {

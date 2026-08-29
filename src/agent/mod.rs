@@ -2,6 +2,7 @@ pub mod circuit_breaker;
 pub mod complexity;
 pub mod critic;
 pub mod hypothesis;
+pub mod intent;
 pub mod r#loop;
 pub mod mock_provider;
 pub mod models;

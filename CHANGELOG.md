@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.63] — 2026-08-29
+
+### Autonomous Intent Routing & Interactive Command Catalog
+
+- **Autonomous Intent Routing Engine (`src/agent/intent.rs`, `src/agent/mod.rs`)**:
+  - Implemented `AgentIntent` classification system across 10 core domains (`StackScaffold`, `MilestonePlan`, `AutonomousGoal`, `CodeReview`, `GitDiff`, `SessionHistory`, `UndoRollback`, `RepoMap`, `ContextCompact`, `CommandCatalog`).
+  - Zero-latency heuristic matcher with automatic query extraction and confidence scoring.
+  - Live timeline intent feedback badges in interactive TUI (e.g. `📋 Autonomous Intent: Milestone Planning`).
+- **Interactive Command Catalog Modal (`ModalState::CommandCatalog`, `/commands`, `src/ui/modal.rs`)**:
+  - 2-column searchable command browser with live filter bar, category tags, shortcuts (`Ctrl+D`, `Ctrl+H`, `Ctrl+U`, `Ctrl+T`), parameter usage examples, and Enter-to-run / auto-fill.
+  - Registered `/commands` in `SLASH_COMMANDS` autocomplete.
+- **Enhanced System Prompt Autonomous Protocols (`src/agent/prompt.rs`)**:
+  - Updated `DEFAULT_SYSTEM_PROMPT` with explicit instructions on how minicode autonomously triggers native tool workflows for planning, scaffolding, goal loops, reviews, and checkpoints.
+- **Dual-Mode NDJSON-RPC Support (`src/main.rs`, `src/agent/types.rs`)**:
+  - Added `StdinCommand::ListCommands` returning complete structured JSON command catalogs over stdout (`AgentEvent::CommandList`).
+  - Added `StdinCommand::ExecuteCommand { command, args }` allowing external AI orchestrators to invoke slash commands and goals programmatically.
+  - Added `AgentEvent::IntentRouted` emitted whenever an intent is recognized.
+- **Integration Test Suite (`tests/integration_intent_routing.rs`)**:
+  - 10 comprehensive tests covering direct slash commands, natural language intent patterns, planning query extraction, catalog registry integrity, fuzzy filtering, and NDJSON-RPC command serialization.
+
 ## [0.0.62] — 2026-08-29
 
 ### Session I/O Performance, Event Schema & Quality Polish

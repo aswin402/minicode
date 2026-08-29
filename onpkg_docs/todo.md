@@ -1082,4 +1082,31 @@
 - [x] `./localupdate.sh` — `minicode --version` → `v0.0.62`
 - [x] `git commit + tag v0.0.62 + push origin main --tags`
 
+---
+
+## ✅ Phase 53: Autonomous Intent Routing & Interactive Command Catalog (v0.0.63)
+
+### Wave 1 — Intent Classification Engine & Protocol (P0)
+- [x] **Task 1:** Create `src/agent/intent.rs` — `AgentIntent` enum with 10 categories, regex/keyword heuristics, `IntentMatch` struct
+- [x] **Task 2:** Update `DEFAULT_SYSTEM_PROMPT` in `src/agent/prompt.rs` with domain-specific autonomous execution protocols
+
+### Wave 2 — Interactive Command Catalog Modal (P1)
+- [x] **Task 3:** Implement `ModalState::CommandCatalog` in `src/ui/modal.rs` — 2-column searchable command browser with keybinding shortcuts
+- [x] **Task 4:** Wire `/commands` into `src/ui/input.rs` and `src/app.rs` with TUI intent detection indicator
+
+### Wave 3 — Dual-Mode NDJSON-RPC & Integration Tests (P1/P2)
+- [x] **Task 5:** Add RPC commands (`ExecuteCommand`, `ListCommands`) and `AgentEvent::IntentRouted` to `src/agent/types.rs`
+- [x] **Task 6:** Wire machine-readable command handler into `src/main.rs` (`--json-stream`)
+- [x] **Task 7:** Create `tests/integration_intent_routing.rs` covering intent classification, catalog listing, and NDJSON-RPC commands
+
+### Verification
+- [x] `cargo check -j 1` — exit 0
+- [x] `cargo clippy -- -D warnings` — 0 warnings
+- [x] `cargo fmt --check` — clean
+- [x] `cargo test -j 1` — all 10 tests pass
+- [x] `cargo build --release -j 1` — exit 0
+- [x] `./localupdate.sh` — `minicode --version` → `v0.0.63`
+- [x] `git commit + tag v0.0.63 + push origin main --tags`
+
+
 

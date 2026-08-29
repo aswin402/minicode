@@ -14,6 +14,10 @@ pub struct SlashCommand {
 
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/commands",
+        description: "interactive catalog of all slash commands & autonomous intents",
+    },
+    SlashCommand {
         name: "/stack",
         description: "interactive multi-runtime stack wizard & template scaffolder",
     },

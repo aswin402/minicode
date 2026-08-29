@@ -42,6 +42,172 @@ pub fn format_time_ago(rfc3339_ts: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
+pub struct CommandCatalogItem {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub shortcut: &'static str,
+    pub description: &'static str,
+    pub example: &'static str,
+}
+
+pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
+    CommandCatalogItem {
+        name: "/commands",
+        category: "Discovery & Help",
+        shortcut: "",
+        description: "Interactive catalog of all available slash commands & keybindings",
+        example: "/commands",
+    },
+    CommandCatalogItem {
+        name: "/stack",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "Interactive multi-runtime stack wizard & template scaffolder (onpkg)",
+        example: "/stack nextjs | /stack react-vite",
+    },
+    CommandCatalogItem {
+        name: "/plan",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "Break complex feature into verifiable milestones in todo.md & plan.md",
+        example: "/plan implement OAuth2 auth flow",
+    },
+    CommandCatalogItem {
+        name: "/goal",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "Autonomous goal execution loop until all checklist tasks pass",
+        example: "/goal refactor database models and pass tests",
+    },
+    CommandCatalogItem {
+        name: "/diff",
+        category: "Code & Inspection",
+        shortcut: "Ctrl+D",
+        description: "Interactive split/unified git diff viewer & staging explorer",
+        example: "/diff",
+    },
+    CommandCatalogItem {
+        name: "/review",
+        category: "Code & Inspection",
+        shortcut: "",
+        description: "Multi-dimensional adversarial code review on git changes",
+        example: "/review | /review --staged",
+    },
+    CommandCatalogItem {
+        name: "/map",
+        category: "Code & Inspection",
+        shortcut: "",
+        description: "Render AST PageRank repository hierarchy & dependency graph",
+        example: "/map",
+    },
+    CommandCatalogItem {
+        name: "/history",
+        category: "History & Sessions",
+        shortcut: "Ctrl+H",
+        description: "Interactive 2-column session history, inspector & time-travel explorer",
+        example: "/history | /sessions",
+    },
+    CommandCatalogItem {
+        name: "/undo",
+        category: "History & Sessions",
+        shortcut: "Ctrl+U",
+        description: "Interactive checkpoint browser to revert file modifications",
+        example: "/undo",
+    },
+    CommandCatalogItem {
+        name: "/export",
+        category: "History & Sessions",
+        shortcut: "",
+        description: "Export current session trajectory to a markdown report",
+        example: "/export report.md",
+    },
+    CommandCatalogItem {
+        name: "/save",
+        category: "History & Sessions",
+        shortcut: "",
+        description: "Export full conversation history transcript to a target file",
+        example: "/save session_backup.md",
+    },
+    CommandCatalogItem {
+        name: "/load",
+        category: "History & Sessions",
+        shortcut: "",
+        description: "Load and replay past session events into active timeline",
+        example: "/load <session_id>",
+    },
+    CommandCatalogItem {
+        name: "/model",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Choose active LLM model & provider interactively",
+        example: "/model",
+    },
+    CommandCatalogItem {
+        name: "/theme",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Switch TUI color theme (Aura, Tokyo Night, Nord, Gruvbox, etc.)",
+        example: "/theme",
+    },
+    CommandCatalogItem {
+        name: "/tokens",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Display detailed token usage breakdown and compaction limits",
+        example: "/tokens",
+    },
+    CommandCatalogItem {
+        name: "/compact",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Manually compact and prune context tokens",
+        example: "/compact",
+    },
+    CommandCatalogItem {
+        name: "/terminal",
+        category: "Utilities",
+        shortcut: "Ctrl+T",
+        description: "Toggle interactive embedded PTY terminal drawer",
+        example: "/terminal",
+    },
+    CommandCatalogItem {
+        name: "/copy",
+        category: "Utilities",
+        shortcut: "",
+        description: "Copy latest assistant response or full transcript to clipboard",
+        example: "/copy | /copy all",
+    },
+    CommandCatalogItem {
+        name: "/retry",
+        category: "Utilities",
+        shortcut: "",
+        description: "Re-submit the previous user prompt to the agent",
+        example: "/retry",
+    },
+    CommandCatalogItem {
+        name: "/clear",
+        category: "Utilities",
+        shortcut: "",
+        description: "Clear active conversation timeline display",
+        example: "/clear",
+    },
+    CommandCatalogItem {
+        name: "/help",
+        category: "Discovery & Help",
+        shortcut: "",
+        description: "Display quick help and keyboard shortcuts",
+        example: "/help",
+    },
+    CommandCatalogItem {
+        name: "/exit",
+        category: "Discovery & Help",
+        shortcut: "Esc / Ctrl+C",
+        description: "Quit minicode interactive session cleanly",
+        example: "/exit",
+    },
+];
+
+#[derive(Debug, Clone)]
 pub enum ModalState {
     None,
     ProviderSelect {
@@ -71,6 +237,11 @@ pub enum ModalState {
     },
     StackSelect {
         stacks: Vec<crate::tools::onpkg::stacks::Stack>,
+        filtered_indices: Vec<usize>,
+        selected_index: usize,
+        filter: String,
+    },
+    CommandCatalog {
         filtered_indices: Vec<usize>,
         selected_index: usize,
         filter: String,
@@ -175,6 +346,15 @@ impl ModalState {
         }
     }
 
+    pub fn new_command_catalog() -> Self {
+        let count = COMMAND_CATALOG_ITEMS.len();
+        ModalState::CommandCatalog {
+            filtered_indices: (0..count).collect(),
+            selected_index: 0,
+            filter: String::new(),
+        }
+    }
+
     pub fn new_git_diff(diff_files: Vec<crate::git::GitDiffFile>, staged_view: bool) -> Self {
         ModalState::GitDiff {
             diff_files,
@@ -229,6 +409,32 @@ impl ModalState {
                             || s.runtime.to_lowercase().contains(&f)
                             || s.description.to_lowercase().contains(&f)
                             || s.packages.iter().any(|p| p.to_lowercase().contains(&f))
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if *selected_index >= filtered_indices.len() {
+                *selected_index = filtered_indices.len().saturating_sub(1);
+            }
+        } else if let ModalState::CommandCatalog {
+            filtered_indices,
+            selected_index,
+            filter,
+        } = self
+        {
+            let f = filter.trim().to_lowercase();
+            *filtered_indices = COMMAND_CATALOG_ITEMS
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    if f.is_empty() {
+                        true
+                    } else {
+                        c.name.to_lowercase().contains(&f)
+                            || c.category.to_lowercase().contains(&f)
+                            || c.description.to_lowercase().contains(&f)
+                            || c.shortcut.to_lowercase().contains(&f)
                     }
                 })
                 .map(|(i, _)| i)
@@ -1308,6 +1514,251 @@ impl ModalState {
                         .style(Style::default().fg(theme.muted))
                         .alignment(Alignment::Center);
                 frame.render_widget(footer, v_chunks[2]);
+            }
+            ModalState::CommandCatalog {
+                ref filtered_indices,
+                selected_index,
+                ref filter,
+            } => {
+                let popup_area = centered_rect(82, 74, area);
+                frame.render_widget(Clear, popup_area);
+
+                let root_block = Block::default()
+                    .title(" 🧭 minicode Slash Commands & Autonomous Intent Catalog ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = root_block.inner(popup_area);
+                frame.render_widget(root_block, popup_area);
+
+                let v_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Min(8),
+                        Constraint::Length(1),
+                    ])
+                    .split(inner_area);
+
+                // Search Bar
+                let count_badge = format!(
+                    " [{}/{}] ",
+                    if filtered_indices.is_empty() {
+                        0
+                    } else {
+                        *selected_index + 1
+                    },
+                    filtered_indices.len()
+                );
+                let search_block = Block::default()
+                    .title(" 🔍 Filter Commands ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.brand_accent))
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let search_p = Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "❯ ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        filter,
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("█", Style::default().fg(theme.brand_accent)),
+                    Span::styled(
+                        format!(
+                            "{:>width$}",
+                            count_badge,
+                            width = (v_chunks[0].width as usize).saturating_sub(filter.len() + 8)
+                        ),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]))
+                .block(search_block);
+                frame.render_widget(search_p, v_chunks[0]);
+
+                // Split into [Left List (42%), Right Details (58%)]
+                let h_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                    .split(v_chunks[1]);
+
+                let list_block = Block::default()
+                    .title(" Commands ")
+                    .borders(Borders::RIGHT)
+                    .border_style(Style::default().fg(theme.bg_elevated));
+
+                let mut list_lines = Vec::new();
+                let max_visible = (h_chunks[0].height as usize).saturating_sub(2);
+                let scroll_offset = if *selected_index >= max_visible {
+                    *selected_index - max_visible + 1
+                } else {
+                    0
+                };
+
+                for (idx_rel, &item_idx) in filtered_indices
+                    .iter()
+                    .skip(scroll_offset)
+                    .take(max_visible)
+                    .enumerate()
+                {
+                    let real_idx = scroll_offset + idx_rel;
+                    let item = &COMMAND_CATALOG_ITEMS[item_idx];
+                    let is_selected = real_idx == *selected_index;
+
+                    let cursor = if is_selected { "▶ " } else { "  " };
+                    let name_style = if is_selected {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    };
+
+                    let shortcut_style = Style::default().fg(theme.warning);
+                    let shortcut_str = if item.shortcut.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", item.shortcut)
+                    };
+
+                    list_lines.push(Line::from(vec![
+                        Span::styled(
+                            cursor,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("{:<10}", item.name), name_style),
+                        Span::styled(shortcut_str, shortcut_style),
+                    ]));
+                }
+
+                if filtered_indices.is_empty() {
+                    list_lines.push(Line::from(Span::styled(
+                        "  No matching commands found",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+
+                let left_p = Paragraph::new(list_lines).block(list_block);
+                frame.render_widget(left_p, h_chunks[0]);
+
+                // Right Details Pane
+                let mut detail_lines = Vec::new();
+                if let Some(&selected_item_idx) = filtered_indices.get(*selected_index) {
+                    let cmd = &COMMAND_CATALOG_ITEMS[selected_item_idx];
+
+                    detail_lines.push(Line::from(vec![
+                        Span::styled(
+                            cmd.name,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  •  {}", cmd.category),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+                    detail_lines.push(Line::from(""));
+
+                    if !cmd.shortcut.is_empty() {
+                        detail_lines.push(Line::from(vec![
+                            Span::styled(
+                                "⚡ Shortcut: ",
+                                Style::default()
+                                    .fg(theme.warning)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(cmd.shortcut, Style::default().fg(theme.text_primary)),
+                        ]));
+                        detail_lines.push(Line::from(""));
+                    }
+
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        "📖 Description:",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        format!("  {}", cmd.description),
+                        Style::default().fg(theme.text_primary),
+                    )]));
+                    detail_lines.push(Line::from(""));
+
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        "💡 Usage Example:",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        format!("  {}", cmd.example),
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::ITALIC),
+                    )]));
+                    detail_lines.push(Line::from(""));
+
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        "🤖 Autonomous Intent Routing:",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        "  You can type natural language in the prompt dock. minicode's",
+                        Style::default().fg(theme.muted),
+                    )]));
+                    detail_lines.push(Line::from(vec![Span::styled(
+                        "  intent router will recognize and trigger this workflow automatically.",
+                        Style::default().fg(theme.muted),
+                    )]));
+                }
+
+                let right_p = Paragraph::new(detail_lines);
+                frame.render_widget(right_p, h_chunks[1]);
+
+                // Footer hints
+                let footer_spans = vec![
+                    Span::styled(
+                        "[↑/↓] ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Navigate   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Enter] ",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Run Command   ", Style::default().fg(theme.text_primary)),
+                    Span::styled(
+                        "[Esc] ",
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("Close", Style::default().fg(theme.text_primary)),
+                ];
+                let footer_p =
+                    Paragraph::new(Line::from(footer_spans)).alignment(Alignment::Center);
+                frame.render_widget(footer_p, v_chunks[2]);
             }
             ModalState::GitDiff {
                 ref diff_files,
