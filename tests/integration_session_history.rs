@@ -316,3 +316,57 @@ async fn test_empty_session_summary() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_user_prompt_in_summary_and_export() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_prompt_test_{}", uuid::Uuid::new_v4()));
+    let store = SessionStore::with_dir(temp_dir.clone());
+    let session_id = store.create_session(&temp_dir).unwrap();
+
+    let user_event = AgentEvent::UserPrompt {
+        turn_id: 1,
+        timestamp: "2026-08-28T14:00:00Z".to_string(),
+        prompt: "Refactor authentication module to support OAuth2".to_string(),
+    };
+    let turn_start = AgentEvent::TurnStart {
+        turn_id: 1,
+        timestamp: "2026-08-28T14:00:01Z".to_string(),
+        model: "claude-3-7-sonnet".to_string(),
+        context_tokens: 1000,
+    };
+    let stream_delta = AgentEvent::StreamDelta {
+        turn_id: 1,
+        delta: "I will start by checking auth.rs".to_string(),
+    };
+    let turn_end = AgentEvent::TurnEnd {
+        turn_id: 1,
+        status: "completed".to_string(),
+        total_tokens_used: 350,
+        files_modified: vec!["src/auth.rs".to_string()],
+    };
+
+    store.append_event(&session_id, &user_event).unwrap();
+    store.append_event(&session_id, &turn_start).unwrap();
+    store.append_event(&session_id, &stream_delta).unwrap();
+    store.append_event(&session_id, &turn_end).unwrap();
+
+    let summary = store.get_session_summary(&session_id).unwrap();
+    assert_eq!(
+        summary.first_prompt,
+        "Refactor authentication module to support OAuth2"
+    );
+    assert_eq!(summary.total_events, 4);
+
+    let export_path = temp_dir.join("export.md");
+    store.export_markdown(&session_id, &export_path).unwrap();
+    assert!(export_path.exists());
+
+    let md_content = std::fs::read_to_string(&export_path).unwrap();
+    assert!(md_content.contains("### 👤 User"));
+    assert!(md_content.contains("Refactor authentication module to support OAuth2"));
+    assert!(md_content.contains("### 🎯 Turn 1"));
+    assert!(md_content.contains("I will start by checking auth.rs"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

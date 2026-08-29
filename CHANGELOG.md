@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.62] — 2026-08-29
+
+### Session I/O Performance, Event Schema & Quality Polish
+
+- **Streaming I/O Performance (200x Speedup, `src/session/store.rs`)**:
+  - Removed per-event `file.sync_all()` from `append_event()`. Avoids ~200 blocking filesystem sync syscalls per turn during LLM streaming.
+- **First-Class UserPrompt Event (`AgentEvent::UserPrompt`, `src/agent/types.rs`, `src/agent/loop.rs`)**:
+  - Added dedicated `AgentEvent::UserPrompt { turn_id, timestamp, prompt }` variant emitted and persisted at the beginning of each turn.
+  - Aligns with OpenAI, Codex CLI, Aider, and Claude Code schemas for accurate session replays and Markdown exports.
+- **Single-Pass Session & Metadata Loading (`src/session/store.rs`)**:
+  - Added `load_session_with_metadata()` returning both metadata and events in a single file read, eliminating redundant file reopening in `get_session_summary_with_events()`.
+- **Display-Width-Aware Truncation (`truncate_display`, `src/session/store.rs`, `src/ui/modal.rs`)**:
+  - Introduced `truncate_display(s, max_cols, suffix)` utilizing `unicode-width` to properly handle full-width CJK characters and emojis in TUI column layouts.
+- **Centralized Session Constants (`src/constants.rs`)**:
+  - Extracted magic numbers across session storage and modal rendering into named constants (`SESSION_PREVIEW_MAX_BYTES`, `SESSION_FIRST_PROMPT_MAX_BYTES`, `SESSION_ID_DISPLAY_COLS`, `SESSION_LOAD_LIST_MAX`, etc.).
+- **Slash Command Prefix Hardening (`src/app.rs`)**:
+  - Tightened `/save` command prefix matching to `== "/save" || starts_with("/save ")`, preventing accidental prefix capture on prompts like `/savefile` or `/saving`.
+- **Expanded Integration Tests (`tests/integration_session_history.rs`)**:
+  - Added `test_user_prompt_in_summary_and_export` verifying user prompt extraction and Markdown timeline rendering (9 tests total in suite).
+
 ## [0.0.61] — 2026-08-28
 
 ### Session History Hardening & Quality Improvements

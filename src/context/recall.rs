@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_long_content_is_chunked() {
-        let long = ("paragraph about rust async ecosystems. ".repeat(80));
+        let long = "paragraph about rust async ecosystems. ".repeat(80);
         let chunks = chunk_text(&long);
         assert!(chunks.len() >= 3, "long content must split into chunks");
         assert!(chunks.iter().all(|c| c.len() <= CHUNK_CHARS + 200));

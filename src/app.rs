@@ -80,6 +80,9 @@ impl<'a> App<'a> {
     pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
         for event in events {
             match event {
+                AgentEvent::UserPrompt { prompt, .. } => {
+                    self.timeline.add_user_message(prompt.clone());
+                }
                 AgentEvent::TurnStart { .. } => {}
                 AgentEvent::StreamDelta { delta, .. } => {
                     self.timeline.append_assistant_delta(delta);
@@ -748,8 +751,8 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                if prompt.starts_with("/save") {
-                                    let target_path = prompt.trim_start_matches("/save").trim();
+                                if prompt == "/save" || prompt.starts_with("/save ") {
+                                    let target_path = prompt.strip_prefix("/save").unwrap_or("").trim();
                                     let export_file = if target_path.is_empty() {
                                         let export_dir = self.workspace_root.join(".minicode").join("exports");
                                         let _ = std::fs::create_dir_all(&export_dir);
@@ -793,8 +796,12 @@ impl<'a> App<'a> {
                                         match store.list_sessions() {
                                             Ok(sessions) if !sessions.is_empty() => {
                                                 let mut list_msg = format!("📂 Available Sessions ({}):\n", sessions.len());
-                                                for s in sessions.iter().take(10) {
-                                                    list_msg.push_str(&format!("  • {} ({})\n", s.id, s.created_at));
+                                                for s in sessions
+                                                    .iter()
+                                                    .take(crate::constants::SESSION_LOAD_LIST_MAX)
+                                                {
+                                                    list_msg
+                                                        .push_str(&format!("  • {} ({})\n", s.id, s.created_at));
                                                 }
                                                 list_msg.push_str("\nUse `/load <session_id>` to view a session.");
                                                 self.timeline.add_status(list_msg);

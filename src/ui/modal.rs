@@ -1,5 +1,9 @@
 use crate::agent::models::ModelInfo;
-use crate::session::store::truncate_safe;
+use crate::constants::{
+    SESSION_ID_DISPLAY_COLS, SESSION_LIST_ITEM_HEIGHT, SESSION_MAX_FILES_PREVIEW,
+    SESSION_RESPONSE_SNIPPET_COLS,
+};
+use crate::session::store::truncate_display;
 use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -732,7 +736,7 @@ impl ModalState {
                     frame.render_widget(empty, body_chunks[0]);
                 } else {
                     let available_height = body_chunks[0].height as usize;
-                    let max_visible = (available_height / 2).max(1);
+                    let max_visible = (available_height / SESSION_LIST_ITEM_HEIGHT).max(1);
                     let scroll_offset = if *selected_index >= max_visible {
                         *selected_index - max_visible + 1
                     } else {
@@ -749,7 +753,7 @@ impl ModalState {
                             let is_selected = i == *selected_index;
                             let time_ago = format_time_ago(&s.created_at);
 
-                            let id_short = truncate_safe(&s.id, 18, "…");
+                            let id_short = truncate_display(&s.id, SESSION_ID_DISPLAY_COLS, "…");
 
                             let event_badge = if s.event_count == 0 {
                                 String::new()
@@ -881,15 +885,18 @@ impl ModalState {
                             format!("Files Touched ({}) : ", summary.files_touched.len()),
                             Style::default().fg(theme.muted),
                         )]));
-                        for f in summary.files_touched.iter().take(4) {
+                        for f in summary.files_touched.iter().take(SESSION_MAX_FILES_PREVIEW) {
                             preview_lines.push(Line::from(vec![
                                 Span::styled("  • ", Style::default().fg(theme.success)),
                                 Span::styled(f, Style::default().fg(theme.text_primary)),
                             ]));
                         }
-                        if summary.files_touched.len() > 4 {
+                        if summary.files_touched.len() > SESSION_MAX_FILES_PREVIEW {
                             preview_lines.push(Line::from(vec![Span::styled(
-                                format!("    +{} more files...", summary.files_touched.len() - 4),
+                                format!(
+                                    "    +{} more files...",
+                                    summary.files_touched.len() - SESSION_MAX_FILES_PREVIEW
+                                ),
                                 Style::default().fg(theme.muted),
                             )]));
                         }
@@ -913,7 +920,11 @@ impl ModalState {
                     }
 
                     if !summary.last_response.is_empty() {
-                        let snippet = truncate_safe(&summary.last_response, 180, "...");
+                        let snippet = truncate_display(
+                            &summary.last_response,
+                            SESSION_RESPONSE_SNIPPET_COLS,
+                            "...",
+                        );
                         preview_lines.push(Line::from(vec![
                             Span::styled("Last Response: ", Style::default().fg(theme.muted)),
                             Span::styled(

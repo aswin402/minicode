@@ -1041,3 +1041,45 @@
   - [x] `test_session_forking_and_isolation` — fork session and verify isolation
   - [x] `test_session_export_markdown_transcript` — markdown export verification
 
+---
+
+## ✅ Phase 52: Session I/O Performance, Event Schema & Quality Polish (v0.0.62)
+
+**Research:** Codex CLI, Aider, Cline, Claude Code all batch writes at turn boundaries — no project calls `fsync` per streaming token. Every major agent records user prompts as first-class events.
+
+### Wave 1 — Quick Fixes (P0)
+- [x] **Task 1:** Remove `sync_all()` from `append_event()` in `src/session/store.rs` — eliminates ~200 fsync syscalls per turn, 200x I/O speedup
+- [x] **Task 2:** Fix `/save` prefix overreach in `src/app.rs` — change `starts_with("/save")` to `== "/save" || starts_with("/save ")`
+- [x] **Task 3:** Upgrade StreamDelta persistence log from `debug!` to `warn!` in `src/agent/loop.rs`
+
+### Wave 2 — Core Improvements (P0/P1)
+- [x] **Task 4:** Add `AgentEvent::UserPrompt { turn_id, timestamp, prompt }` variant to `src/agent/types.rs`
+  - [x] Persist `UserPrompt` event before `TurnStart` in `src/agent/loop.rs`
+  - [x] Extract `first_prompt` from `UserPrompt` in `get_session_summary_with_events()`
+  - [x] Add `"### 👤 User"` section in `export_markdown()`
+  - [x] Prioritize `user_prompt` event in `list_sessions_rich()` preview extraction
+  - [x] Add integration test `test_user_prompt_in_summary_and_export`
+- [x] **Task 5:** Eliminate double file read — create `load_session_with_metadata()` that returns `(Option<SessionMetadata>, Vec<AgentEvent>)` in a single pass
+
+### Wave 3 — Polish (P2)
+- [x] **Task 6:** Add `truncate_display()` using `unicode-width` for TUI column-aware truncation
+  - [x] Add `unicode-width = "0.2"` explicit dep in `Cargo.toml`
+  - [x] Create `truncate_display(s, max_cols, suffix)` function
+  - [x] Use in `modal.rs` for session ID and response snippet rendering
+  - [x] Add unit test for CJK/emoji display width truncation
+- [x] **Task 7:** Extract magic numbers into `src/constants.rs` `// === Session & History ===` section
+  - [x] `SESSION_PREVIEW_MAX_BYTES`, `SESSION_FIRST_PROMPT_MAX_BYTES`, `SESSION_TOOL_OUTPUT_MAX_BYTES`
+  - [x] `SESSION_ID_DISPLAY_COLS`, `SESSION_RESPONSE_SNIPPET_COLS`, `SESSION_MAX_FILES_PREVIEW`
+  - [x] `GIT_SHORT_HASH_BYTES`, `SESSION_LIST_ITEM_HEIGHT`, `SESSION_LOAD_LIST_MAX`, `SESSION_DEFAULT_MODEL`
+  - [x] Replace all magic numbers in `store.rs` and `modal.rs`
+
+### Verification
+- [x] `cargo check` — exit 0
+- [x] `cargo clippy -- -D warnings` — 0 warnings
+- [x] `cargo fmt --check` — clean
+- [x] `cargo test -j 1` — passed cleanly
+- [x] `cargo build --release -j 1` — exit 0
+- [x] `./localupdate.sh` — `minicode --version` → `v0.0.62`
+- [x] `git commit + tag v0.0.62 + push origin main --tags`
+
+

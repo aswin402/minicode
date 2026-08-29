@@ -1,10 +1,15 @@
 use crate::agent::types::AgentEvent;
-use crate::constants::{CONFIG_DIR_NAME, SESSIONS_DIR_NAME, WORKSPACE_DIR_NAME};
+use crate::constants::{
+    CONFIG_DIR_NAME, GIT_SHORT_HASH_BYTES, SESSIONS_DIR_NAME, SESSION_DEFAULT_MODEL,
+    SESSION_FIRST_PROMPT_MAX_BYTES, SESSION_PREVIEW_MAX_BYTES, SESSION_TOOL_OUTPUT_MAX_BYTES,
+    WORKSPACE_DIR_NAME,
+};
 use crate::error::{Result, SessionError};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
@@ -132,12 +137,14 @@ impl SessionStore {
 
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
-        file.sync_all()?;
         Ok(())
     }
 
-    /// Reads all events from a session's JSONL file.
-    pub fn load_session(&self, session_id: &str) -> Result<Vec<AgentEvent>> {
+    /// Reads all events and initial session metadata from a session's JSONL file in a single pass.
+    pub fn load_session_with_metadata(
+        &self,
+        session_id: &str,
+    ) -> Result<(Option<SessionMetadata>, Vec<AgentEvent>)> {
         self.validate_session_id(session_id)?;
         let session_path = self.session_file_path(session_id);
         if !session_path.exists() {
@@ -151,11 +158,21 @@ impl SessionStore {
         let file = std::fs::File::open(&session_path)?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
+        let mut metadata: Option<SessionMetadata> = None;
 
         for (idx, line_res) in reader.lines().enumerate() {
             let line = line_res?;
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("{\"session_meta\":") {
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if metadata.is_none() && trimmed.starts_with("{\"session_meta\":") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(meta_val) = val.get("session_meta") {
+                        metadata = serde_json::from_value::<SessionMetadata>(meta_val.clone()).ok();
+                    }
+                }
                 continue;
             }
 
@@ -172,7 +189,13 @@ impl SessionStore {
             }
         }
 
-        Ok(events)
+        Ok((metadata, events))
+    }
+
+    /// Reads all events from a session's JSONL file.
+    pub fn load_session(&self, session_id: &str) -> Result<Vec<AgentEvent>> {
+        self.load_session_with_metadata(session_id)
+            .map(|(_, events)| events)
     }
 
     /// Returns the session ID of the most recent session.
@@ -252,11 +275,22 @@ impl SessionStore {
                         continue;
                     }
                     count += 1;
-                    // Extract the model or first stream delta as preview
+                    // Extract the first user prompt, model, or first stream delta as preview
                     if meta.preview.is_empty() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                             if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
-                                if event_type == "turn_start" {
+                                if event_type == "user_prompt" {
+                                    if let Some(p) = val.get("prompt").and_then(|v| v.as_str()) {
+                                        let p_trim = p.trim();
+                                        if !p_trim.is_empty() {
+                                            meta.preview = truncate_safe(
+                                                p_trim,
+                                                SESSION_PREVIEW_MAX_BYTES,
+                                                "...",
+                                            );
+                                        }
+                                    }
+                                } else if event_type == "turn_start" {
                                     if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
                                         meta.preview = format!("model: {}", m);
                                     }
@@ -264,7 +298,11 @@ impl SessionStore {
                                     if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
                                         let d_trim = d.trim();
                                         if !d_trim.is_empty() {
-                                            meta.preview = truncate_safe(d_trim, 60, "...");
+                                            meta.preview = truncate_safe(
+                                                d_trim,
+                                                SESSION_PREVIEW_MAX_BYTES,
+                                                "...",
+                                            );
                                         }
                                     }
                                 }
@@ -283,13 +321,14 @@ impl SessionStore {
     }
 
     /// Computes an in-depth analytical summary for a given session, returning both summary and events.
+    /// Uses a single file pass without reopening or scanning twice.
     pub fn get_session_summary_with_events(
         &self,
         session_id: &str,
     ) -> Result<(SessionSummary, Vec<AgentEvent>)> {
         self.validate_session_id(session_id)?;
-        let events = self.load_session(session_id)?;
-        let mut model = "unknown".to_string();
+        let (metadata_opt, events) = self.load_session_with_metadata(session_id)?;
+        let mut model = SESSION_DEFAULT_MODEL.to_string();
         let mut total_turns = 0usize;
         let total_events = events.len();
         let mut total_tokens = 0usize;
@@ -301,8 +340,26 @@ impl SessionStore {
             std::collections::HashMap::new();
         let mut files_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
+        let (created_at, workspace) = if let Some(meta) = metadata_opt {
+            if !meta.preview.is_empty() {
+                first_prompt = meta.preview;
+            }
+            (meta.created_at, meta.workspace)
+        } else {
+            (String::new(), String::new())
+        };
+
         for event in &events {
             match event {
+                AgentEvent::UserPrompt { prompt, .. } => {
+                    if first_prompt.is_empty() {
+                        let trimmed = prompt.trim();
+                        if !trimmed.is_empty() {
+                            first_prompt =
+                                truncate_safe(trimmed, SESSION_FIRST_PROMPT_MAX_BYTES, "...");
+                        }
+                    }
+                }
                 AgentEvent::TurnStart {
                     model: m, turn_id, ..
                 } => {
@@ -350,35 +407,14 @@ impl SessionStore {
             last_response = current_turn_response;
         }
 
-        // Also check if we have the session metadata for creation date & workspace
-        let mut created_at = String::new();
-        let mut workspace = String::new();
-        let session_path = self.session_file_path(session_id);
-        if let Ok(file) = std::fs::File::open(&session_path) {
-            let mut reader = BufReader::new(file);
-            let mut first_line = String::new();
-            if reader.read_line(&mut first_line).is_ok() {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first_line) {
-                    if let Some(meta_val) = val.get("session_meta") {
-                        if let Ok(meta) =
-                            serde_json::from_value::<SessionMetadata>(meta_val.clone())
-                        {
-                            created_at = meta.created_at;
-                            workspace = meta.workspace;
-                            first_prompt = meta.preview;
-                        }
-                    }
-                }
-            }
-        }
-
-        // If first_prompt is still empty, scan events for the first non-empty StreamDelta
+        // If first_prompt is still empty, scan events for the first non-empty StreamDelta as fallback
         if first_prompt.is_empty() {
             for event in &events {
                 if let AgentEvent::StreamDelta { delta, .. } = event {
                     let trimmed = delta.trim();
                     if !trimmed.is_empty() {
-                        first_prompt = truncate_safe(trimmed, 120, "...");
+                        first_prompt =
+                            truncate_safe(trimmed, SESSION_FIRST_PROMPT_MAX_BYTES, "...");
                         break;
                     }
                 }
@@ -479,6 +515,14 @@ impl SessionStore {
 
         for event in events {
             match event {
+                AgentEvent::UserPrompt { prompt, .. } => {
+                    if !assistant_buf.is_empty() {
+                        md.push_str(&assistant_buf);
+                        md.push_str("\n\n");
+                        assistant_buf.clear();
+                    }
+                    md.push_str(&format!("### 👤 User\n\n{}\n\n", prompt));
+                }
                 AgentEvent::TurnStart {
                     turn_id,
                     timestamp,
@@ -524,8 +568,8 @@ impl SessionStore {
                         "> **Tool Result (`{}` — {} in {}ms):**\n",
                         tool, status, duration_ms
                     ));
-                    let preview = if output.len() > 1000 {
-                        truncate_safe(&output, 1000, "...\n[truncated]")
+                    let preview = if output.len() > SESSION_TOOL_OUTPUT_MAX_BYTES {
+                        truncate_safe(&output, SESSION_TOOL_OUTPUT_MAX_BYTES, "...\n[truncated]")
                     } else {
                         output
                     };
@@ -538,7 +582,7 @@ impl SessionStore {
                     md.push_str(&format!("📝 *File {}*: `{}`\n\n", action, path));
                 }
                 AgentEvent::GitCommit { hash, message, .. } => {
-                    let hash_short = truncate_safe(&hash, 7, "");
+                    let hash_short = truncate_safe(&hash, GIT_SHORT_HASH_BYTES, "");
                     md.push_str(&format!(
                         "📦 **Git Commit:** `{}` — *{}*\n\n",
                         hash_short, message
@@ -588,6 +632,27 @@ pub fn truncate_safe(s: &str, max_bytes: usize, suffix: &str) -> String {
     }
     let safe_end = s.floor_char_boundary(max_bytes);
     format!("{}{}", &s[..safe_end], suffix)
+}
+
+/// Truncates a string to fit within `max_cols` visual display columns.
+/// Handles CJK full-width characters and emojis safely without breaking characters.
+pub fn truncate_display(s: &str, max_cols: usize, suffix: &str) -> String {
+    if UnicodeWidthStr::width(s) <= max_cols {
+        return s.to_string();
+    }
+    let suffix_width = UnicodeWidthStr::width(suffix);
+    let target = max_cols.saturating_sub(suffix_width);
+    let mut width = 0;
+    let mut end_idx = 0;
+    for (idx, ch) in s.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > target {
+            break;
+        }
+        width += w;
+        end_idx = idx + ch.len_utf8();
+    }
+    format!("{}{}", &s[..end_idx], suffix)
 }
 
 /// Analytical summary of a completed or active conversation session
@@ -675,6 +740,43 @@ mod tests {
         let rich = store.list_sessions_rich().unwrap();
         assert_eq!(rich.len(), 1);
         assert_eq!(rich[0].event_count, 2);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_truncate_display_cjk_and_emojis() {
+        let s = "你好世界"; // 4 chars * 2 width = 8 columns
+        assert_eq!(truncate_display(s, 5, "..."), "你...");
+        assert_eq!(truncate_display(s, 6, "…"), "你好…");
+        assert_eq!(truncate_display(s, 8, "…"), "你好世界");
+
+        let ascii = "hello world";
+        assert_eq!(truncate_display(ascii, 7, "..."), "hell...");
+        assert_eq!(truncate_display(ascii, 20, "..."), "hello world");
+    }
+
+    #[test]
+    fn test_load_session_with_metadata() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_meta_test_{}", uuid::Uuid::new_v4()));
+        let store = SessionStore::with_dir(temp_dir.clone());
+        let session_id = store.create_session(&temp_dir).unwrap();
+
+        let prompt_event = AgentEvent::UserPrompt {
+            turn_id: 1,
+            timestamp: "2026-08-28T10:00:00Z".to_string(),
+            prompt: "Please write a test function.".to_string(),
+        };
+        store.append_event(&session_id, &prompt_event).unwrap();
+
+        let (meta_opt, events) = store.load_session_with_metadata(&session_id).unwrap();
+        assert!(meta_opt.is_some());
+        let meta = meta_opt.unwrap();
+        assert_eq!(meta.id, session_id);
+        assert_eq!(meta.workspace, temp_dir.display().to_string());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], prompt_event);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

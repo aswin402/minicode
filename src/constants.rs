@@ -441,3 +441,25 @@ pub const BROWSER_MAX_SCREENSHOT_BYTES: usize = 2 * 1024 * 1024;
 pub const BROWSER_PROFILES_DIR: &str = ".minicode/browser_profiles";
 /// Relative directory inside workspace for browser screenshots
 pub const BROWSER_SCREENSHOTS_DIR: &str = ".minicode/screenshots";
+
+// === Session & History ===
+/// Maximum byte length for session preview in list_sessions_rich
+pub const SESSION_PREVIEW_MAX_BYTES: usize = 60;
+/// Maximum byte length for first prompt/response preview in summary
+pub const SESSION_FIRST_PROMPT_MAX_BYTES: usize = 120;
+/// Maximum byte length for tool output in markdown export before truncation
+pub const SESSION_TOOL_OUTPUT_MAX_BYTES: usize = 1000;
+/// Display columns for session ID in TUI session browser list
+pub const SESSION_ID_DISPLAY_COLS: usize = 18;
+/// Display columns for last response snippet in TUI preview pane
+pub const SESSION_RESPONSE_SNIPPET_COLS: usize = 80;
+/// Maximum files shown in session preview pane before "+N more"
+pub const SESSION_MAX_FILES_PREVIEW: usize = 4;
+/// Git commit hash short display length in bytes
+pub const GIT_SHORT_HASH_BYTES: usize = 7;
+/// Height in lines of each session list item (for viewport calculation)
+pub const SESSION_LIST_ITEM_HEIGHT: usize = 2;
+/// Maximum sessions shown in /load listing
+pub const SESSION_LOAD_LIST_MAX: usize = 10;
+/// Default model name when no TurnStart event found
+pub const SESSION_DEFAULT_MODEL: &str = "unknown";

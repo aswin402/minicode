@@ -179,13 +179,28 @@ impl AgentLoop {
         let mcp_tools = self.mcp_client.get_tool_schemas().await;
         tools.extend(mcp_tools);
 
+        let now_ts = chrono::Utc::now().to_rfc3339();
+
+        let prompt_event = AgentEvent::UserPrompt {
+            turn_id,
+            timestamp: now_ts.clone(),
+            prompt: user_prompt.to_string(),
+        };
+        if let Err(e) = self
+            .session_store
+            .append_event(&self.session_id, &prompt_event)
+        {
+            tracing::warn!("Failed to persist UserPrompt event: {}", e);
+        }
+        let _ = event_sender.send(prompt_event);
+
         let initial_context_tokens = crate::context::compressor::ContextCompressor::new()
             .map(|c| c.count_messages_tokens(&self.messages))
             .unwrap_or(0);
 
         let start_event = AgentEvent::TurnStart {
             turn_id,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: now_ts,
             model: self.config.provider.model.clone(),
             context_tokens: initial_context_tokens,
         };
@@ -301,7 +316,7 @@ impl AgentLoop {
                                 .session_store
                                 .append_event(&self.session_id, &delta_event)
                             {
-                                tracing::debug!("Failed to persist StreamDelta event: {}", e);
+                                tracing::warn!("Failed to persist StreamDelta event: {}", e);
                             }
                             if let Err(e) = event_sender.send(delta_event) {
                                 tracing::debug!(error = %e, "Failed to send stream delta event");

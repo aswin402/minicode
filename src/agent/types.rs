@@ -126,6 +126,13 @@ pub struct Turn {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event")]
 pub enum AgentEvent {
+    #[serde(rename = "user_prompt")]
+    UserPrompt {
+        turn_id: usize,
+        timestamp: String,
+        prompt: String,
+    },
+
     #[serde(rename = "turn_start")]
     TurnStart {
         turn_id: usize,
