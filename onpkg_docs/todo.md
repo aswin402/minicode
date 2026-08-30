@@ -1228,10 +1228,10 @@
 - [x] 58.11: Version bump → `v0.0.68`, changelog, commit, tag, push
 
 ### Phase 59: Graph Persistence to Disk (v0.0.69)
-- [ ] 59.1: Define `GraphSnapshot` serialization format in new `graph_store.rs`
-- [ ] 59.2: Integrate `load_cached` / `incremental_update` / `save_to_disk` into `CodeGraph`
-- [ ] 59.3: Register `graph_store` module in `mod.rs`
-- [ ] 59.4: Version bump → `v0.0.69`, changelog, commit, tag, push
+- [x] 59.1: Define `GraphSnapshot` serialization format in new `graph_store.rs`
+- [x] 59.2: Integrate `load_cached` / `incremental_update` / `save_to_disk` into `CodeGraph`
+- [x] 59.3: Register `graph_store` module in `mod.rs`
+- [x] 59.4: Version bump → `v0.0.69`, changelog, commit, tag, push
 
 ### Phase 60: Diff-to-Symbol Projection for `/review` (v0.0.70)
 - [ ] 60.1: Create `DiffProjector` module with symbol-level diff mapping

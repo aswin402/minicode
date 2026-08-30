@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.69] — 2026-08-31
+
+### Code Graph Disk Persistence & Incremental Snapshot Caching
+
+- **Graph Storage Engine (`src/context/graph_store.rs`)**:
+  - Introduced `GraphStore` and `GraphSnapshot` serialization format with versioned schema (`SCHEMA_VERSION = 1`).
+  - Implemented atomic disk serialization via UUID-tagged temporary files and atomic rename to `.minicode/graph.json`.
+  - Added safety guardrails with `MAX_GRAPH_FILE_SIZE_BYTES` (10 MB) threshold to prevent unbounded growth.
+- **Warm-Start Graph Caching & Lifecycle Integration (`src/context/graph.rs`)**:
+  - `CodeGraph::build_graph()` now leverages `load_cached()` on startup for instantaneous warm starts, followed by fast `incremental_update()`.
+  - Automatically serializes the updated graph back to disk via `save_to_disk()`.
+- **Incremental Update Engine (`src/context/graph.rs`)**:
+  - Added `incremental_update()` calculating `IncrementalStats` (`files_scanned`, `files_reparsed`, `files_removed`, `nodes_added`, `nodes_removed`, `edges_rebuilt`).
+  - Incrementally purges removed and stale symbols while re-wiring callers and file dependencies in milliseconds.
+
 ## [0.0.68] — 2026-08-31
 
 ### Symbol-Level Code Graph & Incremental Change Tracking

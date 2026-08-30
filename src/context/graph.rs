@@ -185,6 +185,17 @@ impl FileHashTracker {
     }
 }
 
+/// Statistics from an incremental graph update pass
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct IncrementalStats {
+    pub files_scanned: usize,
+    pub files_reparsed: usize,
+    pub files_removed: usize,
+    pub nodes_added: usize,
+    pub nodes_removed: usize,
+    pub edges_rebuilt: usize,
+}
+
 /// Architectural impact and risk analysis report for a symbol or file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusReport {
@@ -243,8 +254,24 @@ impl CodeGraph {
         }
     }
 
-    /// Indexes the entire workspace, constructing a symbol-level dependency graph.
+    /// Builds or incrementally updates the symbol-level dependency graph, leveraging disk cache if available.
     pub fn build_graph(&mut self, workspace_root: &Path) -> Result<()> {
+        if self.load_cached(workspace_root) {
+            tracing::debug!(
+                "Loaded cached code graph snapshot from disk; running incremental update"
+            );
+            let _ = self.incremental_update(workspace_root);
+            let _ = self.save_to_disk(workspace_root);
+            return Ok(());
+        }
+
+        self.full_rebuild(workspace_root)?;
+        let _ = self.save_to_disk(workspace_root);
+        Ok(())
+    }
+
+    /// Performs a full, cold-start re-indexing of the workspace.
+    pub fn full_rebuild(&mut self, workspace_root: &Path) -> Result<()> {
         self.graph.clear();
         self.symbol_node_indices.clear();
         self.name_to_nodes.clear();
@@ -419,6 +446,324 @@ impl CodeGraph {
         }
 
         Ok(())
+    }
+
+    /// Restores graph state from a disk snapshot
+    pub fn restore_from_snapshot(
+        &mut self,
+        snapshot: crate::context::graph_store::GraphSnapshot,
+    ) -> Result<()> {
+        self.graph.clear();
+        self.symbol_node_indices.clear();
+        self.name_to_nodes.clear();
+        self.file_to_nodes.clear();
+        self.file_node_indices.clear();
+        self.symbol_to_file.clear();
+        self.file_to_symbols.clear();
+
+        let mut node_indices = Vec::with_capacity(snapshot.nodes.len());
+
+        for node in snapshot.nodes {
+            let node_idx = self.graph.add_node(node.clone());
+            node_indices.push(node_idx);
+
+            if node.kind == SymbolKind::File {
+                self.file_node_indices
+                    .insert(node.file_path.clone(), node_idx);
+                self.symbol_node_indices
+                    .insert(node.qualified_name.clone(), node_idx);
+            } else {
+                self.symbol_node_indices
+                    .insert(node.qualified_name.clone(), node_idx);
+                self.name_to_nodes
+                    .entry(node.name.clone())
+                    .or_default()
+                    .push(node_idx);
+                self.file_to_nodes
+                    .entry(node.file_path.clone())
+                    .or_default()
+                    .push(node_idx);
+
+                let sym_def = SymbolDef {
+                    name: node.name.clone(),
+                    kind: node.kind.as_str().to_string(),
+                    signature: node.signature.clone(),
+                    line_number: node.start_line,
+                    end_line: node.end_line,
+                    doc_comment: node.doc_comment.clone(),
+                };
+
+                self.symbol_to_file
+                    .entry(node.name.clone())
+                    .or_default()
+                    .push((node.file_path.clone(), sym_def.clone()));
+                self.file_to_symbols
+                    .entry(node.file_path.clone())
+                    .or_default()
+                    .push(sym_def);
+            }
+        }
+
+        for (source_idx, target_idx, edge_kind) in snapshot.edges {
+            if source_idx < node_indices.len() && target_idx < node_indices.len() {
+                self.graph.add_edge(
+                    node_indices[source_idx],
+                    node_indices[target_idx],
+                    edge_kind,
+                );
+            }
+        }
+
+        self.file_tracker = FileHashTracker {
+            hashes: snapshot.file_hashes,
+        };
+
+        Ok(())
+    }
+
+    /// Attempts to load cached graph from `.minicode/graph.json`. Returns true if loaded successfully.
+    pub fn load_cached(&mut self, workspace_root: &Path) -> bool {
+        match crate::context::graph_store::GraphStore::load_snapshot(workspace_root) {
+            Ok(Some(snapshot)) => {
+                if let Err(e) = self.restore_from_snapshot(snapshot) {
+                    tracing::debug!(error = %e, "Failed to restore graph from snapshot");
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Persists current graph state to `.minicode/graph.json`.
+    pub fn save_to_disk(&self, workspace_root: &Path) -> Result<()> {
+        let snapshot =
+            crate::context::graph_store::GraphStore::create_snapshot(self, workspace_root);
+        crate::context::graph_store::GraphStore::save_snapshot(&snapshot, workspace_root)
+    }
+
+    /// Incrementally updates the code graph: only re-parses dirty or added files and removes deleted files.
+    pub fn incremental_update(&mut self, workspace_root: &Path) -> Result<IncrementalStats> {
+        let walker = WalkBuilder::new(workspace_root)
+            .hidden(true)
+            .parents(true)
+            .git_ignore(true)
+            .build();
+
+        let mut current_files = HashSet::new();
+        for result in walker.flatten() {
+            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                let path = result.path();
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
+                        current_files.insert(path.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        let mut stats = IncrementalStats {
+            files_scanned: current_files.len(),
+            ..Default::default()
+        };
+
+        // 1. Remove files that no longer exist
+        let removed_files = self.file_tracker.removed_files(&current_files);
+        for removed in &removed_files {
+            self.file_tracker.remove(removed);
+            self.file_to_symbols.remove(removed);
+            if let Some(file_node_idx) = self.file_node_indices.remove(removed) {
+                self.graph.remove_node(file_node_idx);
+                stats.nodes_removed += 1;
+            }
+            if let Some(sym_indices) = self.file_to_nodes.remove(removed) {
+                for idx in sym_indices {
+                    self.graph.remove_node(idx);
+                    stats.nodes_removed += 1;
+                }
+            }
+            for targets in self.symbol_to_file.values_mut() {
+                targets.retain(|(p, _)| p != removed);
+            }
+            self.symbol_to_file.retain(|_, v| !v.is_empty());
+            stats.files_removed += 1;
+        }
+
+        // 2. Identify dirty / new files
+        let mut dirty_files = Vec::new();
+        for file in &current_files {
+            if let Ok(content) = std::fs::read_to_string(file) {
+                let hash = FileHashTracker::compute_hash(&content);
+                if self.file_tracker.is_dirty(file, hash) {
+                    dirty_files.push((file.clone(), content, hash));
+                }
+            }
+        }
+
+        if dirty_files.is_empty() && removed_files.is_empty() {
+            return Ok(stats);
+        }
+
+        // 3. Re-parse dirty files
+        for (file, _content, hash) in &dirty_files {
+            let mtime = std::fs::metadata(file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            self.file_tracker.update(file.clone(), *hash, mtime);
+
+            // If file was already indexed, remove its previous symbol nodes from graph
+            if let Some(old_sym_indices) = self.file_to_nodes.remove(file) {
+                for idx in old_sym_indices {
+                    self.graph.remove_node(idx);
+                    stats.nodes_removed += 1;
+                }
+            }
+
+            // Remove old symbol entries for this file
+            for targets in self.symbol_to_file.values_mut() {
+                targets.retain(|(p, _)| p != file);
+            }
+
+            // Ensure file node exists
+            let file_node_idx = match self.file_node_indices.get(file) {
+                Some(&idx) => idx,
+                None => {
+                    let file_node = SymbolNode::file_node(file, Some(workspace_root));
+                    let idx = self.graph.add_node(file_node.clone());
+                    self.file_node_indices.insert(file.clone(), idx);
+                    self.symbol_node_indices
+                        .insert(file_node.qualified_name.clone(), idx);
+                    stats.nodes_added += 1;
+                    idx
+                }
+            };
+
+            // Extract new symbols
+            match self.extractor.extract_file_symbols(file) {
+                Ok(symbols) => {
+                    let mut file_sym_indices = Vec::new();
+                    for sym in &symbols {
+                        if sym.name.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN
+                            && sym.kind != "import"
+                        {
+                            self.symbol_to_file
+                                .entry(sym.name.clone())
+                                .or_default()
+                                .push((file.clone(), sym.clone()));
+
+                            let sym_node = SymbolNode::new(sym, file, Some(workspace_root));
+                            let sym_node_idx = self.graph.add_node(sym_node.clone());
+                            stats.nodes_added += 1;
+
+                            self.graph
+                                .add_edge(file_node_idx, sym_node_idx, EdgeKind::Contains);
+
+                            self.symbol_node_indices
+                                .insert(sym_node.qualified_name.clone(), sym_node_idx);
+                            self.name_to_nodes
+                                .entry(sym.name.clone())
+                                .or_default()
+                                .push(sym_node_idx);
+                            file_sym_indices.push(sym_node_idx);
+                        }
+                    }
+                    self.file_to_nodes.insert(file.clone(), file_sym_indices);
+                    self.file_to_symbols.insert(file.clone(), symbols);
+                    stats.files_reparsed += 1;
+                }
+                Err(e) => {
+                    tracing::debug!(path = %file.display(), error = %e, "Could not extract AST symbols in incremental update");
+                }
+            }
+        }
+
+        // 4. Re-wire edges for dirty files
+        for (file, content, _) in &dirty_files {
+            let file_node_idx = match self.file_node_indices.get(file) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+
+            let lines: Vec<&str> = content.lines().collect();
+
+            if let Some(sym_indices) = self.file_to_nodes.get(file) {
+                for &caller_idx in sym_indices {
+                    let caller_node = match self.graph.node_weight(caller_idx) {
+                        Some(n) => n.clone(),
+                        None => continue,
+                    };
+
+                    let start = caller_node.start_line.saturating_sub(1);
+                    let end = caller_node.end_line.min(lines.len());
+                    let body_text = if start < lines.len() && start <= end {
+                        lines[start..end].join("\n")
+                    } else {
+                        String::new()
+                    };
+
+                    let identifiers: HashSet<&str> = body_text
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
+                        .collect();
+
+                    for ident in identifiers {
+                        if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
+                            continue;
+                        }
+                        if let Some(target_indices) = self.name_to_nodes.get(ident) {
+                            for &target_idx in target_indices {
+                                if target_idx != caller_idx {
+                                    let edge_kind = if caller_node.kind == SymbolKind::Impl {
+                                        EdgeKind::Implements
+                                    } else {
+                                        EdgeKind::Calls
+                                    };
+                                    if !self.graph.contains_edge(caller_idx, target_idx) {
+                                        self.graph.add_edge(caller_idx, target_idx, edge_kind);
+                                        stats.edges_rebuilt += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // File-level dependencies
+            let all_identifiers: HashSet<&str> = content
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
+                .collect();
+
+            for ident in all_identifiers {
+                if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
+                    continue;
+                }
+                if let Some(targets) = self.symbol_to_file.get(ident) {
+                    for (target_file, _) in targets {
+                        if target_file != file {
+                            if let Some(&target_file_idx) = self.file_node_indices.get(target_file)
+                            {
+                                if !self.graph.contains_edge(file_node_idx, target_file_idx) {
+                                    self.graph.add_edge(
+                                        file_node_idx,
+                                        target_file_idx,
+                                        EdgeKind::DependsOn,
+                                    );
+                                    stats.edges_rebuilt += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(stats)
     }
 
     /// Computes symbol-level PageRank scores across all nodes.
@@ -1080,6 +1425,48 @@ mod tests {
         // Verify hash tracker recorded hash
         let hash = FileHashTracker::compute_hash("test content");
         assert_ne!(hash, 0);
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_graph_persistence_and_incremental_update() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_persist_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("math.rs");
+        let file_b = temp_dir.join("main.rs");
+
+        std::fs::write(&file_a, "pub fn double(x: i32) -> i32 { x * 2 }").unwrap();
+        std::fs::write(&file_b, "fn start() { let _y = double(4); }").unwrap();
+
+        // 1. Build and save
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(&temp_dir);
+        assert!(graph_file.exists());
+
+        // 2. Load into new graph instance from disk
+        let mut restored = CodeGraph::new();
+        let loaded = restored.load_cached(&temp_dir);
+        assert!(loaded);
+        assert_eq!(restored.graph().node_count(), graph.graph().node_count());
+
+        // 3. Modify 1 file and run incremental update
+        std::fs::write(
+            &file_a,
+            "pub fn double(x: i32) -> i32 { x * 2 }\npub fn triple(x: i32) -> i32 { x * 3 }",
+        )
+        .unwrap();
+
+        let stats = restored.incremental_update(&temp_dir).unwrap();
+        assert_eq!(stats.files_reparsed, 1);
+        assert_eq!(stats.files_removed, 0);
+
+        let sym_names: Vec<_> = restored.symbol_nodes().map(|s| s.name.clone()).collect();
+        assert!(sym_names.contains(&"triple".to_string()));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
