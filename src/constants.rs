@@ -46,6 +46,7 @@ pub const DEFAULT_MAX_RETRIES: usize = 3;
 /// Exponential backoff baseline delay in seconds between retries
 pub const RETRY_BACKOFF_SECS: u64 = 2;
 /// Maximum token budget for conversation history before pruning old messages
+#[allow(dead_code)]
 pub const CONTEXT_WINDOW_PRUNE_THRESHOLD: usize = 100_000;
 /// Minimum messages to always preserve (system + last N exchanges)
 pub const CONTEXT_MIN_PRESERVED_MESSAGES: usize = 4;
@@ -149,6 +150,20 @@ pub const COMPRESSOR_WARNING_THRESHOLD: f64 = 0.70;
 pub const COMPRESSOR_SAFETY_MARGIN: f64 = 0.15;
 /// Preserved head and tail lines when masking verbose observations
 pub const COMPRESSOR_HEAD_TAIL_LINES: usize = 15;
+
+// === Tiered Auto-Compaction (Phase 55) ===
+/// Ratio of model context window that triggers Tier 1 (Observation Masking)
+pub const COMPACT_TIER1_RATIO: f64 = 0.60;
+/// Ratio of model context window that triggers Tier 2 (Turn Summarization)
+pub const COMPACT_TIER2_RATIO: f64 = 0.80;
+/// Ratio of model context window that triggers Tier 3 (Memory Anchor & Aggressive Prune)
+pub const COMPACT_TIER3_RATIO: f64 = 0.95;
+/// Minimum recent messages to always preserve untouched in Tier 0 (3 turns = 6 messages)
+pub const COMPACT_PRESERVE_RECENT_MESSAGES: usize = 6;
+/// Maximum number of key decisions to retain in memory anchor
+pub const COMPACT_MAX_DECISIONS_IN_ANCHOR: usize = 8;
+/// Maximum number of file states to retain in memory anchor
+pub const COMPACT_MAX_FILES_IN_ANCHOR: usize = 12;
 
 // === Graph / PageRank & Blast Radius ===
 /// Identifiers too common to form meaningful cross-file dependency edges

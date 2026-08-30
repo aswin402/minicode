@@ -76,6 +76,13 @@ pub enum TimelineEntry {
     },
     SubagentTree(SubagentTreeBlock),
     SubagentSwarm(SwarmMatrixBlock),
+    ContextCompaction {
+        tier: usize,
+        turns_summarized: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        savings_percent: usize,
+    },
     SystemStatus(String),
     TurnSeparator,
 }
@@ -319,6 +326,23 @@ impl TimelineView {
 
     pub fn add_status(&mut self, status: String) {
         self.entries.push(TimelineEntry::SystemStatus(status));
+    }
+
+    pub fn add_context_compaction(
+        &mut self,
+        tier: usize,
+        turns_summarized: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        savings_percent: usize,
+    ) {
+        self.entries.push(TimelineEntry::ContextCompaction {
+            tier,
+            turns_summarized,
+            tokens_before,
+            tokens_after,
+            savings_percent,
+        });
     }
 
     /// Adds a subagent tree block to the timeline
@@ -1092,6 +1116,41 @@ impl TimelineView {
                         "└───────────────────────────────────────────────────────────────",
                         Style::default().fg(theme.border),
                     )]));
+                    lines.push(Line::from(String::new()));
+                }
+                TimelineEntry::ContextCompaction {
+                    tier,
+                    turns_summarized,
+                    tokens_before,
+                    tokens_after,
+                    savings_percent,
+                } => {
+                    let tier_label = match tier {
+                        1 => "Tier 1: Masking",
+                        2 => "Tier 2: Turn Summary",
+                        3 => "Tier 3: Memory Anchor",
+                        _ => "Compacted",
+                    };
+                    let before_k = if *tokens_before >= 1000 {
+                        format!("{:.1}k", *tokens_before as f64 / 1000.0)
+                    } else {
+                        tokens_before.to_string()
+                    };
+                    let after_k = if *tokens_after >= 1000 {
+                        format!("{:.1}k", *tokens_after as f64 / 1000.0)
+                    } else {
+                        tokens_after.to_string()
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("🗜️ ", Style::default().fg(theme.brand_accent)),
+                        Span::styled(
+                            format!(
+                                "Context Auto-Compacted [{}]: {} turns summarized, {} → {} tokens ({}% saved)",
+                                tier_label, turns_summarized, before_k, after_k, savings_percent
+                            ),
+                            Style::default().fg(theme.muted).add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SystemStatus(status) => {

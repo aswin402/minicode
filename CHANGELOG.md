@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.65] — 2026-08-30
+
+### Smart Context Window Auto-Compaction Engine & Memory Anchors
+
+- **4-Tier Progressive Auto-Compaction (`src/context/auto_compact.rs`, `AutoCompactor`)**:
+  - Replaces naive message dropping with structured progressive compression:
+    - **Tier 0 (Always)**: Preserves most recent 3 turns (6 messages) untouched at 100% full fidelity.
+    - **Tier 1 (60% Context Limit)**: Masks older verbose tool observations and compiler outputs to head+tail lines.
+    - **Tier 2 (80% Context Limit)**: Algorithmically extracts structured `TurnSummary` blocks (files read, files modified, key decisions, resolved errors, tools used) and collapses older turns into compact markdown blocks without extra LLM API calls.
+    - **Tier 3 (95% Context Limit)**: Synthesizes a persistent `MemoryAnchor` and prunes older messages down to budget while preserving all critical architectural decisions and file states.
+- **Adaptive Model-Aware Thresholds (`src/agent/models.rs`, `src/constants.rs`)**:
+  - Dynamically calculates absolute token thresholds based on model context limits (Liquid/North 65K, GPT-4o 128K, Claude 200K, Gemini 1M, Gemma 8K).
+  - Keeps smaller and free-tier models well within context boundaries without context window overflow errors.
+- **Persistent Memory Anchor (`MemoryAnchor`, `src/agent/prompt.rs`)**:
+  - Rolling session memory block injected into system prompts capturing active goal, key decisions, tracked file states, and unresolved issues across compaction boundaries.
+- **Context Compaction Visibility & Telemetry (`AgentEvent::ContextCompacted`, `src/agent/types.rs`, `src/ui/view.rs`)**:
+  - Emits structured compaction telemetry over MPSC and NDJSON streams.
+  - Renders visual timeline badge in TUI: `🗜️ Context Auto-Compacted [Tier 2]: 4 turns summarized, 52.0k → 18.5k tokens (64% saved)`.
+- **Enhanced `/compact` Slash Command (`src/app.rs`)**:
+  - Displays interactive context window health status with token limits and progressive tier thresholds.
+- **Integration Test Suite (`tests/integration_auto_compact.rs`)**:
+  - 7 comprehensive tests covering all 4 compaction tiers, model-aware threshold scaling, memory anchor prompt injection, and event serialization.
+
 ## [0.0.64] — 2026-08-30
 
 ### CodeGraph Surgical Context, Architectural Layers & OKF v0.2 Knowledge System

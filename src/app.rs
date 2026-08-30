@@ -101,6 +101,22 @@ impl<'a> App<'a> {
                         .finish_tool_call(tool, *success, output.clone(), *duration_ms);
                 }
                 AgentEvent::TurnEnd { .. } => {}
+                AgentEvent::ContextCompacted {
+                    tier,
+                    turns_summarized,
+                    tokens_before,
+                    tokens_after,
+                    savings_percent,
+                    ..
+                } => {
+                    self.timeline.add_context_compaction(
+                        *tier,
+                        *turns_summarized,
+                        *tokens_before,
+                        *tokens_after,
+                        *savings_percent,
+                    );
+                }
                 AgentEvent::Error { message, .. } => {
                     self.timeline.add_status(format!("Error: {}", message));
                 }
@@ -311,6 +327,22 @@ impl<'a> App<'a> {
                                     );
                                     self.modal = crate::ui::modal::ModalState::Approval(approval_state);
                                 }
+                            }
+                            AgentEvent::ContextCompacted {
+                                tier,
+                                turns_summarized,
+                                tokens_before,
+                                tokens_after,
+                                savings_percent,
+                                ..
+                            } => {
+                                self.timeline.add_context_compaction(
+                                    tier,
+                                    turns_summarized,
+                                    tokens_before,
+                                    tokens_after,
+                                    savings_percent,
+                                );
                             }
                             AgentEvent::Error { message, retrying, .. } => {
                                 if retrying {
@@ -728,7 +760,15 @@ impl<'a> App<'a> {
                                 }
 
                                 if prompt == "/compact" {
-                                    self.timeline.add_status("✔ Context compaction requested".to_string());
+                                    let model_limit = crate::agent::models::get_model_context_limit(&self.config.provider.model);
+                                    let t1 = (model_limit as f64 * crate::constants::COMPACT_TIER1_RATIO) as usize;
+                                    let t2 = (model_limit as f64 * crate::constants::COMPACT_TIER2_RATIO) as usize;
+                                    let t3 = (model_limit as f64 * crate::constants::COMPACT_TIER3_RATIO) as usize;
+                                    let status_msg = format!(
+                                        "🗜️ **Context Window Status** (`{}`)\n• **Window Limit**: {} tokens\n• **Tier 1 (Masking)**: {} tokens (60%)\n• **Tier 2 (Summary)**: {} tokens (80%)\n• **Tier 3 (Anchor)**: {} tokens (95%)\n• *Auto-compaction evaluates automatically before each turn.*",
+                                        self.config.provider.model, model_limit, t1, t2, t3
+                                    );
+                                    self.timeline.add_status(status_msg);
                                     continue;
                                 }
 

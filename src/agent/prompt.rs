@@ -28,8 +28,19 @@ pub struct PromptBuilder;
 impl PromptBuilder {
     /// Assembles the complete system prompt including base instructions,
     /// repository rules (AGENTS.md), and workspace metadata.
+    #[allow(dead_code)]
     #[must_use]
     pub fn build_system_prompt(workspace_dir: &Path, custom_instructions: Option<&str>) -> String {
+        Self::build_system_prompt_with_anchor(workspace_dir, custom_instructions, None)
+    }
+
+    /// Assembles the complete system prompt with optional persistent memory anchor.
+    #[must_use]
+    pub fn build_system_prompt_with_anchor(
+        workspace_dir: &Path,
+        custom_instructions: Option<&str>,
+        memory_anchor: Option<&str>,
+    ) -> String {
         let mut prompt = String::from(DEFAULT_SYSTEM_PROMPT);
 
         prompt.push_str(&format!(
@@ -53,6 +64,14 @@ impl PromptBuilder {
             prompt.push_str("\n# Task Working Memory:\n");
             prompt.push_str(&wm_block);
             prompt.push('\n');
+        }
+
+        // Inject Session Memory Anchor if present
+        if let Some(anchor) = memory_anchor {
+            if !anchor.trim().is_empty() {
+                prompt.push_str(anchor);
+                prompt.push('\n');
+            }
         }
 
         // Inject AGENTS.md rules if present in the workspace

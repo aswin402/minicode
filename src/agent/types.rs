@@ -223,6 +223,16 @@ pub enum AgentEvent {
         suggested_command: Option<String>,
     },
 
+    #[serde(rename = "context_compacted")]
+    ContextCompacted {
+        turn_id: usize,
+        tier: usize,
+        turns_summarized: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        savings_percent: usize,
+    },
+
     #[serde(rename = "command_list")]
     CommandList { commands: Vec<CommandDescription> },
 }

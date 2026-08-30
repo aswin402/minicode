@@ -3,8 +3,8 @@ use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    CONTEXT_MIN_PRESERVED_MESSAGES, CONTEXT_WINDOW_PRUNE_THRESHOLD, DEFAULT_MAX_RETRIES,
-    DEFAULT_MAX_TOOL_ITERATIONS, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS,
+    CONTEXT_MIN_PRESERVED_MESSAGES, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS,
+    FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -31,6 +31,8 @@ pub struct AgentLoop {
     pending_approvals: super::types::ApprovalRegistry,
     /// Whether a live host can answer approval requests (false in headless mode).
     interactive_approvals: bool,
+    /// Smart 4-tier progressive context auto-compactor with memory anchor.
+    compactor: crate::context::auto_compact::AutoCompactor,
 }
 
 impl AgentLoop {
@@ -46,6 +48,12 @@ impl AgentLoop {
         let git_service = crate::git::GitService::new(workspace_root.to_path_buf());
         git_service.ensure_git_exclude();
 
+        let compactor = crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
+            .unwrap_or_else(|_| {
+                crate::context::auto_compact::AutoCompactor::new("default")
+                    .expect("fallback compactor")
+            });
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -59,6 +67,7 @@ impl AgentLoop {
             current_turn_id: 0,
             pending_approvals: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             interactive_approvals: true,
+            compactor,
         }
     }
 
@@ -94,55 +103,19 @@ impl AgentLoop {
         );
     }
 
-    /// Prunes conversation message history if total tokens exceed CONTEXT_WINDOW_PRUNE_THRESHOLD,
-    /// or if message count grows too large. Always preserves the most recent CONTEXT_MIN_PRESERVED_MESSAGES.
-    pub fn prune_context(&mut self) {
+    /// Prunes conversation message history progressively via 4-tier auto-compaction,
+    /// or deduplicates repetitive file reads/diagnostics across turns.
+    pub fn prune_context(&mut self) -> Option<crate::context::auto_compact::CompactionMetrics> {
         if self.messages.len() <= CONTEXT_MIN_PRESERVED_MESSAGES {
-            return;
+            return None;
         }
 
         // 1. Deduplicate identical file reads and repetitive compiler checks across turns
         crate::context::dedup::ObservationDeduplicator::deduplicate_messages(&mut self.messages);
 
-        if let Ok(compressor) = crate::context::compressor::ContextCompressor::new() {
-            // First attempt to compact older tool observations in-place
-            compressor.compact_history(&mut self.messages, CONTEXT_WINDOW_PRUNE_THRESHOLD);
-
-            let mut total_tokens = compressor.count_messages_tokens(&self.messages);
-            if total_tokens > CONTEXT_WINDOW_PRUNE_THRESHOLD {
-                let initial_count = self.messages.len();
-                while self.messages.len() > CONTEXT_MIN_PRESERVED_MESSAGES
-                    && total_tokens > CONTEXT_WINDOW_PRUNE_THRESHOLD
-                {
-                    let removed = self.messages.remove(0);
-                    let removed_tokens = compressor.count_tokens(&removed.content);
-                    total_tokens = total_tokens.saturating_sub(removed_tokens + 4);
-                }
-
-                // Invariant: Never leave an orphaned tool result message at the start of conversation history
-                while !self.messages.is_empty()
-                    && self
-                        .messages
-                        .first()
-                        .map(|m| m.role == crate::agent::types::Role::Tool)
-                        .unwrap_or(false)
-                {
-                    let removed = self.messages.remove(0);
-                    let removed_tokens = compressor.count_tokens(&removed.content);
-                    total_tokens = total_tokens.saturating_sub(removed_tokens + 4);
-                }
-
-                let pruned_count = initial_count - self.messages.len();
-                if pruned_count > 0 {
-                    tracing::info!(
-                        pruned_messages = pruned_count,
-                        remaining_messages = self.messages.len(),
-                        remaining_tokens = total_tokens,
-                        "Pruned oldest conversation messages to fit context window budget"
-                    );
-                }
-            }
-        }
+        // 2. Smart 4-tier progressive auto-compaction
+        self.compactor
+            .compact(&mut self.messages, self.current_turn_id)
     }
 
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
@@ -156,10 +129,32 @@ impl AgentLoop {
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
 
-        // 1. Prune conversation context if approaching budget, then append user prompt
-        self.prune_context();
+        if turn_id == 1 {
+            self.compactor.set_working_context(user_prompt);
+        }
+
+        // 1. Prune/compact conversation context if approaching budget, then append user prompt
+        let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
         self.messages.push(Message::user(user_prompt));
+
+        if let Some(metrics) = compaction_metrics {
+            let compact_event = AgentEvent::ContextCompacted {
+                turn_id,
+                tier: metrics.tier,
+                turns_summarized: metrics.turns_summarized,
+                tokens_before: metrics.tokens_before,
+                tokens_after: metrics.tokens_after,
+                savings_percent: metrics.savings_percent,
+            };
+            if let Err(e) = self
+                .session_store
+                .append_event(&self.session_id, &compact_event)
+            {
+                tracing::warn!("Failed to persist ContextCompacted event: {}", e);
+            }
+            let _ = event_sender.send(compact_event);
+        }
 
         // Record turn start checkpoint with prompt and message boundary
         let backup_manager = crate::session::backup::BackupManager::new(&self.workspace_root);
@@ -167,7 +162,16 @@ impl AgentLoop {
             tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
         }
 
-        let system_prompt = PromptBuilder::build_system_prompt(&self.workspace_root, None);
+        let anchor_block = self.compactor.anchor().to_prompt_block();
+        let system_prompt = PromptBuilder::build_system_prompt_with_anchor(
+            &self.workspace_root,
+            None,
+            if anchor_block.is_empty() {
+                None
+            } else {
+                Some(&anchor_block)
+            },
+        );
         let mut tools = crate::tools::ToolRegistry::get_tool_schemas();
 
         // Idempotent initialization of MCP client

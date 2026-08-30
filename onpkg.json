@@ -1,4 +1,7 @@
 {
+  "active_skills": [
+    "rust"
+  ],
   "agent_instructions": {
     "active_skills": [
       "rust.md"
@@ -8,6 +11,8 @@
   "architecture": {
     "entrypoint": "src/main.rs"
   },
+  "name": "minicode",
+  "package_manager": "cargo",
   "packages": {
     "added_by_agent": [
       "tokio",
@@ -47,6 +52,7 @@
     "runtime": "rust",
     "stack": "rust-cli"
   },
+  "runtime": "rust",
   "scripts": {
     "build": "cargo build --release",
     "check": "cargo check",

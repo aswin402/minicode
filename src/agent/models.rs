@@ -25,7 +25,23 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("opus")
     {
         200_000
+    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") {
+        128_000
+    } else if lower.contains("deepseek")
+        || lower.contains("qwen")
+        || lower.contains("liquid")
+        || lower.contains("lfm")
+        || lower.contains("north")
+    {
+        65_536
     } else if lower.contains("gemma") {
+        8_192
+    } else if lower.contains("llama-3.1")
+        || lower.contains("llama-3.2")
+        || lower.contains("llama-3.3")
+    {
+        128_000
+    } else if lower.contains("llama-3") {
         8_192
     } else {
         128_000

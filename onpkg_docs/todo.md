@@ -1133,6 +1133,31 @@
 - [x] **Task 10:** Run `cargo check -j 1`, `cargo clippy -- -D warnings -j 1`, `cargo fmt --check`, and targeted integration tests
 - [x] **Task 11:** Bump version to `0.0.64` in `Cargo.toml`, update `CHANGELOG.md`, build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.64`, and push to `origin main --tags`
 
+---
+
+## ✅ Phase 55: Smart Context Window Auto-Compaction Engine & Memory Anchors (v0.0.65)
+
+### Wave 1 — Core Auto-Compaction & Turn Summarizer (P0)
+- [x] **Task 1:** Create `src/context/auto_compact.rs` (`AutoCompactor`, `TurnSummary`, `MemoryAnchor`, `CompactionMetrics`)
+- [x] **Task 2:** Add adaptive model-aware thresholds & ratio constants in `src/constants.rs` and `src/agent/models.rs`
+- [x] **Task 3:** Expose `auto_compact` module in `src/context/mod.rs`
+
+### Wave 2 — Prompt & Event Integration (P0)
+- [x] **Task 4:** Add `AgentEvent::ContextCompacted` in `src/agent/types.rs`
+- [x] **Task 5:** Support `MemoryAnchor` injection in `PromptBuilder` (`src/agent/prompt.rs`)
+- [x] **Task 6:** Wire `AutoCompactor` into `AgentLoop::prune_context()` and `execute_turn()` in `src/agent/loop.rs`
+
+### Wave 3 — UI Timeline & Slash Command Enhancements (P1)
+- [x] **Task 7:** Implement `TimelineEntry::ContextCompaction` rendering in `src/ui/view.rs` and `src/app.rs`
+- [x] **Task 8:** Enhance `/compact` slash command with visual model limits & progressive tier status in `src/app.rs`
+- [x] **Task 9:** Add `ContextCompacted` event consumer rendering in `src/main.rs`
+
+### Wave 4 — Integration Tests, Release & Quality Gates (P0)
+- [x] **Task 10:** Create comprehensive integration test suite in `tests/integration_auto_compact.rs` (7 tests passing)
+- [x] **Task 11:** Verify formatting with `cargo fmt --check` and clean linting with `cargo clippy -j 1 -- -D warnings`
+- [x] **Task 12:** Bump version to `0.0.65` in `Cargo.toml`, update `CHANGELOG.md`, build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.65`, and push to `origin main --tags`
+
+
 
 
 

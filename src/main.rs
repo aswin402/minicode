@@ -594,6 +594,19 @@ async fn run_headless_task(
                             total_tokens_used, files_modified
                         );
                     }
+                    AgentEvent::ContextCompacted {
+                        tier,
+                        turns_summarized,
+                        tokens_before,
+                        tokens_after,
+                        savings_percent,
+                        ..
+                    } => {
+                        println!(
+                            "🗜️  [Context Compacted Tier {}] {} turns summarized: {} → {} tokens ({}% saved)",
+                            tier, turns_summarized, tokens_before, tokens_after, savings_percent
+                        );
+                    }
                     AgentEvent::Error { message, .. } => {
                         eprintln!("\n✗ Error: {}", message);
                     }
@@ -943,6 +956,19 @@ async fn run_interactive_mode(
                             println!(
                                 "✓ Completed (tokens: {}, modified: {:?})",
                                 total_tokens_used, files_modified
+                            );
+                        }
+                        AgentEvent::ContextCompacted {
+                            tier,
+                            turns_summarized,
+                            tokens_before,
+                            tokens_after,
+                            savings_percent,
+                            ..
+                        } => {
+                            println!(
+                                "🗜️  [Context Compacted Tier {}] {} turns summarized: {} → {} tokens ({}% saved)",
+                                tier, turns_summarized, tokens_before, tokens_after, savings_percent
                             );
                         }
                         AgentEvent::Error { message, .. } => {

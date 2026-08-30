@@ -4,7 +4,9 @@ use tiktoken_rs::CoreBPE;
 
 pub struct ContextCompressor {
     bpe: CoreBPE,
+    #[allow(dead_code)]
     warning_threshold: f64,
+    #[allow(dead_code)]
     safety_margin: f64,
 }
 
@@ -72,6 +74,7 @@ impl ContextCompressor {
 
     /// Compacts message history if context consumption exceeds threshold.
     /// Preserves system prompt + most recent 3 turns, compressing older tool results.
+    #[allow(dead_code)]
     pub fn compact_history(&self, messages: &mut [Message], max_window_tokens: usize) {
         let current_tokens = self.count_messages_tokens(messages);
         let threshold = (max_window_tokens as f64
