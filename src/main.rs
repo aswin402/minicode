@@ -375,7 +375,9 @@ async fn main() -> anyhow::Result<()> {
                 Some(p) => p,
                 None => {
                     let export_dir = workspace_canonical.join(".minicode").join("exports");
-                    let _ = std::fs::create_dir_all(&export_dir);
+                    if let Err(e) = std::fs::create_dir_all(&export_dir) {
+                        tracing::warn!(error = %e, "Failed to create export directory");
+                    }
                     export_dir.join(format!("{}.md", target_id))
                 }
             };

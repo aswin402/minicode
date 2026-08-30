@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.66] — 2026-08-30
+
+### Code Health, Panic Hardening, Deterministic Eviction & Performance Optimizations
+
+- **Zero-Panic Guarantee & Rule Compliance (`src/agent/loop.rs`, `src/tools/web_search.rs`, `src/agent/task_dag.rs`, `src/tools/rtk_filter.rs`)**:
+  - Replaced forbidden `.expect("fallback compactor")` in `AgentLoop::new()` with infallible `AutoCompactor::default_safe()`.
+  - Replaced 4× `.unwrap()` in `src/tools/web_search.rs` with safe `?` error propagation and `ToolError::CommandExec` mapping.
+  - Replaced `.unwrap()` on `child_ids.last()` in `src/agent/task_dag.rs` with safe `Option` matching.
+  - Replaced static `.expect()` regex in `src/tools/rtk_filter.rs` with infallible `OnceLock<Option<Regex>>`.
+  - Audited and verified **zero `.unwrap()` and zero `.expect()` in non-test library code**.
+- **Deterministic MemoryAnchor Eviction (`src/context/auto_compact.rs`, `indexmap`)**:
+  - Switched `MemoryAnchor.file_state` from `std::collections::HashMap` to `indexmap::IndexMap`.
+  - Uses `shift_remove_index(0)` for deterministic FIFO eviction of oldest modified files when exceeding `COMPACT_MAX_FILES_IN_ANCHOR`.
+- **Cancellation-Aware Rate Limit & Retry Sleeps (`src/agent/loop.rs`)**:
+  - Wrapped retry backoff delays in `tokio::select!` with `cancel_token.cancelled()` to immediately interrupt on `Esc` / `Ctrl+C` without blocking.
+- **UTF-8 Safe String Slicing (`src/app.rs`)**:
+  - Fixed byte-index string slicing in clipboard copy preview to use `.chars().take(25).collect::<String>()`, eliminating potential panics on multi-byte characters.
+- **Resource Protection & Bounded Reads (`src/agent/loop.rs`, `src/constants.rs`)**:
+  - Added `MAX_DIFF_SNAPSHOT_BYTES` (512 KB) file size check before reading files for inline diff snapshots, preventing memory spikes on large or binary files.
+- **Zero-Allocation Modal Filtering (`src/ui/modal.rs`)**:
+  - Replaced per-keystroke `.to_lowercase()` string allocations across models, stacks, command catalog, and code explorer with zero-allocation ASCII case-insensitive windowing (`contains_ci`).
+- **PageRank Allocation Reuse (`src/context/graph.rs`)**:
+  - Pre-allocated `next_scores` HashMap and swapped buffers across PageRank iterations, eliminating memory churn on large dependency graphs.
+- **Constants Extraction (`src/constants.rs`)**:
+  - Extracted 15+ hardcoded heuristics to named constants: `COMPACT_MAX_DECISIONS_PER_TURN`, `COMPACT_MAX_ERRORS_PER_TURN`, `COMPACT_MAX_DECISION_CHARS`, `COMPACT_MAX_ERROR_CHARS`, `MESSAGE_FRAMING_TOKEN_OVERHEAD`, `MIN_COMPACTABLE_MESSAGES`, `MIN_LINES_FOR_DEDUPLICATION`, `FNV_OFFSET_BASIS`, `FNV_PRIME`, `MAX_MATCHED_ENTRIES`, `MAX_SOURCE_LINES`, `MAX_CALLERS`, `MAX_CALLEES`, `TOTAL_TOOL_COUNT`, `SPINNER_FRAME_MS`, `SCROLL_LINES_NORMAL`.
+- **Robust Model Pricing & Flag Matching (`src/agent/models.rs`, `src/app.rs`)**:
+  - Replaced fragile string comparison `== Some("0")` with numeric float parsing `Ok(0.0)` / `Some(0.0)`.
+  - Replaced substring `.contains("-s")` with word-boundary matching `split_whitespace().any(...)`.
+
 ## [0.0.65] — 2026-08-30
 
 ### Smart Context Window Auto-Compaction Engine & Memory Anchors

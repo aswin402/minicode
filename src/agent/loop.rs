@@ -49,10 +49,7 @@ impl AgentLoop {
         git_service.ensure_git_exclude();
 
         let compactor = crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
-            .unwrap_or_else(|_| {
-                crate::context::auto_compact::AutoCompactor::new("default")
-                    .expect("fallback compactor")
-            });
+            .unwrap_or_else(|_| crate::context::auto_compact::AutoCompactor::default_safe());
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -281,7 +278,19 @@ impl AgentLoop {
                             if let Err(e) = event_sender.send(event) {
                                 tracing::debug!(error = %e, "Failed to send retry error event");
                             }
-                            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                            if let Some(cancel) = &cancel_token {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
+                                    _ = cancel.cancelled() => {
+                                        tracing::info!("Turn #{} cancelled during retry backoff", turn_id);
+                                        was_cancelled = true;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_secs(delay_secs))
+                                    .await;
+                            }
                             iteration_text.clear();
                             pending_tool_calls.clear();
                             turn_response.truncate(turn_response_len_before);
@@ -388,7 +397,18 @@ impl AgentLoop {
                         if let Err(e) = event_sender.send(event) {
                             tracing::debug!(error = %e, "Failed to send retry error event");
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        if let Some(cancel) = &cancel_token {
+                            tokio::select! {
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
+                                _ = cancel.cancelled() => {
+                                    tracing::info!("Turn #{} cancelled during rate-limit backoff", turn_id);
+                                    was_cancelled = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                        }
                         iteration_text.clear();
                         pending_tool_calls.clear();
                         turn_response.truncate(turn_response_len_before);
@@ -399,6 +419,10 @@ impl AgentLoop {
                 }
 
                 success = true;
+            }
+
+            if was_cancelled {
+                break;
             }
 
             // If assistant produced tool calls, execute them and continue ReAct loop
@@ -498,20 +522,27 @@ impl AgentLoop {
                     }
 
                     // Snapshot file content before dispatch for inline diff preview
-                    let file_before: Option<String> =
-                        if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                            match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
-                                Some(rel) => {
-                                    // Async read: avoids blocking the runtime on large files.
-                                    tokio::fs::read_to_string(self.workspace_root.join(rel))
-                                        .await
-                                        .ok()
+                    let file_before: Option<String> = if FILE_MODIFYING_TOOLS
+                        .contains(&tool_call.name.as_str())
+                    {
+                        match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                            Some(rel) => {
+                                let full_path = self.workspace_root.join(rel);
+                                match tokio::fs::metadata(&full_path).await {
+                                    Ok(meta)
+                                        if meta.len()
+                                            <= crate::constants::MAX_DIFF_SNAPSHOT_BYTES as u64 =>
+                                    {
+                                        tokio::fs::read_to_string(&full_path).await.ok()
+                                    }
+                                    _ => None,
                                 }
-                                None => None,
                             }
-                        } else {
-                            None
-                        };
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
 
                     // Execute tool (MCP vs Built-in)
                     let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {

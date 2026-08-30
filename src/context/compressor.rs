@@ -3,7 +3,7 @@ use crate::error::Result;
 use tiktoken_rs::CoreBPE;
 
 pub struct ContextCompressor {
-    bpe: CoreBPE,
+    bpe: Option<CoreBPE>,
     #[allow(dead_code)]
     warning_threshold: f64,
     #[allow(dead_code)]
@@ -16,22 +16,35 @@ impl ContextCompressor {
             .map_err(|e| crate::error::ContextError::TokenCount(e.to_string()))?;
 
         Ok(Self {
-            bpe,
+            bpe: Some(bpe),
             warning_threshold: crate::constants::COMPRESSOR_WARNING_THRESHOLD,
             safety_margin: crate::constants::COMPRESSOR_SAFETY_MARGIN,
         })
     }
 
-    /// Accurately counts tokens for a text string using OpenAI BPE.
+    /// Infallible fallback constructor that never panics or errors.
+    pub fn default_safe() -> Self {
+        Self {
+            bpe: tiktoken_rs::cl100k_base().ok(),
+            warning_threshold: crate::constants::COMPRESSOR_WARNING_THRESHOLD,
+            safety_margin: crate::constants::COMPRESSOR_SAFETY_MARGIN,
+        }
+    }
+
+    /// Accurately counts tokens for a text string using OpenAI BPE or safe heuristic fallback.
     pub fn count_tokens(&self, text: &str) -> usize {
-        self.bpe.encode_with_special_tokens(text).len()
+        if let Some(ref bpe) = self.bpe {
+            bpe.encode_with_special_tokens(text).len()
+        } else {
+            (text.len() / 4).max(1)
+        }
     }
 
     /// Counts total tokens for a slice of conversation messages.
     pub fn count_messages_tokens(&self, messages: &[Message]) -> usize {
         let mut total = 0;
         for msg in messages {
-            total += 4; // Message overhead
+            total += crate::constants::MESSAGE_FRAMING_TOKEN_OVERHEAD; // Message overhead
             total += self.count_tokens(&msg.content);
             if let Some(ref tool_calls) = msg.tool_calls {
                 for tc in tool_calls {
@@ -81,7 +94,9 @@ impl ContextCompressor {
             * (self.warning_threshold - self.safety_margin).max(0.0))
             as usize;
 
-        if current_tokens <= threshold || messages.len() <= 6 {
+        if current_tokens <= threshold
+            || messages.len() <= crate::constants::MIN_COMPACTABLE_MESSAGES
+        {
             return;
         }
 

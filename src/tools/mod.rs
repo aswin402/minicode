@@ -33,7 +33,7 @@ pub struct ToolRegistry;
 impl ToolRegistry {
     /// Returns the schemas of all built-in tools partitioned across domain submodules.
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
-        let mut schemas = Vec::with_capacity(65);
+        let mut schemas = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
         schemas.extend(registry::fs_tools::get_schemas());
         schemas.extend(registry::exec_tools::get_schemas());
         schemas.extend(registry::search_tools::get_schemas());

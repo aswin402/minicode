@@ -158,8 +158,11 @@ impl CodeGraph {
 
         let damping = crate::constants::PAGERANK_DAMPING;
         let iterations = crate::constants::PAGERANK_ITERATIONS;
+        let mut next_scores: HashMap<NodeIndex, f64> = HashMap::with_capacity(node_count);
 
         for _ in 0..iterations {
+            next_scores.clear();
+
             // Compute dangling sum (nodes with 0 outgoing edges)
             let dangling_sum: f64 = self
                 .graph
@@ -168,7 +171,6 @@ impl CodeGraph {
                 .map(|node| *scores.get(&node).unwrap_or(&0.0))
                 .sum();
 
-            let mut next_scores = HashMap::new();
             for node in self.graph.node_indices() {
                 let mut sum_in = 0.0;
                 for neighbor in self
@@ -203,7 +205,7 @@ impl CodeGraph {
                 }
             }
 
-            scores = next_scores;
+            std::mem::swap(&mut scores, &mut next_scores);
         }
 
         let mut results: Vec<(PathBuf, f64)> = self

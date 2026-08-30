@@ -105,10 +105,18 @@ impl WebSearchService {
         })?;
 
         let document = Html::parse_document(&html_text);
-        let result_sel = Selector::parse(".result").unwrap();
-        let title_sel = Selector::parse(".result__title .result__a").unwrap();
-        let snippet_sel = Selector::parse(".result__snippet").unwrap();
-        let url_sel = Selector::parse(".result__url").unwrap();
+        let result_sel = Selector::parse(".result").map_err(|e| {
+            ToolError::CommandExec(format!("Failed to parse .result selector: {:?}", e))
+        })?;
+        let title_sel = Selector::parse(".result__title .result__a").map_err(|e| {
+            ToolError::CommandExec(format!("Failed to parse title selector: {:?}", e))
+        })?;
+        let snippet_sel = Selector::parse(".result__snippet").map_err(|e| {
+            ToolError::CommandExec(format!("Failed to parse snippet selector: {:?}", e))
+        })?;
+        let url_sel = Selector::parse(".result__url").map_err(|e| {
+            ToolError::CommandExec(format!("Failed to parse url selector: {:?}", e))
+        })?;
 
         let mut results = Vec::new();
 

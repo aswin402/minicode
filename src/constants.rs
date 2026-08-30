@@ -478,3 +478,51 @@ pub const SESSION_LIST_ITEM_HEIGHT: usize = 2;
 pub const SESSION_LOAD_LIST_MAX: usize = 10;
 /// Default model name when no TurnStart event found
 pub const SESSION_DEFAULT_MODEL: &str = "unknown";
+
+// === Code Health & Hardening (Phase 56) ===
+/// Maximum decisions extracted per turn during summarization
+pub const COMPACT_MAX_DECISIONS_PER_TURN: usize = 6;
+/// Maximum errors extracted per turn during summarization
+pub const COMPACT_MAX_ERRORS_PER_TURN: usize = 4;
+/// Maximum characters per decision string in turn summary
+pub const COMPACT_MAX_DECISION_CHARS: usize = 120;
+/// Maximum characters per error trace line in turn summary
+pub const COMPACT_MAX_ERROR_CHARS: usize = 150;
+/// Maximum characters per working context line in memory anchor
+#[allow(dead_code)]
+pub const COMPACT_MAX_CONTEXT_CHARS: usize = 140;
+/// Message framing token overhead in OpenAI-compatible serialization
+pub const MESSAGE_FRAMING_TOKEN_OVERHEAD: usize = 4;
+
+/// Minimum messages required in history before compaction can trigger
+pub const MIN_COMPACTABLE_MESSAGES: usize = 6;
+
+/// Minimum consecutive lines required to trigger observation deduplication
+pub const MIN_LINES_FOR_DEDUPLICATION: usize = 10;
+/// FNV-1a 64-bit hash offset basis
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+/// FNV-1a 64-bit hash prime
+pub const FNV_PRIME: u64 = 0x100000001b3;
+
+/// Maximum matched symbol entries returned in code explore search
+pub const MAX_MATCHED_ENTRIES: usize = 5;
+/// Maximum source lines rendered in code explore symbol definition
+pub const MAX_SOURCE_LINES: usize = 60;
+/// Maximum incoming callers listed in code explore symbol view
+pub const MAX_CALLERS: usize = 8;
+/// Maximum outgoing callees listed in code explore symbol view
+pub const MAX_CALLEES: usize = 8;
+
+/// Total number of built-in and extended tool schemas in registry
+pub const TOTAL_TOOL_COUNT: usize = 94;
+
+/// Milliseconds per animation frame for TUI thinking spinner
+pub const SPINNER_FRAME_MS: u64 = 80;
+/// Number of lines scrolled per normal arrow/wheel event
+pub const SCROLL_LINES_NORMAL: u16 = 3;
+/// Number of lines scrolled per fast/page scroll event
+#[allow(dead_code)]
+pub const SCROLL_LINES_FAST: u16 = 5;
+
+/// Maximum file size in bytes to snapshot for inline diff preview (512 KB)
+pub const MAX_DIFF_SNAPSHOT_BYTES: usize = 512 * 1024;

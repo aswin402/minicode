@@ -240,12 +240,13 @@ impl TaskDag {
         }
 
         // 2. Point all downstream tasks previously depending on parent to depend on child tasks
-        let last_child_id = child_ids.last().unwrap().clone();
-        for task in self.tasks.values_mut() {
-            if task.dependencies.contains(&parent_id.to_string()) {
-                task.dependencies.retain(|d| d != parent_id);
-                if !task.dependencies.contains(&last_child_id) {
-                    task.dependencies.push(last_child_id.clone());
+        if let Some(last_child_id) = child_ids.last() {
+            for task in self.tasks.values_mut() {
+                if task.dependencies.contains(&parent_id.to_string()) {
+                    task.dependencies.retain(|d| d != parent_id);
+                    if !task.dependencies.contains(last_child_id) {
+                        task.dependencies.push(last_child_id.clone());
+                    }
                 }
             }
         }

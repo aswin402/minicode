@@ -1,17 +1,21 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-static ANSI_REGEX: OnceLock<Regex> = OnceLock::new();
+static ANSI_REGEX: OnceLock<Option<Regex>> = OnceLock::new();
 
-fn get_ansi_regex() -> &'static Regex {
-    ANSI_REGEX.get_or_init(|| {
-        Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").expect("ANSI escape regex must compile")
-    })
+fn get_ansi_regex() -> Option<&'static Regex> {
+    ANSI_REGEX
+        .get_or_init(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").ok())
+        .as_ref()
 }
 
 /// Strip ANSI escape codes from output
 pub fn strip_ansi(input: &str) -> String {
-    get_ansi_regex().replace_all(input, "").to_string()
+    if let Some(re) = get_ansi_regex() {
+        re.replace_all(input, "").to_string()
+    } else {
+        input.to_string()
+    }
 }
 
 /// Token-efficient filtering engine (inspired by RTK - Rust Token Killer)

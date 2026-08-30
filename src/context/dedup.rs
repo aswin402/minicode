@@ -29,7 +29,7 @@ impl ObservationDeduplicator {
                 || (msg.content.starts_with("```") && msg.content.contains("\n"))
             {
                 let lines_count = msg.content.lines().count();
-                if lines_count > 10 {
+                if lines_count > crate::constants::MIN_LINES_FOR_DEDUPLICATION {
                     let hash = hash_str(&msg.content);
                     let key = format!("hash:{}", hash);
 
@@ -97,10 +97,10 @@ impl ObservationDeduplicator {
 }
 
 fn hash_str(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = crate::constants::FNV_OFFSET_BASIS;
     for b in s.as_bytes() {
         h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(crate::constants::FNV_PRIME);
     }
     h
 }

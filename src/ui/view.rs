@@ -895,7 +895,9 @@ impl TimelineView {
                         };
 
                         let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                        let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
+                        let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS)
+                            as usize)
+                            % spinner_frames.len();
                         let spinner = spinner_frames[frame_idx];
 
                         let (item_bullet, item_color) = match &item.status {
@@ -947,7 +949,9 @@ impl TimelineView {
                 }
                 TimelineEntry::SubagentSwarm(swarm) => {
                     let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                    let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
+                    let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS)
+                        as usize)
+                        % spinner_frames.len();
                     let spinner = spinner_frames[frame_idx];
 
                     let top_bullet = if swarm.is_running { spinner } else { "✔" };
@@ -1165,7 +1169,8 @@ impl TimelineView {
         // Live working / thinking status spinner at bottom if running
         if ctx.is_working {
             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let frame_idx = ((ctx.working_millis / 80) as usize) % spinner_frames.len();
+            let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % spinner_frames.len();
             let spinner = spinner_frames[frame_idx];
             let elapsed_secs = (ctx.working_millis as f64) / 1000.0;
 

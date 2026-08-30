@@ -365,16 +365,16 @@ impl<'a> App<'a> {
                                 match mouse_event.kind {
                                     MouseEventKind::ScrollUp => {
                                         if self.pty_drawer.is_open {
-                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(3);
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(crate::constants::SCROLL_LINES_NORMAL as usize);
                                         } else {
-                                            self.timeline.scroll_up(3);
+                                            self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
                                     MouseEventKind::ScrollDown => {
                                         if self.pty_drawer.is_open {
-                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(3);
+                                            self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(crate::constants::SCROLL_LINES_NORMAL as usize);
                                         } else {
-                                            self.timeline.scroll_down(3);
+                                            self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
                                     MouseEventKind::Down(MouseButton::Left) => {
@@ -397,8 +397,8 @@ impl<'a> App<'a> {
                                         if let Some(selected_text) = selected_text {
                                             let trimmed = selected_text.trim();
                                             if !trimmed.is_empty() {
-                                                let preview = if trimmed.len() > 25 {
-                                                    format!("{}...", &trimmed[..trimmed.char_indices().map(|(i, _)| i).take(25).last().unwrap_or(0)])
+                                                let preview = if trimmed.chars().count() > 25 {
+                                                    format!("{}...", trimmed.chars().take(25).collect::<String>())
                                                 } else {
                                                     trimmed.to_string()
                                                 };
@@ -697,7 +697,7 @@ impl<'a> App<'a> {
                                 }
 
                                 if prompt == "/review" || prompt.starts_with("/review ") {
-                                    let staged_only = prompt.contains("--staged") || prompt.contains("-s");
+                                    let staged_only = prompt.split_whitespace().any(|w| w == "--staged" || w == "-s");
                                     self.timeline.add_user_message(prompt.clone());
                                     self.timeline.add_status("🛡️ Running multi-agent adversarial code review...".to_string());
 
@@ -798,12 +798,16 @@ impl<'a> App<'a> {
                                     };
                                     let export_file = if target_path.is_empty() {
                                         let export_dir = self.workspace_root.join(".minicode").join("exports");
-                                        let _ = std::fs::create_dir_all(&export_dir);
+                                        if let Err(e) = std::fs::create_dir_all(&export_dir) {
+                                            tracing::warn!(error = %e, "Failed to create exports directory");
+                                        }
                                         export_dir.join(format!("{}.md", session_id))
                                     } else {
                                         let p = self.workspace_root.join(target_path);
                                         if let Some(parent) = p.parent() {
-                                            let _ = std::fs::create_dir_all(parent);
+                                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                                tracing::warn!(error = %e, "Failed to create parent directory");
+                                            }
                                         }
                                         p
                                     };
@@ -822,7 +826,9 @@ impl<'a> App<'a> {
                                     let target_path = prompt.strip_prefix("/save").unwrap_or("").trim();
                                     let export_file = if target_path.is_empty() {
                                         let export_dir = self.workspace_root.join(".minicode").join("exports");
-                                        let _ = std::fs::create_dir_all(&export_dir);
+                                        if let Err(e) = std::fs::create_dir_all(&export_dir) {
+                                            tracing::warn!(error = %e, "Failed to create exports directory");
+                                        }
                                         export_dir.join(format!("session_{}.md", chrono::Utc::now().format("%Y%m%d_%H%M%S")))
                                     } else {
                                         self.workspace_root.join(target_path)

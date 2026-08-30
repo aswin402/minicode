@@ -371,7 +371,9 @@ impl ModalState {
 
     pub fn new_code_explorer(workspace_root: &std::path::Path) -> Self {
         let mut graph = crate::context::graph::CodeGraph::new();
-        let _ = graph.build_graph(workspace_root);
+        if let Err(e) = graph.build_graph(workspace_root) {
+            tracing::warn!(error = %e, "Failed to build code graph for CodeExplorer modal");
+        }
         let res = crate::context::explorer::CodeExploreEngine::explore(
             workspace_root,
             &graph,
@@ -422,7 +424,7 @@ impl ModalState {
                     if f.is_empty() {
                         true
                     } else {
-                        m.id.to_lowercase().contains(&f) || m.name.to_lowercase().contains(&f)
+                        Self::contains_ci(&m.id, &f) || Self::contains_ci(&m.name, &f)
                     }
                 })
                 .map(|(i, _)| i)
@@ -446,10 +448,10 @@ impl ModalState {
                     if f.is_empty() {
                         true
                     } else {
-                        s.name.to_lowercase().contains(&f)
-                            || s.runtime.to_lowercase().contains(&f)
-                            || s.description.to_lowercase().contains(&f)
-                            || s.packages.iter().any(|p| p.to_lowercase().contains(&f))
+                        Self::contains_ci(&s.name, &f)
+                            || Self::contains_ci(&s.runtime, &f)
+                            || Self::contains_ci(&s.description, &f)
+                            || s.packages.iter().any(|p| Self::contains_ci(p, &f))
                     }
                 })
                 .map(|(i, _)| i)
@@ -472,10 +474,10 @@ impl ModalState {
                     if f.is_empty() {
                         true
                     } else {
-                        c.name.to_lowercase().contains(&f)
-                            || c.category.to_lowercase().contains(&f)
-                            || c.description.to_lowercase().contains(&f)
-                            || c.shortcut.to_lowercase().contains(&f)
+                        Self::contains_ci(c.name, &f)
+                            || Self::contains_ci(c.category, &f)
+                            || Self::contains_ci(c.description, &f)
+                            || Self::contains_ci(c.shortcut, &f)
                     }
                 })
                 .map(|(i, _)| i)
@@ -500,11 +502,11 @@ impl ModalState {
                     if f.is_empty() {
                         true
                     } else {
-                        s.symbol_name.to_lowercase().contains(&f)
-                            || s.kind.to_lowercase().contains(&f)
-                            || s.file_path.to_lowercase().contains(&f)
-                            || s.signature.to_lowercase().contains(&f)
-                            || s.layer.display_name().to_lowercase().contains(&f)
+                        Self::contains_ci(&s.symbol_name, &f)
+                            || Self::contains_ci(&s.kind, &f)
+                            || Self::contains_ci(&s.file_path, &f)
+                            || Self::contains_ci(&s.signature, &f)
+                            || Self::contains_ci(s.layer.display_name(), &f)
                     }
                 })
                 .map(|(i, _)| i)
@@ -513,6 +515,26 @@ impl ModalState {
             if *selected_index >= filtered_indices.len() {
                 *selected_index = filtered_indices.len().saturating_sub(1);
             }
+        }
+    }
+
+    /// Efficient zero-allocation case-insensitive substring search for ASCII text.
+    fn contains_ci(haystack: &str, needle_lower: &str) -> bool {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        if haystack.len() < needle_lower.len() {
+            return false;
+        }
+        if haystack.is_ascii() && needle_lower.is_ascii() {
+            let needle_bytes = needle_lower.as_bytes();
+            haystack.as_bytes().windows(needle_bytes.len()).any(|w| {
+                w.iter()
+                    .zip(needle_bytes.iter())
+                    .all(|(a, b)| a.to_ascii_lowercase() == *b)
+            })
+        } else {
+            haystack.to_lowercase().contains(needle_lower)
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.0.65"
+version = "0.0.66"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -85,6 +85,7 @@ rmcp = { version = "3.1.2", features = ["client", "server", "macros", "schemars"
 # Utilities & Error Handling
 anyhow = "1.0"
 thiserror = "1.0"
+indexmap = { version = "2.6", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"

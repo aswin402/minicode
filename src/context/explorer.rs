@@ -94,8 +94,8 @@ impl CodeExploreEngine {
             }
         }
 
-        // Limit results to top 5 most relevant symbols to keep payload surgical
-        matched_entries.truncate(5);
+        // Limit results to top entries to keep payload surgical
+        matched_entries.truncate(crate::constants::MAX_MATCHED_ENTRIES);
 
         // Pre-read file contents for source extraction and callee analysis
         let mut file_contents_cache: HashMap<PathBuf, String> = HashMap::new();
@@ -126,12 +126,12 @@ impl CodeExploreEngine {
 
             let source_code = if include_source && start_idx < lines.len() && start_idx <= end_idx {
                 let chunk: Vec<&str> = lines[start_idx..end_idx].to_vec();
-                // Cap to max 60 lines
-                let snippet = if chunk.len() > 60 {
+                let max_lines = crate::constants::MAX_SOURCE_LINES;
+                let snippet = if chunk.len() > max_lines {
                     format!(
                         "{}\n    // ... [truncated {} lines]",
-                        chunk[..60].join("\n"),
-                        chunk.len() - 60
+                        chunk[..max_lines].join("\n"),
+                        chunk.len() - max_lines
                     )
                 } else {
                     chunk.join("\n")
@@ -141,32 +141,22 @@ impl CodeExploreEngine {
                 None
             };
 
-            // Calculate Callees: Scan symbol's source code for invoked identifiers
+            // Calculate Callees: What symbols/functions does this symbol's body invoke?
             let mut callees = Vec::new();
-            let mut seen_callees = HashSet::new();
-
-            if start_idx < lines.len() && start_idx <= end_idx {
-                let symbol_body = lines[start_idx..end_idx].join(" ");
-                let identifiers: HashSet<&str> = symbol_body
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|w| w.len() >= 2 && *w != sym_name)
-                    .collect();
-
-                for ident in identifiers {
-                    if let Some(target_defs) = graph.symbol_to_file().get(ident) {
-                        for (callee_path, callee_sym) in target_defs {
-                            if (callee_path != path || callee_sym.line_number != sym.line_number)
-                                && seen_callees.insert(format!(
-                                    "{}:{}",
-                                    callee_sym.name, callee_sym.line_number
-                                ))
-                            {
+            if let Some(ref body) = source_code {
+                for (other_sym_name, entries) in graph.symbol_to_file() {
+                    if other_sym_name != sym_name
+                        && !crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS
+                            .contains(&other_sym_name.as_str())
+                        && body.contains(other_sym_name)
+                    {
+                        for (callee_path, callee_sym) in entries {
+                            if callee_sym.kind != "import" {
                                 let callee_rel = callee_path
                                     .strip_prefix(workspace_root)
                                     .unwrap_or(callee_path)
                                     .display()
                                     .to_string();
-
                                 callees.push(SymbolCallInfo {
                                     name: callee_sym.name.clone(),
                                     file_path: callee_rel,
@@ -178,7 +168,7 @@ impl CodeExploreEngine {
                     }
                 }
             }
-            callees.truncate(8);
+            callees.truncate(crate::constants::MAX_CALLEES);
 
             // Calculate Callers: Find incoming callers from other files referencing this symbol
             let mut callers = Vec::new();
@@ -230,7 +220,7 @@ impl CodeExploreEngine {
                     }
                 }
             }
-            callers.truncate(8);
+            callers.truncate(crate::constants::MAX_CALLERS);
 
             // Blast Radius Files
             let blast_radius_files = match graph.get_blast_radius(sym_name, workspace_root) {

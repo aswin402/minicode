@@ -265,8 +265,11 @@ impl ModelFetcher {
                         || item
                             .get("pricing")
                             .and_then(|p| p.get("prompt"))
-                            .and_then(|pr| pr.as_str())
-                            == Some("0");
+                            .is_some_and(|pr| match pr {
+                                serde_json::Value::String(s) => s.parse::<f64>() == Ok(0.0),
+                                serde_json::Value::Number(n) => n.as_f64() == Some(0.0),
+                                _ => false,
+                            });
 
                     models.push(ModelInfo {
                         id: id.to_string(),

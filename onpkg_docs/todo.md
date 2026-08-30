@@ -1157,6 +1157,39 @@
 - [x] **Task 11:** Verify formatting with `cargo fmt --check` and clean linting with `cargo clippy -j 1 -- -D warnings`
 - [x] **Task 12:** Bump version to `0.0.65` in `Cargo.toml`, update `CHANGELOG.md`, build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.65`, and push to `origin main --tags`
 
+---
+
+## ✅ Phase 56: Code Health, Panic Hardening & Deterministic Eviction (v0.0.66)
+
+### Wave 1 — Critical: Zero-Panic Guarantee & Rule Compliance (P0)
+- [x] **Task 1:** Replace `.expect("fallback compactor")` in `src/agent/loop.rs` with `AutoCompactor::default_safe()`
+- [x] **Task 2:** Replace 4× `.unwrap()` in `src/tools/web_search.rs` with safe `?` error propagation and `ToolError::CommandExec`
+- [x] **Task 3:** Replace `.unwrap()` on `child_ids.last()` in `src/agent/task_dag.rs` with safe `Option` matching
+- [x] **Task 4:** Replace unsafe byte-index string slicing in `src/app.rs` with safe `.chars().take(25)` UTF-8 truncation
+- [x] **Task 5:** Replace `.expect()` regex in `src/tools/rtk_filter.rs` with infallible `OnceLock<Option<Regex>>`
+
+### Wave 2 — Important: Bugs & Error Handling (P0)
+- [x] **Task 6:** Switch `MemoryAnchor.file_state` to `IndexMap` with `shift_remove_index(0)` for deterministic FIFO eviction
+- [x] **Task 7:** Wrap retry backoff sleeps in `tokio::select!` with `cancel_token.cancelled()` in `src/agent/loop.rs`
+- [x] **Task 8:** Check and log errors for `create_dir_all` in `src/app.rs` and `src/main.rs`
+- [x] **Task 9:** Bound inline diff file snapshot size with `MAX_DIFF_SNAPSHOT_BYTES` in `src/agent/loop.rs`
+
+### Wave 3 — Performance & Optimization (P1)
+- [x] **Task 10:** Pre-allocate and reuse PageRank score buffers in `src/context/graph.rs`
+- [x] **Task 11:** Replace per-keystroke `.to_lowercase()` allocations in `src/ui/modal.rs` with zero-allocation `contains_ci`
+- [x] **Task 12:** Update tool registry capacity to `TOTAL_TOOL_COUNT` (94) in `src/tools/mod.rs`
+
+### Wave 4 — Constants Extraction & Polish (P1)
+- [x] **Task 13:** Extract 15+ hardcoded heuristics to named constants in `src/constants.rs`
+- [x] **Task 14:** Replace magic numbers across `auto_compact.rs`, `compressor.rs`, `dedup.rs`, `explorer.rs`, `view.rs`, `app.rs`
+- [x] **Task 15:** Make free model pricing detection robust with float parsing and fix `/review` flag matching
+
+### Wave 5 — Verification, Release & Ship (P0)
+- [x] **Task 16:** Run targeted integration test suites (`integration_auto_compact`, `integration_context_dedup`, `integration_token_compactor`, `integration_code_explore`) with `-j 1`
+- [x] **Task 17:** Run `cargo fmt --check` and `cargo clippy -j 1 -- -D warnings` (0 errors, 0 warnings)
+- [x] **Task 18:** Bump version to `0.0.66` in `Cargo.toml`, update `CHANGELOG.md` and `onpkg_docs/todo.md`
+- [x] **Task 19:** Build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.66`, and push to `origin main --tags`
+
 
 
 

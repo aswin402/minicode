@@ -1,11 +1,14 @@
 use crate::agent::models::get_model_context_limit;
 use crate::agent::types::{Message, Role};
 use crate::constants::{
-    COMPACT_MAX_DECISIONS_IN_ANCHOR, COMPACT_MAX_FILES_IN_ANCHOR, COMPACT_PRESERVE_RECENT_MESSAGES,
-    COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO, COMPACT_TIER3_RATIO,
+    COMPACT_MAX_DECISIONS_IN_ANCHOR, COMPACT_MAX_DECISIONS_PER_TURN, COMPACT_MAX_DECISION_CHARS,
+    COMPACT_MAX_ERRORS_PER_TURN, COMPACT_MAX_ERROR_CHARS, COMPACT_MAX_FILES_IN_ANCHOR,
+    COMPACT_PRESERVE_RECENT_MESSAGES, COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO,
+    COMPACT_TIER3_RATIO, MESSAGE_FRAMING_TOKEN_OVERHEAD,
 };
 use crate::context::compressor::ContextCompressor;
 use crate::error::Result;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -75,7 +78,7 @@ impl TurnSummary {
 pub struct MemoryAnchor {
     pub working_context: Option<String>,
     pub key_decisions: Vec<String>,
-    pub file_state: HashMap<String, String>,
+    pub file_state: IndexMap<String, String>,
     pub unresolved_errors: Vec<String>,
 }
 
@@ -151,6 +154,16 @@ impl AutoCompactor {
             model: model.to_string(),
             custom_limit: None,
         })
+    }
+
+    /// Infallible fallback constructor that never panics or fails.
+    pub fn default_safe() -> Self {
+        Self {
+            compressor: ContextCompressor::default_safe(),
+            anchor: MemoryAnchor::default(),
+            model: "default".to_string(),
+            custom_limit: None,
+        }
     }
 
     /// Overrides model context limit for testing or specific provider configurations.
@@ -236,7 +249,7 @@ impl AutoCompactor {
                             || trimmed.starts_with("use ")
                             || trimmed.starts_with("do not ")
                             || trimmed.starts_with("don't "))
-                            && trimmed.len() <= 120
+                            && trimmed.len() <= COMPACT_MAX_DECISION_CHARS
                         {
                             decisions_set.insert(trimmed.to_string());
                         }
@@ -253,7 +266,7 @@ impl AutoCompactor {
                             || trimmed.starts_with("Plan:")
                             || trimmed.starts_with("- Fix:")
                             || trimmed.starts_with("Fix:"))
-                            && trimmed.len() <= 150
+                            && trimmed.len() <= COMPACT_MAX_DECISION_CHARS
                         {
                             let clean = trimmed
                                 .trim_start_matches('-')
@@ -274,7 +287,7 @@ impl AutoCompactor {
                             if (trimmed.starts_with("error:")
                                 || trimmed.starts_with("error[")
                                 || trimmed.starts_with("FAILED"))
-                                && trimmed.len() <= 140
+                                && trimmed.len() <= COMPACT_MAX_ERROR_CHARS
                             {
                                 errors_set.insert(trimmed.to_string());
                             }
@@ -299,10 +312,16 @@ impl AutoCompactor {
         summary.files_modified = mod_set.into_iter().collect();
         summary.files_modified.sort();
 
-        summary.decisions = decisions_set.into_iter().take(6).collect();
+        summary.decisions = decisions_set
+            .into_iter()
+            .take(COMPACT_MAX_DECISIONS_PER_TURN)
+            .collect();
         summary.decisions.sort();
 
-        summary.errors_resolved = errors_set.into_iter().take(4).collect();
+        summary.errors_resolved = errors_set
+            .into_iter()
+            .take(COMPACT_MAX_ERRORS_PER_TURN)
+            .collect();
         summary.errors_resolved.sort();
 
         summary
@@ -310,15 +329,13 @@ impl AutoCompactor {
 
     /// Updates persistent memory anchor with newly summarized turn data.
     pub fn update_anchor_from_summary(&mut self, summary: &TurnSummary) {
-        // Track file states
+        // Track file states (IndexMap preserves insertion order -> shift_remove_index(0) evicts oldest FIFO)
         for f in &summary.files_modified {
             self.anchor
                 .file_state
                 .insert(f.clone(), "modified".to_string());
             if self.anchor.file_state.len() > COMPACT_MAX_FILES_IN_ANCHOR {
-                if let Some(first_key) = self.anchor.file_state.keys().next().cloned() {
-                    self.anchor.file_state.remove(&first_key);
-                }
+                self.anchor.file_state.shift_remove_index(0);
             }
         }
 
@@ -441,7 +458,8 @@ impl AutoCompactor {
 
                 let removed = messages.remove(remove_idx);
                 let removed_tokens = self.compressor.count_tokens(&removed.content);
-                current_tokens = current_tokens.saturating_sub(removed_tokens + 4);
+                current_tokens =
+                    current_tokens.saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
                 pruned_count += 1;
             }
 
@@ -454,7 +472,8 @@ impl AutoCompactor {
             {
                 let removed = messages.remove(0);
                 let removed_tokens = self.compressor.count_tokens(&removed.content);
-                current_tokens = current_tokens.saturating_sub(removed_tokens + 4);
+                current_tokens =
+                    current_tokens.saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
             }
 
             let final_tokens = self.compressor.count_messages_tokens(messages);
