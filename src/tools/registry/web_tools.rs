@@ -534,8 +534,10 @@ pub async fn dispatch(
                     crate::tools::parse_u64_param(args.get("max_links")).unwrap_or(20) as usize;
 
                 let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(10))
-                    .user_agent("Mozilla/5.0 (compatible; minicode-agent/0.0.53)")
+                    .timeout(std::time::Duration::from_secs(
+                        crate::constants::WEB_TIMEOUT_SECS,
+                    ))
+                    .user_agent(crate::constants::WEB_USER_AGENT)
                     .build()
                     .unwrap_or_default();
 

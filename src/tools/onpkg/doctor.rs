@@ -29,10 +29,10 @@ impl OnpkgDoctor {
                 Ok(output) if output.status.success() => {
                     let ver = String::from_utf8_lossy(&output.stdout);
                     let first_line = ver.lines().next().unwrap_or("Installed").trim();
-                    let compact_ver = if first_line.len() > 40 {
-                        &first_line[..40]
+                    let compact_ver: String = if first_line.chars().count() > 40 {
+                        first_line.chars().take(40).collect()
                     } else {
-                        first_line
+                        first_line.to_string()
                     };
                     res.push_str(&format!("| **{}** | ✔ | `{}` |\n", name, compact_ver));
                 }

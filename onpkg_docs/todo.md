@@ -1190,6 +1190,24 @@
 - [x] **Task 18:** Bump version to `0.0.66` in `Cargo.toml`, update `CHANGELOG.md` and `onpkg_docs/todo.md`
 - [x] **Task 19:** Build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.66`, and push to `origin main --tags`
 
+---
+
+## ✅ Phase 57: Unicode Safety, Timeout Standardization & Hardening Polish (v0.0.67)
+
+### Wave 1 — Unicode Slicing Safety (P0)
+- [x] **Task 1:** Update `src/tools/onpkg/doctor.rs` with safe `.chars().take(40)` UTF-8 truncation
+- [x] **Task 2:** Update `src/ui/modal.rs` with safe `.chars().take(52)` UTF-8 truncation for checkpoint prompts
+
+### Wave 2 — Timeout Standardization & Idiom Polish (P1)
+- [x] **Task 3:** Standardize HTTP timeouts across `web_search.rs`, `crawler/engine.rs`, and `web_tools.rs` to `WEB_TIMEOUT_SECS`
+- [x] **Task 4:** Replace `Duration::from_secs(0)` with `Duration::ZERO` in `decay.rs` and `wiki.rs`
+
+### Wave 3 — Verification, Release & Ship (P0)
+- [x] **Task 5:** Verify with `cargo fmt --check` and `cargo clippy -j 1 -- -D warnings` (0 warnings)
+- [x] **Task 6:** Run targeted single-job integration test suites (`integration_auto_compact`, `integration_code_explore`)
+- [x] **Task 7:** Bump version to `0.0.67` in `Cargo.toml`, update `CHANGELOG.md` and `onpkg_docs/todo.md`
+- [x] **Task 8:** Build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.67`, and push to `origin main --tags`
+
 
 
 

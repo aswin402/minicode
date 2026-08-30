@@ -762,8 +762,8 @@ impl ModalState {
                     } else {
                         Style::default().fg(theme.muted)
                     };
-                    let prompt_display = if cp.prompt.len() > 55 {
-                        format!("{}...", &cp.prompt[..52])
+                    let prompt_display = if cp.prompt.chars().count() > 55 {
+                        format!("{}...", cp.prompt.chars().take(52).collect::<String>())
                     } else {
                         cp.prompt.clone()
                     };

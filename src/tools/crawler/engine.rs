@@ -1,3 +1,4 @@
+use crate::constants::{WEB_TIMEOUT_SECS, WEB_USER_AGENT};
 use crate::error::{Result, ToolError};
 use crate::tools::crawler::markdown::MarkdownDistiller;
 use crate::tools::crawler::sitemap::SitemapParser;
@@ -24,8 +25,8 @@ impl Default for CrawlerEngine {
 impl CrawlerEngine {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .user_agent("Mozilla/5.0 (compatible; minicode-agent/0.0.53; +https://github.com/aswin402/minicode)")
+            .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
+            .user_agent(WEB_USER_AGENT)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .unwrap_or_default();

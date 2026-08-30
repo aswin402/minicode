@@ -50,7 +50,7 @@ impl WikiManager {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0))
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         let meta = WikiEntryMeta {

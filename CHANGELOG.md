@@ -5,6 +5,18 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.67] — 2026-08-30
+
+### Unicode Safety, Timeout Standardization & Hardening Polish
+
+- **Full-Spectrum Unicode Safety (`src/tools/onpkg/doctor.rs`, `src/ui/modal.rs`)**:
+  - Replaced byte-slice truncation `&first_line[..40]` in `doctor.rs` with safe char-iterator collection `first_line.chars().take(40).collect()`, preventing panics on multibyte UTF-8 characters from external CLI tools.
+  - Replaced byte-slice truncation `&cp.prompt[..52]` in `src/ui/modal.rs` with safe `cp.prompt.chars().take(52).collect::<String>()`, ensuring undo timeline never panics when previewing non-ASCII prompt text or emojis.
+- **HTTP Timeout Standardization (`src/tools/web_search.rs`, `src/tools/crawler/engine.rs`, `src/tools/registry/web_tools.rs`)**:
+  - Replaced hardcoded `10s` and `12s` timeouts and user agent literals with centralized `crate::constants::WEB_TIMEOUT_SECS` (15s) and `crate::constants::WEB_USER_AGENT`.
+- **Zero Duration Polish (`src/context/decay.rs`, `src/context/wiki.rs`)**:
+  - Replaced `Duration::from_secs(0)` fallbacks with idiomatic `Duration::ZERO`.
+
 ## [0.0.66] — 2026-08-30
 
 ### Code Health, Panic Hardening, Deterministic Eviction & Performance Optimizations

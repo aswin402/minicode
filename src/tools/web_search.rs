@@ -1,4 +1,4 @@
-use crate::constants::WEB_USER_AGENT;
+use crate::constants::{WEB_TIMEOUT_SECS, WEB_USER_AGENT};
 use crate::error::{Result, ToolError};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ impl WebSearchService {
     async fn search_duckduckgo(query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
         let client = reqwest::Client::builder()
             .user_agent(WEB_USER_AGENT)
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
             .build()
             .map_err(|e: reqwest::Error| {
                 ToolError::CommandExec(format!("Failed to build HTTP client: {}", e))

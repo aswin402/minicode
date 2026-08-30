@@ -32,7 +32,7 @@ impl ScopedMemoryFact {
     pub fn new(id: impl Into<String>, scope: MemoryScope, content: impl Into<String>) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0))
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         Self {
@@ -49,7 +49,7 @@ impl ScopedMemoryFact {
     pub fn reinforce(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::from_secs(0))
+            .unwrap_or(Duration::ZERO)
             .as_secs();
         self.last_accessed_at = now;
         self.reinforcement_count = self.reinforcement_count.saturating_add(1);
