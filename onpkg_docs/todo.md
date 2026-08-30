@@ -1108,5 +1108,31 @@
 - [x] `./localupdate.sh` — `minicode --version` → `v0.0.63`
 - [x] `git commit + tag v0.0.63 + push origin main --tags`
 
+---
+
+## ✅ Phase 54: CodeGraph Surgical Context, Architectural Layers & OKF v0.2 Knowledge System (v0.0.64)
+
+### Wave 1 — Dense `code_explore` Surgical Context Engine (P0)
+- [x] **Task 1:** Create `src/context/explorer.rs` (`CodeExploreEngine`) with symbol extraction, caller/callee traversal, and blast radius
+- [x] **Task 2:** Create `src/tools/registry/explore_tools.rs` for `code_explore` and wire dispatch in `src/tools/mod.rs`
+
+### Wave 2 — Architectural Layering & `diff_impact` Analysis (P1)
+- [x] **Task 3:** Create `src/context/layers.rs` (`LayerClassifier`) for `Ui`, `Api`, `Service`, `Data`, `Utility` tagging
+- [x] **Task 4:** Implement `diff_impact` tool to compute blast radius from uncommitted git diffs
+
+### Wave 3 — OKF v0.2 Knowledge System & Ledgers (P1)
+- [x] **Task 5:** Create `src/context/okf.rs` for OKF v0.2 YAML frontmatter parsing, `index.md` TOC, and `log.md` ledger
+- [x] **Task 6:** Update `src/tools/onpkg/sync.rs` to validate and synchronize OKF v0.2 manifests
+
+### Wave 4 — Interactive TUI Code Explorer Modal & Commands (P2)
+- [x] **Task 7:** Implement `ModalState::CodeExplorer` in `src/ui/modal.rs` with 2-column layer & call graph browser
+- [x] **Task 8:** Register `/explore` in `src/ui/input.rs`, `COMMAND_CATALOG_ITEMS`, `src/app.rs`, and `AgentIntent::CodeExplore`
+
+### Wave 5 — Verification, Tests & Release (P0)
+- [x] **Task 9:** Create `tests/integration_code_explore.rs` test suite
+- [x] **Task 10:** Run `cargo check -j 1`, `cargo clippy -- -D warnings -j 1`, `cargo fmt --check`, and targeted integration tests
+- [x] **Task 11:** Bump version to `0.0.64` in `Cargo.toml`, update `CHANGELOG.md`, build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.64`, and push to `origin main --tags`
+
+
 
 

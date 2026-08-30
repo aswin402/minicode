@@ -408,6 +408,12 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+E toggles interactive CodeGraph Surgical Explorer modal
+                                if key_event.code == KeyCode::Char('e') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.modal = ModalState::new_code_explorer(&self.workspace_root);
+                                    continue;
+                                }
+
                                 // Ctrl+H toggles interactive Session History & Time-Travel modal
                                 if key_event.code == KeyCode::Char('h') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
@@ -594,6 +600,22 @@ impl<'a> App<'a> {
 
                                 if prompt == "/stack" || prompt == "/stacks" {
                                     self.modal = ModalState::new_stack_select();
+                                    continue;
+                                }
+
+                                if prompt == "/explore" || prompt.starts_with("/explore ") {
+                                    let query = prompt.trim_start_matches("/explore").trim();
+                                    if query.is_empty() {
+                                        self.modal = ModalState::new_code_explorer(&self.workspace_root);
+                                    } else {
+                                        let explore_prompt = format!("Surgically explore the following symbol or architecture question in the codebase using `code_explore`: {}", query);
+                                        self.timeline.add_user_message(prompt.clone());
+                                        self.is_working = true;
+                                        self.work_start = Some(Instant::now());
+                                        let cancel = tokio_util::sync::CancellationToken::new();
+                                        self.cancel_token = Some(cancel.clone());
+                                        let _ = control_tx.send(AgentCommand::Prompt(explore_prompt, Some(cancel)));
+                                    }
                                     continue;
                                 }
 
@@ -1343,6 +1365,9 @@ impl<'a> App<'a> {
                             "/theme" => {
                                 self.modal = ModalState::new_theme_select(&self.config.ui.theme);
                             }
+                            "/explore" => {
+                                self.modal = ModalState::new_code_explorer(&self.workspace_root);
+                            }
                             "/diff" => {
                                 let ws = self.workspace_root.clone();
                                 match crate::git::GitDiffViewer::load_diffs(&ws, false).await {
@@ -1472,6 +1497,40 @@ impl<'a> App<'a> {
                         });
                     }
                     self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::CodeExplorer {
+                ref filtered_indices,
+                ref mut selected_index,
+                ref mut filter,
+                ref mut active_tab,
+                ..
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Up => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if *selected_index + 1 < filtered_indices.len() {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Tab => {
+                    *active_tab = (*active_tab + 1) % 4;
+                }
+                KeyCode::BackTab => {
+                    *active_tab = if *active_tab == 0 { 3 } else { *active_tab - 1 };
+                }
+                KeyCode::Backspace => {
+                    filter.pop();
+                    self.modal.update_filter();
+                }
+                KeyCode::Char(c) => {
+                    filter.push(c);
+                    self.modal.update_filter();
                 }
                 _ => {}
             },

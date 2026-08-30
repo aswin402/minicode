@@ -34,6 +34,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "interactive split/unified git diff viewer & staging (Ctrl+D)",
     },
     SlashCommand {
+        name: "/explore",
+        description: "surgically explore codebase AST symbols, call graph & blast radius (Ctrl+E)",
+    },
+    SlashCommand {
         name: "/review",
         description: "run multi-dimensional code review on current git diff",
     },

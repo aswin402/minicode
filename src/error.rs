@@ -156,6 +156,9 @@ pub enum ContextError {
 
     #[error("Core memory error: {0}")]
     Memory(String),
+
+    #[error("OKF knowledge catalog error: {0}")]
+    Okf(String),
 }
 
 #[derive(Error, Debug)]

@@ -87,6 +87,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/diff",
     },
     CommandCatalogItem {
+        name: "/explore",
+        category: "Code & Inspection",
+        shortcut: "Ctrl+E",
+        description: "Surgically explore codebase AST symbols, call graph & blast radius",
+        example: "/explore | /explore auth",
+    },
+    CommandCatalogItem {
         name: "/review",
         category: "Code & Inspection",
         shortcut: "",
@@ -246,6 +253,13 @@ pub enum ModalState {
         selected_index: usize,
         filter: String,
     },
+    CodeExplorer {
+        symbols: Vec<crate::context::explorer::CodeExploreMatch>,
+        filtered_indices: Vec<usize>,
+        selected_index: usize,
+        filter: String,
+        active_tab: usize,
+    },
     GitDiff {
         diff_files: Vec<crate::git::GitDiffFile>,
         selected_file_index: usize,
@@ -355,6 +369,33 @@ impl ModalState {
         }
     }
 
+    pub fn new_code_explorer(workspace_root: &std::path::Path) -> Self {
+        let mut graph = crate::context::graph::CodeGraph::new();
+        let _ = graph.build_graph(workspace_root);
+        let res = crate::context::explorer::CodeExploreEngine::explore(
+            workspace_root,
+            &graph,
+            "",
+            None,
+            2,
+            true,
+        )
+        .unwrap_or_else(|_| crate::context::explorer::CodeExploreResult {
+            query: String::new(),
+            target_symbol: None,
+            matches: Vec::new(),
+            summary: String::new(),
+        });
+        let count = res.matches.len();
+        ModalState::CodeExplorer {
+            symbols: res.matches,
+            filtered_indices: (0..count).collect(),
+            selected_index: 0,
+            filter: String::new(),
+            active_tab: 0,
+        }
+    }
+
     pub fn new_git_diff(diff_files: Vec<crate::git::GitDiffFile>, staged_view: bool) -> Self {
         ModalState::GitDiff {
             diff_files,
@@ -435,6 +476,35 @@ impl ModalState {
                             || c.category.to_lowercase().contains(&f)
                             || c.description.to_lowercase().contains(&f)
                             || c.shortcut.to_lowercase().contains(&f)
+                    }
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            if *selected_index >= filtered_indices.len() {
+                *selected_index = filtered_indices.len().saturating_sub(1);
+            }
+        } else if let ModalState::CodeExplorer {
+            symbols,
+            filtered_indices,
+            selected_index,
+            filter,
+            ..
+        } = self
+        {
+            let f = filter.trim().to_lowercase();
+            *filtered_indices = symbols
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    if f.is_empty() {
+                        true
+                    } else {
+                        s.symbol_name.to_lowercase().contains(&f)
+                            || s.kind.to_lowercase().contains(&f)
+                            || s.file_path.to_lowercase().contains(&f)
+                            || s.signature.to_lowercase().contains(&f)
+                            || s.layer.display_name().to_lowercase().contains(&f)
                     }
                 })
                 .map(|(i, _)| i)
@@ -1927,6 +1997,289 @@ impl ModalState {
                     .style(Style::default().fg(theme.muted))
                     .alignment(Alignment::Center);
                 frame.render_widget(footer, v_chunks[1]);
+            }
+            ModalState::CodeExplorer {
+                symbols,
+                filtered_indices,
+                selected_index,
+                filter,
+                active_tab,
+            } => {
+                let popup_area = centered_rect(85, 80, area);
+                frame.render_widget(Clear, popup_area);
+
+                let outer_block = Block::default()
+                    .title(" 🧭 CodeGraph Surgical Explorer (Ctrl+E) ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = outer_block.inner(popup_area);
+                frame.render_widget(outer_block, popup_area);
+
+                let v_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3), // Search box
+                        Constraint::Min(5),    // Main content (2 cols)
+                        Constraint::Length(1), // Footer
+                    ])
+                    .split(inner_area);
+
+                // Search input
+                let search_text = format!(" Filter symbols/layers: {}█", filter);
+                let search_box = Paragraph::new(search_text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme.border)),
+                    )
+                    .style(Style::default().fg(theme.text_primary));
+                frame.render_widget(search_box, v_chunks[0]);
+
+                let h_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(35), // Left: Symbols list
+                        Constraint::Percentage(65), // Right: Details & Call graph
+                    ])
+                    .split(v_chunks[1]);
+
+                // Left: Symbols list
+                let items: Vec<ListItem> = filtered_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(display_idx, &real_idx)| {
+                        let sym = &symbols[real_idx];
+                        let is_selected = display_idx == *selected_index;
+
+                        let spans = vec![
+                            Span::styled(
+                                format!("{:<10} ", sym.layer.badge()),
+                                Style::default().fg(theme.brand_accent),
+                            ),
+                            Span::styled(
+                                &sym.symbol_name,
+                                if is_selected {
+                                    Style::default()
+                                        .fg(theme.bg_primary)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default()
+                                        .fg(theme.text_primary)
+                                        .add_modifier(Modifier::BOLD)
+                                },
+                            ),
+                            Span::styled(
+                                format!(" [{}]", sym.kind),
+                                Style::default().fg(theme.muted),
+                            ),
+                        ];
+
+                        let item_style = if is_selected {
+                            Style::default().bg(theme.brand_accent).fg(theme.bg_primary)
+                        } else {
+                            Style::default()
+                        };
+
+                        ListItem::new(Line::from(spans)).style(item_style)
+                    })
+                    .collect();
+
+                let list_title = format!(" Symbols ({}) ", filtered_indices.len());
+                let list_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(list_title);
+                let list = List::new(items).block(list_block);
+                frame.render_widget(list, h_chunks[0]);
+
+                // Right: Detail view with tabs
+                let detail_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.border))
+                    .title(" Surgical AST Inspection ");
+
+                let mut detail_lines = Vec::new();
+
+                if let Some(&real_idx) = filtered_indices.get(*selected_index) {
+                    let sym = &symbols[real_idx];
+
+                    // Header line
+                    detail_lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", sym.layer.badge()),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            &sym.symbol_name,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                " ({}) in {}:{}-{}",
+                                sym.kind, sym.file_path, sym.line_range.0, sym.line_range.1
+                            ),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+
+                    // Signature
+                    detail_lines.push(Line::from(vec![
+                        Span::styled("Signature: ", Style::default().fg(theme.warning)),
+                        Span::styled(&sym.signature, Style::default().fg(theme.text_primary)),
+                    ]));
+
+                    if let Some(doc) = &sym.doc_comment {
+                        detail_lines.push(Line::from(vec![
+                            Span::styled("Doc: ", Style::default().fg(theme.muted)),
+                            Span::styled(doc.trim(), Style::default().fg(theme.muted)),
+                        ]));
+                    }
+                    detail_lines.push(Line::from(""));
+
+                    // Tab selector bar
+                    let tab_titles = [
+                        "[ 1. Source Definition ]".to_string(),
+                        format!("[ 2. Callers ({}) ]", sym.callers.len()),
+                        format!("[ 3. Callees ({}) ]", sym.callees.len()),
+                        format!("[ 4. Blast Radius ({}) ]", sym.blast_radius_files.len()),
+                    ];
+
+                    let mut tab_spans = Vec::new();
+                    for (t_idx, t_title) in tab_titles.iter().enumerate() {
+                        let is_active_tab = t_idx == *active_tab;
+                        tab_spans.push(Span::styled(
+                            format!("{} ", t_title),
+                            if is_active_tab {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            },
+                        ));
+                    }
+                    detail_lines.push(Line::from(tab_spans));
+                    detail_lines.push(Line::from(""));
+
+                    // Tab contents
+                    match *active_tab {
+                        0 => {
+                            if let Some(src) = &sym.source_code {
+                                for src_line in src.lines() {
+                                    detail_lines.push(Line::from(Span::styled(
+                                        src_line,
+                                        Style::default().fg(theme.text_primary),
+                                    )));
+                                }
+                            } else {
+                                detail_lines.push(Line::from(Span::styled(
+                                    " (Source code not loaded) ",
+                                    Style::default().fg(theme.muted),
+                                )));
+                            }
+                        }
+                        1 => {
+                            if sym.callers.is_empty() {
+                                detail_lines.push(Line::from(Span::styled(
+                                    " No incoming callers found (Root entrypoint / public symbol).",
+                                    Style::default().fg(theme.muted),
+                                )));
+                            } else {
+                                for c in &sym.callers {
+                                    detail_lines.push(Line::from(vec![
+                                        Span::styled("  ← ", Style::default().fg(theme.success)),
+                                        Span::styled(
+                                            &c.name,
+                                            Style::default()
+                                                .fg(theme.text_primary)
+                                                .add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            format!(" in {}:{}", c.file_path, c.line),
+                                            Style::default().fg(theme.muted),
+                                        ),
+                                    ]));
+                                }
+                            }
+                        }
+                        2 => {
+                            if sym.callees.is_empty() {
+                                detail_lines.push(Line::from(Span::styled(
+                                    " No outgoing calls found (Leaf function).",
+                                    Style::default().fg(theme.muted),
+                                )));
+                            } else {
+                                for c in &sym.callees {
+                                    detail_lines.push(Line::from(vec![
+                                        Span::styled(
+                                            "  → ",
+                                            Style::default().fg(theme.brand_accent),
+                                        ),
+                                        Span::styled(
+                                            &c.name,
+                                            Style::default()
+                                                .fg(theme.text_primary)
+                                                .add_modifier(Modifier::BOLD),
+                                        ),
+                                        Span::styled(
+                                            format!(" in {}:{}", c.file_path, c.line),
+                                            Style::default().fg(theme.muted),
+                                        ),
+                                    ]));
+                                }
+                            }
+                        }
+                        _ => {
+                            if sym.blast_radius_files.is_empty() {
+                                detail_lines.push(Line::from(Span::styled(
+                                    " Isolated module (No direct downstream dependents).",
+                                    Style::default().fg(theme.success),
+                                )));
+                            } else {
+                                detail_lines.push(Line::from(Span::styled(
+                                    "Files directly dependent on this symbol:",
+                                    Style::default().fg(theme.warning),
+                                )));
+                                for file in &sym.blast_radius_files {
+                                    detail_lines.push(Line::from(vec![
+                                        Span::styled(
+                                            "  • ",
+                                            Style::default().fg(theme.destructive),
+                                        ),
+                                        Span::styled(file, Style::default().fg(theme.text_primary)),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    detail_lines.push(Line::from(Span::styled(
+                        " No matching AST symbols found. ",
+                        Style::default().fg(theme.muted),
+                    )));
+                }
+
+                let detail_p = Paragraph::new(detail_lines).block(detail_block);
+                frame.render_widget(detail_p, h_chunks[1]);
+
+                // Footer
+                let footer = Paragraph::new(
+                    " [↑/↓] Select Symbol  [Tab] Switch Tab (Source/Callers/Callees/Blast)  [Esc] Close ",
+                )
+                .style(Style::default().fg(theme.muted))
+                .alignment(Alignment::Center);
+                frame.render_widget(footer, v_chunks[2]);
             }
             ModalState::Approval(approval_state) => {
                 approval_state.render(frame, area, theme);

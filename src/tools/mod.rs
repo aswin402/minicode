@@ -42,6 +42,7 @@ impl ToolRegistry {
         schemas.extend(registry::context_tools::get_schemas());
         schemas.extend(registry::web_tools::get_schemas());
         schemas.extend(registry::onpkg_tools::get_schemas());
+        schemas.extend(registry::explore_tools::get_schemas());
         schemas
     }
 
@@ -141,6 +142,12 @@ impl ToolRegistry {
             return res;
         }
 
+        // 9. CodeGraph Surgical Exploration & Diff Impact Tools
+        if let Some(res) = registry::explore_tools::dispatch(tool_name, args, workspace_root).await
+        {
+            return res;
+        }
+
         Err(ToolError::NotFound {
             name: tool_name.to_string(),
         }
@@ -156,7 +163,7 @@ mod tests {
     #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
-        assert_eq!(schemas.len(), 92);
+        assert_eq!(schemas.len(), 94);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"score_task_complexity"));
         assert!(names.contains(&"check_architecture"));

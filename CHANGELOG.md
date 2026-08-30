@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.64] — 2026-08-30
+
+### CodeGraph Surgical Context, Architectural Layers & OKF v0.2 Knowledge System
+
+- **CodeGraph Surgical Context Explorer (`src/context/explorer.rs`, `code_explore` tool)**:
+  - Dense 1-call context retrieval combining verbatim symbol definitions, signatures, doc comments, incoming callers (`← who calls this`), outgoing callees (`→ what does this call`), and blast radius.
+  - Eliminates iterative multi-turn search/read cycles, saving 60-80% of agent context tokens during code exploration.
+- **Architectural Layer Classification (`src/context/layers.rs`, `ArchitecturalLayer`)**:
+  - Automatically classifies files and AST symbols into 5 architectural tiers: `🎨 UI`, `🌐 API`, `⚙️ Service`, `💾 Data`, and `🔧 Utility`.
+  - Enriches repomap representations and code exploration with visual layer badges.
+- **Uncommitted Diff Blast Radius & Impact Analysis (`diff_impact` tool)**:
+  - Analyzes active git modifications or specified file paths against the AST dependency graph to compute blast radius, downstream dependents, affected architectural tiers, and required regression test coverage.
+- **Open Knowledge Format (OKF v0.2) Documentation System (`src/context/okf.rs`)**:
+  - Full YAML frontmatter parser and validator according to Google Cloud OKF v0.2 specifications.
+  - `OkfManager` auto-generates progressive disclosure table-of-contents (`onpkg_docs/index.md`) and chronological audit ledgers (`onpkg_docs/log.md`).
+  - Integrated into `OnpkgSyncEngine` to keep project documentation continuously synchronized.
+- **Interactive TUI Code Explorer Modal (`ModalState::CodeExplorer`, `/explore`, `Ctrl+E`)**:
+  - 2-column interactive TUI browser with live search/filter by symbol name, signature, file, and layer.
+  - 4 inspection tabs: `[1. Source Definition]`, `[2. Callers]`, `[3. Callees]`, and `[4. Blast Radius]`.
+  - Registered `/explore` in `SLASH_COMMANDS`, `COMMAND_CATALOG_ITEMS`, and autonomous intent router (`AgentIntent::CodeExplore`).
+- **Integration Test Suite (`tests/integration_code_explore.rs`)**:
+  - 5 comprehensive tests covering layer classification, surgical symbol exploration with caller detection, diff impact blast radius, OKF v0.2 frontmatter parsing and ledger generation, and intent routing.
+
 ## [0.0.63] — 2026-08-29
 
 ### Autonomous Intent Routing & Interactive Command Catalog

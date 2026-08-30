@@ -20,6 +20,8 @@ pub enum AgentIntent {
     UndoRollback,
     /// Render AST PageRank repository dependency graph (`/map`)
     RepoMap,
+    /// Surgically explore codebase AST symbols, call graph & blast radius (`/explore`)
+    CodeExplore,
     /// Compact context tokens and summarize conversation (`/compact`)
     ContextCompact,
     /// Display interactive catalog of all available slash commands (`/commands`, `/help`)
@@ -37,6 +39,7 @@ impl AgentIntent {
             Self::AutonomousGoal => ("🎯", "Autonomous Goal"),
             Self::CodeReview => ("🛡️", "Adversarial Code Review"),
             Self::GitDiff => ("📊", "Git Diff Inspection"),
+            Self::CodeExplore => ("🧭", "Code Exploration"),
             Self::SessionHistory => ("📜", "Session History"),
             Self::UndoRollback => ("⏮️", "Checkpoint Undo"),
             Self::RepoMap => ("🗺️", "AST Repository Map"),
@@ -55,6 +58,7 @@ impl AgentIntent {
             Self::AutonomousGoal => Some("/goal"),
             Self::CodeReview => Some("/review"),
             Self::GitDiff => Some("/diff"),
+            Self::CodeExplore => Some("/explore"),
             Self::SessionHistory => Some("/history"),
             Self::UndoRollback => Some("/undo"),
             Self::RepoMap => Some("/map"),
@@ -146,6 +150,20 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             confidence: 1.0,
             query: String::new(),
             suggested_command: Some("/diff".to_string()),
+        });
+    }
+
+    if lower == "/explore" || lower.starts_with("/explore ") {
+        let query = trimmed
+            .strip_prefix("/explore")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        return Some(IntentMatch {
+            intent: AgentIntent::CodeExplore,
+            confidence: 1.0,
+            query,
+            suggested_command: Some("/explore".to_string()),
         });
     }
 
@@ -294,6 +312,24 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             confidence: 0.90,
             query: String::new(),
             suggested_command: Some("/diff".to_string()),
+        });
+    }
+
+    // CodeGraph Surgical Exploration
+    if lower.starts_with("explore ")
+        || lower.contains("code explore")
+        || lower.contains("call graph")
+        || lower.contains("call hierarchy")
+        || lower.contains("blast radius")
+        || lower.contains("explore symbol")
+        || lower.contains("who calls")
+        || lower.contains("what calls")
+    {
+        return Some(IntentMatch {
+            intent: AgentIntent::CodeExplore,
+            confidence: 0.91,
+            query: trimmed.to_string(),
+            suggested_command: Some("/explore".to_string()),
         });
     }
 

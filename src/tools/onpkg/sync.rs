@@ -80,15 +80,24 @@ impl OnpkgSyncEngine {
             fs::write(&agents_md_path, agents_md).ok();
         }
 
-        // 3. Ensure onpkg_docs/ directory exists
+        // 3. Ensure onpkg_docs/ directory exists and synchronize OKF v0.2 index and log
         let docs_dir = workspace_root.join("onpkg_docs");
         fs::create_dir_all(&docs_dir).ok();
+
+        crate::context::okf::OkfManager::generate_index_md(&docs_dir).ok();
+        crate::context::okf::OkfManager::append_log_entry(
+            &docs_dir,
+            &format!("minicode/v{}", env!("CARGO_PKG_VERSION")),
+            "SYNC",
+            "onpkg.json",
+            &format!("Synchronized project manifest and OKF knowledge catalog (Runtime: {}, Package Manager: {})", runtime, package_manager),
+        ).ok();
 
         Ok(format!(
             "✔ Synchronized `{}` project manifest:\n\
             • Manifest: onpkg.json (Runtime: `{}`, Package Manager: `{}`)\n\
             • Instructions: AGENTS.md\n\
-            • Documentation: onpkg_docs/",
+            • Documentation & OKF Catalog: onpkg_docs/ (index.md & log.md updated)",
             project_name, runtime, package_manager
         ))
     }

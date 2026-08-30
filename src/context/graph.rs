@@ -514,6 +514,28 @@ impl CodeGraph {
 
         map_lines.join("\n")
     }
+
+    /// Accessor for the mapping from symbol names to defining files and definitions
+    pub fn symbol_to_file(&self) -> &HashMap<String, Vec<(PathBuf, SymbolDef)>> {
+        &self.symbol_to_file
+    }
+
+    /// Accessor for the mapping from file paths to all extracted symbols
+    pub fn file_to_symbols(&self) -> &HashMap<PathBuf, Vec<SymbolDef>> {
+        &self.file_to_symbols
+    }
+
+    /// Accessor for the node index map
+    #[allow(dead_code)]
+    pub fn node_indices(&self) -> &HashMap<PathBuf, NodeIndex> {
+        &self.node_indices
+    }
+
+    /// Accessor for the underlying Petgraph directed graph
+    #[allow(dead_code)]
+    pub fn graph(&self) -> &DiGraph<PathBuf, ()> {
+        &self.graph
+    }
 }
 
 #[cfg(test)]
