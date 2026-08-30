@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.68] — 2026-08-31
+
+### Symbol-Level Code Graph & Incremental Change Tracking
+
+- **Symbol-Level Petgraph Architecture (`src/context/graph.rs`)**:
+  - Replaced file-level `DiGraph<PathBuf, ()>` with fine-grained symbol-level `DiGraph<SymbolNode, EdgeKind>`.
+  - Added `SymbolKind` enumeration covering 14 symbol categories (`Function`, `Method`, `Struct`, `Class`, `Trait`, `Interface`, `Enum`, `TypeAlias`, `Impl`, `Import`, `Module`, `Variable`, `File`, `Other`).
+  - Added `SymbolNode` containing symbol identifier, qualified path (`path::symbol`), kind, line spans, signature, and doc comments.
+  - Added `EdgeKind` multi-graph relationship taxonomy (`Calls`, `Imports`, `Implements`, `Contains`, `References`, `DependsOn`).
+- **Incremental File Hash Tracking (`src/context/graph.rs`)**:
+  - Introduced `FileHashTracker` computing pure Rust FNV-1a 64-bit content hashes alongside filesystem modification timestamps.
+  - Enables incremental re-indexing where only modified files are reparsed, dramatically accelerating graph updates.
+- **Symbol-Precision PageRank & Blast Radius (`src/context/graph.rs`)**:
+  - Added `compute_symbol_pagerank()` ranking individual functions and types by centrality, with backward-compatible file-level aggregation (`compute_pagerank()`).
+  - Enhanced `get_blast_radius()` to return exact caller symbol names (`direct_caller_symbols`, `transitive_caller_symbols`) in addition to dependent file paths.
+- **Constants & Code Health (`src/constants.rs`)**:
+  - Added `SYMBOL_GRAPH_MAX_NODES` (50,000), `SYMBOL_GRAPH_MAX_EDGES` (200,000), and `SYMBOL_REFERENCE_MIN_LEN` (3).
+  - Maintained zero clippy warnings with `-D warnings` and 100% test pass rate.
+
 ## [0.0.67] — 2026-08-30
 
 ### Unicode Safety, Timeout Standardization & Hardening Polish

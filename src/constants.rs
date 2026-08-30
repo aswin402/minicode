@@ -230,6 +230,16 @@ pub const BLAST_RADIUS_MEDIUM_DIRECT: usize = 1;
 /// Transitive dependents threshold triggering MEDIUM risk rating
 pub const BLAST_RADIUS_MEDIUM_TRANSITIVE: usize = 3;
 
+// === Symbol-Level Code Graph Constants ===
+/// Maximum node capacity for in-memory symbol graph
+#[allow(dead_code)]
+pub const SYMBOL_GRAPH_MAX_NODES: usize = 50_000;
+/// Maximum edge capacity for in-memory symbol graph
+#[allow(dead_code)]
+pub const SYMBOL_GRAPH_MAX_EDGES: usize = 200_000;
+/// Minimum identifier character length to consider for symbol cross-reference
+pub const SYMBOL_REFERENCE_MIN_LEN: usize = 3;
+
 // === Symbol Index & BM25 Ranking ===
 /// Exact symbol name match score
 pub const SYMBOL_EXACT_MATCH_SCORE: f64 = 100.0;

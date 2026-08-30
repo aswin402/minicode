@@ -7,6 +7,184 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+/// Normalized classification kind for a symbol in the graph
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum SymbolKind {
+    Function,
+    Method,
+    Struct,
+    Class,
+    Trait,
+    Interface,
+    Enum,
+    TypeAlias,
+    Impl,
+    Import,
+    Module,
+    Variable,
+    File,
+    Other,
+}
+
+impl SymbolKind {
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Struct => "struct",
+            Self::Class => "class",
+            Self::Trait => "trait",
+            Self::Interface => "interface",
+            Self::Enum => "enum",
+            Self::TypeAlias => "type_alias",
+            Self::Impl => "impl",
+            Self::Import => "import",
+            Self::Module => "module",
+            Self::Variable => "variable",
+            Self::File => "file",
+            Self::Other => "other",
+        }
+    }
+
+    pub fn from_kind_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "function" => Self::Function,
+            "method" => Self::Method,
+            "struct" => Self::Struct,
+            "class" => Self::Class,
+            "trait" => Self::Trait,
+            "interface" => Self::Interface,
+            "enum" => Self::Enum,
+            "type_alias" => Self::TypeAlias,
+            "impl" => Self::Impl,
+            "import" => Self::Import,
+            "module" => Self::Module,
+            "variable" => Self::Variable,
+            "file" => Self::File,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A node in the symbol-level code graph representing a function, struct, trait, file, etc.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SymbolNode {
+    pub name: String,
+    pub qualified_name: String,
+    pub kind: SymbolKind,
+    pub file_path: PathBuf,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub signature: String,
+    pub doc_comment: Option<String>,
+}
+
+impl SymbolNode {
+    pub fn new(sym: &SymbolDef, file_path: &Path, workspace_root: Option<&Path>) -> Self {
+        let rel_path = if let Some(root) = workspace_root {
+            file_path.strip_prefix(root).unwrap_or(file_path)
+        } else {
+            file_path
+        };
+        let qualified_name = format!("{}::{}", rel_path.display(), sym.name);
+        Self {
+            name: sym.name.clone(),
+            qualified_name,
+            kind: SymbolKind::from_kind_str(&sym.kind),
+            file_path: file_path.to_path_buf(),
+            start_line: sym.line_number,
+            end_line: sym.end_line,
+            signature: sym.signature.clone(),
+            doc_comment: sym.doc_comment.clone(),
+        }
+    }
+
+    pub fn file_node(file_path: &Path, workspace_root: Option<&Path>) -> Self {
+        let rel_path = if let Some(root) = workspace_root {
+            file_path.strip_prefix(root).unwrap_or(file_path)
+        } else {
+            file_path
+        };
+        let name = file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| rel_path.display().to_string());
+        let qualified_name = rel_path.display().to_string();
+        Self {
+            name,
+            qualified_name,
+            kind: SymbolKind::File,
+            file_path: file_path.to_path_buf(),
+            start_line: 1,
+            end_line: 1,
+            signature: format!("file {}", rel_path.display()),
+            doc_comment: None,
+        }
+    }
+}
+
+/// Relationship edge type between symbols in the code graph
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum EdgeKind {
+    Calls,      // function A calls function B
+    Imports,    // file/module imports symbol
+    Implements, // struct implements trait
+    Contains,   // file contains symbol, or impl contains method
+    References, // symbol references another symbol
+    DependsOn,  // file-level dependency (backward compat)
+}
+
+/// Tracks file content hashes for incremental graph rebuilds
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FileHashTracker {
+    /// Map from canonical file path to (content_hash, mtime_millis)
+    pub hashes: HashMap<PathBuf, (u64, u64)>,
+}
+
+impl FileHashTracker {
+    pub fn new() -> Self {
+        Self {
+            hashes: HashMap::new(),
+        }
+    }
+
+    pub fn compute_hash(content: &str) -> u64 {
+        let mut hash = crate::constants::FNV_OFFSET_BASIS;
+        for byte in content.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(crate::constants::FNV_PRIME);
+        }
+        hash
+    }
+
+    #[allow(dead_code)]
+    pub fn is_dirty(&self, path: &Path, current_hash: u64) -> bool {
+        match self.hashes.get(path) {
+            Some(&(stored_hash, _)) => stored_hash != current_hash,
+            None => true,
+        }
+    }
+
+    pub fn update(&mut self, path: PathBuf, hash: u64, mtime: u64) {
+        self.hashes.insert(path, (hash, mtime));
+    }
+
+    #[allow(dead_code)]
+    pub fn removed_files(&self, current_files: &HashSet<PathBuf>) -> Vec<PathBuf> {
+        self.hashes
+            .keys()
+            .filter(|p| !current_files.contains(*p))
+            .cloned()
+            .collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn remove(&mut self, path: &Path) {
+        self.hashes.remove(path);
+    }
+}
+
 /// Architectural impact and risk analysis report for a symbol or file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusReport {
@@ -20,13 +198,27 @@ pub struct BlastRadiusReport {
     pub cycle_members: Vec<String>,
     pub risk_level: String, // "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
     pub summary: String,
+    #[serde(default)]
+    pub direct_caller_symbols: Vec<String>,
+    #[serde(default)]
+    pub transitive_caller_symbols: Vec<String>,
 }
 
 pub struct CodeGraph {
-    graph: DiGraph<PathBuf, ()>,
-    node_indices: HashMap<PathBuf, NodeIndex>,
+    graph: DiGraph<SymbolNode, EdgeKind>,
+    symbol_node_indices: HashMap<String, NodeIndex>, // qualified_name -> NodeIndex
+    name_to_nodes: HashMap<String, Vec<NodeIndex>>,  // symbol name -> NodeIndex
+    file_to_nodes: HashMap<PathBuf, Vec<NodeIndex>>, // file -> symbol nodes in that file
+    file_node_indices: HashMap<PathBuf, NodeIndex>,  // file -> file node index in graph
+
+    // Backward-compat accessors:
     symbol_to_file: HashMap<String, Vec<(PathBuf, SymbolDef)>>,
     file_to_symbols: HashMap<PathBuf, Vec<SymbolDef>>,
+
+    // Incremental hash tracking:
+    file_tracker: FileHashTracker,
+
+    // AST extractor:
     extractor: RepoMapExtractor,
 }
 
@@ -40,17 +232,24 @@ impl CodeGraph {
     pub fn new() -> Self {
         Self {
             graph: DiGraph::new(),
-            node_indices: HashMap::new(),
+            symbol_node_indices: HashMap::new(),
+            name_to_nodes: HashMap::new(),
+            file_to_nodes: HashMap::new(),
+            file_node_indices: HashMap::new(),
             symbol_to_file: HashMap::new(),
             file_to_symbols: HashMap::new(),
+            file_tracker: FileHashTracker::new(),
             extractor: RepoMapExtractor::new(),
         }
     }
 
-    /// Indexes the entire workspace, constructing a dependency graph of files and extracting symbols.
+    /// Indexes the entire workspace, constructing a symbol-level dependency graph.
     pub fn build_graph(&mut self, workspace_root: &Path) -> Result<()> {
         self.graph.clear();
-        self.node_indices.clear();
+        self.symbol_node_indices.clear();
+        self.name_to_nodes.clear();
+        self.file_to_nodes.clear();
+        self.file_node_indices.clear();
         self.symbol_to_file.clear();
         self.file_to_symbols.clear();
 
@@ -72,31 +271,61 @@ impl CodeGraph {
             }
         }
 
-        // 1. Add nodes
-        for file in &source_files {
-            if !self.node_indices.contains_key(file) {
-                let idx = self.graph.add_node(file.clone());
-                self.node_indices.insert(file.clone(), idx);
-            }
-        }
-
         let mut file_contents = HashMap::new();
 
-        // 2. Extract AST symbols and map symbol -> defining files
+        // 1. Add file nodes and extract AST symbols
         for file in &source_files {
-            if let Ok(content) = std::fs::read_to_string(file) {
-                file_contents.insert(file.clone(), content);
-            }
+            match std::fs::read_to_string(file) {
+                Ok(c) => {
+                    let hash = FileHashTracker::compute_hash(&c);
+                    let mtime = std::fs::metadata(file)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    self.file_tracker.update(file.clone(), hash, mtime);
+                    file_contents.insert(file.clone(), c);
+                }
+                Err(_) => continue,
+            };
+
+            // Add File Node
+            let file_node = SymbolNode::file_node(file, Some(workspace_root));
+            let file_node_idx = self.graph.add_node(file_node.clone());
+            self.file_node_indices.insert(file.clone(), file_node_idx);
+            self.symbol_node_indices
+                .insert(file_node.qualified_name.clone(), file_node_idx);
+
             match self.extractor.extract_file_symbols(file) {
                 Ok(symbols) => {
+                    let mut file_sym_indices = Vec::new();
                     for sym in &symbols {
-                        if sym.name.len() > 2 && sym.kind != "import" {
+                        if sym.name.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN
+                            && sym.kind != "import"
+                        {
                             self.symbol_to_file
                                 .entry(sym.name.clone())
                                 .or_default()
                                 .push((file.clone(), sym.clone()));
+
+                            let sym_node = SymbolNode::new(sym, file, Some(workspace_root));
+                            let sym_node_idx = self.graph.add_node(sym_node.clone());
+
+                            // File Contains Symbol edge
+                            self.graph
+                                .add_edge(file_node_idx, sym_node_idx, EdgeKind::Contains);
+
+                            self.symbol_node_indices
+                                .insert(sym_node.qualified_name.clone(), sym_node_idx);
+                            self.name_to_nodes
+                                .entry(sym.name.clone())
+                                .or_default()
+                                .push(sym_node_idx);
+                            file_sym_indices.push(sym_node_idx);
                         }
                     }
+                    self.file_to_nodes.insert(file.clone(), file_sym_indices);
                     self.file_to_symbols.insert(file.clone(), symbols);
                 }
                 Err(e) => {
@@ -105,30 +334,81 @@ impl CodeGraph {
             }
         }
 
-        // 3. Build directed dependency edges based on cross-file symbol references
+        // 2. Build directed edges between symbols and files
         for file in &source_files {
-            let from_idx = match self.node_indices.get(file) {
+            let file_node_idx = match self.file_node_indices.get(file) {
                 Some(&idx) => idx,
                 None => continue,
             };
 
             if let Some(content) = file_contents.get(file) {
-                // Extract unique word-boundary identifiers in a single pass
-                let identifiers: HashSet<&str> = content
+                let lines: Vec<&str> = content.lines().collect();
+
+                // Connect symbol-to-symbol calls and file dependencies
+                if let Some(sym_indices) = self.file_to_nodes.get(file) {
+                    for &caller_idx in sym_indices {
+                        let caller_node = match self.graph.node_weight(caller_idx) {
+                            Some(n) => n.clone(),
+                            None => continue,
+                        };
+
+                        let start = caller_node.start_line.saturating_sub(1);
+                        let end = caller_node.end_line.min(lines.len());
+                        let body_text = if start < lines.len() && start <= end {
+                            lines[start..end].join("\n")
+                        } else {
+                            String::new()
+                        };
+
+                        let identifiers: HashSet<&str> = body_text
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
+                            .collect();
+
+                        for ident in identifiers {
+                            if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
+                                continue;
+                            }
+                            if let Some(target_indices) = self.name_to_nodes.get(ident) {
+                                for &target_idx in target_indices {
+                                    if target_idx != caller_idx {
+                                        let edge_kind = if caller_node.kind == SymbolKind::Impl {
+                                            EdgeKind::Implements
+                                        } else {
+                                            EdgeKind::Calls
+                                        };
+                                        if !self.graph.contains_edge(caller_idx, target_idx) {
+                                            self.graph.add_edge(caller_idx, target_idx, edge_kind);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // File-level dependency edges (for fast file-level traversal & backward compat)
+                let all_identifiers: HashSet<&str> = content
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|w| w.len() >= 2)
+                    .filter(|w| w.len() >= crate::constants::SYMBOL_REFERENCE_MIN_LEN)
                     .collect();
 
-                for ident in identifiers {
+                for ident in all_identifiers {
                     if crate::constants::CODEGRAPH_IGNORED_IDENTIFIERS.contains(&ident) {
                         continue;
                     }
                     if let Some(targets) = self.symbol_to_file.get(ident) {
                         for (target_file, _) in targets {
                             if target_file != file {
-                                if let Some(&to_idx) = self.node_indices.get(target_file) {
-                                    if !self.graph.contains_edge(from_idx, to_idx) {
-                                        self.graph.add_edge(from_idx, to_idx, ());
+                                if let Some(&target_file_idx) =
+                                    self.file_node_indices.get(target_file)
+                                {
+                                    if !self.graph.contains_edge(file_node_idx, target_file_idx) {
+                                        self.graph.add_edge(
+                                            file_node_idx,
+                                            target_file_idx,
+                                            EdgeKind::DependsOn,
+                                        );
                                     }
                                 }
                             }
@@ -141,15 +421,15 @@ impl CodeGraph {
         Ok(())
     }
 
-    /// Computes PageRank scores for all indexed files with dangling node mass redistribution.
-    pub fn compute_pagerank(&self, active_files: &[PathBuf]) -> Vec<(PathBuf, f64)> {
+    /// Computes symbol-level PageRank scores across all nodes.
+    pub fn compute_symbol_pagerank(&self, active_files: &[PathBuf]) -> Vec<(SymbolNode, f64)> {
         let node_count = self.graph.node_count();
         if node_count == 0 {
             return Vec::new();
         }
 
         let n = node_count as f64;
-        let mut scores: HashMap<NodeIndex, f64> = HashMap::new();
+        let mut scores: HashMap<NodeIndex, f64> = HashMap::with_capacity(node_count);
         let initial_score = 1.0 / n;
 
         for node_idx in self.graph.node_indices() {
@@ -160,10 +440,12 @@ impl CodeGraph {
         let iterations = crate::constants::PAGERANK_ITERATIONS;
         let mut next_scores: HashMap<NodeIndex, f64> = HashMap::with_capacity(node_count);
 
+        let active_set: HashSet<&PathBuf> = active_files.iter().collect();
+
         for _ in 0..iterations {
             next_scores.clear();
 
-            // Compute dangling sum (nodes with 0 outgoing edges)
+            // Dangling node redistribution
             let dangling_sum: f64 = self
                 .graph
                 .node_indices()
@@ -181,12 +463,13 @@ impl CodeGraph {
                     sum_in += scores.get(&neighbor).unwrap_or(&0.0) / out_degree as f64;
                 }
 
-                // Personalization boost for active files in conversation
-                let personalization_bias = if active_files
-                    .iter()
-                    .any(|af| self.node_indices.get(af) == Some(&node))
-                {
-                    crate::constants::PAGERANK_PERSONALIZATION_BIAS
+                // Personalization boost for active files
+                let personalization_bias = if let Some(node_data) = self.graph.node_weight(node) {
+                    if active_set.contains(&node_data.file_path) {
+                        crate::constants::PAGERANK_PERSONALIZATION_BIAS
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };
@@ -197,7 +480,7 @@ impl CodeGraph {
                 next_scores.insert(node, score);
             }
 
-            // L1 score normalization so total score mass sums to 1.0
+            // L1 score normalization
             let total: f64 = next_scores.values().sum();
             if total > 0.0 {
                 for score in next_scores.values_mut() {
@@ -208,12 +491,30 @@ impl CodeGraph {
             std::mem::swap(&mut scores, &mut next_scores);
         }
 
-        let mut results: Vec<(PathBuf, f64)> = self
-            .node_indices
-            .iter()
-            .map(|(path, idx)| (path.clone(), *scores.get(idx).unwrap_or(&0.0)))
+        let mut results: Vec<(SymbolNode, f64)> = self
+            .graph
+            .node_indices()
+            .filter_map(|idx| {
+                self.graph
+                    .node_weight(idx)
+                    .map(|node| (node.clone(), *scores.get(&idx).unwrap_or(&0.0)))
+            })
             .collect();
 
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results
+    }
+
+    /// Computes PageRank scores aggregated by file (backward-compatible API).
+    pub fn compute_pagerank(&self, active_files: &[PathBuf]) -> Vec<(PathBuf, f64)> {
+        let symbol_ranks = self.compute_symbol_pagerank(active_files);
+        let mut file_scores: HashMap<PathBuf, f64> = HashMap::new();
+
+        for (sym_node, score) in symbol_ranks {
+            *file_scores.entry(sym_node.file_path).or_default() += score;
+        }
+
+        let mut results: Vec<(PathBuf, f64)> = file_scores.into_iter().collect();
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
@@ -224,106 +525,173 @@ impl CodeGraph {
         target_query: &str,
         workspace_root: &Path,
     ) -> Result<BlastRadiusReport> {
-        let (target_type, file_path, symbol_name) =
-            if let Some(targets) = self.symbol_to_file.get(target_query) {
-                if let Some((path, _sym)) = targets.first() {
-                    (
-                        "symbol".to_string(),
-                        path.clone(),
-                        Some(target_query.to_string()),
-                    )
-                } else {
-                    return Err(ContextError::Graph(format!(
-                        "Symbol '{}' has no associated source files",
-                        target_query
-                    ))
-                    .into());
-                }
-            } else {
-                let candidate_path = if Path::new(target_query).is_absolute() {
-                    PathBuf::from(target_query)
-                } else {
-                    workspace_root.join(target_query)
-                };
+        let mut direct_caller_symbols = Vec::new();
+        let mut transitive_caller_symbols = Vec::new();
+        let mut direct_dependents = Vec::new();
+        let mut transitive_dependents = Vec::new();
+        let mut target_type = "file".to_string();
+        let mut target_file_path = PathBuf::new();
+        let mut target_symbol_name: Option<String> = None;
 
-                let canonical = std::fs::canonicalize(&candidate_path).unwrap_or(candidate_path);
-                if self.node_indices.contains_key(&canonical) {
-                    ("file".to_string(), canonical, None)
-                } else {
-                    // Try partial file match
-                    let found = self.node_indices.keys().find(|p| {
+        // 1. Resolve Target Node(s)
+        if let Some(target_nodes) = self.name_to_nodes.get(target_query) {
+            // Target is a symbol
+            target_type = "symbol".to_string();
+            target_symbol_name = Some(target_query.to_string());
+
+            let mut visited_nodes = HashSet::new();
+            let mut queue = VecDeque::new();
+
+            for &sym_idx in target_nodes {
+                if let Some(sym_node) = self.graph.node_weight(sym_idx) {
+                    if target_file_path.as_os_str().is_empty() {
+                        target_file_path = sym_node.file_path.clone();
+                    }
+                }
+                visited_nodes.insert(sym_idx);
+
+                // Direct callers of symbol
+                for neighbor in self
+                    .graph
+                    .neighbors_directed(sym_idx, petgraph::Direction::Incoming)
+                {
+                    if let Some(caller_node) = self.graph.node_weight(neighbor) {
+                        if caller_node.kind != SymbolKind::File {
+                            direct_caller_symbols.push(caller_node.qualified_name.clone());
+                            let rel = caller_node
+                                .file_path
+                                .strip_prefix(workspace_root)
+                                .unwrap_or(&caller_node.file_path)
+                                .display()
+                                .to_string();
+                            if !direct_dependents.contains(&rel) {
+                                direct_dependents.push(rel);
+                            }
+                            if visited_nodes.insert(neighbor) {
+                                queue.push_back((neighbor, 1));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Transitive BFS up to BLAST_RADIUS_MAX_HOPS
+            while let Some((curr_idx, depth)) = queue.pop_front() {
+                if depth >= crate::constants::BLAST_RADIUS_MAX_HOPS {
+                    continue;
+                }
+                for pred in self
+                    .graph
+                    .neighbors_directed(curr_idx, petgraph::Direction::Incoming)
+                {
+                    if visited_nodes.insert(pred) {
+                        if let Some(node) = self.graph.node_weight(pred) {
+                            if node.kind != SymbolKind::File {
+                                transitive_caller_symbols.push(node.qualified_name.clone());
+                                let rel = node
+                                    .file_path
+                                    .strip_prefix(workspace_root)
+                                    .unwrap_or(&node.file_path)
+                                    .display()
+                                    .to_string();
+                                if !direct_dependents.contains(&rel)
+                                    && !transitive_dependents.contains(&rel)
+                                {
+                                    transitive_dependents.push(rel);
+                                }
+                                queue.push_back((pred, depth + 1));
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Target is a file path
+            let candidate_path = if Path::new(target_query).is_absolute() {
+                PathBuf::from(target_query)
+            } else {
+                workspace_root.join(target_query)
+            };
+
+            let canonical = std::fs::canonicalize(&candidate_path).unwrap_or(candidate_path);
+            let matched_file = if self.file_node_indices.contains_key(&canonical) {
+                Some(canonical)
+            } else {
+                self.file_node_indices
+                    .keys()
+                    .find(|p| {
                         p.to_string_lossy().ends_with(target_query)
                             || p.file_name()
                                 .map(|n| n.to_string_lossy() == target_query)
                                 .unwrap_or(false)
-                    });
-
-                    if let Some(matched) = found {
-                        ("file".to_string(), matched.clone(), None)
-                    } else {
-                        return Err(ContextError::Graph(format!(
-                            "Target '{}' not found in indexed codebase symbols or files",
-                            target_query
-                        ))
-                        .into());
-                    }
-                }
+                    })
+                    .cloned()
             };
 
-        let target_node = *self.node_indices.get(&file_path).ok_or_else(|| {
-            ContextError::Graph(format!(
-                "Node for path '{}' missing in graph",
-                file_path.display()
-            ))
-        })?;
+            let file_path = matched_file.ok_or_else(|| {
+                ContextError::Graph(format!(
+                    "Target '{}' not found in indexed codebase symbols or files",
+                    target_query
+                ))
+            })?;
 
-        // 1. Direct callers (Incoming edges to file_path)
-        let mut direct_dependents = Vec::new();
-        let mut direct_indices = HashSet::new();
+            target_file_path = file_path.clone();
+            let target_node = *self.file_node_indices.get(&file_path).ok_or_else(|| {
+                ContextError::Graph(format!("File node for '{}' missing", file_path.display()))
+            })?;
 
-        for neighbor in self
-            .graph
-            .neighbors_directed(target_node, petgraph::Direction::Incoming)
-        {
-            if let Some(path) = self.graph.node_weight(neighbor) {
-                let rel = path
-                    .strip_prefix(workspace_root)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string();
-                direct_dependents.push(rel);
-                direct_indices.insert(neighbor);
-            }
-        }
-
-        // 2. Transitive dependents (BFS up to k=3 hops)
-        let mut transitive_dependents = Vec::new();
-        let mut visited = HashSet::new();
-        let mut queue = VecDeque::new();
-
-        visited.insert(target_node);
-        for &d in &direct_indices {
-            visited.insert(d);
-            queue.push_back((d, 1));
-        }
-
-        while let Some((curr_node, depth)) = queue.pop_front() {
-            if depth >= crate::constants::BLAST_RADIUS_MAX_HOPS {
-                continue;
-            }
-            for pred in self
+            // Direct callers of file
+            let mut direct_indices = HashSet::new();
+            for neighbor in self
                 .graph
-                .neighbors_directed(curr_node, petgraph::Direction::Incoming)
+                .neighbors_directed(target_node, petgraph::Direction::Incoming)
             {
-                if visited.insert(pred) {
-                    if let Some(path) = self.graph.node_weight(pred) {
-                        let rel = path
-                            .strip_prefix(workspace_root)
-                            .unwrap_or(path)
-                            .display()
-                            .to_string();
-                        transitive_dependents.push(rel);
-                        queue.push_back((pred, depth + 1));
+                if let Some(node) = self.graph.node_weight(neighbor) {
+                    let rel = node
+                        .file_path
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(&node.file_path)
+                        .display()
+                        .to_string();
+                    if !direct_dependents.contains(&rel) {
+                        direct_dependents.push(rel);
+                        direct_indices.insert(neighbor);
+                    }
+                }
+            }
+
+            // Transitive BFS
+            let mut visited = HashSet::new();
+            let mut queue = VecDeque::new();
+            visited.insert(target_node);
+            for &d in &direct_indices {
+                visited.insert(d);
+                queue.push_back((d, 1));
+            }
+
+            while let Some((curr_node, depth)) = queue.pop_front() {
+                if depth >= crate::constants::BLAST_RADIUS_MAX_HOPS {
+                    continue;
+                }
+                for pred in self
+                    .graph
+                    .neighbors_directed(curr_node, petgraph::Direction::Incoming)
+                {
+                    if visited.insert(pred) {
+                        if let Some(node) = self.graph.node_weight(pred) {
+                            let rel = node
+                                .file_path
+                                .strip_prefix(workspace_root)
+                                .unwrap_or(&node.file_path)
+                                .display()
+                                .to_string();
+                            if !direct_dependents.contains(&rel)
+                                && !transitive_dependents.contains(&rel)
+                            {
+                                transitive_dependents.push(rel);
+                            }
+                            queue.push_back((pred, depth + 1));
+                        }
                     }
                 }
             }
@@ -341,22 +709,30 @@ impl CodeGraph {
             }
         }
 
-        // 4. Tarjan SCC Mutual Cyclic Dependency Detection
+        // 4. Tarjan SCC Cyclic Dependency Detection
         let sccs = tarjan_scc(&self.graph);
         let mut in_cyclic_dependency = false;
         let mut cycle_members = Vec::new();
 
+        let target_node_indices: Vec<NodeIndex> = if let Some(ref sym) = target_symbol_name {
+            self.name_to_nodes.get(sym).cloned().unwrap_or_default()
+        } else {
+            self.file_node_indices
+                .get(&target_file_path)
+                .copied()
+                .into_iter()
+                .collect()
+        };
+
         for scc in sccs {
-            if scc.len() > 1 && scc.contains(&target_node) {
+            if scc.len() > 1 && scc.iter().any(|n| target_node_indices.contains(n)) {
                 in_cyclic_dependency = true;
                 for n in scc {
-                    if let Some(p) = self.graph.node_weight(n) {
-                        cycle_members.push(
-                            p.strip_prefix(workspace_root)
-                                .unwrap_or(p)
-                                .display()
-                                .to_string(),
-                        );
+                    if let Some(node) = self.graph.node_weight(n) {
+                        let name = node.qualified_name.clone();
+                        if !cycle_members.contains(&name) {
+                            cycle_members.push(name);
+                        }
                     }
                 }
                 break;
@@ -389,18 +765,21 @@ impl CodeGraph {
             "LOW"
         };
 
-        let target_display = if let Some(ref sym) = symbol_name {
+        let target_display = if let Some(ref sym) = target_symbol_name {
             format!(
                 "symbol `{}` in `{}`",
                 sym,
-                file_path.file_name().unwrap_or_default().to_string_lossy()
+                target_file_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
             )
         } else {
             format!(
                 "file `{}`",
-                file_path
+                target_file_path
                     .strip_prefix(workspace_root)
-                    .unwrap_or(&file_path)
+                    .unwrap_or(&target_file_path)
                     .display()
             )
         };
@@ -422,9 +801,25 @@ impl CodeGraph {
             }
         }
 
+        if !direct_caller_symbols.is_empty() {
+            summary.push_str(&format!(
+                "- **Caller Symbols ({})**:\n",
+                direct_caller_symbols.len()
+            ));
+            for sym in direct_caller_symbols.iter().take(8) {
+                summary.push_str(&format!("  - `← {}`\n", sym));
+            }
+            if direct_caller_symbols.len() > 8 {
+                summary.push_str(&format!(
+                    "  - ... and {} more symbols\n",
+                    direct_caller_symbols.len() - 8
+                ));
+            }
+        }
+
         if !transitive_dependents.is_empty() {
             summary.push_str(&format!(
-                "- **Transitive Impact ({} downstream modules)**:\n",
+                "- **Transitive Impact ({} downstream files)**:\n",
                 transitive_dependents.len()
             ));
             for dep in transitive_dependents.iter().take(8) {
@@ -452,7 +847,7 @@ impl CodeGraph {
 
         if in_cyclic_dependency {
             summary.push_str(&format!(
-                "- **⚠️ Mutual Dependency Cycle Detected ({} files)**:\n",
+                "- **⚠️ Mutual Dependency Cycle Detected ({} nodes)**:\n",
                 cycle_members.len()
             ));
             for member in &cycle_members {
@@ -463,7 +858,7 @@ impl CodeGraph {
         Ok(BlastRadiusReport {
             target: target_query.to_string(),
             target_type,
-            file_path: file_path.display().to_string(),
+            file_path: target_file_path.display().to_string(),
             direct_dependents,
             transitive_dependents,
             test_coverage,
@@ -471,6 +866,8 @@ impl CodeGraph {
             cycle_members,
             risk_level: risk_level.to_string(),
             summary,
+            direct_caller_symbols,
+            transitive_caller_symbols,
         })
     }
 
@@ -517,6 +914,31 @@ impl CodeGraph {
         map_lines.join("\n")
     }
 
+    /// Accessor for symbol nodes
+    #[allow(dead_code)]
+    pub fn symbol_nodes(&self) -> impl Iterator<Item = &SymbolNode> {
+        self.graph.node_indices().filter_map(|idx| {
+            let node = self.graph.node_weight(idx)?;
+            if node.kind != SymbolKind::File {
+                Some(node)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Accessor for symbol name to node indices mapping
+    #[allow(dead_code)]
+    pub fn name_to_nodes(&self) -> &HashMap<String, Vec<NodeIndex>> {
+        &self.name_to_nodes
+    }
+
+    /// Accessor for qualified name to node index mapping
+    #[allow(dead_code)]
+    pub fn symbol_node_indices(&self) -> &HashMap<String, NodeIndex> {
+        &self.symbol_node_indices
+    }
+
     /// Accessor for the mapping from symbol names to defining files and definitions
     pub fn symbol_to_file(&self) -> &HashMap<String, Vec<(PathBuf, SymbolDef)>> {
         &self.symbol_to_file
@@ -527,15 +949,21 @@ impl CodeGraph {
         &self.file_to_symbols
     }
 
-    /// Accessor for the node index map
+    /// Accessor for file tracker
     #[allow(dead_code)]
-    pub fn node_indices(&self) -> &HashMap<PathBuf, NodeIndex> {
-        &self.node_indices
+    pub fn file_tracker(&self) -> &FileHashTracker {
+        &self.file_tracker
+    }
+
+    /// Accessor for file tracker mutable
+    #[allow(dead_code)]
+    pub fn file_tracker_mut(&mut self) -> &mut FileHashTracker {
+        &mut self.file_tracker
     }
 
     /// Accessor for the underlying Petgraph directed graph
     #[allow(dead_code)]
-    pub fn graph(&self) -> &DiGraph<PathBuf, ()> {
+    pub fn graph(&self) -> &DiGraph<SymbolNode, EdgeKind> {
         &self.graph
     }
 }
@@ -624,6 +1052,34 @@ mod tests {
         assert_eq!(ranked.len(), 3);
         let total_score: f64 = ranked.iter().map(|(_, s)| s).sum();
         assert!((total_score - 1.0).abs() < 1e-4);
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_symbol_nodes_and_hash_tracker() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_sym_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("calc.rs");
+        std::fs::write(
+            &file_a,
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\npub fn mul(a: i32, b: i32) -> i32 { a * b }",
+        )
+        .unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        // Verify symbol nodes are indexed
+        let syms: Vec<_> = graph.symbol_nodes().collect();
+        assert!(syms.iter().any(|s| s.name == "add"));
+        assert!(syms.iter().any(|s| s.name == "mul"));
+
+        // Verify hash tracker recorded hash
+        let hash = FileHashTracker::compute_hash("test content");
+        assert_ne!(hash, 0);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

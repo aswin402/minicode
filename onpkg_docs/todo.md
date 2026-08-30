@@ -1208,7 +1208,54 @@
 - [x] **Task 7:** Bump version to `0.0.67` in `Cargo.toml`, update `CHANGELOG.md` and `onpkg_docs/todo.md`
 - [x] **Task 8:** Build release (`cargo build --release -j 1`), run `./localupdate.sh`, commit, tag `v0.0.67`, and push to `origin main --tags`
 
+---
 
+## 🚀 Code Intelligence Upgrade Roadmap (Phases 58–63)
 
+> **Research basis:** 9 open-source code graph repositories analyzed (suatkocar/codegraph, petgraph, tree-sitter-graph, codegraph-rust, codebase-memory-mcp, Understand-Anything, TencentDB-Agent-Memory, code-review-graph, colbymchenry/codegraph)
+
+### Phase 58: Symbol-Level Graph + Incremental Updates (v0.0.68)
+- [x] 58.1: Define `SymbolNode`, `SymbolKind`, `EdgeKind` types in `graph.rs`
+- [x] 58.2: Define `FileHashTracker` for incremental change detection
+- [x] 58.3: Add symbol graph constants to `constants.rs`
+- [x] 58.4: Refactor `CodeGraph` struct to `DiGraph<SymbolNode, EdgeKind>`
+- [x] 58.5: Update `compute_pagerank` for symbol-level nodes
+- [x] 58.6: Update `get_blast_radius` for symbol-level precision
+- [x] 58.7: Update `CodeExploreEngine::explore()` consumers
+- [x] 58.8: Update `format_repomap` to use symbol graph
+- [x] 58.9: Update all tool registrations (backward compat)
+- [x] 58.10: Run all tests + clippy
+- [x] 58.11: Version bump → `v0.0.68`, changelog, commit, tag, push
+
+### Phase 59: Graph Persistence to Disk (v0.0.69)
+- [ ] 59.1: Define `GraphSnapshot` serialization format in new `graph_store.rs`
+- [ ] 59.2: Integrate `load_cached` / `incremental_update` / `save_to_disk` into `CodeGraph`
+- [ ] 59.3: Register `graph_store` module in `mod.rs`
+- [ ] 59.4: Version bump → `v0.0.69`, changelog, commit, tag, push
+
+### Phase 60: Diff-to-Symbol Projection for `/review` (v0.0.70)
+- [ ] 60.1: Create `DiffProjector` module with symbol-level diff mapping
+- [ ] 60.2: Integrate into `diff_impact` tool with enhanced output
+- [ ] 60.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
+- [ ] 60.4: Version bump → `v0.0.70`, changelog, commit, tag, push
+
+### Phase 61: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.71)
+- [ ] 61.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
+- [ ] 61.2: Update `semantic_search` and `search_symbols_semantic` tools
+- [ ] 61.3: Add RRF constants to `constants.rs`
+- [ ] 61.4: Version bump → `v0.0.71`, changelog, commit, tag, push
+
+### Phase 62: Progressive Memory Tiers (v0.0.72)
+- [ ] 62.1: Create `ProgressiveMemory` module with L0–L3 tiers
+- [ ] 62.2: Implement fact extraction from compaction
+- [ ] 62.3: Inject memory tiers into system prompt
+- [ ] 62.4: Persistence to `.minicode/progressive_memory.json`
+- [ ] 62.5: Version bump → `v0.0.72`, changelog, commit, tag, push
+
+### Phase 63: Test Gap Detection + Composite Risk Scoring (v0.0.73)
+- [ ] 63.1: Implement `TestGapAnalyzer` with call-graph reachability
+- [ ] 63.2: Enhance `BlastRadiusReport` with composite risk formula
+- [ ] 63.3: Expose `test_coverage_gaps` tool
+- [ ] 63.4: Version bump → `v0.0.73`, changelog, commit, tag, push
 
 
