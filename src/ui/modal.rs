@@ -693,7 +693,6 @@ impl ModalState {
                     .constraints([
                         Constraint::Length(3), // Search / filter input
                         Constraint::Min(5),    // Models list
-                        Constraint::Length(1), // Keybind hints
                     ])
                     .split(inner_area);
 
@@ -761,14 +760,6 @@ impl ModalState {
 
                 let list = List::new(items);
                 frame.render_widget(list, chunks[1]);
-
-                // Footer hints
-                let footer = Paragraph::new(
-                    " [↑/↓] Navigate  [Enter] Select Model  [Esc] Back to Providers ",
-                )
-                .style(Style::default().fg(theme.muted))
-                .alignment(Alignment::Center);
-                frame.render_widget(footer, chunks[2]);
             }
             ModalState::UndoCheckpoint {
                 checkpoints,
@@ -919,40 +910,6 @@ impl ModalState {
 
                 let p = Paragraph::new(lines).block(block);
                 frame.render_widget(p, popup_area);
-
-                let footer_text = vec![
-                    Span::styled(
-                        "[↑/↓] ",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Select   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Enter] ",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Revert   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Esc] ",
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
-                ];
-                let footer_area = Rect {
-                    x: popup_area.x + 2,
-                    y: popup_area.y + popup_area.height.saturating_sub(2),
-                    width: popup_area.width.saturating_sub(4),
-                    height: 1,
-                };
-                frame.render_widget(
-                    Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
-                    footer_area,
-                );
             }
             ModalState::ThemeSelect {
                 themes,
@@ -1028,40 +985,6 @@ impl ModalState {
 
                 let p = Paragraph::new(lines).block(block);
                 frame.render_widget(p, popup_area);
-
-                let footer_text = vec![
-                    Span::styled(
-                        "[↑/↓] ",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Select   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Enter] ",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Apply & Save   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Esc] ",
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Cancel", Style::default().fg(theme.text_primary)),
-                ];
-                let footer_area = Rect {
-                    x: popup_area.x + 2,
-                    y: popup_area.y + popup_area.height.saturating_sub(2),
-                    width: popup_area.width.saturating_sub(4),
-                    height: 1,
-                };
-                frame.render_widget(
-                    Paragraph::new(Line::from(footer_text)).alignment(Alignment::Center),
-                    footer_area,
-                );
             }
             ModalState::SessionBrowser {
                 sessions,
@@ -1099,23 +1022,15 @@ impl ModalState {
                 let inner_area = outer_block.inner(popup_area);
                 frame.render_widget(outer_block, popup_area);
 
-                // Split inner: list area | footer bar (1 line)
-                let root_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(3), Constraint::Length(1)])
-                    .split(inner_area);
-
-                let list_area = root_chunks[0];
-
                 if sessions.is_empty() {
                     let empty = Paragraph::new(Line::from(vec![Span::styled(
                         "No past sessions found in this workspace.",
                         Style::default().fg(theme.muted),
                     )]))
                     .alignment(Alignment::Center);
-                    frame.render_widget(empty, list_area);
+                    frame.render_widget(empty, inner_area);
                 } else {
-                    let available_height = list_area.height as usize;
+                    let available_height = inner_area.height as usize;
                     // Each item takes SESSION_LIST_ITEM_HEIGHT lines
                     let max_visible = (available_height / SESSION_LIST_ITEM_HEIGHT).max(1);
                     let scroll_offset = if *selected_index >= max_visible {
@@ -1203,51 +1118,8 @@ impl ModalState {
                         .collect();
 
                     let list = List::new(items);
-                    frame.render_widget(list, list_area);
+                    frame.render_widget(list, inner_area);
                 }
-
-                // Footer keycap guide
-                let footer_line = Line::from(vec![
-                    Span::styled(
-                        "[Enter]",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" Resume  •  ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[f]",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" Fork  •  ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[e]",
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" Export MD  •  ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[d]",
-                        Style::default()
-                            .fg(theme.destructive)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" Delete  •  ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[Esc]",
-                        Style::default()
-                            .fg(theme.muted)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" Close", Style::default().fg(theme.muted)),
-                ]);
-                frame.render_widget(
-                    Paragraph::new(footer_line).alignment(Alignment::Center),
-                    root_chunks[1],
-                );
             }
             ModalState::Help => {
                 let popup_area = centered_rect(60, 50, area);
@@ -1409,7 +1281,6 @@ impl ModalState {
                     .constraints([
                         Constraint::Length(3), // Filter search input
                         Constraint::Min(6),    // 2-column main area
-                        Constraint::Length(1), // Footer
                     ])
                     .split(inner_area);
 
@@ -1563,13 +1434,6 @@ impl ModalState {
 
                 let preview_p = Paragraph::new(preview_lines).block(preview_block);
                 frame.render_widget(preview_p, h_chunks[1]);
-
-                // Footer hints
-                let footer =
-                    Paragraph::new(" [↑/↓] Navigate  [Enter] Scaffold Stack  [Esc] Close ")
-                        .style(Style::default().fg(theme.muted))
-                        .alignment(Alignment::Center);
-                frame.render_widget(footer, v_chunks[2]);
             }
             ModalState::CommandCatalog {
                 ref filtered_indices,
@@ -1595,11 +1459,7 @@ impl ModalState {
 
                 let v_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3),
-                        Constraint::Min(8),
-                        Constraint::Length(1),
-                    ])
+                    .constraints([Constraint::Length(3), Constraint::Min(8)])
                     .split(inner_area);
 
                 // Search Bar
@@ -1787,34 +1647,6 @@ impl ModalState {
 
                 let right_p = Paragraph::new(detail_lines);
                 frame.render_widget(right_p, h_chunks[1]);
-
-                // Footer hints
-                let footer_spans = vec![
-                    Span::styled(
-                        "[↑/↓] ",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Navigate   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Enter] ",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Run Command   ", Style::default().fg(theme.text_primary)),
-                    Span::styled(
-                        "[Esc] ",
-                        Style::default()
-                            .fg(theme.muted)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("Close", Style::default().fg(theme.text_primary)),
-                ];
-                let footer_p =
-                    Paragraph::new(Line::from(footer_spans)).alignment(Alignment::Center);
-                frame.render_widget(footer_p, v_chunks[2]);
             }
             ModalState::GitDiff {
                 ref diff_files,
@@ -1846,21 +1678,13 @@ impl ModalState {
                     horizontal: 1,
                 });
 
-                let v_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Min(1),    // Main Diff view
-                        Constraint::Length(1), // Footer hotkeys
-                    ])
-                    .split(inner);
-
                 let h_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
                         Constraint::Percentage(32), // Files list
                         Constraint::Percentage(68), // Diff viewer
                     ])
-                    .split(v_chunks[0]);
+                    .split(inner);
 
                 // Left: Files list
                 let items: Vec<ListItem> = diff_files
@@ -1972,17 +1796,6 @@ impl ModalState {
 
                 let diff_p = Paragraph::new(diff_lines).block(preview_block);
                 frame.render_widget(diff_p, h_chunks[1]);
-
-                // Footer hotkeys
-                let footer_text = if *staged_view {
-                    " [↑/↓] Files  [j/k/PgUp/PgDn] Scroll  [Tab] View Unstaged  [s] Unstage  [r] Review  [Esc] Close "
-                } else {
-                    " [↑/↓] Files  [j/k/PgUp/PgDn] Scroll  [Tab] View Staged  [s] Stage  [r] Review  [Esc] Close "
-                };
-                let footer = Paragraph::new(footer_text)
-                    .style(Style::default().fg(theme.muted))
-                    .alignment(Alignment::Center);
-                frame.render_widget(footer, v_chunks[1]);
             }
             ModalState::CodeExplorer {
                 symbols,
@@ -2013,7 +1826,6 @@ impl ModalState {
                     .constraints([
                         Constraint::Length(3), // Search box
                         Constraint::Min(5),    // Main content (2 cols)
-                        Constraint::Length(1), // Footer
                     ])
                     .split(inner_area);
 
@@ -2258,14 +2070,6 @@ impl ModalState {
 
                 let detail_p = Paragraph::new(detail_lines).block(detail_block);
                 frame.render_widget(detail_p, h_chunks[1]);
-
-                // Footer
-                let footer = Paragraph::new(
-                    " [↑/↓] Select Symbol  [Tab] Switch Tab (Source/Callers/Callees/Blast)  [Esc] Close ",
-                )
-                .style(Style::default().fg(theme.muted))
-                .alignment(Alignment::Center);
-                frame.render_widget(footer, v_chunks[2]);
             }
             ModalState::Approval(approval_state) => {
                 approval_state.render(frame, area, theme);
@@ -2424,7 +2228,7 @@ impl ModalState {
                 selected_yes,
             } => {
                 let width = 54_u16.min(area.width.saturating_sub(2));
-                let height = 10_u16.min(area.height.saturating_sub(2));
+                let height = 8_u16.min(area.height.saturating_sub(2));
                 let popup_area = centered_rect_exact(width, height, area);
                 frame.render_widget(Clear, popup_area);
 
@@ -2452,8 +2256,6 @@ impl ModalState {
                         Constraint::Length(1), // 2: Question "Are you sure you want to quit?"
                         Constraint::Length(1), // 3: Spacer
                         Constraint::Length(1), // 4: Buttons row "[ ✖ Yep, Quit ]   [ ✔ Stay in Session ]"
-                        Constraint::Length(1), // 5: Spacer
-                        Constraint::Length(1), // 6: Footer hint
                     ])
                     .split(inner_area);
 
@@ -2542,29 +2344,6 @@ impl ModalState {
                 let buttons_p =
                     Paragraph::new(Line::from(buttons_line)).alignment(Alignment::Center);
                 frame.render_widget(buttons_p, chunks[4]);
-
-                // 6: Footer hint
-                let footer_line = Line::from(vec![
-                    Span::styled("Press ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[Y]",
-                        Style::default()
-                            .fg(theme.destructive)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" to quit • ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "[N/Esc]",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" to stay • ", Style::default().fg(theme.muted)),
-                    Span::styled("[Ctrl+C ×2]", Style::default().fg(theme.warning)),
-                    Span::styled(" force", Style::default().fg(theme.muted)),
-                ]);
-                let footer_p = Paragraph::new(footer_line).alignment(Alignment::Center);
-                frame.render_widget(footer_p, chunks[6]);
             }
         }
     }

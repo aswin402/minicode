@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.77] — 2026-08-31
+
+### Universal Menu Decluttering & Minimalist UI Polish
+
+- **Clean Minimalist Modals & Menus (`src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Removed cluttered and redundant bottom footer keycap shortcut hint bars across all interactive TUI menus and modals:
+    - `SessionBrowser` (`/sessions`, `/history`, `Ctrl+H`): Removed `[Enter] Resume • [f] Fork • [e] Export MD • [d] Delete • [Esc] Close`. Full card inner area is now dedicated to the session timeline.
+    - `ExitConfirm` (`/exit`, `/quit`, `Ctrl+C`): Removed bottom footer line `Press [Y] to quit • [N/Esc] to stay • [Ctrl+C ×2] force`. Adjusted card height to 8 lines for a compact, ultra-clean popup.
+    - `CommandPalette` (`/` popup in input dock): Removed bottom divider and footer hint `↑/↓ browse • Enter select • Tab switch category • Esc dismiss`. Adjusted palette height to 10 lines.
+    - `ModelSelect` (`/models`, `/model`): Removed footer keybind hints row.
+    - `UndoCheckpoint` (`/undo`): Removed footer action bar.
+    - `ThemeSelect` (`/theme`): Removed footer action bar.
+    - `StackBrowser` (`/stacks`, `/scaffold`): Removed footer action bar.
+    - `CommandCatalog` (`/commands`, `/help`): Removed footer action bar.
+    - `GitDiff` (`/diff`): Removed footer hotkeys bar and directly rendered 2-column files & diff viewer.
+    - `CodeExplorer` (`/explore`, `Ctrl+E`): Removed footer action bar.
+
 ## [0.0.76] — 2026-08-31
 
 ### Minimal Floating Spotlight Session History (Option 1)

@@ -489,7 +489,7 @@ impl<'a> InputDock<'a> {
 
         // Modal dimensions (responsive spotlight centered on screen)
         let width = (area.width * 64 / 100).clamp(62, 78);
-        let height = 13_u16;
+        let height = 10_u16;
 
         let x = area.x + (area.width.saturating_sub(width)) / 2;
         let y = area.y + (area.height.saturating_sub(height)) / 3; // Position in upper-middle
@@ -542,9 +542,7 @@ impl<'a> InputDock<'a> {
             .constraints([
                 Constraint::Length(1), // Search row: › /search█
                 Constraint::Length(1), // Divider
-                Constraint::Min(5),    // Commands list (up to 7 items)
-                Constraint::Length(1), // Divider
-                Constraint::Length(1), // Footer hint line
+                Constraint::Min(4),    // Commands list
             ])
             .split(inner_area);
 
@@ -644,20 +642,6 @@ impl<'a> InputDock<'a> {
 
         let list_p = Paragraph::new(item_lines);
         frame.render_widget(list_p, chunks[2]);
-
-        // Bottom Divider
-        let bottom_divider = Paragraph::new(Line::from(vec![Span::styled(
-            "─".repeat(inner_area.width as usize),
-            Style::default().fg(theme.border),
-        )]));
-        frame.render_widget(bottom_divider, chunks[3]);
-
-        // 3. Footer Hint Row
-        let footer_p = Paragraph::new(Line::from(vec![Span::styled(
-            "  ↑/↓ browse • Enter select • Tab switch category • Esc dismiss",
-            Style::default().fg(theme.muted),
-        )]));
-        frame.render_widget(footer_p, chunks[4]);
     }
 }
 
