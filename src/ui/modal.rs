@@ -283,6 +283,7 @@ pub enum ModalState {
         selected_index: usize,
     },
     ExitConfirm {
+        workspace_name: String,
         selected_yes: bool,
     },
 }
@@ -292,8 +293,14 @@ impl ModalState {
         !matches!(self, ModalState::None)
     }
 
-    pub fn new_exit_confirm() -> Self {
+    pub fn new_exit_confirm(workspace_root: &std::path::Path) -> Self {
+        let workspace_name = workspace_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("minicode")
+            .to_string();
         Self::ExitConfirm {
+            workspace_name,
             selected_yes: false,
         }
     }
@@ -2522,14 +2529,26 @@ impl ModalState {
                 let list = List::new(items);
                 frame.render_widget(list, chunks[2]);
             }
-            ModalState::ExitConfirm { selected_yes } => {
-                let popup_area = centered_rect_exact(46, 8, area);
+            ModalState::ExitConfirm {
+                workspace_name,
+                selected_yes,
+            } => {
+                let width = 54_u16.min(area.width.saturating_sub(2));
+                let height = 10_u16.min(area.height.saturating_sub(2));
+                let popup_area = centered_rect_exact(width, height, area);
                 frame.render_widget(Clear, popup_area);
 
                 let block = Block::default()
+                    .title(Line::from(vec![Span::styled(
+                        " ⏻ Exit minicode ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )]))
+                    .title_alignment(Alignment::Left)
                     .borders(Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Rounded)
-                    .border_style(Style::default().fg(ratatui::style::Color::Rgb(140, 120, 255)))
+                    .border_style(Style::default().fg(theme.brand_accent))
                     .style(Style::default().bg(theme.bg_elevated));
 
                 let inner_area = block.inner(popup_area);
@@ -2538,16 +2557,45 @@ impl ModalState {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(1), // 0: Question "Are you sure you want to quit?"
-                        Constraint::Length(1), // 1: Spacer
-                        Constraint::Length(1), // 2: Buttons "[ Yep! ]  [ Nope ]"
+                        Constraint::Length(1), // 0: ● Workspace: name (vX.X.X)
+                        Constraint::Length(1), // 1: ● Session: auto-saved to .minicode/history
+                        Constraint::Length(1), // 2: Question "Are you sure you want to quit?"
                         Constraint::Length(1), // 3: Spacer
-                        Constraint::Length(1), // 4: "To quit without confirmation"
-                        Constraint::Length(1), // 5: "press ctrl+c twice."
+                        Constraint::Length(1), // 4: Buttons row "[ ✖ Yep, Quit ]   [ ✔ Stay in Session ]"
+                        Constraint::Length(1), // 5: Spacer
+                        Constraint::Length(1), // 6: Footer hint
                     ])
                     .split(inner_area);
 
-                // 0: Question
+                // 0: Workspace info
+                let ws_line = Line::from(vec![
+                    Span::styled(" ● ", Style::default().fg(theme.success)),
+                    Span::styled("Workspace: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        workspace_name.clone(),
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" (v{})", env!("CARGO_PKG_VERSION")),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(ws_line), chunks[0]);
+
+                // 1: Session persistence info
+                let sess_line = Line::from(vec![
+                    Span::styled(" ● ", Style::default().fg(theme.info)),
+                    Span::styled("Session: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        "auto-saved to .minicode/history",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(sess_line), chunks[1]);
+
+                // 2: Question
                 let question_p = Paragraph::new(Line::from(vec![Span::styled(
                     "Are you sure you want to quit?",
                     Style::default()
@@ -2555,53 +2603,44 @@ impl ModalState {
                         .add_modifier(Modifier::BOLD),
                 )]))
                 .alignment(Alignment::Center);
-                frame.render_widget(question_p, chunks[0]);
+                frame.render_widget(question_p, chunks[2]);
 
-                // 2: Buttons
-                let active_button_bg = ratatui::style::Color::Rgb(255, 90, 210); // Vibrant pink/magenta
-                let active_button_fg = ratatui::style::Color::Rgb(20, 20, 30);
-                let inactive_button_bg = ratatui::style::Color::Rgb(50, 52, 64);
-                let inactive_button_fg = ratatui::style::Color::Rgb(215, 220, 235);
-
+                // 4: Buttons
                 let yep_style = if *selected_yes {
                     Style::default()
-                        .bg(active_button_bg)
-                        .fg(active_button_fg)
+                        .bg(theme.destructive)
+                        .fg(theme.bg_primary)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
-                        .bg(inactive_button_bg)
-                        .fg(inactive_button_fg)
+                    Style::default().bg(theme.bg_primary).fg(theme.text_primary)
                 };
 
                 let nope_style = if !*selected_yes {
                     Style::default()
-                        .bg(active_button_bg)
-                        .fg(active_button_fg)
+                        .bg(theme.brand_accent)
+                        .fg(theme.bg_primary)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
-                        .bg(inactive_button_bg)
-                        .fg(inactive_button_fg)
+                    Style::default().bg(theme.bg_primary).fg(theme.text_primary)
                 };
 
                 let yep_spans = if *selected_yes {
-                    vec![Span::styled("   Yep!   ", yep_style)]
+                    vec![Span::styled("  ✖ Yep, Quit (Y)  ", yep_style)]
                 } else {
                     vec![
-                        Span::styled("   ", yep_style),
+                        Span::styled("  ✖ ", yep_style),
                         Span::styled("Y", yep_style.add_modifier(Modifier::UNDERLINED)),
-                        Span::styled("ep!   ", yep_style),
+                        Span::styled("ep, Quit  ", yep_style),
                     ]
                 };
 
                 let nope_spans = if !*selected_yes {
-                    vec![Span::styled("   Nope   ", nope_style)]
+                    vec![Span::styled("  ✔ Stay in Session (N)  ", nope_style)]
                 } else {
                     vec![
-                        Span::styled("   ", nope_style),
+                        Span::styled("  ✔ Stay in Session (", nope_style),
                         Span::styled("N", nope_style.add_modifier(Modifier::UNDERLINED)),
-                        Span::styled("ope   ", nope_style),
+                        Span::styled(")  ", nope_style),
                     ]
                 };
 
@@ -2612,22 +2651,30 @@ impl ModalState {
 
                 let buttons_p =
                     Paragraph::new(Line::from(buttons_line)).alignment(Alignment::Center);
-                frame.render_widget(buttons_p, chunks[2]);
+                frame.render_widget(buttons_p, chunks[4]);
 
-                // 4 & 5: Hint lines
-                let hint_p1 = Paragraph::new(Line::from(vec![Span::styled(
-                    "To quit without confirmation",
-                    Style::default().fg(theme.muted),
-                )]))
-                .alignment(Alignment::Center);
-                frame.render_widget(hint_p1, chunks[4]);
-
-                let hint_p2 = Paragraph::new(Line::from(vec![Span::styled(
-                    "press ctrl+c twice.",
-                    Style::default().fg(theme.muted),
-                )]))
-                .alignment(Alignment::Center);
-                frame.render_widget(hint_p2, chunks[5]);
+                // 6: Footer hint
+                let footer_line = Line::from(vec![
+                    Span::styled("Press ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        "[Y]",
+                        Style::default()
+                            .fg(theme.destructive)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" to quit • ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        "[N/Esc]",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" to stay • ", Style::default().fg(theme.muted)),
+                    Span::styled("[Ctrl+C ×2]", Style::default().fg(theme.warning)),
+                    Span::styled(" force", Style::default().fg(theme.muted)),
+                ]);
+                let footer_p = Paragraph::new(footer_line).alignment(Alignment::Center);
+                frame.render_widget(footer_p, chunks[6]);
             }
         }
     }
@@ -2713,10 +2760,15 @@ mod tests {
 
     #[test]
     fn test_exit_confirm_initial_state_and_render() {
-        let modal = ModalState::new_exit_confirm();
+        let temp_dir = TempDir::new().unwrap();
+        let modal = ModalState::new_exit_confirm(temp_dir.path());
         match modal {
-            ModalState::ExitConfirm { selected_yes } => {
+            ModalState::ExitConfirm {
+                selected_yes,
+                ref workspace_name,
+            } => {
                 assert!(!selected_yes, "Default should be Nope for safety");
+                assert!(!workspace_name.is_empty());
             }
             _ => panic!("Expected ExitConfirm variant"),
         }
@@ -2732,7 +2784,10 @@ mod tests {
             })
             .unwrap();
 
-        let modal_yes = ModalState::ExitConfirm { selected_yes: true };
+        let modal_yes = ModalState::ExitConfirm {
+            workspace_name: "test_ws".to_string(),
+            selected_yes: true,
+        };
         terminal
             .draw(|f| {
                 let area = f.area();

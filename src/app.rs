@@ -574,7 +574,7 @@ impl<'a> App<'a> {
                                             }
                                         }
                                         self.last_ctrl_c = Some(now);
-                                        self.modal = ModalState::new_exit_confirm();
+                                        self.modal = ModalState::new_exit_confirm(&self.workspace_root);
                                         continue;
                                     }
                                 }
@@ -643,7 +643,7 @@ impl<'a> App<'a> {
                                 }
 
                                 if prompt == "/exit" || prompt == "/quit" {
-                                    self.modal = ModalState::new_exit_confirm();
+                                    self.modal = ModalState::new_exit_confirm(&self.workspace_root);
                                     continue;
                                 }
 
@@ -1126,7 +1126,7 @@ impl<'a> App<'a> {
     ) {
         match &mut self.modal {
             ModalState::None => {}
-            ModalState::ExitConfirm { selected_yes } => match key.code {
+            ModalState::ExitConfirm { selected_yes, .. } => match key.code {
                 KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
                     *selected_yes = !*selected_yes;
                 }

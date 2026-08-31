@@ -5,6 +5,18 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.75] — 2026-08-31
+
+### Informative Developer Exit Card (Variant 3) & Theme Token Binding
+
+- **Informative Developer Session Exit Card (`src/ui/modal.rs`)**:
+  - Implemented **Variant 3: Informative Session Card** matching minicode's signature developer aesthetic.
+  - Displays live workspace information and version badge: `● Workspace: <workspace_name> (v0.0.75)`.
+  - Reassures developer of session persistence: `● Session: auto-saved to .minicode/history`.
+  - Clear, distinct action pills: `[ ✖ Yep, Quit (Y) ]` and `[ ✔ Stay in Session (N) ]`.
+  - Fully binds to active Theme tokens (`theme.destructive` for Quit, `theme.brand_accent` for Stay, `theme.bg_elevated` for modal surface).
+  - Modern footer keycap bar: `Press [Y] to quit • [N/Esc] to stay • [Ctrl+C ×2] force`.
+
 ## [0.0.74] — 2026-08-31
 
 ### Interactive Exit Confirmation Menu (`src/ui/modal.rs`, `src/app.rs`)
