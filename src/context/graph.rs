@@ -1306,6 +1306,11 @@ impl CodeGraph {
         &mut self.file_tracker
     }
 
+    /// Accessor for the number of indexed files
+    pub fn file_count(&self) -> usize {
+        self.file_node_indices.len()
+    }
+
     /// Accessor for the underlying Petgraph directed graph
     #[allow(dead_code)]
     pub fn graph(&self) -> &DiGraph<SymbolNode, EdgeKind> {

@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.70] — 2026-08-31
+
+### Interactive Workspace Analysis Onboarding Menu & Cache-Aware Indexing
+
+- **Workspace Analysis Onboarding Modal (`src/ui/modal.rs`)**:
+  - Implemented `ModalState::WorkspaceAnalysis` with Design 1 minimal rounded card layout.
+  - Automatically activates on initial startup in unindexed repositories to give users explicit control over indexing operations.
+  - In unindexed mode, presents options: `[1] ⚡ Quick Index` (AST symbols + PageRank graph), `[2] 🧠 Deep Scan` (Symbol graph + Architecture scan), and `[3] ⏩ Skip` (Instant lightweight chat).
+  - In indexed mode, presents options: `[1] ⚡ Incremental Sync` (~5ms modified file scan), `[2] 🔄 Full Rebuild` (Cold re-index), `[3] 🗺️ View Repo Map` (PageRank centrality hierarchy), and `[4] ⏩ Close`.
+- **Keyboard Shortcuts & Commands (`src/app.rs`)**:
+  - Bound `F2` key to open the interactive Workspace Analysis modal anytime.
+  - Added slash commands `/init`, `/index`, and `/analyze` to open the modal or run cache-aware analysis.
+  - Intercepts natural language keywords (`"analyze the project"`, `"index codebase"`, `"generate code graph"`, `"reindex"`) to trigger cache-aware indexing.
+- **Resumed Session Safety (`src/app.rs`, `src/main.rs`)**:
+  - Session hydration skips the onboarding modal so resumed past conversations open straight into active chat.
+
 ## [0.0.69] — 2026-08-31
 
 ### Code Graph Disk Persistence & Incremental Snapshot Caching

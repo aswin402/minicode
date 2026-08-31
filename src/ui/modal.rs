@@ -59,6 +59,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/commands",
     },
     CommandCatalogItem {
+        name: "/init",
+        category: "Code & Inspection",
+        shortcut: "F2",
+        description: "Interactive workspace analysis & AST CodeGraph manager",
+        example: "/init | /index | /analyze",
+    },
+    CommandCatalogItem {
         name: "/stack",
         category: "Workflows & Scaffolding",
         shortcut: "",
@@ -268,6 +275,13 @@ pub enum ModalState {
     },
     Help,
     Approval(crate::ui::approval::ApprovalModalState),
+    WorkspaceAnalysis {
+        workspace_path: String,
+        is_indexed: bool,
+        cached_symbols_count: usize,
+        cached_files_count: usize,
+        selected_index: usize,
+    },
 }
 
 impl ModalState {
@@ -515,6 +529,47 @@ impl ModalState {
             if *selected_index >= filtered_indices.len() {
                 *selected_index = filtered_indices.len().saturating_sub(1);
             }
+        }
+    }
+
+    pub fn new_workspace_analysis(workspace_root: &std::path::Path) -> Self {
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
+        let is_indexed = graph_file.exists();
+        let (cached_symbols_count, cached_files_count) = if is_indexed {
+            if let Ok(Some(snap)) =
+                crate::context::graph_store::GraphStore::load_snapshot(workspace_root)
+            {
+                let sym_count = snap
+                    .nodes
+                    .iter()
+                    .filter(|n| n.kind != crate::context::graph::SymbolKind::File)
+                    .count();
+                let file_count = snap.file_hashes.len();
+                (sym_count, file_count)
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        };
+
+        let workspace_path = if let Ok(home) = std::env::var("HOME") {
+            let p_str = workspace_root.display().to_string();
+            if let Some(rest) = p_str.strip_prefix(&home) {
+                format!("~{}", rest)
+            } else {
+                p_str
+            }
+        } else {
+            workspace_root.display().to_string()
+        };
+
+        ModalState::WorkspaceAnalysis {
+            workspace_path,
+            is_indexed,
+            cached_symbols_count,
+            cached_files_count,
+            selected_index: 0,
         }
     }
 
@@ -2306,7 +2361,170 @@ impl ModalState {
             ModalState::Approval(approval_state) => {
                 approval_state.render(frame, area, theme);
             }
+            ModalState::WorkspaceAnalysis {
+                workspace_path,
+                is_indexed,
+                cached_symbols_count,
+                cached_files_count,
+                selected_index,
+            } => {
+                let popup_area = centered_rect_exact(78, 10, area);
+                frame.render_widget(Clear, popup_area);
+
+                let title = format!(" ✨ minicode v{} ", env!("CARGO_PKG_VERSION"));
+                let block = Block::default()
+                    .title(title)
+                    .title_alignment(Alignment::Left)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner = block.inner(popup_area);
+                frame.render_widget(block, popup_area);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // Header info
+                        Constraint::Length(1), // Spacer
+                        Constraint::Min(3),    // Options
+                    ])
+                    .split(inner);
+
+                let cache_status_span = if *is_indexed {
+                    Span::styled(
+                        format!(
+                            "Indexed ({} syms, {} files)",
+                            cached_symbols_count, cached_files_count
+                        ),
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled(
+                        "Unindexed",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                };
+
+                let header_line = Line::from(vec![
+                    Span::raw(" 📁 "),
+                    Span::styled(
+                        workspace_path.as_str(),
+                        Style::default().fg(theme.text_primary),
+                    ),
+                    Span::styled("  │  🔍 Cache: ", Style::default().fg(theme.muted)),
+                    cache_status_span,
+                ]);
+                frame.render_widget(Paragraph::new(header_line), chunks[0]);
+
+                let options: Vec<(&str, &str, &str)> = if !*is_indexed {
+                    vec![
+                        (
+                            "[1] ⚡ Quick Index",
+                            "AST symbols & PageRank graph",
+                            "[ENTER]",
+                        ),
+                        (
+                            "[2] 🧠 Deep Scan",
+                            "Symbol graph & architecture scan",
+                            "[2]",
+                        ),
+                        ("[3] ⏩ Skip", "Instant lightweight chat", "[ESC]"),
+                    ]
+                } else {
+                    vec![
+                        (
+                            "[1] ⚡ Incremental Sync",
+                            "Scan modified files only (~5ms)",
+                            "[ENTER]",
+                        ),
+                        ("[2] 🔄 Full Rebuild", "Cold re-index from scratch", "[2]"),
+                        (
+                            "[3] 🗺️ View Repo Map",
+                            "Display AST centrality hierarchy",
+                            "[3]",
+                        ),
+                        ("[4] ⏩ Close", "Resume chat without re-indexing", "[ESC]"),
+                    ]
+                };
+
+                let items: Vec<ListItem> = options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (tag, desc, key))| {
+                        let is_selected = i == *selected_index;
+                        let prefix = if is_selected { "  ❯ " } else { "    " };
+
+                        let line = if is_selected {
+                            Line::from(vec![
+                                Span::styled(
+                                    prefix,
+                                    Style::default()
+                                        .fg(theme.brand_accent)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    *tag,
+                                    Style::default()
+                                        .fg(theme.brand_accent)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("  ({})", desc),
+                                    Style::default().fg(theme.text_primary),
+                                ),
+                                Span::styled(
+                                    format!("  {:>8}", key),
+                                    Style::default()
+                                        .fg(theme.brand_accent)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                            ])
+                        } else {
+                            Line::from(vec![
+                                Span::raw(prefix),
+                                Span::styled(*tag, Style::default().fg(theme.text_primary)),
+                                Span::styled(
+                                    format!("  ({})", desc),
+                                    Style::default().fg(theme.muted),
+                                ),
+                                Span::styled(
+                                    format!("  {:>8}", key),
+                                    Style::default().fg(theme.muted),
+                                ),
+                            ])
+                        };
+
+                        ListItem::new(line)
+                    })
+                    .collect();
+
+                let list = List::new(items);
+                frame.render_widget(list, chunks[2]);
+            }
         }
+    }
+}
+
+/// Helper function to create an exact sized centered rect
+fn centered_rect_exact(width: u16, height: u16, r: Rect) -> Rect {
+    let w = width.min(r.width.saturating_sub(2));
+    let h = height.min(r.height.saturating_sub(2));
+    let x = r.x + (r.width.saturating_sub(w)) / 2;
+    let y = r.y + (r.height.saturating_sub(h)) / 2;
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
     }
 }
 
@@ -2332,4 +2550,45 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage(margin_x),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_new_workspace_analysis_unindexed() {
+        let temp_dir = TempDir::new().unwrap();
+        let modal = ModalState::new_workspace_analysis(temp_dir.path());
+        match modal {
+            ModalState::WorkspaceAnalysis {
+                is_indexed,
+                selected_index,
+                ..
+            } => {
+                assert!(!is_indexed);
+                assert_eq!(selected_index, 0);
+            }
+            _ => panic!("Expected WorkspaceAnalysis variant"),
+        }
+    }
+
+    #[test]
+    fn test_workspace_analysis_render_without_panic() {
+        let temp_dir = TempDir::new().unwrap();
+        let modal = ModalState::new_workspace_analysis(temp_dir.path());
+        let theme = Theme::default();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
 }

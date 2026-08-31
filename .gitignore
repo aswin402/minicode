@@ -22,3 +22,8 @@ logs/
 # Local scripts
 localinstall.sh
 localupdate.sh
+
+# Local runtime DBs & fastembed cache
+memory.db*
+.fastembed_cache/
+

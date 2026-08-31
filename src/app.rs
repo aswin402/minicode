@@ -57,6 +57,13 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(workspace_root: &Path, config: Config) -> Self {
         let theme = Theme::detect(&config.ui.theme);
+        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
+        let initial_modal = if !graph_file.exists() && !config.ui.plain {
+            ModalState::new_workspace_analysis(workspace_root)
+        } else {
+            ModalState::None
+        };
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -64,7 +71,7 @@ impl<'a> App<'a> {
             timeline: TimelineView::new(),
             input_dock: InputDock::new(),
             pty_drawer: crate::ui::PtyDrawer::new(),
-            modal: ModalState::None,
+            modal: initial_modal,
             model_fetcher: ModelFetcher::new(),
             is_working: false,
             work_start: None,
@@ -78,6 +85,7 @@ impl<'a> App<'a> {
 
     /// Hydrates past session events into the timeline view
     pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
+        self.modal = ModalState::None;
         for event in events {
             match event {
                 AgentEvent::UserPrompt { prompt, .. } => {
@@ -461,6 +469,12 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // F2 opens interactive Workspace Analysis modal
+                                if key_event.code == KeyCode::F(2) {
+                                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
+                                    continue;
+                                }
+
                                 // When PTY drawer is open, route keystrokes into drawer
                                 if self.pty_drawer.is_open {
                                     match key_event.code {
@@ -745,6 +759,18 @@ impl<'a> App<'a> {
                                         self.config.agent.warning_threshold * 100.0
                                     );
                                     self.timeline.add_status(card);
+                                    continue;
+                                }
+
+                                let is_analysis_keyword = prompt.eq_ignore_ascii_case("analyze the project")
+                                    || prompt.eq_ignore_ascii_case("analyze project")
+                                    || prompt.eq_ignore_ascii_case("index codebase")
+                                    || prompt.eq_ignore_ascii_case("generate code graph")
+                                    || prompt.eq_ignore_ascii_case("reindex")
+                                    || prompt.eq_ignore_ascii_case("re-index");
+
+                                if prompt == "/init" || prompt == "/index" || prompt == "/analyze" || is_analysis_keyword {
+                                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                                     continue;
                                 }
 
@@ -1758,6 +1784,189 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::WorkspaceAnalysis {
+                workspace_path: _,
+                is_indexed,
+                cached_symbols_count: _,
+                cached_files_count: _,
+                selected_index,
+            } => {
+                let max_index = if !*is_indexed { 2 } else { 3 };
+                let is_indexed_flag = *is_indexed;
+                let mut triggered_action: Option<usize> = None;
+
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        triggered_action = Some(if !is_indexed_flag { 2 } else { 3 });
+                    }
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                        *selected_index = selected_index.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                        if *selected_index < max_index {
+                            *selected_index += 1;
+                        }
+                    }
+                    KeyCode::Char('1') => {
+                        triggered_action = Some(0);
+                    }
+                    KeyCode::Char('2') => {
+                        triggered_action = Some(1);
+                    }
+                    KeyCode::Char('3') => {
+                        triggered_action = Some(2);
+                    }
+                    KeyCode::Char('4') if is_indexed_flag => {
+                        triggered_action = Some(3);
+                    }
+                    KeyCode::Enter => {
+                        triggered_action = Some(*selected_index);
+                    }
+                    _ => {}
+                }
+
+                if let Some(act) = triggered_action {
+                    self.modal = ModalState::None;
+                    self.execute_workspace_analysis_action(act, is_indexed_flag);
+                }
+            }
+        }
+    }
+
+    /// Executes the selected workspace analysis action from the interactive modal
+    fn execute_workspace_analysis_action(&mut self, action_index: usize, is_indexed: bool) {
+        self.modal = ModalState::None;
+        if !is_indexed {
+            match action_index {
+                0 => {
+                    // Quick Index
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    match graph.build_graph(&self.workspace_root) {
+                        Ok(_) => {
+                            let sym_count = graph.symbol_nodes().count();
+                            let file_count = graph.file_count();
+                            self.timeline.add_status(format!(
+                                "✔ Workspace indexed: {} symbols across {} files (saved to .minicode/graph.json)",
+                                sym_count, file_count
+                            ));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Failed to index workspace: {}", e));
+                        }
+                    }
+                }
+                1 => {
+                    // Deep Scan
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    let _ = graph.build_graph(&self.workspace_root);
+                    let sym_count = graph.symbol_nodes().count();
+                    match crate::context::governance::ArchitectureGovernor::scan_workspace(
+                        &self.workspace_root,
+                    ) {
+                        Ok(report) => {
+                            let card = format!(
+                                "🧠 Deep Analysis Complete:\n  • Symbols: {}\n  • Architecture Health: {}/100 ({} files, {} LOC)\n  • Violations: {} | Circular Cycles: {}\n  • Snapshot: .minicode/graph.json",
+                                sym_count,
+                                report.health_score,
+                                report.total_files,
+                                report.total_loc,
+                                report.layer_violations.len(),
+                                report.circular_cycles.len()
+                            );
+                            self.timeline.add_status(card);
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Deep scan encountered error: {}", e));
+                        }
+                    }
+                }
+                _ => {
+                    // Skip
+                    self.timeline.add_status(
+                        "⏩ Workspace analysis skipped. Running in lightweight instant mode. Type /init anytime to analyze.".to_string(),
+                    );
+                }
+            }
+        } else {
+            match action_index {
+                0 => {
+                    // Incremental Sync
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    if graph.load_cached(&self.workspace_root) {
+                        match graph.incremental_update(&self.workspace_root) {
+                            Ok(stats) => {
+                                let _ = graph.save_to_disk(&self.workspace_root);
+                                let sym_count = graph.symbol_nodes().count();
+                                self.timeline.add_status(format!(
+                                    "✔ Incremental graph sync complete ({} files scanned, {} reparsed, {} removed) — {} active symbols",
+                                    stats.files_scanned, stats.files_reparsed, stats.files_removed, sym_count
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Incremental update failed: {}", e));
+                            }
+                        }
+                    } else {
+                        // Cold build fallback
+                        match graph.build_graph(&self.workspace_root) {
+                            Ok(_) => {
+                                let sym_count = graph.symbol_nodes().count();
+                                self.timeline.add_status(format!(
+                                    "✔ Code graph rebuilt: {} symbols (saved to .minicode/graph.json)",
+                                    sym_count
+                                ));
+                            }
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to build graph: {}", e));
+                            }
+                        }
+                    }
+                }
+                1 => {
+                    // Full Rebuild
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    match graph.full_rebuild(&self.workspace_root) {
+                        Ok(_) => {
+                            let _ = graph.save_to_disk(&self.workspace_root);
+                            let sym_count = graph.symbol_nodes().count();
+                            let file_count = graph.file_count();
+                            self.timeline.add_status(format!(
+                                "🔄 Full cold re-index complete: {} symbols across {} files (saved to .minicode/graph.json)",
+                                sym_count, file_count
+                            ));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Failed full re-index: {}", e));
+                        }
+                    }
+                }
+                2 => {
+                    // View Repo Map
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    if let Err(e) = graph.build_graph(&self.workspace_root) {
+                        self.timeline
+                            .add_status(format!("✗ Failed to build repo map: {}", e));
+                    } else {
+                        let repomap = graph.format_repomap(
+                            &self.workspace_root,
+                            &[],
+                            self.config.agent.map_tokens,
+                        );
+                        self.timeline
+                            .add_status(format!("🗺️ AST PageRank Repository Map:\n\n{}", repomap));
+                    }
+                }
+                _ => {
+                    // Close
+                    self.timeline
+                        .add_status("ℹ Analysis menu closed.".to_string());
+                }
+            }
         }
     }
 }

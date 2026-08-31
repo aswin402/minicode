@@ -1233,29 +1233,36 @@
 - [x] 59.3: Register `graph_store` module in `mod.rs`
 - [x] 59.4: Version bump → `v0.0.69`, changelog, commit, tag, push
 
-### Phase 60: Diff-to-Symbol Projection for `/review` (v0.0.70)
-- [ ] 60.1: Create `DiffProjector` module with symbol-level diff mapping
-- [ ] 60.2: Integrate into `diff_impact` tool with enhanced output
-- [ ] 60.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
-- [ ] 60.4: Version bump → `v0.0.70`, changelog, commit, tag, push
+### Phase 60: Workspace Analysis Onboarding Menu & Cache-Aware Indexing (v0.0.70)
+- [x] 60.1: Implement `ModalState::WorkspaceAnalysis` with Design 1 minimal rounded card layout
+- [x] 60.2: Add startup detection in unindexed repos with Quick Index, Deep Scan, and Skip options
+- [x] 60.3: Add F2 keybinding and `/init`, `/index`, `/analyze` slash commands with cache-aware indexing
+- [x] 60.4: Intercept natural language analysis intents ("analyze project", "index codebase", etc.)
+- [x] 60.5: Version bump → `v0.0.70`, changelog, commit, tag, push
 
-### Phase 61: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.71)
-- [ ] 61.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
-- [ ] 61.2: Update `semantic_search` and `search_symbols_semantic` tools
-- [ ] 61.3: Add RRF constants to `constants.rs`
+### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.71)
+- [ ] 61.1: Create `DiffProjector` module with symbol-level diff mapping
+- [ ] 61.2: Integrate into `diff_impact` tool with enhanced output
+- [ ] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
 - [ ] 61.4: Version bump → `v0.0.71`, changelog, commit, tag, push
 
-### Phase 62: Progressive Memory Tiers (v0.0.72)
-- [ ] 62.1: Create `ProgressiveMemory` module with L0–L3 tiers
-- [ ] 62.2: Implement fact extraction from compaction
-- [ ] 62.3: Inject memory tiers into system prompt
-- [ ] 62.4: Persistence to `.minicode/progressive_memory.json`
-- [ ] 62.5: Version bump → `v0.0.72`, changelog, commit, tag, push
+### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.72)
+- [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
+- [ ] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
+- [ ] 62.3: Add RRF constants to `constants.rs`
+- [ ] 62.4: Version bump → `v0.0.72`, changelog, commit, tag, push
 
-### Phase 63: Test Gap Detection + Composite Risk Scoring (v0.0.73)
-- [ ] 63.1: Implement `TestGapAnalyzer` with call-graph reachability
-- [ ] 63.2: Enhance `BlastRadiusReport` with composite risk formula
-- [ ] 63.3: Expose `test_coverage_gaps` tool
-- [ ] 63.4: Version bump → `v0.0.73`, changelog, commit, tag, push
+### Phase 63: Progressive Memory Tiers (v0.0.73)
+- [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
+- [ ] 63.2: Implement fact extraction from compaction
+- [ ] 63.3: Inject memory tiers into system prompt
+- [ ] 63.4: Persistence to `.minicode/progressive_memory.json`
+- [ ] 63.5: Version bump → `v0.0.73`, changelog, commit, tag, push
+
+### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.74)
+- [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
+- [ ] 64.2: Enhance `BlastRadiusReport` with composite risk formula
+- [ ] 64.3: Expose `test_coverage_gaps` tool
+- [ ] 64.4: Version bump → `v0.0.74`, changelog, commit, tag, push
 
 
