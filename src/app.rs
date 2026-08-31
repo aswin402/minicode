@@ -1750,7 +1750,42 @@ impl<'a> App<'a> {
                     approval_state.handle_backspace();
                 }
                 KeyCode::Char(c) => {
-                    approval_state.handle_char(c);
+                    let pending_tool_id = approval_state.tool_id.clone();
+                    if let Some(resp) = approval_state.handle_char(c) {
+                        match resp {
+                            crate::ui::approval::ApprovalResponse::Accept => {
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Approve,
+                                );
+                                self.timeline
+                                    .add_status("✔ Action approved & applied".to_string());
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::Reject => {
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Reject,
+                                );
+                                self.timeline
+                                    .add_status("✗ Action rejected by user".to_string());
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::AllowSession => {
+                                self.config.agent.auto_approve = true;
+                                self.resolve_approval(
+                                    &pending_tool_id,
+                                    crate::agent::types::ApprovalDecision::Approve,
+                                );
+                                self.timeline.add_status(
+                                    "✔ Auto-approve enabled for this session".to_string(),
+                                );
+                                self.propagate_session_config(control_tx);
+                                self.modal = ModalState::None;
+                            }
+                            crate::ui::approval::ApprovalResponse::CustomFeedback(_) => {}
+                        }
+                    }
                 }
                 KeyCode::Enter => {
                     let pending_tool_id = approval_state.tool_id.clone();

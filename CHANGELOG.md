@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.72] — 2026-08-31
+
+### Ultra-Compact Permission Dialog (Variant 2A) & Argument Extraction Fix
+
+- **Ultra-Compact Permission Dialog (`src/ui/approval.rs`)**:
+  - Implemented **Variant 2A: Modern Rounded & Pill-Highlighted Single-Block Strip** (reduced height from 30+ empty lines down to a sleek 8–9 lines).
+  - Added rounded border styling with brand accent styling (`BorderType::Rounded`).
+  - Added full-line vibrant pill highlight on active selection (`theme.brand_accent` background + bold text).
+  - Auto-responsive width (`(width - 4).clamp(48, 62)`) and dynamic height fitting the content cleanly over the timeline.
+- **Command & Tool Argument Resolution Fix (`src/ui/approval.rs`)**:
+  - Fixed argument extraction for `exec_cmd` to check `"command"` and `"cmd"`, displaying exact highlighted shell commands (`▶ Run: $ cargo test -j 1`).
+  - Fixed tool-aware badges for `patch_file` (`📝 Patch: src/main.rs (+5/-2 lines)`) and `write_file` (`📄 Write: path (KB)`).
+  - Gracefully truncates long commands and paths with ellipsis (`…`) so the modal borders never break.
+- **Instant Hotkey Response (`src/ui/approval.rs`, `src/app.rs`)**:
+  - Added instant key triggers: press `y` (Approve), `n` / `Esc` (Reject), `a` (Always allow for session), or `f` (Type custom feedback).
+
 ## [0.0.71] — 2026-08-31
 
 ### Global Non-Destructive Configuration, Multi-Provider Support & Graceful Startup
