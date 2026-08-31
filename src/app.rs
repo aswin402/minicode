@@ -52,6 +52,8 @@ pub struct App<'a> {
     total_cost_usd: f64,
     /// Handle to the agent's in-flight approval requests.
     approvals: crate::agent::types::ApprovalRegistry,
+    pub should_exit: bool,
+    pub last_ctrl_c: Option<Instant>,
 }
 
 impl<'a> App<'a> {
@@ -80,6 +82,8 @@ impl<'a> App<'a> {
             last_turn_tokens: 0,
             total_cost_usd: 0.0,
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            should_exit: false,
+            last_ctrl_c: None,
         }
     }
 
@@ -189,6 +193,10 @@ impl<'a> App<'a> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
+            if self.should_exit {
+                break;
+            }
+
             let working_millis = self
                 .work_start
                 .map(|s| s.elapsed().as_millis() as u64)
@@ -548,8 +556,8 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // Check for Ctrl+C or Esc to interrupt or exit
-                                if key_event.code == KeyCode::Esc || (key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL)) {
+                                // Check for Ctrl+C to interrupt turn or confirm exit
+                                if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     if self.is_working {
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
@@ -558,11 +566,31 @@ impl<'a> App<'a> {
                                         self.work_start = None;
                                         self.timeline.add_status("⏹ Turn interrupted by user".to_string());
                                         continue;
-                                    } else if key_event.code == KeyCode::Esc && self.timeline.has_selection() {
+                                    } else {
+                                        let now = Instant::now();
+                                        if let Some(last) = self.last_ctrl_c {
+                                            if now.duration_since(last) < Duration::from_millis(1500) {
+                                                break;
+                                            }
+                                        }
+                                        self.last_ctrl_c = Some(now);
+                                        self.modal = ModalState::new_exit_confirm();
+                                        continue;
+                                    }
+                                }
+
+                                if key_event.code == KeyCode::Esc {
+                                    if self.is_working {
+                                        if let Some(token) = self.cancel_token.take() {
+                                            token.cancel();
+                                        }
+                                        self.is_working = false;
+                                        self.work_start = None;
+                                        self.timeline.add_status("⏹ Turn interrupted by user".to_string());
+                                        continue;
+                                    } else if self.timeline.has_selection() {
                                         self.timeline.clear_selection();
                                         continue;
-                                    } else {
-                                        break;
                                     }
                                 }
 
@@ -615,7 +643,8 @@ impl<'a> App<'a> {
                                 }
 
                                 if prompt == "/exit" || prompt == "/quit" {
-                                    break;
+                                    self.modal = ModalState::new_exit_confirm();
+                                    continue;
                                 }
 
                                 if prompt == "/terminal" {
@@ -1097,6 +1126,28 @@ impl<'a> App<'a> {
     ) {
         match &mut self.modal {
             ModalState::None => {}
+            ModalState::ExitConfirm { selected_yes } => match key.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                    *selected_yes = !*selected_yes;
+                }
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.should_exit = true;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Enter => {
+                    if *selected_yes {
+                        self.should_exit = true;
+                    } else {
+                        self.modal = ModalState::None;
+                    }
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.should_exit = true;
+                }
+                _ => {}
+            },
             ModalState::ProviderSelect {
                 providers,
                 selected_index,

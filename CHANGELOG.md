@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.74] — 2026-08-31
+
+### Interactive Exit Confirmation Menu (`src/ui/modal.rs`, `src/app.rs`)
+
+- **Interactive Exit Confirmation Dialog (`src/ui/modal.rs`)**:
+  - Implemented sleek floating exit confirmation card matching modern TUI design.
+  - Question: `"Are you sure you want to quit?"`
+  - Interactive button row: `[ Yep! ]` and `[ Nope ]` with safe default focus on `Nope`.
+  - Vibrant magenta/pink pill highlight (`#ff5ad2`) on focused button and hotkey underlining (`Y` in `Yep!`, `N` in `Nope`).
+  - Subtext hint: `"To quit without confirmation press ctrl+c twice."`
+- **Smart Exit Navigation & Keybindings (`src/app.rs`)**:
+  - Arrow keys (`Left`/`Right`) or `Tab`/`Shift+Tab` smoothly toggle selection between `Yep!` and `Nope`.
+  - Direct single-key hotkeys: press `y` to confirm quit, `n` or `Esc` to cancel.
+  - Rapid double `Ctrl+C` (< 1.5s) immediately exits without confirmation.
+  - Triggered automatically via `Ctrl+C`, `/exit`, `/quit`, or selecting "Exit minicode" from the Command Palette.
+
 ## [0.0.73] — 2026-08-31
 
 ### Floating Spotlight Command Palette (Option 1) & Clean Human-Readable Registry

@@ -282,11 +282,20 @@ pub enum ModalState {
         cached_files_count: usize,
         selected_index: usize,
     },
+    ExitConfirm {
+        selected_yes: bool,
+    },
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_exit_confirm() -> Self {
+        Self::ExitConfirm {
+            selected_yes: false,
+        }
     }
 
     pub fn new_provider_select() -> Self {
@@ -2513,6 +2522,113 @@ impl ModalState {
                 let list = List::new(items);
                 frame.render_widget(list, chunks[2]);
             }
+            ModalState::ExitConfirm { selected_yes } => {
+                let popup_area = centered_rect_exact(46, 8, area);
+                frame.render_widget(Clear, popup_area);
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(Style::default().fg(ratatui::style::Color::Rgb(140, 120, 255)))
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = block.inner(popup_area);
+                frame.render_widget(block, popup_area);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // 0: Question "Are you sure you want to quit?"
+                        Constraint::Length(1), // 1: Spacer
+                        Constraint::Length(1), // 2: Buttons "[ Yep! ]  [ Nope ]"
+                        Constraint::Length(1), // 3: Spacer
+                        Constraint::Length(1), // 4: "To quit without confirmation"
+                        Constraint::Length(1), // 5: "press ctrl+c twice."
+                    ])
+                    .split(inner_area);
+
+                // 0: Question
+                let question_p = Paragraph::new(Line::from(vec![Span::styled(
+                    "Are you sure you want to quit?",
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )]))
+                .alignment(Alignment::Center);
+                frame.render_widget(question_p, chunks[0]);
+
+                // 2: Buttons
+                let active_button_bg = ratatui::style::Color::Rgb(255, 90, 210); // Vibrant pink/magenta
+                let active_button_fg = ratatui::style::Color::Rgb(20, 20, 30);
+                let inactive_button_bg = ratatui::style::Color::Rgb(50, 52, 64);
+                let inactive_button_fg = ratatui::style::Color::Rgb(215, 220, 235);
+
+                let yep_style = if *selected_yes {
+                    Style::default()
+                        .bg(active_button_bg)
+                        .fg(active_button_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .bg(inactive_button_bg)
+                        .fg(inactive_button_fg)
+                };
+
+                let nope_style = if !*selected_yes {
+                    Style::default()
+                        .bg(active_button_bg)
+                        .fg(active_button_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .bg(inactive_button_bg)
+                        .fg(inactive_button_fg)
+                };
+
+                let yep_spans = if *selected_yes {
+                    vec![Span::styled("   Yep!   ", yep_style)]
+                } else {
+                    vec![
+                        Span::styled("   ", yep_style),
+                        Span::styled("Y", yep_style.add_modifier(Modifier::UNDERLINED)),
+                        Span::styled("ep!   ", yep_style),
+                    ]
+                };
+
+                let nope_spans = if !*selected_yes {
+                    vec![Span::styled("   Nope   ", nope_style)]
+                } else {
+                    vec![
+                        Span::styled("   ", nope_style),
+                        Span::styled("N", nope_style.add_modifier(Modifier::UNDERLINED)),
+                        Span::styled("ope   ", nope_style),
+                    ]
+                };
+
+                let mut buttons_line = Vec::new();
+                buttons_line.extend(yep_spans);
+                buttons_line.push(Span::raw("   "));
+                buttons_line.extend(nope_spans);
+
+                let buttons_p =
+                    Paragraph::new(Line::from(buttons_line)).alignment(Alignment::Center);
+                frame.render_widget(buttons_p, chunks[2]);
+
+                // 4 & 5: Hint lines
+                let hint_p1 = Paragraph::new(Line::from(vec![Span::styled(
+                    "To quit without confirmation",
+                    Style::default().fg(theme.muted),
+                )]))
+                .alignment(Alignment::Center);
+                frame.render_widget(hint_p1, chunks[4]);
+
+                let hint_p2 = Paragraph::new(Line::from(vec![Span::styled(
+                    "press ctrl+c twice.",
+                    Style::default().fg(theme.muted),
+                )]))
+                .alignment(Alignment::Center);
+                frame.render_widget(hint_p2, chunks[5]);
+            }
         }
     }
 }
@@ -2591,6 +2707,36 @@ mod tests {
             .draw(|f| {
                 let area = f.area();
                 modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_exit_confirm_initial_state_and_render() {
+        let modal = ModalState::new_exit_confirm();
+        match modal {
+            ModalState::ExitConfirm { selected_yes } => {
+                assert!(!selected_yes, "Default should be Nope for safety");
+            }
+            _ => panic!("Expected ExitConfirm variant"),
+        }
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let modal_yes = ModalState::ExitConfirm { selected_yes: true };
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal_yes.render(f, area, &theme);
             })
             .unwrap();
     }
