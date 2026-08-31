@@ -488,10 +488,12 @@ pub const SESSION_FIRST_PROMPT_MAX_BYTES: usize = 120;
 /// Maximum byte length for tool output in markdown export before truncation
 pub const SESSION_TOOL_OUTPUT_MAX_BYTES: usize = 1000;
 /// Display columns for session ID in TUI session browser list
-pub const SESSION_ID_DISPLAY_COLS: usize = 18;
+pub const SESSION_ID_DISPLAY_COLS: usize = 14;
 /// Display columns for last response snippet in TUI preview pane
+#[allow(dead_code)]
 pub const SESSION_RESPONSE_SNIPPET_COLS: usize = 80;
 /// Maximum files shown in session preview pane before "+N more"
+#[allow(dead_code)]
 pub const SESSION_MAX_FILES_PREVIEW: usize = 4;
 /// Git commit hash short display length in bytes
 pub const GIT_SHORT_HASH_BYTES: usize = 7;

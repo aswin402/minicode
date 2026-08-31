@@ -5,6 +5,18 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.76] — 2026-08-31
+
+### Minimal Floating Spotlight Session History (Option 1)
+
+- **Clean Floating Spotlight Session History (`src/ui/modal.rs`)**:
+  - Redesigned the Session Browser modal (`/sessions`, `/history`, `Ctrl+H`) from a rigid full-screen 2-column pane into a centered, rounded floating spotlight card (`BorderType::Rounded`).
+  - Integrated header with session count indicator: `╭─ 📜 Session History ───────────── [1/14] ─╮`.
+  - Replaced raw, noisy timestamp UUIDs (`20260831T142903Z-...`) with human-readable task/prompt titles (e.g. `› 13s ago   Fix permission asking modal responsive layout`).
+  - Two-line structured session cards with event statistics, model information, and subtle relative time ago badges.
+  - Smooth viewport windowing so large session archives scroll seamlessly.
+  - Modern bottom keycap shortcut action guide: `[Enter] Resume  •  [f] Fork  •  [e] Export MD  •  [d] Delete  •  [Esc] Close`.
+
 ## [0.0.75] — 2026-08-31
 
 ### Informative Developer Exit Card (Variant 3) & Theme Token Binding

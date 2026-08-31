@@ -1280,29 +1280,36 @@
 - [x] 60.5.4: Add modern footer keycap shortcut guide
 - [x] 60.5.5: Version bump → `v0.0.75`, changelog, commit, tag, push
 
-### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.76)
+### Phase 60.6: Minimal Floating Spotlight Session History (Option 1) (v0.0.76)
+- [x] 60.6.1: Redesign `ModalState::SessionBrowser` into a sleek centered floating spotlight card
+- [x] 60.6.2: Display human-readable task/prompt previews instead of raw timestamp UUIDs
+- [x] 60.6.3: Render 2-line structured cards with event counts, relative time ago, and short IDs
+- [x] 60.6.4: Integrate modern keycap action footer bar (`[Enter] Resume`, `[f] Fork`, `[e] Export`, `[d] Delete`, `[Esc] Close`)
+- [x] 60.6.5: Version bump → `v0.0.76`, changelog, commit, tag, push
+
+### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.77)
 - [ ] 61.1: Create `DiffProjector` module with symbol-level diff mapping
 - [ ] 61.2: Integrate into `diff_impact` tool with enhanced output
 - [ ] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
-- [ ] 61.4: Version bump → `v0.0.76`, changelog, commit, tag, push
+- [ ] 61.4: Version bump → `v0.0.77`, changelog, commit, tag, push
 
-### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.77)
+### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.78)
 - [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
 - [ ] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
 - [ ] 62.3: Add RRF constants to `constants.rs`
-- [ ] 62.4: Version bump → `v0.0.77`, changelog, commit, tag, push
+- [ ] 62.4: Version bump → `v0.0.78`, changelog, commit, tag, push
 
-### Phase 63: Progressive Memory Tiers (v0.0.78)
+### Phase 63: Progressive Memory Tiers (v0.0.79)
 - [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
 - [ ] 63.2: Implement fact extraction from compaction
 - [ ] 63.3: Inject memory tiers into system prompt
 - [ ] 63.4: Persistence to `.minicode/progressive_memory.json`
-- [ ] 63.5: Version bump → `v0.0.78`, changelog, commit, tag, push
+- [ ] 63.5: Version bump → `v0.0.79`, changelog, commit, tag, push
 
-### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.79)
+### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.80)
 - [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
 - [ ] 64.2: Enhance `BlastRadiusReport` with composite risk formula
 - [ ] 64.3: Expose `test_coverage_gaps` tool
-- [ ] 64.4: Version bump → `v0.0.79`, changelog, commit, tag, push
+- [ ] 64.4: Version bump → `v0.0.80`, changelog, commit, tag, push
 
 
