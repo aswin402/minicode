@@ -16,16 +16,28 @@ pub struct ModelInfo {
 /// Returns estimated max context window length in tokens for common models.
 pub fn get_model_context_limit(model: &str) -> usize {
     let lower = model.to_lowercase();
-    if lower.contains("gemini-2") || lower.contains("gemini-1.5") || lower.contains("1m") {
+    if lower.contains("gemini-2")
+        || lower.contains("gemini-1.5")
+        || lower.contains("1m")
+        || lower.contains("minimax-text-01")
+    {
         1_000_000
     } else if lower.contains("claude-3-7")
         || lower.contains("claude-3-5")
         || lower.contains("claude-3")
         || lower.contains("sonnet")
         || lower.contains("opus")
+        || lower.contains("codestral")
+        || lower.contains("mistral")
     {
         200_000
-    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") {
+    } else if lower.contains("gpt-4o")
+        || lower.contains("o1")
+        || lower.contains("o3")
+        || lower.contains("glm")
+        || lower.contains("z.ai")
+        || lower.contains("zhipu")
+    {
         128_000
     } else if lower.contains("deepseek")
         || lower.contains("qwen")
@@ -168,6 +180,18 @@ impl ModelFetcher {
             "together" => {
                 self.fetch_openai_compatible_models(crate::constants::TOGETHER_BASE_URL, api_key)
                     .await
+            }
+            "minimax" => {
+                let url = custom_base_url.unwrap_or(crate::constants::MINIMAX_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
+                let url = custom_base_url.unwrap_or(crate::constants::ZHIPU_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "mistral" => {
+                let url = custom_base_url.unwrap_or(crate::constants::MISTRAL_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
             }
             "ollama" => {
                 let url = custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL);

@@ -296,7 +296,10 @@ impl ModalState {
             "openai".to_string(),
             "deepseek".to_string(),
             "groq".to_string(),
+            "minimax".to_string(),
+            "z.ai".to_string(),
             "together".to_string(),
+            "mistral".to_string(),
             "ollama".to_string(),
         ];
         ModalState::ProviderSelect {

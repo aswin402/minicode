@@ -39,6 +39,12 @@ pub struct ProviderConfig {
 
     #[serde(default = "default_max_tokens")]
     pub max_tokens: usize,
+
+    #[serde(default)]
+    pub api_keys: std::collections::HashMap<String, String>,
+
+    #[serde(default)]
+    pub custom_endpoints: std::collections::HashMap<String, String>,
 }
 
 impl Default for ProviderConfig {
@@ -49,6 +55,8 @@ impl Default for ProviderConfig {
             ollama: OllamaConfig::default(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
+            api_keys: std::collections::HashMap::new(),
+            custom_endpoints: std::collections::HashMap::new(),
         }
     }
 }
@@ -324,6 +332,8 @@ pub struct RawProviderConfig {
     pub temperature: Option<f32>,
     pub max_tokens: Option<usize>,
     pub ollama: Option<OllamaConfig>,
+    pub api_keys: Option<std::collections::HashMap<String, String>>,
+    pub custom_endpoints: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -373,7 +383,21 @@ impl Config {
     /// 4. Built-in defaults
     /// 5. Environment variable overrides (MINICODE_*)
     pub fn load(workspace_dir: Option<&Path>, custom_config_path: Option<&Path>) -> Result<Self> {
-        // Load .env if present
+        // 0. Load global ~/.config/minicode/.env if present
+        if let Some(global_dir) = dirs::config_dir() {
+            let global_env = global_dir
+                .join(crate::constants::CONFIG_DIR_NAME)
+                .join(crate::constants::ENV_FILE_NAME);
+            match dotenvy::from_path(&global_env) {
+                Ok(_) => {}
+                Err(dotenvy::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(path = %global_env.display(), error = %e, "Failed to parse global .env file");
+                }
+            }
+        }
+
+        // 1. Load workspace .env if present
         if let Some(dir) = workspace_dir {
             let env_file = dir.join(crate::constants::ENV_FILE_NAME);
             match dotenvy::from_path(&env_file) {
@@ -581,6 +605,20 @@ impl Config {
         if let Some(ai_commit_messages) = other.git.ai_commit_messages {
             self.git.ai_commit_messages = ai_commit_messages;
         }
+        if let Some(keys) = other.provider.api_keys {
+            for (k, v) in keys {
+                if !v.trim().is_empty() {
+                    self.provider.api_keys.insert(k.to_lowercase(), v);
+                }
+            }
+        }
+        if let Some(endpoints) = other.provider.custom_endpoints {
+            for (k, v) in endpoints {
+                if !v.trim().is_empty() {
+                    self.provider.custom_endpoints.insert(k.to_lowercase(), v);
+                }
+            }
+        }
         if let Some(policy) = other.mcp.approval_policy {
             self.mcp.approval_policy = Some(policy);
         }
@@ -629,59 +667,103 @@ impl Config {
         }
     }
 
-    /// Resolves the API key for a specific provider from the environment, trimming surrounding whitespace.
+    /// Resolves the API key for a specific provider.
+    /// Checks environment variables first, then persistent `[provider.api_keys]` in config.toml.
     pub fn get_api_key(&self, provider_name: &str) -> Result<String> {
         let env_trimmed = |key: &str| std::env::var(key).map(|v| v.trim().to_string());
+        let norm = provider_name.to_lowercase();
 
-        match provider_name.to_lowercase().as_str() {
-            "gemini" | "google" => env_trimmed("GEMINI_API_KEY")
-                .or_else(|_| env_trimmed("GOOGLE_API_KEY"))
-                .map_err(|_| {
-                    ConfigError::MissingApiKey {
-                        provider: "gemini".to_string(),
-                        env_var: "GEMINI_API_KEY".to_string(),
-                    }
-                    .into()
-                }),
-            "anthropic" | "claude" => env_trimmed("ANTHROPIC_API_KEY").map_err(|_| {
-                ConfigError::MissingApiKey {
-                    provider: "anthropic".to_string(),
-                    env_var: "ANTHROPIC_API_KEY".to_string(),
-                }
-                .into()
-            }),
-            "openrouter" => env_trimmed("OPENROUTER_API_KEY")
-                .or_else(|_| env_trimmed("OPENROUTER_KEY"))
-                .map_err(|_| {
-                    ConfigError::MissingApiKey {
-                        provider: "openrouter".to_string(),
-                        env_var: "OPENROUTER_API_KEY".to_string(),
-                    }
-                    .into()
-                }),
-            "openai" => env_trimmed("OPENAI_API_KEY").map_err(|_| {
-                ConfigError::MissingApiKey {
-                    provider: "openai".to_string(),
-                    env_var: "OPENAI_API_KEY".to_string(),
-                }
-                .into()
-            }),
-            "ollama" => {
-                // Ollama runs locally and does not require an API key by default
-                Ok(String::new())
+        // 1. Check environment variables
+        let env_val = match norm.as_str() {
+            "gemini" | "google" => {
+                env_trimmed("GEMINI_API_KEY").or_else(|_| env_trimmed("GOOGLE_API_KEY"))
             }
+            "anthropic" | "claude" => env_trimmed("ANTHROPIC_API_KEY"),
+            "openrouter" => {
+                env_trimmed("OPENROUTER_API_KEY").or_else(|_| env_trimmed("OPENROUTER_KEY"))
+            }
+            "openai" => env_trimmed("OPENAI_API_KEY"),
+            "deepseek" => env_trimmed("DEEPSEEK_API_KEY"),
+            "groq" => env_trimmed("GROQ_API_KEY"),
+            "together" => env_trimmed("TOGETHER_API_KEY"),
+            "minimax" => env_trimmed("MINIMAX_API_KEY"),
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => env_trimmed("ZHIPU_API_KEY")
+                .or_else(|_| env_trimmed("Z_AI_API_KEY"))
+                .or_else(|_| env_trimmed("GLM_API_KEY"))
+                .or_else(|_| env_trimmed("BIGMODEL_API_KEY")),
+            "mistral" => env_trimmed("MISTRAL_API_KEY"),
+            "ollama" => return Ok(String::new()),
             custom => {
                 let sanitized_custom = custom.to_uppercase().replace(['-', '.'], "_");
                 let env_var = format!("{}_API_KEY", sanitized_custom);
-                env_trimmed(&env_var).map_err(|_| {
-                    ConfigError::MissingApiKey {
-                        provider: custom.to_string(),
-                        env_var,
-                    }
-                    .into()
-                })
+                env_trimmed(&env_var)
+            }
+        };
+
+        if let Ok(key) = env_val {
+            if !key.is_empty() {
+                return Ok(key);
             }
         }
+
+        // 2. Check persistent api_keys table in config.toml
+        if let Some(key) = self
+            .provider
+            .api_keys
+            .get(&norm)
+            .or_else(|| match norm.as_str() {
+                "gemini" | "google" => self
+                    .provider
+                    .api_keys
+                    .get("gemini")
+                    .or_else(|| self.provider.api_keys.get("google")),
+                "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => self
+                    .provider
+                    .api_keys
+                    .get("z.ai")
+                    .or_else(|| self.provider.api_keys.get("z_ai"))
+                    .or_else(|| self.provider.api_keys.get("zhipu"))
+                    .or_else(|| self.provider.api_keys.get("glm")),
+                "openrouter" => self.provider.api_keys.get("openrouter"),
+                _ => None,
+            })
+        {
+            if !key.trim().is_empty() {
+                return Ok(key.trim().to_string());
+            }
+        }
+
+        // 3. Ollama runs locally without requiring an API key
+        if norm == "ollama" {
+            return Ok(String::new());
+        }
+
+        let env_var = match norm.as_str() {
+            "gemini" | "google" => "GEMINI_API_KEY",
+            "anthropic" | "claude" => "ANTHROPIC_API_KEY",
+            "openrouter" => "OPENROUTER_API_KEY",
+            "openai" => "OPENAI_API_KEY",
+            "deepseek" => "DEEPSEEK_API_KEY",
+            "groq" => "GROQ_API_KEY",
+            "together" => "TOGETHER_API_KEY",
+            "minimax" => "MINIMAX_API_KEY",
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
+            "mistral" => "MISTRAL_API_KEY",
+            _ => "",
+        };
+
+        let env_var_string = if env_var.is_empty() {
+            let sanitized_custom = norm.to_uppercase().replace(['-', '.'], "_");
+            format!("{}_API_KEY", sanitized_custom)
+        } else {
+            env_var.to_string()
+        };
+
+        Err(ConfigError::MissingApiKey {
+            provider: provider_name.to_string(),
+            env_var: env_var_string,
+        }
+        .into())
     }
 }
 
@@ -780,5 +862,31 @@ mod tests {
         assert!(!config.git.auto_commit);
         assert!(config.git.dirty_commit);
         assert!(!config.git.ai_commit_messages);
+    }
+
+    #[test]
+    fn test_get_api_key_from_persistent_map() {
+        let mut config = Config::default();
+        config.provider.api_keys.insert(
+            "openrouter".to_string(),
+            "sk-or-v1-persist-test".to_string(),
+        );
+        config
+            .provider
+            .api_keys
+            .insert("minimax".to_string(), "mm-test-key".to_string());
+        config
+            .provider
+            .api_keys
+            .insert("z.ai".to_string(), "glm-test-key".to_string());
+
+        assert_eq!(
+            config.get_api_key("openrouter").unwrap(),
+            "sk-or-v1-persist-test"
+        );
+        assert_eq!(config.get_api_key("minimax").unwrap(), "mm-test-key");
+        assert_eq!(config.get_api_key("z.ai").unwrap(), "glm-test-key");
+        assert_eq!(config.get_api_key("zhipu").unwrap(), "glm-test-key");
+        assert_eq!(config.get_api_key("ollama").unwrap(), "");
     }
 }

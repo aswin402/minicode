@@ -14,7 +14,7 @@ mod tools;
 mod ui;
 
 use agent::types::{AgentEvent, StdinCommand};
-use agent::{create_provider, AgentLoop};
+use agent::AgentLoop;
 use app::App;
 use clap::{Parser, Subcommand};
 use config::Config;
@@ -113,6 +113,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Interactive configuration wizard (select provider, model, API keys, approval policy)
+    #[command(alias = "config", alias = "setup")]
     Configure,
 
     /// Execute a one-shot autonomous task non-interactively
@@ -394,6 +395,31 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     cli.resume
                 };
+
+                // Check if API key for default provider is configured
+                if config.get_api_key(&config.provider.default).is_err() {
+                    println!("\n\x1b[1;35m⚡ Welcome to minicode!\x1b[0m");
+                    println!(
+                        "\x1b[33mNo API key found for provider '{}'.\x1b[0m\n\
+                         Let's configure your provider and API key in a few seconds...\n",
+                        config.provider.default
+                    );
+                    if let Err(wizard_err) = ConfigMenu::run_interactive(&workspace_canonical).await
+                    {
+                        tracing::warn!(error = %wizard_err, "Configuration wizard exited");
+                    }
+                    // Reload configuration after wizard
+                    config = Config::load(Some(&workspace_canonical), cli.config.as_deref())?;
+
+                    // If still missing API key after wizard (e.g. user exited), exit gracefully
+                    if config.get_api_key(&config.provider.default).is_err() {
+                        println!(
+                            "\n\x1b[90mℹ No API key configured. You can run \x1b[1;36mminicode configure\x1b[0m\x1b[90m anytime to set up your keys.\x1b[0m\n"
+                        );
+                        return Ok(());
+                    }
+                }
+
                 run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref())
                     .await?;
             }
@@ -537,8 +563,27 @@ async fn run_headless_task(
     task: &str,
     emit_ndjson: bool,
 ) -> Result<()> {
-    let api_key = config.get_api_key(&config.provider.default)?;
-    let provider = create_provider(&config.provider.default, &api_key)?;
+    let api_key = match config.get_api_key(&config.provider.default) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!(
+                "\n\x1b[31m✗ Configuration error:\x1b[0m {}\n\
+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
+                e
+            );
+            return Err(e);
+        }
+    };
+    let custom_url = config
+        .provider
+        .custom_endpoints
+        .get(&config.provider.default)
+        .cloned();
+    let provider = crate::agent::provider::create_provider_with_base_url(
+        &config.provider.default,
+        &api_key,
+        custom_url.as_deref(),
+    )?;
 
     let mut agent = AgentLoop::new(workspace, config.clone(), provider);
     // No interactive approval sink exists in one-shot mode: dangerous tools
@@ -605,7 +650,7 @@ async fn run_headless_task(
                         ..
                     } => {
                         println!(
-                            "🗜️  [Context Compacted Tier {}] {} turns summarized: {} → {} tokens ({}% saved)",
+                            "🗜️ Context Compacted [Tier {}]: {} turns summarized: {} → {} tokens ({}% reduction)",
                             tier, turns_summarized, tokens_before, tokens_after, savings_percent
                         );
                     }
@@ -618,9 +663,18 @@ async fn run_headless_task(
         }
     });
 
+    if let Some(m) = crate::agent::intent::match_intent(task) {
+        let _ = tx.send(AgentEvent::IntentRouted {
+            turn_id: None,
+            intent: format!("{:?}", m.intent),
+            query: m.query,
+            confidence: m.confidence,
+            suggested_command: m.suggested_command,
+        });
+    }
+
     agent.execute_turn(task, tx, None).await?;
     event_consumer.await.ok();
-
     Ok(())
 }
 /// Prints an invalid-command NDJSON error event to stdout.
@@ -644,13 +698,22 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
         Ok(key) => key,
         Err(e) => {
             emit_invalid_command(&format!(
-                "Startup failed: {}. Fix the configuration, then reconnect.",
+                "Startup failed: {}. Fix the configuration with 'minicode configure', then reconnect.",
                 e
             ));
             return Err(e);
         }
     };
-    let provider = create_provider(&config.provider.default, &api_key)?;
+    let custom_url = config
+        .provider
+        .custom_endpoints
+        .get(&config.provider.default)
+        .cloned();
+    let provider = crate::agent::provider::create_provider_with_base_url(
+        &config.provider.default,
+        &api_key,
+        custom_url.as_deref(),
+    )?;
     let agent = AgentLoop::new(workspace, config.clone(), provider);
     let approvals = agent.approval_registry();
     let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
@@ -853,7 +916,16 @@ async fn run_interactive_mode(
     resume_session_id: Option<&str>,
 ) -> Result<()> {
     let api_key = config.get_api_key(&config.provider.default)?;
-    let provider = create_provider(&config.provider.default, &api_key)?;
+    let custom_url = config
+        .provider
+        .custom_endpoints
+        .get(&config.provider.default)
+        .cloned();
+    let provider = crate::agent::provider::create_provider_with_base_url(
+        &config.provider.default,
+        &api_key,
+        custom_url.as_deref(),
+    )?;
     let agent = AgentLoop::new(workspace, config.clone(), provider);
 
     let past_events = if let Some(sid) = resume_session_id {

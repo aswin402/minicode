@@ -352,6 +352,12 @@ pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/v1";
 pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 /// Together AI API base URL
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
+/// MiniMax API base URL
+pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
+/// Zhipu / BigModel / Z.ai API base URL
+pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+/// Mistral AI API base URL
+pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 /// Ollama default API base URL
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 /// OpenRouter default model used when config omits one
@@ -360,6 +366,12 @@ pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
 /// DeepSeek default model used when config omits one
 pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-coder";
+/// MiniMax default model used when config omits one
+pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-Text-01";
+/// Z.ai / Zhipu GLM default model (Free tier available)
+pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
+/// Mistral default model used when config omits one
+pub const MISTRAL_DEFAULT_MODEL: &str = "codestral-latest";
 
 // === Context, Search & Channel Tuning ===
 /// Weight factor for prefix token match in BM25 scoring

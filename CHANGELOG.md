@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.71] — 2026-08-31
+
+### Global Non-Destructive Configuration, Multi-Provider Support & Graceful Startup
+
+- **Global Configuration Non-Destructive Persistence (`src/config.rs`, `src/ui/configure.rs`)**:
+  - Added `[provider.api_keys]` and `[provider.custom_endpoints]` persistent tables in `~/.config/minicode/config.toml`.
+  - Added global environment key synchronization into `~/.config/minicode/.env`, automatically loaded on every minicode launch regardless of the current working directory.
+  - Enhanced `localupdate.sh` with automatic safety backup of existing `.env` files in `$CONFIG_DIR/backups` with 10-backup rotation retention.
+- **Graceful Startup Handling (`src/main.rs`)**:
+  - Eliminated missing API key startup crashes in interactive mode; now welcomes the user and opens the interactive setup wizard immediately.
+  - If setup is aborted, exits cleanly with zero error code and helpful reminder (`minicode configure`).
+  - Added `minicode config` and `minicode setup` as CLI aliases for `minicode configure`.
+- **Expanded Provider Ecosystem (`src/agent/provider.rs`, `src/agent/models.rs`, `src/constants.rs`, `src/ui/modal.rs`)**:
+  - Added first-class support for **MiniMax** (`https://api.minimaxi.chat/v1`, `MiniMax-Text-01`), **Z.ai / Zhipu GLM** (`https://open.bigmodel.cn/api/paas/v4`, `glm-4-flash`), and **Mistral AI** (`https://api.mistral.ai/v1`, `codestral-latest`).
+  - Added live model fetching, context window discovery, and free-tier badges (`[FREE]`) across OpenRouter, Gemini, OpenAI, DeepSeek, Groq, MiniMax, Zhipu, Together, Mistral, Ollama, and custom endpoints.
+- **Interactive Configuration Submenus (`src/ui/configure.rs`)**:
+  - Added option `[2] 🔑 Manage / Reconfigure API Keys` to view and update any provider key without switching the active provider.
+  - Added `[0] / b` back options at every menu level and `del` command to clear stored keys.
+  - Added custom OpenAI-compatible endpoint registration (vLLM, LM Studio, Ollama, LocalAI, Azure).
+
 ## [0.0.70] — 2026-08-31
 
 ### Interactive Workspace Analysis Onboarding Menu & Cache-Aware Indexing

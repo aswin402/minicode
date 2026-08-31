@@ -1240,29 +1240,39 @@
 - [x] 60.4: Intercept natural language analysis intents ("analyze project", "index codebase", etc.)
 - [x] 60.5: Version bump → `v0.0.70`, changelog, commit, tag, push
 
-### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.71)
+### Phase 60.1: Global Non-Destructive Configuration, Multi-Provider Support & Graceful Startup (v0.0.71)
+- [x] 60.1.1: Global persistent `[provider.api_keys]` and `[provider.custom_endpoints]` in `~/.config/minicode/config.toml` & `~/.config/minicode/.env`
+- [x] 60.1.2: Automatic backup of `.env` in `localupdate.sh` with 10-backup rotation retention
+- [x] 60.1.3: Eliminate missing API key startup crash, auto-launch setup wizard in interactive mode, exit gracefully if aborted
+- [x] 60.1.4: Add first-class support for MiniMax, Z.ai / Zhipu GLM, and Mistral AI providers
+- [x] 60.1.5: Interactive API Key Manager submenu `[2]` to view and edit keys without switching active provider
+- [x] 60.1.6: Custom OpenAI-compatible endpoint registration and live model discovery with `[FREE]` badges
+- [x] 60.1.7: Add `minicode config` and `minicode setup` CLI aliases
+- [x] 60.1.8: Version bump → `v0.0.71`, changelog, commit, tag, push
+
+### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.72)
 - [ ] 61.1: Create `DiffProjector` module with symbol-level diff mapping
 - [ ] 61.2: Integrate into `diff_impact` tool with enhanced output
 - [ ] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
-- [ ] 61.4: Version bump → `v0.0.71`, changelog, commit, tag, push
+- [ ] 61.4: Version bump → `v0.0.72`, changelog, commit, tag, push
 
-### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.72)
+### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.73)
 - [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
 - [ ] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
 - [ ] 62.3: Add RRF constants to `constants.rs`
-- [ ] 62.4: Version bump → `v0.0.72`, changelog, commit, tag, push
+- [ ] 62.4: Version bump → `v0.0.73`, changelog, commit, tag, push
 
-### Phase 63: Progressive Memory Tiers (v0.0.73)
+### Phase 63: Progressive Memory Tiers (v0.0.74)
 - [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
 - [ ] 63.2: Implement fact extraction from compaction
 - [ ] 63.3: Inject memory tiers into system prompt
 - [ ] 63.4: Persistence to `.minicode/progressive_memory.json`
-- [ ] 63.5: Version bump → `v0.0.73`, changelog, commit, tag, push
+- [ ] 63.5: Version bump → `v0.0.74`, changelog, commit, tag, push
 
-### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.74)
+### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.75)
 - [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
 - [ ] 64.2: Enhance `BlastRadiusReport` with composite risk formula
 - [ ] 64.3: Expose `test_coverage_gaps` tool
-- [ ] 64.4: Version bump → `v0.0.74`, changelog, commit, tag, push
+- [ ] 64.4: Version bump → `v0.0.75`, changelog, commit, tag, push
 
 

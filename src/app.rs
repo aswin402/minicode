@@ -1053,10 +1053,24 @@ impl<'a> App<'a> {
                         String::new()
                     });
 
+                    let custom_url = self
+                        .config
+                        .provider
+                        .custom_endpoints
+                        .get(&provider)
+                        .cloned()
+                        .or_else(|| {
+                            if provider == "ollama" {
+                                Some(self.config.provider.ollama.host.clone())
+                            } else {
+                                None
+                            }
+                        });
+
                     // Switch modal to loading models state
                     let models_res = self
                         .model_fetcher
-                        .fetch_models(&provider, &api_key, None)
+                        .fetch_models(&provider, &api_key, custom_url.as_deref())
                         .await;
                     let models = match models_res {
                         Ok(m) => m,
@@ -1072,6 +1086,7 @@ impl<'a> App<'a> {
                             provider, self.config.provider.model
                         ));
                         self.config.provider.default = provider;
+                        let _ = self.config.save(Some(&self.workspace_root));
                         self.modal = ModalState::None;
                     } else {
                         self.modal = ModalState::new_model_select(provider, models);
@@ -1113,24 +1128,33 @@ impl<'a> App<'a> {
                         self.config.provider.default = provider.clone();
                         self.config.provider.model = selected_model.clone();
 
-                        let custom_url = if self.config.provider.default == "ollama" {
-                            Some(self.config.provider.ollama.host.as_str())
-                        } else {
-                            None
-                        };
+                        let custom_url = self
+                            .config
+                            .provider
+                            .custom_endpoints
+                            .get(&self.config.provider.default)
+                            .cloned()
+                            .or_else(|| {
+                                if self.config.provider.default == "ollama" {
+                                    Some(self.config.provider.ollama.host.clone())
+                                } else {
+                                    None
+                                }
+                            });
 
                         match self.config.get_api_key(&self.config.provider.default) {
                             Ok(key) => {
                                 match crate::agent::provider::create_provider_with_base_url(
                                     &self.config.provider.default,
                                     &key,
-                                    custom_url,
+                                    custom_url.as_deref(),
                                 ) {
                                     Ok(new_prov) => {
                                         let _ = control_tx.send(AgentCommand::UpdateConfig {
                                             config: Box::new(self.config.clone()),
                                             provider: new_prov,
                                         });
+                                        let _ = self.config.save(Some(&self.workspace_root));
                                         self.timeline.add_status(format!(
                                             "✔ Switched active provider to '{}' and model to '{}'",
                                             provider, selected_model

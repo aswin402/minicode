@@ -747,6 +747,7 @@ impl Provider for OpenAiCompatibleProvider {
 }
 
 /// Provider factory that initializes the appropriate provider based on name and config
+#[allow(dead_code)]
 pub fn create_provider(provider_name: &str, api_key: &str) -> Result<Box<dyn Provider>> {
     create_provider_with_base_url(provider_name, api_key, None)
 }
@@ -789,6 +790,26 @@ pub fn create_provider_with_base_url(
             api_key,
             custom_base_url.unwrap_or(crate::constants::TOGETHER_BASE_URL),
             "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        ))),
+        "minimax" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "minimax",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::MINIMAX_BASE_URL),
+            crate::constants::MINIMAX_DEFAULT_MODEL,
+        ))),
+        "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
+            Ok(Box::new(OpenAiCompatibleProvider::new(
+                "z.ai",
+                api_key,
+                custom_base_url.unwrap_or(crate::constants::ZHIPU_BASE_URL),
+                crate::constants::ZHIPU_DEFAULT_MODEL,
+            )))
+        }
+        "mistral" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "mistral",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::MISTRAL_BASE_URL),
+            crate::constants::MISTRAL_DEFAULT_MODEL,
         ))),
         "ollama" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "ollama",

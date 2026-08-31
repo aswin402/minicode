@@ -20,6 +20,7 @@ pub mod types;
 pub use models::{ModelFetcher, ModelInfo};
 #[allow(unused_imports)]
 pub use orchestrator::MultiAgentOrchestrator;
+#[allow(unused_imports)]
 pub use provider::*;
 pub use r#loop::AgentLoop;
 #[allow(unused_imports)]
