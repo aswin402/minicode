@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.73] — 2026-08-31
+
+### Floating Spotlight Command Palette (Option 1) & Clean Human-Readable Registry
+
+- **Clean Floating Spotlight Command Palette (`src/ui/input.rs`, `src/app.rs`)**:
+  - Automatically pops up the modern floating spotlight Command Palette when typing `/` in the input prompt.
+  - Implemented **Option 1: Clean Floating Spotlight** with rounded corners (`BorderType::Rounded`), brand accent border, and live search input row (`› /search█`).
+  - Top category radio pills (`[Tab]` switches between `◉ All`, `○ System`, `○ Intelligence`, and `○ Tools`).
+  - Real-time search query filtering against command titles, descriptions, slash names, and shortcuts.
+  - Full-line vibrant highlight on active item (`theme.brand_accent` background, bold foreground).
+  - Right-aligned shortcut keycap badges (`ctrl+n`, `ctrl+l`, `ctrl+r`, `ctrl+e`, `ctrl+t`, `F5`, `F1`, `ctrl+c`).
+  - Viewport scrolling with windowing support so lists of any length navigate smoothly.
+- **Dynamic Non-Hardcoded Command Registry (`src/ui/input.rs`)**:
+  - Replaced ambiguous text items with clean, human-readable command titles (`New Session`, `Switch Model`, `Repository Index`, `Code Review`, `Configure Providers`, `Clear Timeline`, etc.) mapped directly to real minicode features.
+- **Global Shortcut Keybindings (`src/app.rs`)**:
+  - Added global `Ctrl+N` for instant new session reset.
+  - Added global `Ctrl+L` for model & provider switching.
+  - Added global `Ctrl+R` for git review.
+  - Added global `F1` for help shortcuts cheatsheet and `F5` for workspace analysis.
+
 ## [0.0.72] — 2026-08-31
 
 ### Ultra-Compact Permission Dialog (Variant 2A) & Argument Extraction Fix

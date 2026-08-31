@@ -201,26 +201,14 @@ impl<'a> App<'a> {
                     .style(Style::default().bg(self.theme.bg_primary));
                 frame.render_widget(background_block, frame.area());
 
-                // Reserve dynamic height for autocomplete suggestions if user is typing a slash command
-                let matching_cmds = self.input_dock.matching_slash_commands();
-                let has_slash_hint = !matching_cmds.is_empty();
-                let hint_height = if has_slash_hint {
-                    matching_cmds
-                        .len()
-                        .min(crate::constants::MAX_AUTOCOMPLETE_ROWS) as u16
-                } else {
-                    0
-                };
-
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Min(4),              // 0: Streaming Timeline
-                        Constraint::Length(1),           // 1: Top Spacer / Margin above input dock
-                        Constraint::Length(hint_height), // 2: Autocomplete hint rows
-                        Constraint::Length(3),           // 3: Input Dock
-                        Constraint::Length(1), // 4: Bottom Spacer / Margin below input dock
-                        Constraint::Length(1), // 5: Minimal Bottom Status Line
+                        Constraint::Min(4),    // 0: Streaming Timeline
+                        Constraint::Length(1), // 1: Top Spacer / Margin above input dock
+                        Constraint::Length(3), // 2: Input Dock
+                        Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
+                        Constraint::Length(1), // 4: Minimal Bottom Status Line
                     ])
                     .split(frame.area());
 
@@ -233,13 +221,7 @@ impl<'a> App<'a> {
                     model: &self.config.provider.model,
                 };
                 self.timeline.render(frame, chunks[0], &timeline_ctx);
-
-                if has_slash_hint {
-                    self.input_dock
-                        .render_autocomplete_hint(frame, chunks[2], &self.theme);
-                }
-
-                self.input_dock.render(frame, chunks[3], &self.theme);
+                self.input_dock.render(frame, chunks[2], &self.theme);
 
                 let active_mcp_count = self
                     .config
@@ -264,7 +246,13 @@ impl<'a> App<'a> {
                     session_cost_usd: self.total_cost_usd,
                 };
 
-                StatusWidgets::render_bottom_bar(frame, chunks[5], &status_ctx);
+                StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+
+                // Render Floating Spotlight Command Palette Overlay when typing '/'
+                if self.input_dock.has_active_slash_query() {
+                    self.input_dock
+                        .render_slash_palette(frame, frame.area(), &self.theme);
+                }
 
                 // Render Modal Overlay if active
                 if self.modal.is_active() {
@@ -469,8 +457,49 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+N starts fresh conversation session
+                                if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.timeline = crate::ui::TimelineView::new();
+                                    self.timeline.add_status("✨ Started a new session".to_string());
+                                    continue;
+                                }
+
+                                // Ctrl+L opens Switch Model & Provider modal
+                                if key_event.code == KeyCode::Char('l') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.modal = ModalState::new_provider_select();
+                                    continue;
+                                }
+
+                                // Ctrl+R triggers code review
+                                if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.timeline.add_user_message("/review".to_string());
+                                    self.timeline.add_status("🛡️ Running multi-agent adversarial code review...".to_string());
+                                    match crate::git::GitReviewer::review_workspace(&self.workspace_root, false).await {
+                                        Ok(report) => {
+                                            let formatted = crate::git::GitReviewer::format_report(&report);
+                                            self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Code review error: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                // F1 opens interactive Help modal
+                                if key_event.code == KeyCode::F(1) {
+                                    self.modal = ModalState::Help;
+                                    continue;
+                                }
+
                                 // F2 opens interactive Workspace Analysis modal
                                 if key_event.code == KeyCode::F(2) {
+                                    self.modal = ModalState::new_provider_select();
+                                    continue;
+                                }
+
+                                // F5 opens interactive Workspace Analysis modal
+                                if key_event.code == KeyCode::F(5) {
                                     self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                                     continue;
                                 }
@@ -564,9 +593,9 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // If input dock has no matching slash suggestions and textarea is single-line empty, Up/Down scroll timeline
+                                // If input dock has no active slash palette and textarea is single-line empty, Up/Down scroll timeline
                                 let is_input_empty = self.input_dock.textarea.lines().len() <= 1 && self.input_dock.textarea.lines().first().map(|l| l.is_empty()).unwrap_or(true);
-                                let has_slash_matching = !self.input_dock.matching_slash_commands().is_empty();
+                                let has_slash_matching = self.input_dock.has_active_slash_query();
                                 if is_input_empty && !has_slash_matching {
                                     if key_event.code == KeyCode::Up {
                                         self.timeline.scroll_up(3);
@@ -625,6 +654,43 @@ impl<'a> App<'a> {
                                                 "✗ Failed to copy to clipboard".to_string(),
                                             );
                                         }
+                                    }
+                                    continue;
+                                }
+
+                                if prompt == "/new" {
+                                    self.timeline = crate::ui::TimelineView::new();
+                                    self.timeline.add_status("✨ Started a new session".to_string());
+                                    continue;
+                                }
+
+                                if prompt == "/configure" || prompt == "/config" || prompt == "/setup" {
+                                    self.modal = ModalState::new_provider_select();
+                                    continue;
+                                }
+
+                                if prompt == "/terminal" {
+                                    self.pty_drawer.toggle();
+                                    continue;
+                                }
+
+                                if prompt == "/exit" || prompt == "/quit" {
+                                    return Ok(());
+                                }
+
+                                if prompt == "/retry" {
+                                    if let Some(last_user_msg) = self.timeline.entries.iter().rev().find_map(|e| match e {
+                                        crate::ui::view::TimelineEntry::UserPrompt(p) => Some(p.clone()),
+                                        _ => None,
+                                    }) {
+                                        self.timeline.add_status("🔄 Retrying last prompt...".to_string());
+                                        self.is_working = true;
+                                        self.work_start = Some(Instant::now());
+                                        let cancel = tokio_util::sync::CancellationToken::new();
+                                        self.cancel_token = Some(cancel.clone());
+                                        let _ = control_tx.send(AgentCommand::Prompt(last_user_msg, Some(cancel)));
+                                    } else {
+                                        self.timeline.add_status("ℹ No previous user prompt found to retry".to_string());
                                     }
                                     continue;
                                 }

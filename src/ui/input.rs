@@ -1,123 +1,222 @@
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use tui_textarea::TextArea;
 
-pub struct SlashCommand {
-    pub name: &'static str,
-    pub description: &'static str,
+/// Categories for organizing palette commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandCategory {
+    All,
+    System,
+    Intelligence,
+    Tools,
 }
 
-pub const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand {
-        name: "/commands",
-        description: "interactive catalog of all slash commands & autonomous intents",
+impl CommandCategory {
+    pub fn all() -> &'static [CommandCategory] {
+        &[
+            CommandCategory::All,
+            CommandCategory::System,
+            CommandCategory::Intelligence,
+            CommandCategory::Tools,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            CommandCategory::All => "All",
+            CommandCategory::System => "System",
+            CommandCategory::Intelligence => "Intelligence",
+            CommandCategory::Tools => "Tools",
+        }
+    }
+}
+
+/// A command item displayed in the floating spotlight palette.
+#[derive(Debug, Clone)]
+pub struct PaletteCommand {
+    pub slash_name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub category: CommandCategory,
+    pub shortcut: Option<&'static str>,
+}
+
+pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
+    // System Commands
+    PaletteCommand {
+        slash_name: "/new",
+        title: "New Session",
+        description: "Start fresh session & reset conversation",
+        category: CommandCategory::System,
+        shortcut: Some("ctrl+n"),
     },
-    SlashCommand {
-        name: "/stack",
-        description: "interactive multi-runtime stack wizard & template scaffolder",
+    PaletteCommand {
+        slash_name: "/model",
+        title: "Switch Model",
+        description: "Choose AI model or reasoning effort",
+        category: CommandCategory::System,
+        shortcut: Some("ctrl+l"),
     },
-    SlashCommand {
-        name: "/plan",
-        description: "break complex feature into verifiable milestones in todo.md",
+    PaletteCommand {
+        slash_name: "/configure",
+        title: "Configure Providers",
+        description: "Interactive API key & endpoint manager",
+        category: CommandCategory::System,
+        shortcut: Some("F2"),
     },
-    SlashCommand {
-        name: "/goal",
-        description: "run autonomous self-directed goal execution loop until complete",
+    PaletteCommand {
+        slash_name: "/provider",
+        title: "Switch Provider",
+        description: "Select active LLM provider (OpenRouter, Groq, Ollama, etc.)",
+        category: CommandCategory::System,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/diff",
-        description: "interactive split/unified git diff viewer & staging (Ctrl+D)",
+    PaletteCommand {
+        slash_name: "/theme",
+        title: "Theme Selector",
+        description: "Switch TUI color theme palette",
+        category: CommandCategory::System,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/explore",
-        description: "surgically explore codebase AST symbols, call graph & blast radius (Ctrl+E)",
+    PaletteCommand {
+        slash_name: "/sessions",
+        title: "Session History",
+        description: "Browse & reload past workspace sessions",
+        category: CommandCategory::System,
+        shortcut: Some("ctrl+h"),
     },
-    SlashCommand {
-        name: "/review",
-        description: "run multi-dimensional code review on current git diff",
+    PaletteCommand {
+        slash_name: "/tokens",
+        title: "Token Breakdown",
+        description: "Display detailed token usage & context stats",
+        category: CommandCategory::System,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/model",
-        description: "choose what model and reasoning effort to use",
+    PaletteCommand {
+        slash_name: "/clear",
+        title: "Clear Timeline",
+        description: "Clear active conversation timeline messages",
+        category: CommandCategory::System,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/provider",
-        description: "select or switch active LLM provider",
+    PaletteCommand {
+        slash_name: "/help",
+        title: "Help & Shortcuts",
+        description: "Interactive keyboard shortcuts cheatsheet",
+        category: CommandCategory::System,
+        shortcut: Some("F1"),
     },
-    SlashCommand {
-        name: "/theme",
-        description: "switch TUI color theme (Aura, Tokyo Night, Nord, etc.)",
+    PaletteCommand {
+        slash_name: "/exit",
+        title: "Exit minicode",
+        description: "Quit minicode interactive session cleanly",
+        category: CommandCategory::System,
+        shortcut: Some("ctrl+c"),
     },
-    SlashCommand {
-        name: "/undo",
-        description: "revert files modified in the previous turn",
+    // Intelligence / Code Graph Commands
+    PaletteCommand {
+        slash_name: "/index",
+        title: "Repository Index",
+        description: "Scan AST symbols & build PageRank code graph",
+        category: CommandCategory::Intelligence,
+        shortcut: Some("F5"),
     },
-    SlashCommand {
-        name: "/retry",
-        description: "re-submit the last prompt to the agent",
+    PaletteCommand {
+        slash_name: "/review",
+        title: "Code Review",
+        description: "Run git diff impact analysis & security audit",
+        category: CommandCategory::Intelligence,
+        shortcut: Some("ctrl+r"),
     },
-    SlashCommand {
-        name: "/history",
-        description: "interactive session history, preview & time-travel explorer (Ctrl+H)",
+    PaletteCommand {
+        slash_name: "/explore",
+        title: "Code Explorer",
+        description: "Surgically explore AST symbols, call graph & blast radius",
+        category: CommandCategory::Intelligence,
+        shortcut: Some("ctrl+e"),
     },
-    SlashCommand {
-        name: "/sessions",
-        description: "browse past session history for this workspace (Ctrl+H)",
+    PaletteCommand {
+        slash_name: "/compact",
+        title: "Compact Context",
+        description: "Manually compact conversation context tokens",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/export",
-        description: "export session trajectory to a markdown report (/export [path])",
+    PaletteCommand {
+        slash_name: "/plan",
+        title: "Plan Feature",
+        description: "Break complex task into verifiable milestones",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/save",
-        description: "export conversation history to a file",
+    PaletteCommand {
+        slash_name: "/goal",
+        title: "Autonomous Goal",
+        description: "Run self-directed loop until complete",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/load",
-        description: "load and display past session history",
+    // Tools Commands
+    PaletteCommand {
+        slash_name: "/diff",
+        title: "Git Diff Viewer",
+        description: "Interactive split/unified git diff viewer & staging",
+        category: CommandCategory::Tools,
+        shortcut: Some("ctrl+d"),
     },
-    SlashCommand {
-        name: "/map",
-        description: "render AST PageRank repository map",
+    PaletteCommand {
+        slash_name: "/terminal",
+        title: "Toggle Terminal",
+        description: "Toggle embedded interactive terminal drawer",
+        category: CommandCategory::Tools,
+        shortcut: Some("ctrl+t"),
     },
-    SlashCommand {
-        name: "/compact",
-        description: "manually compact conversation context tokens",
+    PaletteCommand {
+        slash_name: "/stack",
+        title: "Scaffold Stack",
+        description: "Interactive onpkg multi-runtime stack wizard",
+        category: CommandCategory::Tools,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/tokens",
-        description: "display detailed token usage breakdown",
+    PaletteCommand {
+        slash_name: "/undo",
+        title: "Undo Changes",
+        description: "Revert file modifications from previous turn",
+        category: CommandCategory::Tools,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/terminal",
-        description: "toggle interactive embedded terminal drawer (Ctrl+T)",
+    PaletteCommand {
+        slash_name: "/retry",
+        title: "Retry Prompt",
+        description: "Re-submit previous prompt to agent",
+        category: CommandCategory::Tools,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/copy",
-        description: "copy latest response or entire transcript to clipboard (/copy [all])",
+    PaletteCommand {
+        slash_name: "/export",
+        title: "Export Session",
+        description: "Export conversation trajectory to markdown",
+        category: CommandCategory::Tools,
+        shortcut: None,
     },
-    SlashCommand {
-        name: "/clear",
-        description: "clear conversation timeline",
-    },
-    SlashCommand {
-        name: "/help",
-        description: "display help and keyboard shortcuts",
-    },
-    SlashCommand {
-        name: "/exit",
-        description: "quit minicode interactive session",
+    PaletteCommand {
+        slash_name: "/copy",
+        title: "Copy Transcript",
+        description: "Copy latest response or whole transcript to clipboard",
+        category: CommandCategory::Tools,
+        shortcut: None,
     },
 ];
 
 pub struct InputDock<'a> {
     pub textarea: TextArea<'a>,
     pub slash_selected_index: usize,
+    pub category_index: usize,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -134,27 +233,73 @@ impl<'a> InputDock<'a> {
         Self {
             textarea,
             slash_selected_index: 0,
+            category_index: 0,
         }
     }
 
-    /// Returns matching slash command candidates if user is typing a slash command
-    pub fn matching_slash_commands(&self) -> Vec<&'static SlashCommand> {
+    /// Checks if the input starts with '/' and is actively triggering the command palette
+    pub fn has_active_slash_query(&self) -> bool {
         let lines = self.textarea.lines();
         if let Some(first_line) = lines.first() {
             let trimmed = first_line.trim();
-            if trimmed.starts_with('/') && !trimmed.contains(' ') {
-                return SLASH_COMMANDS
-                    .iter()
-                    .filter(|cmd| cmd.name.starts_with(trimmed))
-                    .collect();
-            }
+            trimmed.starts_with('/') && !trimmed.contains(' ')
+        } else {
+            false
         }
-        Vec::new()
     }
 
-    /// Returns the currently selected slash command candidate
-    pub fn selected_slash_command(&self) -> Option<&'static SlashCommand> {
-        let matches = self.matching_slash_commands();
+    /// Returns matching slash command candidates filtered by search query and active category
+    pub fn matching_palette_commands(&self) -> Vec<&'static PaletteCommand> {
+        let lines = self.textarea.lines();
+        let query = if let Some(first_line) = lines.first() {
+            let trimmed = first_line.trim();
+            if let Some(stripped) = trimmed.strip_prefix('/') {
+                stripped.to_lowercase()
+            } else {
+                return Vec::new();
+            }
+        } else {
+            return Vec::new();
+        };
+
+        let selected_category =
+            CommandCategory::all()[self.category_index % CommandCategory::all().len()];
+
+        PALETTE_COMMANDS
+            .iter()
+            .filter(|cmd| {
+                // Category filter
+                let matches_category = match selected_category {
+                    CommandCategory::All => true,
+                    cat => cmd.category == cat,
+                };
+
+                if !matches_category {
+                    return false;
+                }
+
+                // Query filter
+                if query.is_empty() {
+                    return true;
+                }
+
+                cmd.title.to_lowercase().contains(&query)
+                    || cmd
+                        .slash_name
+                        .trim_start_matches('/')
+                        .to_lowercase()
+                        .contains(&query)
+                    || cmd.description.to_lowercase().contains(&query)
+                    || cmd
+                        .shortcut
+                        .is_some_and(|s| s.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    /// Returns the currently selected palette command candidate
+    pub fn selected_palette_command(&self) -> Option<&'static PaletteCommand> {
+        let matches = self.matching_palette_commands();
         if matches.is_empty() {
             None
         } else {
@@ -165,10 +310,22 @@ impl<'a> InputDock<'a> {
         }
     }
 
+    /// Cycles the active category (Tab / BackTab)
+    pub fn cycle_category(&mut self, forward: bool) {
+        let total = CommandCategory::all().len();
+        if forward {
+            self.category_index = (self.category_index + 1) % total;
+        } else {
+            self.category_index = (self.category_index + total - 1) % total;
+        }
+        self.slash_selected_index = 0;
+    }
+
     /// Autocompletes active slash command when Tab or Enter is pressed on recommendation
+    #[allow(dead_code)]
     pub fn autocomplete_slash(&mut self) -> bool {
-        if let Some(cmd) = self.selected_slash_command() {
-            let mut ta = TextArea::new(vec![cmd.name.to_string()]);
+        if let Some(cmd) = self.selected_palette_command() {
+            let mut ta = TextArea::new(vec![cmd.slash_name.to_string()]);
             ta.set_placeholder_text("Ask minicode to do anything...");
             ta.set_cursor_line_style(Style::default());
             self.textarea = ta;
@@ -185,11 +342,21 @@ impl<'a> InputDock<'a> {
             return None;
         }
 
-        let matching = self.matching_slash_commands();
-        let has_recommendations = !matching.is_empty();
+        let is_slash_open = self.has_active_slash_query();
+        let matching = self.matching_palette_commands();
 
-        // Handle Up/Down arrow navigation across recommendations
-        if has_recommendations {
+        // Handle Escape to dismiss command palette immediately
+        if is_slash_open && key.code == KeyCode::Esc {
+            let mut ta = TextArea::default();
+            ta.set_placeholder_text("Ask minicode to do anything...");
+            ta.set_cursor_line_style(Style::default());
+            self.textarea = ta;
+            self.slash_selected_index = 0;
+            return None;
+        }
+
+        // Handle Up/Down arrow navigation across palette commands
+        if is_slash_open && !matching.is_empty() {
             if key.code == KeyCode::Up {
                 self.slash_selected_index = self.slash_selected_index.saturating_sub(1);
                 return None;
@@ -202,8 +369,13 @@ impl<'a> InputDock<'a> {
             }
         }
 
-        // Handle Tab for autocomplete
-        if key.code == KeyCode::Tab && self.autocomplete_slash() {
+        // Handle Tab to cycle categories or autocomplete
+        if is_slash_open && key.code == KeyCode::Tab {
+            self.cycle_category(true);
+            return None;
+        }
+        if is_slash_open && key.code == KeyCode::BackTab {
+            self.cycle_category(false);
             return None;
         }
 
@@ -215,18 +387,17 @@ impl<'a> InputDock<'a> {
                 let text = self.textarea.lines().join("\n");
                 let trimmed = text.trim().to_string();
 
-                // If user typed an exact or prefix slash command with recommendations open,
+                // If user typed an exact or prefix slash command with palette open,
                 // resolve to the highlighted slash command
-                let final_prompt =
-                    if has_recommendations && trimmed.starts_with('/') && !trimmed.contains(' ') {
-                        if let Some(cmd) = self.selected_slash_command() {
-                            cmd.name.to_string()
-                        } else {
-                            trimmed
-                        }
+                let final_prompt = if is_slash_open && !matching.is_empty() {
+                    if let Some(cmd) = self.selected_palette_command() {
+                        cmd.slash_name.to_string()
                     } else {
                         trimmed
-                    };
+                    }
+                } else {
+                    trimmed
+                };
 
                 if !final_prompt.is_empty() {
                     let mut ta = TextArea::default();
@@ -253,7 +424,7 @@ impl<'a> InputDock<'a> {
             }
             _ => {
                 self.textarea.input(key);
-                let new_matches = self.matching_slash_commands();
+                let new_matches = self.matching_palette_commands();
                 if self.slash_selected_index >= new_matches.len() {
                     self.slash_selected_index = new_matches.len().saturating_sub(1);
                 }
@@ -273,11 +444,11 @@ impl<'a> InputDock<'a> {
         frame.render_widget(block, area);
 
         // Subdivide inner area to render "› " prompt and text editor inline
-        let input_chunks = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
+        let input_chunks = Layout::default()
+            .direction(Direction::Horizontal)
             .constraints([
-                ratatui::layout::Constraint::Length(2), // "› "
-                ratatui::layout::Constraint::Min(1),    // TextArea input
+                Constraint::Length(2), // "› "
+                Constraint::Min(1),    // TextArea input
             ])
             .split(inner_area);
 
@@ -308,54 +479,185 @@ impl<'a> InputDock<'a> {
         frame.render_widget(&cloned, input_chunks[1]);
     }
 
-    /// Renders the slash command autocomplete suggestion rows (with Up/Down arrow selection)
-    pub fn render_autocomplete_hint(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let matches = self.matching_slash_commands();
-        if matches.is_empty() {
+    /// Renders the Clean Floating Spotlight Command Palette (Option 1)
+    pub fn render_slash_palette(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        if !self.has_active_slash_query() {
             return;
         }
 
-        let max_display = (area.height as usize).min(matches.len());
+        let matches = self.matching_palette_commands();
+
+        // Modal dimensions (responsive spotlight centered on screen)
+        let width = (area.width * 64 / 100).clamp(62, 78);
+        let height = 13_u16;
+
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 3; // Position in upper-middle
+        let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+
+        frame.render_widget(Clear, popup_area);
+
+        // Build Title Bar with Category Radio Tabs on right
+        let current_cat_idx = self.category_index % CommandCategory::all().len();
+        let mut title_spans = vec![
+            Span::styled(
+                " ⌘ Commands ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("[Tab] ", Style::default().fg(theme.muted)),
+        ];
+
+        for (idx, cat) in CommandCategory::all().iter().enumerate() {
+            let is_active = idx == current_cat_idx;
+            if is_active {
+                title_spans.push(Span::styled(
+                    format!("◉ {} ", cat.label()),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                title_spans.push(Span::styled(
+                    format!("○ {} ", cat.label()),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+        }
+        title_spans.push(Span::raw(" "));
+
+        let outer_block = Block::default()
+            .title(Line::from(title_spans))
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(theme.brand_accent))
+            .style(Style::default().bg(theme.bg_elevated));
+
+        let inner_area = outer_block.inner(popup_area);
+        frame.render_widget(outer_block, popup_area);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Search row: › /search█
+                Constraint::Length(1), // Divider
+                Constraint::Min(5),    // Commands list (up to 7 items)
+                Constraint::Length(1), // Divider
+                Constraint::Length(1), // Footer hint line
+            ])
+            .split(inner_area);
+
+        // 1. Search Query Row
+        let typed_text = self.textarea.lines().first().cloned().unwrap_or_default();
+        let search_line = Line::from(vec![
+            Span::styled(
+                "  › ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if typed_text.is_empty() {
+                    "/"
+                } else {
+                    &typed_text
+                },
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("█", Style::default().fg(theme.brand_accent)),
+        ]);
+        frame.render_widget(Paragraph::new(search_line), chunks[0]);
+
+        // Top Divider
+        let divider = Paragraph::new(Line::from(vec![Span::styled(
+            "─".repeat(inner_area.width as usize),
+            Style::default().fg(theme.border),
+        )]));
+        frame.render_widget(divider, chunks[1]);
+
+        // 2. Command Items List
+        let list_height = chunks[2].height as usize;
         let selected_idx = self
             .slash_selected_index
             .min(matches.len().saturating_sub(1));
 
-        let mut lines = Vec::new();
-        for (i, cmd) in matches.iter().take(max_display).enumerate() {
-            let is_selected = i == selected_idx;
-            let prefix = if is_selected { " › " } else { "   " };
+        // Viewport windowing calculation for smooth scrolling
+        let scroll_offset = if selected_idx >= list_height {
+            selected_idx.saturating_sub(list_height - 1)
+        } else {
+            0
+        };
 
-            let cmd_style = if is_selected {
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.success)
-            };
+        let mut item_lines = Vec::new();
+        let inner_width = inner_area.width as usize;
 
-            let desc_style = if is_selected {
-                Style::default().fg(theme.text_primary)
-            } else {
-                Style::default().fg(theme.muted)
-            };
+        if matches.is_empty() {
+            item_lines.push(Line::from(vec![Span::styled(
+                "   No matching commands found",
+                Style::default().fg(theme.muted),
+            )]));
+        } else {
+            for (i, cmd) in matches
+                .iter()
+                .skip(scroll_offset)
+                .take(list_height)
+                .enumerate()
+            {
+                let actual_idx = scroll_offset + i;
+                let is_selected = actual_idx == selected_idx;
+                let shortcut_str = cmd.shortcut.unwrap_or("");
 
-            let row_style = if is_selected {
-                Style::default().bg(theme.bg_elevated)
-            } else {
-                Style::default().bg(theme.bg_primary)
-            };
+                let prefix = if is_selected { " ❯ " } else { "   " };
+                let left_content = format!("{}{}", prefix, cmd.title);
 
-            let mut line = Line::from(vec![
-                Span::styled(prefix, Style::default().fg(theme.brand_accent)),
-                Span::styled(format!("{:<12}", cmd.name), cmd_style),
-                Span::styled(cmd.description, desc_style),
-            ]);
-            line.style = row_style;
-            lines.push(line);
+                // Right-aligned shortcut badge
+                let avail_space =
+                    inner_width.saturating_sub(left_content.len() + shortcut_str.len() + 2);
+                let padding = " ".repeat(avail_space);
+
+                if is_selected {
+                    let line_str = format!("{}{}{}", left_content, padding, shortcut_str);
+                    let full_padded = format!("{:<width$}", line_str, width = inner_width);
+                    item_lines.push(Line::from(vec![Span::styled(
+                        full_padded,
+                        Style::default()
+                            .bg(theme.brand_accent)
+                            .fg(theme.bg_primary)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                } else {
+                    let mut spans = vec![
+                        Span::styled(left_content, Style::default().fg(theme.text_primary)),
+                        Span::raw(padding),
+                    ];
+                    if !shortcut_str.is_empty() {
+                        spans.push(Span::styled(shortcut_str, Style::default().fg(theme.muted)));
+                    }
+                    spans.push(Span::raw(" "));
+                    item_lines.push(Line::from(spans));
+                }
+            }
         }
 
-        let p = Paragraph::new(lines).style(Style::default().bg(theme.bg_primary));
-        frame.render_widget(p, area);
+        let list_p = Paragraph::new(item_lines);
+        frame.render_widget(list_p, chunks[2]);
+
+        // Bottom Divider
+        let bottom_divider = Paragraph::new(Line::from(vec![Span::styled(
+            "─".repeat(inner_area.width as usize),
+            Style::default().fg(theme.border),
+        )]));
+        frame.render_widget(bottom_divider, chunks[3]);
+
+        // 3. Footer Hint Row
+        let footer_p = Paragraph::new(Line::from(vec![Span::styled(
+            "  ↑/↓ browse • Enter select • Tab switch category • Esc dismiss",
+            Style::default().fg(theme.muted),
+        )]));
+        frame.render_widget(footer_p, chunks[4]);
     }
 }
 
@@ -364,18 +666,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_matching_slash_commands_suggests_theme() {
+    fn test_matching_palette_commands_filtering() {
         let mut dock = InputDock::new();
-        dock.textarea.insert_str("/th");
-        let matches = dock.matching_slash_commands();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].name, "/theme");
+        dock.textarea.insert_str("/mod");
+        let matches = dock.matching_palette_commands();
+        assert!(matches.iter().any(|c| c.title == "Switch Model"));
 
         let mut dock2 = InputDock::new();
-        dock2.textarea.insert_str("/");
-        let all_matches = dock2.matching_slash_commands();
-        assert!(all_matches.iter().any(|c| c.name == "/theme"));
-        assert!(all_matches.iter().any(|c| c.name == "/undo"));
-        assert!(all_matches.iter().any(|c| c.name == "/model"));
+        dock2.textarea.insert_str("/rev");
+        let matches2 = dock2.matching_palette_commands();
+        assert!(matches2.iter().any(|c| c.title == "Code Review"));
+    }
+
+    #[test]
+    fn test_category_cycling() {
+        let mut dock = InputDock::new();
+        assert_eq!(dock.category_index, 0);
+        dock.cycle_category(true);
+        assert_eq!(dock.category_index, 1);
+        dock.cycle_category(false);
+        assert_eq!(dock.category_index, 0);
     }
 }

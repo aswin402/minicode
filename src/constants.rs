@@ -106,6 +106,7 @@ pub const MAX_AGENTS_MD_BYTES: usize = 8192;
 /// TUI event poll tick rate in milliseconds
 pub const TICK_RATE_MS: u64 = 50;
 /// Maximum autocomplete candidates rendered in input dock
+#[allow(dead_code)]
 pub const MAX_AUTOCOMPLETE_ROWS: usize = 4;
 /// Default token budget for AST repository map
 pub const DEFAULT_MAP_TOKENS: usize = 1024;
