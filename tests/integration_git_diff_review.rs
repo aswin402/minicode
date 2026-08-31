@@ -3,7 +3,7 @@ use minicode::git::diff_viewer::GitDiffViewer;
 use minicode::git::reviewer::GitReviewer;
 use minicode::tools::registry::git_tools;
 use minicode::tools::ToolRegistry;
-use minicode::ui::input::SLASH_COMMANDS;
+use minicode::ui::input::PALETTE_COMMANDS;
 use minicode::ui::modal::ModalState;
 
 #[test]
@@ -21,7 +21,7 @@ fn test_git_review_schema_in_registry() {
 
 #[test]
 fn test_slash_commands_contain_diff_and_review() {
-    let cmd_names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
+    let cmd_names: Vec<&str> = PALETTE_COMMANDS.iter().map(|c| c.slash_name).collect();
     assert!(cmd_names.contains(&"/diff"));
     assert!(cmd_names.contains(&"/review"));
 }

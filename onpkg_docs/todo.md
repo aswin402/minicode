@@ -1294,29 +1294,39 @@
 - [x] 60.7.4: Remove redundant footer rows from `ModelSelect`, `UndoCheckpoint`, `ThemeSelect`, `StackBrowser`, `CommandCatalog`, `GitDiff`, `CodeExplorer`
 - [x] 60.7.5: Version bump → `v0.0.77`, changelog, commit, tag, push
 
-### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.78)
+### Phase 60.8: Critical Stability Hardening, Unicode Safety & Comprehensive Code Health (v0.0.78)
+- [x] 60.8.1: Fix arithmetic underflow panic in command palette scrolling (`input.rs`)
+- [x] 60.8.2: Fix UTF-8 display width vs byte length shortcut badge alignment with `UnicodeWidthStr` (`input.rs`)
+- [x] 60.8.3: Fix session preview overwrite bug, add `file.sync_data()` and strict allowlist validation (`store.rs`)
+- [x] 60.8.4: Add error logging for corrupted lines, TOCTOU safety, and remove duplicate sort (`store.rs`)
+- [x] 60.8.5: Centralize 20+ layout, viewport, and column display magic numbers to `constants.rs`
+- [x] 60.8.6: Add smooth viewport scrolling to `ModelSelect`, `StackSelect`, `CodeExplorer`, and `GitDiff` (`modal.rs`)
+- [x] 60.8.7: Replace hardcoded border strings with dynamic width card borders (`view.rs`)
+- [x] 60.8.8: Version bump → `v0.0.78`, changelog, commit, tag, push
+
+### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.79)
 - [ ] 61.1: Create `DiffProjector` module with symbol-level diff mapping
 - [ ] 61.2: Integrate into `diff_impact` tool with enhanced output
 - [ ] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
-- [ ] 61.4: Version bump → `v0.0.78`, changelog, commit, tag, push
+- [ ] 61.4: Version bump → `v0.0.79`, changelog, commit, tag, push
 
-### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.79)
+### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.80)
 - [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
 - [ ] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
 - [ ] 62.3: Add RRF constants to `constants.rs`
-- [ ] 62.4: Version bump → `v0.0.79`, changelog, commit, tag, push
+- [ ] 62.4: Version bump → `v0.0.80`, changelog, commit, tag, push
 
-### Phase 63: Progressive Memory Tiers (v0.0.80)
+### Phase 63: Progressive Memory Tiers (v0.0.81)
 - [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
 - [ ] 63.2: Implement fact extraction from compaction
 - [ ] 63.3: Inject memory tiers into system prompt
 - [ ] 63.4: Persistence to `.minicode/progressive_memory.json`
-- [ ] 63.5: Version bump → `v0.0.80`, changelog, commit, tag, push
+- [ ] 63.5: Version bump → `v0.0.81`, changelog, commit, tag, push
 
-### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.81)
+### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.82)
 - [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
 - [ ] 64.2: Enhance `BlastRadiusReport` with composite risk formula
 - [ ] 64.3: Expose `test_coverage_gaps` tool
-- [ ] 64.4: Version bump → `v0.0.81`, changelog, commit, tag, push
+- [ ] 64.4: Version bump → `v0.0.82`, changelog, commit, tag, push
 
 

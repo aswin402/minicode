@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.78] — 2026-08-31
+
+### Critical Stability Hardening, Unicode Safety & Comprehensive Code Health
+
+- **Underflow Panic Fix (`src/ui/input.rs`)**:
+  - Fixed an arithmetic underflow panic when computing command palette scroll offset (`list_height - 1`) on small or compressed terminal heights.
+- **Display-Width Safe Alignment (`src/ui/input.rs`)**:
+  - Switched shortcut badge spacing calculation from raw byte length (`len()`) to `UnicodeWidthStr::width()` to avoid misalignment caused by multi-byte symbols like `❯`.
+- **Session Store Hardening (`src/session/store.rs`)**:
+  - Fixed preview overwrite bug where `turn_start` or `stream_delta` blocked user prompts from appearing in session history.
+  - Added `file.sync_data()` after each JSONL event write to ensure zero data loss on abrupt termination.
+  - Replaced session ID blacklist validation with strict character allowlist (`is_ascii_alphanumeric() || '-' || '_'`).
+  - Eliminated TOCTOU check-then-act races across file loaders and directory readers.
+  - Added warning logging for corrupted `session_meta` lines and file open failures instead of silent swallowing.
+  - Removed redundant secondary sorting in `get_last_session_id`.
+  - Added buffer flush before `FileModified` and `GitCommit` in `export_markdown`.
+- **Viewport Scrolling across all Modals (`src/ui/modal.rs`)**:
+  - Added smooth viewport windowing to `ModelSelect`, `StackSelect`, `CodeExplorer`, and `GitDiff`.
+  - Normalized search filter strings with `.trim()` across all interactive filterable modals.
+  - Replaced hardcoded dimensions and magic numbers with centralized constants in `src/constants.rs`.
+- **UI Dynamic Layouts (`src/ui/view.rs`)**:
+  - Replaced static 64-character border with dynamically sized area-aware bottom card borders.
+- **Dead Code Cleanup (`src/ui/input.rs`)**:
+  - Removed obsolete `autocomplete_slash` function and unified placeholder text with `DEFAULT_INPUT_PLACEHOLDER`.
+
 ## [0.0.77] — 2026-08-31
 
 ### Universal Menu Decluttering & Minimalist UI Polish

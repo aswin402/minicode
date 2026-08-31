@@ -1,5 +1,13 @@
 use crate::agent::models::ModelInfo;
-use crate::constants::{SESSION_ID_DISPLAY_COLS, SESSION_LIST_ITEM_HEIGHT};
+use crate::constants::{
+    CHECKPOINT_FILES_PREVIEW, CHECKPOINT_PROMPT_MAX_CHARS, CHECKPOINT_PROMPT_PREVIEW_CHARS,
+    COMMAND_NAME_DISPLAY_COLS, EXIT_CONFIRM_MODAL_HEIGHT, EXIT_CONFIRM_MODAL_WIDTH,
+    EXPLORER_BADGE_DISPLAY_COLS, SESSION_BROWSER_MAX_HEIGHT, SESSION_BROWSER_MAX_WIDTH,
+    SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MIN_WIDTH, SESSION_ID_DISPLAY_COLS,
+    SESSION_LIST_ITEM_HEIGHT, SESSION_TIME_AGO_COLS, STACK_PREVIEW_MAX_FILES,
+    THEME_MODAL_MAX_VISIBLE, THEME_NAME_DISPLAY_COLS, UNDO_CHECKPOINT_MAX_VISIBLE,
+    WORKSPACE_ANALYSIS_HEIGHT, WORKSPACE_ANALYSIS_WIDTH,
+};
 use crate::session::store::truncate_display;
 use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
@@ -412,11 +420,14 @@ impl ModalState {
             2,
             true,
         )
-        .unwrap_or_else(|_| crate::context::explorer::CodeExploreResult {
-            query: String::new(),
-            target_symbol: None,
-            matches: Vec::new(),
-            summary: String::new(),
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to run AST explore for CodeExplorer modal");
+            crate::context::explorer::CodeExploreResult {
+                query: String::new(),
+                target_symbol: None,
+                matches: Vec::new(),
+                summary: String::new(),
+            }
         });
         let count = res.matches.len();
         ModalState::CodeExplorer {
@@ -446,7 +457,7 @@ impl ModalState {
             ..
         } = self
         {
-            let f = filter.to_lowercase();
+            let f = filter.trim().to_lowercase();
             *filtered_indices = models
                 .iter()
                 .enumerate()
@@ -470,7 +481,7 @@ impl ModalState {
             filter,
         } = self
         {
-            let f = filter.to_lowercase();
+            let f = filter.trim().to_lowercase();
             *filtered_indices = stacks
                 .iter()
                 .enumerate()
@@ -708,10 +719,19 @@ impl ModalState {
                     .style(Style::default().fg(theme.text_primary));
                 frame.render_widget(search_box, chunks[0]);
 
-                // Models list
+                // Models list with viewport scrolling
+                let max_visible = chunks[1].height as usize;
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
+                } else {
+                    0
+                };
+
                 let items: Vec<ListItem> = filtered_indices
                     .iter()
                     .enumerate()
+                    .skip(scroll_offset)
+                    .take(max_visible)
                     .map(|(visual_idx, &real_idx)| {
                         let m = &models[real_idx];
                         let is_selected = visual_idx == *selected_index;
@@ -772,7 +792,7 @@ impl ModalState {
                 lines.push(Line::from(""));
 
                 let total = checkpoints.len();
-                let max_visible = 5;
+                let max_visible = UNDO_CHECKPOINT_MAX_VISIBLE;
                 let scroll_offset = if *selected_index >= max_visible {
                     *selected_index - max_visible + 1
                 } else {
@@ -824,8 +844,15 @@ impl ModalState {
                     } else {
                         Style::default().fg(theme.muted)
                     };
-                    let prompt_display = if cp.prompt.chars().count() > 55 {
-                        format!("{}...", cp.prompt.chars().take(52).collect::<String>())
+                    let prompt_display = if cp.prompt.chars().count() > CHECKPOINT_PROMPT_MAX_CHARS
+                    {
+                        format!(
+                            "{}...",
+                            cp.prompt
+                                .chars()
+                                .take(CHECKPOINT_PROMPT_PREVIEW_CHARS)
+                                .collect::<String>()
+                        )
                     } else {
                         cp.prompt.clone()
                     };
@@ -854,10 +881,10 @@ impl ModalState {
                                     .and_then(|n| n.to_str())
                                     .unwrap_or(p)
                             })
-                            .take(2)
+                            .take(CHECKPOINT_FILES_PREVIEW)
                             .collect();
-                        let more = if cp.files.len() > 2 {
-                            format!(" +{} more", cp.files.len() - 2)
+                        let more = if cp.files.len() > CHECKPOINT_FILES_PREVIEW {
+                            format!(" +{} more", cp.files.len() - CHECKPOINT_FILES_PREVIEW)
                         } else {
                             String::new()
                         };
@@ -921,7 +948,7 @@ impl ModalState {
                 let mut lines = Vec::new();
                 lines.push(Line::from(""));
 
-                let max_visible = 5;
+                let max_visible = THEME_MODAL_MAX_VISIBLE;
                 let scroll_offset = if *selected_index >= max_visible {
                     *selected_index - max_visible + 1
                 } else {
@@ -950,7 +977,10 @@ impl ModalState {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
-                        Span::styled(format!("{:<22}", t.name), title_style),
+                        Span::styled(
+                            format!("{:<width$}", t.name, width = THEME_NAME_DISPLAY_COLS),
+                            title_style,
+                        ),
                     ];
 
                     for c in &t.swatches {
@@ -991,8 +1021,10 @@ impl ModalState {
                 selected_index,
                 cached_summary: _,
             } => {
-                let width = (area.width.saturating_sub(4)).clamp(58, 82);
-                let height = (area.height.saturating_sub(4)).clamp(14, 22);
+                let width = (area.width.saturating_sub(4))
+                    .clamp(SESSION_BROWSER_MIN_WIDTH, SESSION_BROWSER_MAX_WIDTH);
+                let height = (area.height.saturating_sub(4))
+                    .clamp(SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MAX_HEIGHT);
                 let popup_area = centered_rect_exact(width, height, area);
                 frame.render_widget(Clear, popup_area);
 
@@ -1080,7 +1112,14 @@ impl ModalState {
                                             .fg(theme.brand_accent)
                                             .add_modifier(Modifier::BOLD),
                                     ),
-                                    Span::styled(format!("{:<8} ", time_ago), time_style),
+                                    Span::styled(
+                                        format!(
+                                            "{:<width$} ",
+                                            time_ago,
+                                            width = SESSION_TIME_AGO_COLS
+                                        ),
+                                        time_style,
+                                    ),
                                     Span::styled(preview_title, title_style),
                                 ]);
 
@@ -1098,7 +1137,14 @@ impl ModalState {
                                 let title_style = Style::default().fg(theme.text_primary);
                                 let l1 = Line::from(vec![
                                     Span::raw("   "),
-                                    Span::styled(format!("{:<8} ", time_ago), time_style),
+                                    Span::styled(
+                                        format!(
+                                            "{:<width$} ",
+                                            time_ago,
+                                            width = SESSION_TIME_AGO_COLS
+                                        ),
+                                        time_style,
+                                    ),
                                     Span::styled(preview_title, title_style),
                                 ]);
 
@@ -1302,10 +1348,19 @@ impl ModalState {
                     .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
                     .split(v_chunks[1]);
 
-                // Left: Stacks List
+                let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
+                } else {
+                    0
+                };
+
+                // Left: Stacks List with viewport scrolling
                 let items: Vec<ListItem> = filtered_indices
                     .iter()
                     .enumerate()
+                    .skip(scroll_offset)
+                    .take(max_visible)
                     .map(|(visual_idx, &real_idx)| {
                         let s = &stacks[real_idx];
                         let is_selected = visual_idx == *selected_index;
@@ -1413,15 +1468,18 @@ impl ModalState {
                         Style::default().fg(theme.brand_accent),
                     )]));
 
-                    for f in s.files.iter().take(12) {
+                    for f in s.files.iter().take(STACK_PREVIEW_MAX_FILES) {
                         preview_lines.push(Line::from(vec![
                             Span::styled("  ├── ", Style::default().fg(theme.muted)),
                             Span::styled(&f.path, Style::default().fg(theme.text_primary)),
                         ]));
                     }
-                    if s.files.len() > 12 {
+                    if s.files.len() > STACK_PREVIEW_MAX_FILES {
                         preview_lines.push(Line::from(vec![Span::styled(
-                            format!("  ╰── ... and {} more files", s.files.len() - 12),
+                            format!(
+                                "  ╰── ... and {} more files",
+                                s.files.len() - STACK_PREVIEW_MAX_FILES
+                            ),
                             Style::default().fg(theme.muted),
                         )]));
                     }
@@ -1556,7 +1614,10 @@ impl ModalState {
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<10}", item.name), name_style),
+                        Span::styled(
+                            format!("{:<width$}", item.name, width = COMMAND_NAME_DISPLAY_COLS),
+                            name_style,
+                        ),
                         Span::styled(shortcut_str, shortcut_style),
                     ]));
                 }
@@ -1686,10 +1747,19 @@ impl ModalState {
                     ])
                     .split(inner);
 
-                // Left: Files list
+                let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
+                let file_scroll_offset = if max_visible > 0 && *selected_file_index >= max_visible {
+                    selected_file_index.saturating_sub(max_visible.saturating_sub(1))
+                } else {
+                    0
+                };
+
+                // Left: Files list with viewport scrolling
                 let items: Vec<ListItem> = diff_files
                     .iter()
                     .enumerate()
+                    .skip(file_scroll_offset)
+                    .take(max_visible)
                     .map(|(idx, f)| {
                         let is_selected = idx == *selected_file_index;
                         let prefix = if is_selected { " › " } else { "   " };
@@ -1848,17 +1918,30 @@ impl ModalState {
                     ])
                     .split(v_chunks[1]);
 
-                // Left: Symbols list
+                let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
+                } else {
+                    0
+                };
+
+                // Left: Symbols list with viewport scrolling
                 let items: Vec<ListItem> = filtered_indices
                     .iter()
                     .enumerate()
+                    .skip(scroll_offset)
+                    .take(max_visible)
                     .map(|(display_idx, &real_idx)| {
                         let sym = &symbols[real_idx];
                         let is_selected = display_idx == *selected_index;
 
                         let spans = vec![
                             Span::styled(
-                                format!("{:<10} ", sym.layer.badge()),
+                                format!(
+                                    "{:<width$} ",
+                                    sym.layer.badge(),
+                                    width = EXPLORER_BADGE_DISPLAY_COLS
+                                ),
                                 Style::default().fg(theme.brand_accent),
                             ),
                             Span::styled(
@@ -2081,7 +2164,8 @@ impl ModalState {
                 cached_files_count,
                 selected_index,
             } => {
-                let popup_area = centered_rect_exact(78, 10, area);
+                let popup_area =
+                    centered_rect_exact(WORKSPACE_ANALYSIS_WIDTH, WORKSPACE_ANALYSIS_HEIGHT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let title = format!(" ✨ minicode v{} ", env!("CARGO_PKG_VERSION"));
@@ -2227,8 +2311,8 @@ impl ModalState {
                 workspace_name,
                 selected_yes,
             } => {
-                let width = 54_u16.min(area.width.saturating_sub(2));
-                let height = 8_u16.min(area.height.saturating_sub(2));
+                let width = EXIT_CONFIRM_MODAL_WIDTH.min(area.width.saturating_sub(2));
+                let height = EXIT_CONFIRM_MODAL_HEIGHT.min(area.height.saturating_sub(2));
                 let popup_area = centered_rect_exact(width, height, area);
                 frame.render_widget(Clear, popup_area);
 

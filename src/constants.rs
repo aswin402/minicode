@@ -551,3 +551,54 @@ pub const SCROLL_LINES_FAST: u16 = 5;
 
 /// Maximum file size in bytes to snapshot for inline diff preview (512 KB)
 pub const MAX_DIFF_SNAPSHOT_BYTES: usize = 512 * 1024;
+
+// === Modal Layout Dimensions & Viewport (Phase 60.8) ===
+/// Exit confirmation modal dialog width in columns
+pub const EXIT_CONFIRM_MODAL_WIDTH: u16 = 54;
+/// Exit confirmation modal dialog height in rows
+pub const EXIT_CONFIRM_MODAL_HEIGHT: u16 = 8;
+/// Workspace analysis modal dialog width in columns
+pub const WORKSPACE_ANALYSIS_WIDTH: u16 = 78;
+/// Workspace analysis modal dialog height in rows
+pub const WORKSPACE_ANALYSIS_HEIGHT: u16 = 10;
+/// Minimum width for session history spotlight browser
+pub const SESSION_BROWSER_MIN_WIDTH: u16 = 58;
+/// Maximum width for session history spotlight browser
+pub const SESSION_BROWSER_MAX_WIDTH: u16 = 82;
+/// Minimum height for session history spotlight browser
+pub const SESSION_BROWSER_MIN_HEIGHT: u16 = 14;
+/// Maximum height for session history spotlight browser
+pub const SESSION_BROWSER_MAX_HEIGHT: u16 = 22;
+
+/// Maximum visible undo checkpoints shown in viewport list before scrolling
+pub const UNDO_CHECKPOINT_MAX_VISIBLE: usize = 5;
+/// Maximum visible themes shown in viewport list before scrolling
+pub const THEME_MODAL_MAX_VISIBLE: usize = 5;
+/// Maximum files displayed in stack preview before summary truncation
+pub const STACK_PREVIEW_MAX_FILES: usize = 12;
+/// Maximum character length of checkpoint prompt display before truncation
+pub const CHECKPOINT_PROMPT_MAX_CHARS: usize = 55;
+/// Preview slice length for truncated checkpoint prompts
+pub const CHECKPOINT_PROMPT_PREVIEW_CHARS: usize = 52;
+/// Number of files shown inline for undo checkpoints before "+N more"
+pub const CHECKPOINT_FILES_PREVIEW: usize = 2;
+
+/// Width in columns for theme name column in theme selector
+pub const THEME_NAME_DISPLAY_COLS: usize = 22;
+/// Width in columns for command name in catalog list
+pub const COMMAND_NAME_DISPLAY_COLS: usize = 10;
+/// Width in columns for layer badge in code explorer
+pub const EXPLORER_BADGE_DISPLAY_COLS: usize = 10;
+/// Width in columns for time-ago column in session history browser
+pub const SESSION_TIME_AGO_COLS: usize = 8;
+
+/// Default placeholder text displayed in the interactive input dock textarea
+pub const DEFAULT_INPUT_PLACEHOLDER: &str = "Ask minicode to do anything...";
+/// Height in rows of the floating spotlight command palette
+pub const COMMAND_PALETTE_HEIGHT: u16 = 10;
+/// Width percentage of screen for floating spotlight command palette
+pub const COMMAND_PALETTE_WIDTH_PCT: u16 = 64;
+/// Minimum width in columns for floating spotlight command palette
+pub const COMMAND_PALETTE_MIN_WIDTH: u16 = 62;
+/// Maximum width in columns for floating spotlight command palette
+pub const COMMAND_PALETTE_MAX_WIDTH: u16 = 78;

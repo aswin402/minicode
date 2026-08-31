@@ -116,10 +116,10 @@ impl SessionStore {
 
     fn validate_session_id(&self, session_id: &str) -> Result<()> {
         if session_id.is_empty()
-            || session_id.contains('/')
-            || session_id.contains('\\')
-            || session_id.contains("..")
-            || session_id.contains('\0')
+            || session_id.len() > 128
+            || !session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err(SessionError::InvalidId(session_id.to_string()).into());
         }
@@ -137,6 +137,7 @@ impl SessionStore {
 
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
+        file.sync_data()?;
         Ok(())
     }
 
@@ -147,15 +148,18 @@ impl SessionStore {
     ) -> Result<(Option<SessionMetadata>, Vec<AgentEvent>)> {
         self.validate_session_id(session_id)?;
         let session_path = self.session_file_path(session_id);
-        if !session_path.exists() {
-            return Err(SessionError::NotFound {
-                id: session_id.to_string(),
-                path: session_path.display().to_string(),
+        let file = match std::fs::File::open(&session_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SessionError::NotFound {
+                    id: session_id.to_string(),
+                    path: session_path.display().to_string(),
+                }
+                .into());
             }
-            .into());
-        }
+            Err(e) => return Err(e.into()),
+        };
 
-        let file = std::fs::File::open(&session_path)?;
         let reader = BufReader::new(file);
         let mut events = Vec::new();
         let mut metadata: Option<SessionMetadata> = None;
@@ -170,7 +174,17 @@ impl SessionStore {
             if metadata.is_none() && trimmed.starts_with("{\"session_meta\":") {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                     if let Some(meta_val) = val.get("session_meta") {
-                        metadata = serde_json::from_value::<SessionMetadata>(meta_val.clone()).ok();
+                        match serde_json::from_value::<SessionMetadata>(meta_val.clone()) {
+                            Ok(m) => metadata = Some(m),
+                            Err(e) => {
+                                tracing::warn!(
+                                    session = session_id,
+                                    line = idx + 1,
+                                    error = %e,
+                                    "Corrupted session_meta in session JSONL"
+                                );
+                            }
+                        }
                     }
                 }
                 continue;
@@ -201,10 +215,7 @@ impl SessionStore {
     /// Returns the session ID of the most recent session.
     pub fn get_last_session_id(&self) -> Option<String> {
         match self.list_sessions() {
-            Ok(mut sessions) => {
-                sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-                sessions.first().map(|s| s.id.clone())
-            }
+            Ok(sessions) => sessions.first().map(|s| s.id.clone()),
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to list sessions for latest session lookup");
                 None
@@ -215,11 +226,13 @@ impl SessionStore {
     /// Lists all sessions (fast — only reads first line of each JSONL).
     pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
         let mut sessions = Vec::new();
-        if !self.sessions_dir.exists() {
-            return Ok(sessions);
-        }
+        let entries = match std::fs::read_dir(&self.sessions_dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
+            Err(e) => return Err(e.into()),
+        };
 
-        for entry in std::fs::read_dir(&self.sessions_dir)?.flatten() {
+        for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
                 if let Ok(file) = std::fs::File::open(&path) {
@@ -265,18 +278,21 @@ impl SessionStore {
     pub fn list_sessions_rich(&self) -> Result<Vec<SessionMetadata>> {
         let mut sessions = self.list_sessions()?;
         for meta in &mut sessions {
-            if let Ok(file) = std::fs::File::open(&meta.path) {
-                let reader = BufReader::new(file);
-                let mut count = 0usize;
-                for line_res in reader.lines() {
-                    let Ok(line) = line_res else { break };
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with("{\"session_meta\":") {
-                        continue;
-                    }
-                    count += 1;
-                    // Extract the first user prompt, model, or first stream delta as preview
-                    if meta.preview.is_empty() {
+            match std::fs::File::open(&meta.path) {
+                Ok(file) => {
+                    let reader = BufReader::new(file);
+                    let mut count = 0usize;
+                    let mut found_prompt = false;
+
+                    for line_res in reader.lines() {
+                        let Ok(line) = line_res else { break };
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() || trimmed.starts_with("{\"session_meta\":") {
+                            continue;
+                        }
+                        count += 1;
+
+                        // Prioritize user_prompt over turn_start or stream_delta
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
                             if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
                                 if event_type == "user_prompt" {
@@ -288,29 +304,39 @@ impl SessionStore {
                                                 SESSION_PREVIEW_MAX_BYTES,
                                                 "...",
                                             );
+                                            found_prompt = true;
                                         }
                                     }
-                                } else if event_type == "turn_start" {
-                                    if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
-                                        meta.preview = format!("model: {}", m);
-                                    }
-                                } else if event_type == "stream_delta" {
-                                    if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
-                                        let d_trim = d.trim();
-                                        if !d_trim.is_empty() {
-                                            meta.preview = truncate_safe(
-                                                d_trim,
-                                                SESSION_PREVIEW_MAX_BYTES,
-                                                "...",
-                                            );
+                                } else if !found_prompt && meta.preview.is_empty() {
+                                    if event_type == "turn_start" {
+                                        if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
+                                            meta.preview = format!("model: {}", m);
+                                        }
+                                    } else if event_type == "stream_delta" {
+                                        if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                                            let d_trim = d.trim();
+                                            if !d_trim.is_empty() {
+                                                meta.preview = truncate_safe(
+                                                    d_trim,
+                                                    SESSION_PREVIEW_MAX_BYTES,
+                                                    "...",
+                                                );
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                    meta.event_count = count;
                 }
-                meta.event_count = count;
+                Err(e) => {
+                    tracing::warn!(
+                        path = %meta.path,
+                        error = %e,
+                        "Failed to open session file for rich summary"
+                    );
+                }
             }
         }
         Ok(sessions)
@@ -579,9 +605,19 @@ impl SessionStore {
                     ));
                 }
                 AgentEvent::FileModified { path, action, .. } => {
+                    if !assistant_buf.is_empty() {
+                        md.push_str(&assistant_buf);
+                        md.push_str("\n\n");
+                        assistant_buf.clear();
+                    }
                     md.push_str(&format!("📝 *File {}*: `{}`\n\n", action, path));
                 }
                 AgentEvent::GitCommit { hash, message, .. } => {
+                    if !assistant_buf.is_empty() {
+                        md.push_str(&assistant_buf);
+                        md.push_str("\n\n");
+                        assistant_buf.clear();
+                    }
                     let hash_short = truncate_safe(&hash, GIT_SHORT_HASH_BYTES, "");
                     md.push_str(&format!(
                         "📦 **Git Commit:** `{}` — *{}*\n\n",
@@ -598,7 +634,13 @@ impl SessionStore {
         }
 
         if let Some(parent) = output_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "Failed to create directory for markdown export"
+                );
+            }
         }
         std::fs::write(output_path, md)?;
         tracing::info!(

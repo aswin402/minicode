@@ -1116,8 +1116,10 @@ impl TimelineView {
                         ]));
                     }
 
+                    let bottom_border =
+                        format!("└{}", "─".repeat((area.width as usize).saturating_sub(2)));
                     lines.push(Line::from(vec![Span::styled(
-                        "└───────────────────────────────────────────────────────────────",
+                        bottom_border,
                         Style::default().fg(theme.border),
                     )]));
                     lines.push(Line::from(String::new()));

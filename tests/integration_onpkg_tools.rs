@@ -5,7 +5,7 @@ use minicode::tools::onpkg::scaffolder::OnpkgScaffolder;
 use minicode::tools::onpkg::sync::OnpkgSyncEngine;
 use minicode::tools::registry::onpkg_tools;
 use minicode::tools::ToolRegistry;
-use minicode::ui::input::SLASH_COMMANDS;
+use minicode::ui::input::PALETTE_COMMANDS;
 use minicode::ui::modal::ModalState;
 use tempfile::tempdir;
 
@@ -98,7 +98,7 @@ fn test_native_doctor_diagnostics() {
 
 #[test]
 fn test_slash_commands_contain_stack_plan_goal() {
-    let cmd_names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
+    let cmd_names: Vec<&str> = PALETTE_COMMANDS.iter().map(|c| c.slash_name).collect();
     assert!(cmd_names.contains(&"/stack"));
     assert!(cmd_names.contains(&"/plan"));
     assert!(cmd_names.contains(&"/goal"));

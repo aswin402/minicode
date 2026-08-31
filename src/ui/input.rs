@@ -1,3 +1,7 @@
+use crate::constants::{
+    COMMAND_PALETTE_HEIGHT, COMMAND_PALETTE_MAX_WIDTH, COMMAND_PALETTE_MIN_WIDTH,
+    COMMAND_PALETTE_WIDTH_PCT, DEFAULT_INPUT_PLACEHOLDER,
+};
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -6,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use tui_textarea::TextArea;
+use unicode_width::UnicodeWidthStr;
 
 /// Categories for organizing palette commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +233,7 @@ impl<'a> Default for InputDock<'a> {
 impl<'a> InputDock<'a> {
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
-        textarea.set_placeholder_text("Ask minicode to do anything...");
+        textarea.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
         textarea.set_cursor_line_style(Style::default());
         Self {
             textarea,
@@ -321,21 +326,6 @@ impl<'a> InputDock<'a> {
         self.slash_selected_index = 0;
     }
 
-    /// Autocompletes active slash command when Tab or Enter is pressed on recommendation
-    #[allow(dead_code)]
-    pub fn autocomplete_slash(&mut self) -> bool {
-        if let Some(cmd) = self.selected_palette_command() {
-            let mut ta = TextArea::new(vec![cmd.slash_name.to_string()]);
-            ta.set_placeholder_text("Ask minicode to do anything...");
-            ta.set_cursor_line_style(Style::default());
-            self.textarea = ta;
-            self.slash_selected_index = 0;
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
         // Only process KeyPress / KeyRepeat events (ignore KeyRelease)
         if key.kind == KeyEventKind::Release {
@@ -348,7 +338,7 @@ impl<'a> InputDock<'a> {
         // Handle Escape to dismiss command palette immediately
         if is_slash_open && key.code == KeyCode::Esc {
             let mut ta = TextArea::default();
-            ta.set_placeholder_text("Ask minicode to do anything...");
+            ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
             ta.set_cursor_line_style(Style::default());
             self.textarea = ta;
             self.slash_selected_index = 0;
@@ -401,7 +391,7 @@ impl<'a> InputDock<'a> {
 
                 if !final_prompt.is_empty() {
                     let mut ta = TextArea::default();
-                    ta.set_placeholder_text("Ask minicode to do anything...");
+                    ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
                     ta.set_cursor_line_style(Style::default());
                     self.textarea = ta;
                     self.slash_selected_index = 0;
@@ -469,7 +459,7 @@ impl<'a> InputDock<'a> {
         // Explicitly disable underline on cursor line
         cloned.set_cursor_line_style(Style::default().bg(theme.bg_input));
         cloned.set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_input));
-        cloned.set_placeholder_text("Ask minicode to do anything...");
+        cloned.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
         cloned.set_block(
             Block::default()
                 .borders(Borders::NONE)
@@ -479,7 +469,7 @@ impl<'a> InputDock<'a> {
         frame.render_widget(&cloned, input_chunks[1]);
     }
 
-    /// Renders the Clean Floating Spotlight Command Palette (Option 1)
+    /// Renders the Clean Floating Spotlight Command Palette
     pub fn render_slash_palette(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if !self.has_active_slash_query() {
             return;
@@ -488,8 +478,9 @@ impl<'a> InputDock<'a> {
         let matches = self.matching_palette_commands();
 
         // Modal dimensions (responsive spotlight centered on screen)
-        let width = (area.width * 64 / 100).clamp(62, 78);
-        let height = 10_u16;
+        let width = (area.width * COMMAND_PALETTE_WIDTH_PCT / 100)
+            .clamp(COMMAND_PALETTE_MIN_WIDTH, COMMAND_PALETTE_MAX_WIDTH);
+        let height = COMMAND_PALETTE_HEIGHT;
 
         let x = area.x + (area.width.saturating_sub(width)) / 2;
         let y = area.y + (area.height.saturating_sub(height)) / 3; // Position in upper-middle
@@ -582,9 +573,9 @@ impl<'a> InputDock<'a> {
             .slash_selected_index
             .min(matches.len().saturating_sub(1));
 
-        // Viewport windowing calculation for smooth scrolling
-        let scroll_offset = if selected_idx >= list_height {
-            selected_idx.saturating_sub(list_height - 1)
+        // Viewport windowing calculation for smooth scrolling (safe underflow guard)
+        let scroll_offset = if list_height > 0 && selected_idx >= list_height {
+            selected_idx.saturating_sub(list_height.saturating_sub(1))
         } else {
             0
         };
@@ -610,15 +601,18 @@ impl<'a> InputDock<'a> {
 
                 let prefix = if is_selected { " ❯ " } else { "   " };
                 let left_content = format!("{}{}", prefix, cmd.title);
+                let left_width = UnicodeWidthStr::width(left_content.as_str());
+                let shortcut_width = UnicodeWidthStr::width(shortcut_str);
 
-                // Right-aligned shortcut badge
-                let avail_space =
-                    inner_width.saturating_sub(left_content.len() + shortcut_str.len() + 2);
+                // Right-aligned shortcut badge using display width
+                let avail_space = inner_width.saturating_sub(left_width + shortcut_width + 2);
                 let padding = " ".repeat(avail_space);
 
                 if is_selected {
                     let line_str = format!("{}{}{}", left_content, padding, shortcut_str);
-                    let full_padded = format!("{:<width$}", line_str, width = inner_width);
+                    let current_width = UnicodeWidthStr::width(line_str.as_str());
+                    let trailing_spaces = " ".repeat(inner_width.saturating_sub(current_width));
+                    let full_padded = format!("{}{}", line_str, trailing_spaces);
                     item_lines.push(Line::from(vec![Span::styled(
                         full_padded,
                         Style::default()
