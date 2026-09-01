@@ -21,6 +21,7 @@ pub mod okf;
 pub mod progressive_memory;
 pub mod recall;
 pub mod repomap;
+pub mod reranker;
 pub mod semantic;
 pub mod skill_forge;
 pub mod skills;

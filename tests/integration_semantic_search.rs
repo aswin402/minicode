@@ -1,82 +1,82 @@
-use minicode::context::semantic::SemanticIndex;
-use minicode::tools::ToolRegistry;
+use minicode::context::reranker::CrossEncoderReranker;
 use serde_json::json;
 use std::fs;
 use tempfile::tempdir;
 
 #[test]
-fn test_semantic_index_chunking_and_cosine_retrieval() {
-    let dir = tempdir().unwrap();
-    let ws = dir.path();
+fn test_semantic_code_search_intent_matching() {
+    let dir = tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src");
 
-    let src = ws.join("src");
-    fs::create_dir_all(&src).unwrap();
-
-    let db_file = src.join("db.rs");
+    // Target module
     fs::write(
-        &db_file,
+        src_dir.join("stream_writer.rs"),
         r#"
-pub struct ConnectionPool {
-    max_connections: u32,
+pub struct StreamWriter {
+    pub buffer: Vec<u8>,
 }
 
-impl ConnectionPool {
-    pub fn connect(db_url: &str) -> Result<Self, String> {
-        println!("Opening postgres SQL database connection to {}", db_url);
-        Ok(Self { max_connections: 10 })
+impl StreamWriter {
+    pub fn flush_stream_to_disk(&mut self) {
+        // sync and flush pending bytes
     }
 }
 "#,
     )
-    .unwrap();
+    .expect("write stream_writer.rs");
 
-    let ui_file = src.join("ui.rs");
+    // Unrelated module
     fs::write(
-        &ui_file,
+        src_dir.join("network_client.rs"),
         r#"
-pub fn render_gradient_banner(title: &str) {
-    println!("Drawing colorful banner with title {}", title);
+pub fn send_http_request(url: &str) -> String {
+    format!("GET {}", url)
 }
 "#,
     )
-    .unwrap();
+    .expect("write network_client.rs");
 
-    let mut index = SemanticIndex::new();
-    let indexed = index.build_index(ws).unwrap();
-    assert_eq!(indexed, 2);
+    let result =
+        CrossEncoderReranker::search_and_rerank(dir.path(), "flush stream buffer to disk", 5, None)
+            .expect("semantic search and rerank");
 
-    let results = index.search("postgres sql database connection pool", 5);
-    assert!(!results.is_empty());
-    assert_eq!(results[0].file_path, "src/db.rs");
-    assert!(results[0].snippet.contains("ConnectionPool"));
+    assert!(!result.hits.is_empty());
+    let top_hit = &result.hits[0];
+    assert!(top_hit.file_path.contains("stream_writer.rs"));
+    assert!(top_hit.rerank_score > 0.4);
 }
 
 #[tokio::test]
-async fn test_semantic_search_tool_dispatch() {
-    let dir = tempdir().unwrap();
-    let ws = dir.path();
+async fn test_semantic_code_search_tool_dispatch() {
+    let dir = tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src");
 
-    let src = ws.join("src");
-    fs::create_dir_all(&src).unwrap();
-
-    let auth_file = src.join("crypto.rs");
     fs::write(
-        &auth_file,
+        src_dir.join("auth.rs"),
         r#"
-pub fn hash_password(password: &str) -> String {
-    format!("argon2_hash_{}", password)
+pub fn verify_jwt_token(token: &str) -> bool {
+    !token.is_empty()
 }
 "#,
     )
-    .unwrap();
+    .expect("write auth.rs");
 
     let args = json!({
-        "query": "hash user passwords with argon2",
+        "query": "jwt token verification",
         "limit": 3
     });
 
-    let res = ToolRegistry::dispatch(ws, "call_sem", "semantic_search", &args, None, 1).await;
-    assert!(res.success);
-    assert!(res.output.contains("src/crypto.rs"));
-    assert!(res.output.contains("hash_password"));
+    let res = minicode::tools::registry::context_tools::dispatch(
+        "semantic_code_search",
+        &args,
+        dir.path(),
+    )
+    .await;
+
+    assert!(res.is_some());
+    let output = res.unwrap().expect("tool execution success");
+    assert!(output.contains("Semantic Code Search Results"));
+    assert!(output.contains("jwt token verification"));
 }

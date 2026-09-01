@@ -473,6 +473,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "semantic_code_search".to_string(),
+            description: "Execute two-stage semantic code search (BM25 + Dense Vectors + PageRank + Cross-Encoder Intent Reranker) for precision code retrieval.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language or technical code search query (e.g. 'where is session history flushed to disk?')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of reranked results to return (default: 5, max: 20)"
+                    },
+                    "target_layer": {
+                        "type": "string",
+                        "description": "Optional architectural layer to boost/filter by (e.g. 'UI', 'Service', 'Data', 'API')"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1107,6 +1129,28 @@ pub async fn dispatch(
             )?;
 
             let markdown = report.format_markdown();
+            Ok(markdown)
+        })()),
+        "semantic_code_search" => Some((|| {
+            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "semantic_code_search".to_string(),
+                    reason: "Missing required argument 'query'".to_string(),
+                }
+            })?;
+            let limit = parse_u64_param(args.get("limit"))
+                .map(|v| (v as usize).clamp(1, 20))
+                .unwrap_or(5);
+            let target_layer = args.get("target_layer").and_then(|v| v.as_str());
+
+            let result = crate::context::reranker::CrossEncoderReranker::search_and_rerank(
+                workspace_root,
+                query,
+                limit,
+                target_layer,
+            )?;
+
+            let markdown = result.format_markdown();
             Ok(markdown)
         })()),
         "prune_context" => Some(Ok(

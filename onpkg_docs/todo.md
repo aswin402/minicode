@@ -1376,8 +1376,13 @@
 - [x] 69.3: Version bump → `v0.0.89`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 70: Semantic Code Search & Cross-Encoder Reranker (v0.0.90)
-- [ ] 70.1: Implement hybrid semantic retrieval with reciprocal rank fusion (RRF)
-- [ ] 70.2: Add `semantic_code_search` agent tool
-- [ ] 70.3: Version bump → `v0.0.90`, changelog with ideas/sources, commit, tag, push
+- [x] 70.1: Implement hybrid semantic retrieval with reciprocal rank fusion (RRF)
+- [x] 70.2: Add `semantic_code_search` agent tool
+- [x] 70.3: Version bump → `v0.0.90`, changelog with ideas/sources, commit, tag, push
+
+### Phase 71: Autonomous Workspace Architecture Documentation Synthesizer (v0.0.91)
+- [ ] 71.1: Implement automated ARCHITECTURE.md generation from CodeGraph & layers
+- [ ] 71.2: Add `generate_architecture_docs` agent tool
+- [ ] 71.3: Version bump → `v0.0.91`, changelog with ideas/sources, commit, tag, push
 
 

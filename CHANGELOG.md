@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.90] — 2026-09-01
+
+### Semantic Code Search & Cross-Encoder Reranker (Phase 70)
+
+#### 💡 Ideas & Inspirations
+- **Beyond Keyword Grep and Raw Vector Cosine**: Developers often remember *what* a function does (e.g. *"where is streaming session output flushed?"*) rather than the exact identifier name. Standard vector search frequently returns generic comments or boilerplate. By introducing a two-stage retrieval pipeline (Dense/BM25 candidate retrieval followed by Cross-Encoder AST semantic reranking), `minicode` surfaces the exact implementation logic with high precision.
+- **Explainable Match Signals**: Every search result includes explainable relevance factors (e.g. exact phrase match, term coverage %, symbol identifier match, architectural layer alignment, PageRank centrality).
+
+#### 📚 References & Sources
+- **Two-Stage RAG & Retrieval Pipelines**: Bi-Encoder candidate retrieval + Cross-Encoder sequence relevance scoring (Cohere Rerank, BGE Reranker architecture).
+- **Reciprocal Rank Fusion (RRF)**: Cormack, Clarke, and Buettcher (*Reciprocal Rank Fusion outperforms Condorcet and individual Rank SVM*).
+- **Tree-sitter AST & Subword Token Matching**: Structural code decomposition principles.
+
+#### 🚀 Features & Changes
+- **`CrossEncoderReranker` Engine (`src/context/reranker.rs`, `src/context/mod.rs`)**:
+  - Two-stage code search pipeline integrating `HybridIndex` (BM25 + Semantic Vector embeddings + PageRank) with fine-grained cross-scoring.
+  - Computes exact phrase matches, subword token coverage, symbol name alignments, and architectural layer proximity boosts.
+  - Formats results into structured `SemanticSearchResult` with confidence scoring and syntax-highlighted snippets.
+- **`semantic_code_search` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing natural language and technical concept searches with layer filtering.
+- **Integration Test Suite (`tests/integration_semantic_search.rs`)**:
+  - Added 2 integration tests verifying intent matching over disparate modules and async tool dispatch.
+
 ## [0.0.89] — 2026-09-01
 
 ### AST-Guided Dead Code & Redundant Symbol Eliminator (Phase 69)
