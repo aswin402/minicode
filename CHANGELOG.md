@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.84] — 2026-09-01
+
+### Test Gap Detection & Composite Risk Scoring (Phase 64)
+
+- **`TestGapAnalyzer` Call-Graph Reachability Engine (`src/context/test_gap.rs`, `src/context/mod.rs`)**:
+  - Implemented multi-source BFS traversing outwards from all discovered test functions and test files across the AST code graph.
+  - Accurately classifies every non-test symbol into `DirectlyTested` ($\text{depth} = 1$), `TransitivelyCovered` ($\text{depth} \ge 2$), or `Untested` (zero test reachability).
+- **Composite Risk Rating Formula (`src/context/graph.rs`, `src/context/test_gap.rs`)**:
+  - Continuous composite risk index: $R = 0.35 \cdot R_{\text{callers}} + 0.25 \cdot R_{\text{pagerank}} + 0.30 \cdot R_{\text{test\_gap}} + 0.10 \cdot R_{\text{pub}}$.
+  - Enhanced `BlastRadiusReport` with `composite_risk_score` metric.
+- **`test_coverage_gaps` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered `test_coverage_gaps` tool enabling the LLM agent to inspect missing test coverage, filter by minimum composite risk, and receive suggested integration test suites.
+- **Integration Test Suite (`tests/integration_test_gaps.rs`)**:
+  - Added integration tests covering test reachability categorization, risk differential, and tool execution.
+
 ## [0.0.83] — 2026-09-01
 
 ### Progressive Multi-Tier Memory Hierarchy L0 -> L3 (Phase 63)

@@ -334,6 +334,27 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "test_coverage_gaps".to_string(),
+            description: "Analyze codebase AST call-graph reachability from test entrypoints to identify untested symbols, missing test coverage gaps, and composite risk scores.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "Optional specific file to limit test gap analysis to (e.g. 'src/context/graph.rs')"
+                    },
+                    "untested_only": {
+                        "type": "boolean",
+                        "description": "If true, only returns symbols that have zero test reachability (default: false)"
+                    },
+                    "min_risk": {
+                        "type": "number",
+                        "description": "Minimum composite risk threshold 0.0 to 1.0 (e.g. 0.5 for high-risk only)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -757,6 +778,29 @@ pub async fn dispatch(
             let report =
                 crate::context::governance::ArchitectureGovernor::scan_workspace(workspace_root)?;
             Ok(report.format_markdown())
+        })()),
+        "test_coverage_gaps" => Some((|| {
+            let target_file = args.get("target_file").and_then(|v| v.as_str());
+            let untested_only = args
+                .get("untested_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let min_risk = args.get("min_risk").and_then(|v| v.as_f64());
+
+            let mut graph = crate::context::graph::CodeGraph::new();
+            let _ = graph.build_graph(workspace_root);
+
+            let report = crate::context::test_gap::TestGapAnalyzer::analyze(
+                workspace_root,
+                &graph,
+                target_file,
+                untested_only,
+                min_risk,
+            )?;
+
+            let markdown =
+                crate::context::test_gap::TestGapAnalyzer::format_markdown(&report, target_file);
+            Ok(markdown)
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

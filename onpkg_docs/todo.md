@@ -1344,9 +1344,15 @@
 - [x] 63.5: Version bump → `v0.0.83`, changelog, commit, tag, push
 
 ### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.84)
-- [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
-- [ ] 64.2: Enhance `BlastRadiusReport` with composite risk formula
-- [ ] 64.3: Expose `test_coverage_gaps` tool
-- [ ] 64.4: Version bump → `v0.0.84`, changelog, commit, tag, push
+- [x] 64.1: Implement `TestGapAnalyzer` with call-graph reachability
+- [x] 64.2: Enhance `BlastRadiusReport` with composite risk formula
+- [x] 64.3: Expose `test_coverage_gaps` tool
+- [x] 64.4: Version bump → `v0.0.84`, changelog, commit, tag, push
+
+### Phase 65: AST Code Smells & Antipattern Linter (v0.0.85)
+- [ ] 65.1: Implement `AstSmellDetector` for god functions, deep nesting, magic literals, dead exports
+- [ ] 65.2: Expose `code_smells` agent tool
+- [ ] 65.3: Integrate smell checks into `/review` pipeline
+- [ ] 65.4: Version bump → `v0.0.85`, changelog, commit, tag, push
 
 

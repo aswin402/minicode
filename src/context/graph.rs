@@ -213,6 +213,8 @@ pub struct BlastRadiusReport {
     pub direct_caller_symbols: Vec<String>,
     #[serde(default)]
     pub transitive_caller_symbols: Vec<String>,
+    #[serde(default)]
+    pub composite_risk_score: f64,
 }
 
 pub struct CodeGraph {
@@ -1200,6 +1202,19 @@ impl CodeGraph {
             }
         }
 
+        let callers_risk = ((direct_count as f64 + 0.5 * transitive_count as f64) / 10.0).min(1.0);
+        let cycle_risk = if in_cyclic_dependency { 1.0 } else { 0.0 };
+        let test_risk = if has_tests { 0.0 } else { 1.0 };
+        let pagerank_approx = (direct_count as f64 * 0.05).min(1.0);
+        let composite_risk_score =
+            (0.35 * callers_risk + 0.25 * pagerank_approx + 0.25 * test_risk + 0.15 * cycle_risk)
+                .min(1.0);
+
+        summary.push_str(&format!(
+            "- **Composite Risk Score**: `{:.3}` / 1.000\n",
+            composite_risk_score
+        ));
+
         Ok(BlastRadiusReport {
             target: target_query.to_string(),
             target_type,
@@ -1213,6 +1228,7 @@ impl CodeGraph {
             summary,
             direct_caller_symbols,
             transitive_caller_symbols,
+            composite_risk_score,
         })
     }
 
