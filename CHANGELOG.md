@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.91] — 2026-09-01
+
+### Autonomous Workspace Architecture Documentation Synthesizer (Phase 71)
+
+#### 💡 Ideas & Inspirations
+- **Living Architecture Documentation (Docs-as-Code)**: In fast-moving projects and AI-assisted development, static design docs rapidly drift out of sync with actual code implementations. Inspired by Simon Brown's C4 model and dynamic AST extraction, `minicode` introduces zero-maintenance architecture synthesis directly from live AST parse trees and `CodeGraph` dependencies.
+- **Visual Mermaid Architecture Graphs**: Generating clean, interactive Mermaid flowcharts of component interactions and Clean Architecture layer boundaries keeps human maintainers and agents aligned without manual diagram drawing.
+
+#### 📚 References & Sources
+- **Simon Brown's *C4 Model for Visualizing Software Architecture***: Level 2 & Level 3 component and container diagrams.
+- **Mermaid.js Flowchart Specifications**: Declarative graph visualization syntax.
+- **Robert C. Martin's *Clean Architecture Layer Classifications***: Layer partitioning matrices.
+
+#### 🚀 Features & Changes
+- **`ArchitectureDocSynthesizer` Engine (`src/context/doc_synthesizer.rs`, `src/context/mod.rs`)**:
+  - Automatically analyzes workspace source files and classifies them into Clean Architecture tiers (`Presentation`, `Service`, `Domain`, `Data`, `Infrastructure`, `Utility`).
+  - Synthesizes Mermaid flowchart diagrams representing data and control flow between architectural subsystems.
+  - Catalogs top high-centrality symbols with PageRank rankings to highlight primary system abstractions.
+  - Optionally outputs to `ARCHITECTURE.md` directly in the project root.
+- **`generate_architecture_docs` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool enabling on-demand synthesis and file persistence of living architecture specifications.
+- **Integration Test Suite (`tests/integration_doc_synthesizer.rs`)**:
+  - Added 3 integration tests covering markdown generation, direct `ARCHITECTURE.md` file writing, and async tool dispatch.
+
 ## [0.0.90] — 2026-09-01
 
 ### Semantic Code Search & Cross-Encoder Reranker (Phase 70)

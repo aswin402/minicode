@@ -495,6 +495,27 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "generate_architecture_docs".to_string(),
+            description: "Automatically synthesize comprehensive ARCHITECTURE.md documentation with Mermaid component diagrams and layer breakdowns.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "write_to_file": {
+                        "type": "boolean",
+                        "description": "Whether to write the documentation directly to ARCHITECTURE.md in the workspace root (default: false)"
+                    },
+                    "include_mermaid": {
+                        "type": "boolean",
+                        "description": "Whether to include Mermaid visual architecture diagrams (default: true)"
+                    },
+                    "include_symbol_catalog": {
+                        "type": "boolean",
+                        "description": "Whether to include high-centrality PageRank symbol table (default: true)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1152,6 +1173,42 @@ pub async fn dispatch(
 
             let markdown = result.format_markdown();
             Ok(markdown)
+        })()),
+        "generate_architecture_docs" => Some((|| {
+            let write_to_file = args
+                .get("write_to_file")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let include_mermaid = args
+                .get("include_mermaid")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let include_symbol_catalog = args
+                .get("include_symbol_catalog")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            let options = crate::context::doc_synthesizer::ArchitectureDocOptions {
+                write_to_file,
+                include_mermaid,
+                include_symbol_catalog,
+            };
+
+            let report = crate::context::doc_synthesizer::ArchitectureDocSynthesizer::synthesize(
+                workspace_root,
+                options,
+            )?;
+
+            let response = if let Some(path) = report.file_written {
+                format!(
+                    "✔ Successfully synthesized and wrote `{}` to workspace root!\n\n{}",
+                    path, report.markdown_content
+                )
+            } else {
+                report.markdown_content
+            };
+
+            Ok(response)
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

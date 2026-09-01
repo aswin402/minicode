@@ -6,6 +6,7 @@ pub mod compressor;
 pub mod dead_code;
 pub mod decay;
 pub mod dedup;
+pub mod doc_synthesizer;
 pub mod episodic;
 pub mod explorer;
 pub mod governance;

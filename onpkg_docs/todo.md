@@ -1381,8 +1381,13 @@
 - [x] 70.3: Version bump → `v0.0.90`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 71: Autonomous Workspace Architecture Documentation Synthesizer (v0.0.91)
-- [ ] 71.1: Implement automated ARCHITECTURE.md generation from CodeGraph & layers
-- [ ] 71.2: Add `generate_architecture_docs` agent tool
-- [ ] 71.3: Version bump → `v0.0.91`, changelog with ideas/sources, commit, tag, push
+- [x] 71.1: Implement automated ARCHITECTURE.md generation from CodeGraph & layers
+- [x] 71.2: Add `generate_architecture_docs` agent tool
+- [x] 71.3: Version bump → `v0.0.91`, changelog with ideas/sources, commit, tag, push
+
+### Phase 72: Real-Time Incremental CodeGraph Synchronizer & File Watcher (v0.0.92)
+- [ ] 72.1: Implement file system event debouncer & dirty AST diff graph patching
+- [ ] 72.2: Add `sync_code_graph` agent tool
+- [ ] 72.3: Version bump → `v0.0.92`, changelog with ideas/sources, commit, tag, push
 
 
