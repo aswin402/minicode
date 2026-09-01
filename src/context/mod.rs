@@ -13,6 +13,7 @@ pub mod graph_store;
 pub mod graph_visualizer;
 pub mod hybrid;
 pub mod index;
+pub mod invariants;
 pub mod layers;
 pub mod memory;
 pub mod okf;

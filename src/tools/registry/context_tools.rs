@@ -442,6 +442,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "architecture_invariants".to_string(),
+            description: "Audit multi-file architectural invariants, detect forbidden cross-layer calls (e.g. Domain->UI), circular call cycles, and structural integrity violations.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "Optional specific file to limit invariant audit to (e.g. 'src/agent/loop.rs')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1045,6 +1058,21 @@ pub async fn dispatch(
                 }
                 .into()),
             }
+        })()),
+        "architecture_invariants" => Some((|| {
+            let target_file = args.get("target_file").and_then(|v| v.as_str());
+
+            let mut graph = crate::context::graph::CodeGraph::new();
+            let _ = graph.build_graph(workspace_root);
+
+            let report = crate::context::invariants::InvariantChecker::check_workspace(
+                workspace_root,
+                Some(&graph),
+                target_file,
+            )?;
+
+            let markdown = report.format_markdown();
+            Ok(markdown)
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

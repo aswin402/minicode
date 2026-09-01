@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.88] — 2026-09-01
+
+### Multi-File Symbol Dependency Invariant Checker (Phase 68)
+
+#### 💡 Ideas & Inspirations
+- **Preventing Architectural Decay in Agentic Coding**: Autonomous AI coding agents can inadvertently introduce architectural shortcuts (e.g. Domain models invoking UI presentation widgets or Data access layers bypassing domain services). The Invariant Checker provides automated structural guardrails to maintain Clean / Hexagonal Architecture invariants.
+- **Fine-Grained Call-Graph Cycles**: File-level import checks miss mutual symbol recursion. Tarjan's Strongly Connected Components algorithm across the symbol graph identifies specific cyclic call paths across files.
+
+#### 📚 References & Sources
+- **Robert C. Martin's *Clean Architecture***: Dependency Inversion Principle (DIP) and stable abstraction invariants.
+- **ArchUnit Architecture Testing Framework**: Architectural rule declarative validation concepts.
+- **Tarjan's SCC (Strongly Connected Components)**: Graph acyclicity verification over `petgraph::algo::tarjan_scc`.
+
+#### 🚀 Features & Changes
+- **`InvariantChecker` Engine (`src/context/invariants.rs`, `src/context/mod.rs`)**:
+  - `INV-001 (CRITICAL)`: Service $\rightarrow$ UI layer inversion detection (domain calling presentation).
+  - `INV-002 (CRITICAL)`: Data $\rightarrow$ UI / API layer inversion detection (persistence calling outward layers).
+  - `INV-003 (HIGH)`: Fine-grained multi-file symbol mutual recursion call cycles.
+  - `INV-004 (HIGH)`: Utility helpers depending upward on higher architectural tiers.
+  - Computes composite Invariant Health Score ($0 \dots 100$) with actionable remediation suggestions.
+- **`architecture_invariants` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool for the LLM agent and developer to audit repository structural invariants.
+- **Integration Test Suite (`tests/integration_invariants.rs`)**:
+  - Added 3 integration tests covering layer inversion detection, mutual call cycle detection, and tool dispatch.
+
 ## [0.0.87] — 2026-09-01
 
 ### Semantic Patch Synthesizer & AST Refactoring Actions (Phase 67)

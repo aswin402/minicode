@@ -1366,8 +1366,13 @@
 - [x] 67.3: Version bump → `v0.0.87`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 68: Multi-File Symbol Dependency Invariant Checker (v0.0.88)
-- [ ] 68.1: Implement layer violation and circular dependency invariant rules
-- [ ] 68.2: Add `architecture_invariants` agent tool
-- [ ] 68.3: Version bump → `v0.0.88`, changelog with ideas/sources, commit, tag, push
+- [x] 68.1: Implement layer violation and circular dependency invariant rules
+- [x] 68.2: Add `architecture_invariants` agent tool
+- [x] 68.3: Version bump → `v0.0.88`, changelog with ideas/sources, commit, tag, push
+
+### Phase 69: AST-Guided Dead Code & Redundant Symbol Eliminator (v0.0.89)
+- [ ] 69.1: Implement Dead Code reachability analysis from crate roots
+- [ ] 69.2: Add `dead_code_sweep` agent tool
+- [ ] 69.3: Version bump → `v0.0.89`, changelog with ideas/sources, commit, tag, push
 
 
