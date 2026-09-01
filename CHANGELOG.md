@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.89] — 2026-09-01
+
+### AST-Guided Dead Code & Redundant Symbol Eliminator (Phase 69)
+
+#### 💡 Ideas & Inspirations
+- **Zero Technical Debt in Autonomous Development**: As repositories grow and agentic workflows refactor APIs, dead functions and unused structures ("zombie code") accumulate. Inspired by modern bundler tree-shaking (Rollup, Webpack) and compiler mark-and-sweep garbage collection algorithms, `minicode` introduces reachability-based dead code elimination.
+- **Dead Island Cluster Isolation**: Unused code often exists in self-referencing clusters (Function A calls Function B, which calls Function A, but neither is ever invoked by the program entrypoints). The reachability engine traces from actual crate roots to isolate entire disconnected subgraphs.
+
+#### 📚 References & Sources
+- **Mark-and-Sweep Garbage Collection & Reachability Analysis**: Multi-source breadth-first search traversing downwards from known root roots (`main.rs`, `lib.rs`, `bin/*`, `tests/*`).
+- **Tree-Shaking Algorithms (ES Modules & Static AST Analysis)**: Static symbol dependency resolution.
+- **Rust `cargo-udeps` & `cargo-deadlinks`**: Principles of dead code and unreferenced item auditing.
+
+#### 🚀 Features & Changes
+- **`DeadCodeEliminator` Engine (`src/context/dead_code.rs`, `src/context/mod.rs`)**:
+  - Automatically identifies seed entrypoints (`main.rs`, `lib.rs`, exported APIs, test functions).
+  - Traverses the entire AST `CodeGraph` using forward reachability BFS.
+  - Classifies unreachable items: `DeadFunction`, `DeadStruct`, `DeadEnum`, and `DeadIslandCluster`.
+  - Calculates confidence ratings (`HIGH`, `MEDIUM`, `LOW`) and computes potential lines of code (LOC) saved.
+- **`dead_code_sweep` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing the LLM agent to audit dead symbols and generate cleanup reports.
+- **Integration Test Suite (`tests/integration_dead_code.rs`)**:
+  - Added 3 integration tests covering unreachable function detection, dead island cluster detection, and tool execution.
+
 ## [0.0.88] — 2026-09-01
 
 ### Multi-File Symbol Dependency Invariant Checker (Phase 68)

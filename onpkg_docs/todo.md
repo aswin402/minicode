@@ -1371,8 +1371,13 @@
 - [x] 68.3: Version bump → `v0.0.88`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 69: AST-Guided Dead Code & Redundant Symbol Eliminator (v0.0.89)
-- [ ] 69.1: Implement Dead Code reachability analysis from crate roots
-- [ ] 69.2: Add `dead_code_sweep` agent tool
-- [ ] 69.3: Version bump → `v0.0.89`, changelog with ideas/sources, commit, tag, push
+- [x] 69.1: Implement Dead Code reachability analysis from crate roots
+- [x] 69.2: Add `dead_code_sweep` agent tool
+- [x] 69.3: Version bump → `v0.0.89`, changelog with ideas/sources, commit, tag, push
+
+### Phase 70: Semantic Code Search & Cross-Encoder Reranker (v0.0.90)
+- [ ] 70.1: Implement hybrid semantic retrieval with reciprocal rank fusion (RRF)
+- [ ] 70.2: Add `semantic_code_search` agent tool
+- [ ] 70.3: Version bump → `v0.0.90`, changelog with ideas/sources, commit, tag, push
 
 

@@ -455,6 +455,24 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "dead_code_sweep".to_string(),
+            description: "Analyze codebase reachability from crate roots and identify dead functions, structs, and isolated cyclic clusters.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "Optional specific file to limit dead code audit to (e.g. 'src/agent/loop.rs')"
+                    },
+                    "min_confidence": {
+                        "type": "string",
+                        "enum": ["all", "medium", "high"],
+                        "description": "Minimum confidence threshold (default: 'all')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1069,6 +1087,23 @@ pub async fn dispatch(
                 workspace_root,
                 Some(&graph),
                 target_file,
+            )?;
+
+            let markdown = report.format_markdown();
+            Ok(markdown)
+        })()),
+        "dead_code_sweep" => Some((|| {
+            let target_file = args.get("target_file").and_then(|v| v.as_str());
+            let min_confidence = args.get("min_confidence").and_then(|v| v.as_str());
+
+            let mut graph = crate::context::graph::CodeGraph::new();
+            let _ = graph.build_graph(workspace_root);
+
+            let report = crate::context::dead_code::DeadCodeEliminator::analyze_workspace(
+                workspace_root,
+                Some(&graph),
+                target_file,
+                min_confidence,
             )?;
 
             let markdown = report.format_markdown();
