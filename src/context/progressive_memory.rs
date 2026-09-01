@@ -299,6 +299,15 @@ impl ProgressiveMemory {
                     "On version bump: always commit, tag with vX.Y.Z, and push to origin main --tags",
                     source,
                 );
+            } else if lower.contains("mention the ideas")
+                || lower.contains("ideas,insperations and source")
+                || lower.contains("ideas, inspirations and source")
+            {
+                self.add_l3_preference(
+                    "changelog_structure",
+                    "In CHANGELOG.md, always include '💡 Ideas & Inspirations' and '📚 References & Sources' for new features",
+                    source,
+                );
             } else if trimmed.starts_with("Rule:")
                 || trimmed.starts_with("Note:")
                 || trimmed.starts_with("Fact:")

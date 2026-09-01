@@ -1356,8 +1356,13 @@
 - [x] 65.4: Version bump → `v0.0.85`, changelog, commit, tag, push
 
 ### Phase 66: Interactive Architectural Heatmap & Call-Graph Visualizer (v0.0.86)
-- [ ] 66.1: Implement ASCII/Unicode Tree & Box Call-Graph Visualizer
-- [ ] 66.2: Add `graph_visualize` tool and TUI `/graph` modal
-- [ ] 66.3: Version bump → `v0.0.86`, changelog, commit, tag, push
+- [x] 66.1: Implement ASCII/Unicode Tree & Box Call-Graph Visualizer
+- [x] 66.2: Add `graph_visualize` tool and TUI `/graph` modal
+- [x] 66.3: Version bump → `v0.0.86`, changelog, commit, tag, push
+
+### Phase 67: Semantic Patch Synthesizer & AST Refactoring Actions (v0.0.87)
+- [ ] 67.1: Implement AST refactoring actions (extract function, inline variable, rename symbol)
+- [ ] 67.2: Expose `ast_refactor` agent tool
+- [ ] 67.3: Version bump → `v0.0.87`, changelog with ideas/sources, commit, tag, push
 
 

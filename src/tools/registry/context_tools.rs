@@ -368,6 +368,29 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "graph_visualize".to_string(),
+            description: "Render visual ASCII and Unicode call-graph trees, upstream callers, downstream callees, and architectural box summaries for a symbol or file.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Symbol name (e.g. 'CodeGraph', 'execute_turn') or file path (e.g. 'src/agent/loop.rs')"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["both", "upstream", "downstream", "box"],
+                        "description": "Visualization mode: 'both' (callers + callees), 'upstream' (callers only), 'downstream' (callees only), 'box' (architectural card only). Default: 'both'"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum tree depth to traverse (default: 3, max: 6)"
+                    }
+                },
+                "required": ["target"]
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -832,6 +855,32 @@ pub async fn dispatch(
                 target_file,
             );
             Ok(markdown)
+        })()),
+        "graph_visualize" => Some((|| {
+            let target = args.get("target").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "graph_visualize".to_string(),
+                    reason: "Missing required argument 'target'".to_string(),
+                }
+            })?;
+            let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
+            let max_depth = parse_u64_param(args.get("max_depth"))
+                .map(|v| (v as usize).clamp(1, 6))
+                .unwrap_or(3);
+
+            let mode = crate::context::graph_visualizer::VisualizeMode::from_str(mode_str);
+
+            let mut graph = crate::context::graph::CodeGraph::new();
+            let _ = graph.build_graph(workspace_root);
+
+            let diagram = crate::context::graph_visualizer::GraphVisualizer::render(
+                workspace_root,
+                &graph,
+                target,
+                mode,
+                max_depth,
+            )?;
+            Ok(diagram)
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.86] — 2026-09-01
+
+### Interactive Architectural Heatmap & Call-Graph Visualizer (Phase 66)
+
+#### 💡 Ideas & Inspirations
+- **Terminal-Native Visual Architectures**: Developers shouldn't need heavy web browsers or external GUI tools just to understand caller hierarchies, blast radius, and dependencies. Inspired by Unix `tree`, Graphviz DOT representations, and ASCII diagram generators, `minicode` now provides pure-terminal visual graphs.
+- **Architectural Heatmap Cards**: Quick-reference box summaries displaying symbol centrality (PageRank), test status, incoming callers, and risk rating in a single glanceable card.
+
+#### 📚 References & Sources
+- **Petgraph Directed Graph BFS Traversal**: Upstream & downstream graph exploration using `petgraph::Direction::Incoming` and `petgraph::Direction::Outgoing`.
+- **Unicode Box-Drawing Standards**: UTF-8 line drawing (`┌`, `─`, `┐`, `│`, `└`, `┘`, `├──`, `└──`) for seamless TUI rendering.
+- **Aider & Tree-Sitter AST Repomap**: Symbolic structural navigation principles.
+
+#### 🚀 Features & Changes
+- **`GraphVisualizer` Engine (`src/context/graph_visualizer.rs`, `src/context/mod.rs`)**:
+  - Implemented ASCII/Unicode call-tree and architectural box visualizer.
+  - Supports multiple visualization modes: `Box` (architectural card), `Upstream` (caller tree), `Downstream` (callee tree), and `Both` (full bidirectional relationship graph).
+  - Handles mutual recursive cycle detection and displays `(⟲ mutual cycle)` markers.
+- **`graph_visualize` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered `graph_visualize` tool enabling the LLM agent to inspect visual call trees and export architectural cards for any symbol or file.
+- **Integration Test Suite (`tests/integration_graph_visualizer.rs`)**:
+  - Added 3 integration tests covering box rendering, upstream/downstream tree generation, and async tool dispatch.
+
 ## [0.0.85] — 2026-09-01
 
 ### AST Code Smells & Architectural Health Linter (Phase 65)
