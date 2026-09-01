@@ -48,6 +48,16 @@ impl PromptBuilder {
             workspace_dir.display()
         ));
 
+        // Inject Progressive 4-Tier Memory (<progressive_memory>)
+        let prog_memory =
+            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
+        let prog_block = prog_memory.to_prompt_block();
+        if !prog_block.is_empty() {
+            prompt.push_str("\n# Progressive Multi-Tier Memory:\n");
+            prompt.push_str(&prog_block);
+            prompt.push('\n');
+        }
+
         // Inject 2-Tier Core Memory (<core_memory>)
         let memory = crate::context::memory::CoreMemory::load(workspace_dir);
         let memory_block = memory.to_prompt_block();

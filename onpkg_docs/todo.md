@@ -1337,11 +1337,11 @@
 - [x] 62.4: Version bump → `v0.0.82`, changelog, commit, tag, push
 
 ### Phase 63: Progressive Memory Tiers (v0.0.83)
-- [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
-- [ ] 63.2: Implement fact extraction from compaction
-- [ ] 63.3: Inject memory tiers into system prompt
-- [ ] 63.4: Persistence to `.minicode/progressive_memory.json`
-- [ ] 63.5: Version bump → `v0.0.83`, changelog, commit, tag, push
+- [x] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers
+- [x] 63.2: Implement fact extraction from compaction
+- [x] 63.3: Inject memory tiers into system prompt
+- [x] 63.4: Persistence to `.minicode/progressive_memory.json`
+- [x] 63.5: Version bump → `v0.0.83`, changelog, commit, tag, push
 
 ### Phase 64: Test Gap Detection + Composite Risk Scoring (v0.0.84)
 - [ ] 64.1: Implement `TestGapAnalyzer` with call-graph reachability

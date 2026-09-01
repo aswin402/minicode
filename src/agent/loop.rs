@@ -719,6 +719,21 @@ impl AgentLoop {
         }
         event_sender.send(end_event)?;
 
+        // Sync turn learnings & facts into Progressive Multi-Tier Memory
+        let mut prog_mem =
+            crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);
+        prog_mem.extract_and_store_facts(&turn_response, &format!("turn_{}", turn_id));
+        prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
+        if !turn_files_modified.is_empty() {
+            prog_mem.record_l1_anchor(
+                &format!("Modified {} files", turn_files_modified.len()),
+                &turn_files_modified,
+                user_prompt,
+                &format!("turn_{}", turn_id),
+            );
+        }
+        let _ = prog_mem.save(&self.workspace_root);
+
         let turn = Turn {
             turn_id,
             user_prompt: user_prompt.to_string(),

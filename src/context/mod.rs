@@ -14,6 +14,7 @@ pub mod index;
 pub mod layers;
 pub mod memory;
 pub mod okf;
+pub mod progressive_memory;
 pub mod recall;
 pub mod repomap;
 pub mod semantic;

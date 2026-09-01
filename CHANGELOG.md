@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.83] — 2026-09-01
+
+### Progressive Multi-Tier Memory Hierarchy L0 -> L3 (Phase 63)
+
+- **`ProgressiveMemory` 4-Tier Memory Engine (`src/context/progressive_memory.rs`, `src/context/mod.rs`)**:
+  - Implemented structured progressive memory hierarchy:
+    - **L0 (Working Context)**: Ephemeral in-memory turn scratchpad and active sub-goals.
+    - **L1 (Session Anchors)**: Milestone summaries, active goals, and modified file rollups.
+    - **L2 (Project Knowledge Base)**: Workspace-persisted architectural facts and conventions (`.minicode/progressive_memory.json`).
+    - **L3 (Global Developer Memory)**: Cross-project user preferences and hardware execution constraints (`~/.config/minicode/global_memory.json`).
+- **Automatic Rule & Fact Extraction (`src/context/progressive_memory.rs`, `src/agent/loop.rs`)**:
+  - Automatically distills guidelines, constraints (e.g. `-j 1` resource limits, commit/push rules), and project facts from turn responses and user prompts.
+- **System Prompt Integration (`src/agent/prompt.rs`)**:
+  - Injects structured `<progressive_memory>` block into agent system prompt with clean tier separation.
+- **Integration Test Suite (`tests/integration_progressive_memory.rs`)**:
+  - Added 5 end-to-end tests covering tier separation, local persistence, fact extraction, query retrieval, and prompt block rendering.
+
 ## [0.0.82] — 2026-09-01
 
 ### Hybrid BM25 + Dense 3-Gram Vector + PageRank RRF Retrieval (Phase 62)

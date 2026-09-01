@@ -11,6 +11,12 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const ENV_FILE_NAME: &str = ".env";
 /// Memory storage JSON file name
 pub const MEMORY_FILE: &str = "memory.json";
+/// Progressive memory local JSON file name (.minicode/progressive_memory.json)
+pub const PROGRESSIVE_MEMORY_FILE: &str = "progressive_memory.json";
+/// Global progressive memory JSON file name (~/.config/minicode/global_memory.json)
+pub const GLOBAL_PROGRESSIVE_MEMORY_FILE: &str = "global_memory.json";
+/// Maximum progressive memory entries to retain per tier
+pub const MAX_PROGRESSIVE_TIER_ENTRIES: usize = 100;
 /// Subdirectory storing active task plans
 pub const PLAN_DIR: &str = "plan";
 /// Active task plan markdown filename
