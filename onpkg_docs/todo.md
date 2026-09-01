@@ -1331,10 +1331,10 @@
 - [x] 61.4: Version bump → `v0.0.81`, changelog, commit, tag, push
 
 ### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.82)
-- [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
-- [ ] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
-- [ ] 62.3: Add RRF constants to `constants.rs`
-- [ ] 62.4: Version bump → `v0.0.82`, changelog, commit, tag, push
+- [x] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion
+- [x] 62.2: Update `semantic_search` and `search_symbols_semantic` tools
+- [x] 62.3: Add RRF constants to `constants.rs`
+- [x] 62.4: Version bump → `v0.0.82`, changelog, commit, tag, push
 
 ### Phase 63: Progressive Memory Tiers (v0.0.83)
 - [ ] 63.1: Create `ProgressiveMemory` module with L0–L3 tiers

@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.82] — 2026-09-01
+
+### Hybrid BM25 + Dense 3-Gram Vector + PageRank RRF Retrieval (Phase 62)
+
+- **`HybridIndex` Multi-Modal Retrieval Engine (`src/context/hybrid.rs`, `src/context/mod.rs`)**:
+  - Combined lexical BM25 inverted indexing over identifiers/symbols with dense 128-dimensional 3-gram hashing vector semantic search and `CodeGraph` PageRank graph centrality.
+  - Implemented standard **Reciprocal Rank Fusion (RRF)**: $RRF(d) = \sum_{m} \frac{w_m}{k + \text{rank}_m(d)} + w_{\text{pr}} \cdot \text{PageRank}(d)$.
+  - Provides multi-source rank tracking and normalized score breakdown for every search hit.
+- **RRF Retrieval Constants (`src/constants.rs`)**:
+  - Added `RRF_K = 60.0`, `RRF_WEIGHT_LEXICAL = 1.0`, `RRF_WEIGHT_VECTOR = 1.0`, `RRF_WEIGHT_PAGERANK = 0.5`.
+- **`hybrid_search` Agent Tool (`src/tools/registry/search_tools.rs`)**:
+  - Registered `hybrid_search` schema and dispatcher enabling the agent to execute unified hybrid searches with rich markdown formatting and source attribution.
+- **Integration Test Suite (`tests/integration_hybrid_search.rs`)**:
+  - Added end-to-end tests covering schema registration, empty workspaces, exact identifier matching, conceptual intent retrieval, and tool dispatch.
+
 ## [0.0.81] — 2026-09-01
 
 ### Diff-to-Symbol AST Projection for `/review` & `diff_impact` (Phase 61)

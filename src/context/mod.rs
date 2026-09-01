@@ -9,6 +9,7 @@ pub mod explorer;
 pub mod governance;
 pub mod graph;
 pub mod graph_store;
+pub mod hybrid;
 pub mod index;
 pub mod layers;
 pub mod memory;

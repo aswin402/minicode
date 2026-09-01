@@ -257,6 +257,16 @@ pub const SYMBOL_FUNC_KIND_BOOST: f64 = 2.0;
 /// Penalty multiplier applied to search score for test and mock files
 pub const SYMBOL_TEST_PENALTY_FACTOR: f64 = 0.5;
 
+// === Reciprocal Rank Fusion (RRF) Constants ===
+/// RRF smoothing constant (k) to dampen outlier rankings
+pub const RRF_K: f64 = 60.0;
+/// Weight multiplier for BM25 lexical ranking in RRF fusion
+pub const RRF_WEIGHT_LEXICAL: f64 = 1.0;
+/// Weight multiplier for vector semantic similarity ranking in RRF fusion
+pub const RRF_WEIGHT_VECTOR: f64 = 1.0;
+/// Weight multiplier for PageRank architectural centrality in RRF fusion
+pub const RRF_WEIGHT_PAGERANK: f64 = 0.5;
+
 // === Sandbox Environment Whitelist & Blacklist ===
 /// Standard environment variables permitted through execution sandbox
 pub const WHITELIST_ENV_VARS: &[&str] = &[

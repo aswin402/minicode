@@ -48,6 +48,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "hybrid_search".to_string(),
+            description: "Execute advanced multi-modal code search fusing lexical BM25, dense 3-gram semantic vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query (keyword, natural language concept, or identifier name)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of ranked results to return (default: 5)"
+                    },
+                    "include_symbols": {
+                        "type": "boolean",
+                        "description": "Whether to include AST symbol definitions in candidate pool (default: true)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolSchema {
             name: "semantic_search".to_string(),
             description: "Perform fast sub-millisecond offline semantic vector code search using intent queries across all indexed source files.".to_string(),
             parameters: json!({
@@ -187,6 +209,27 @@ pub fn dispatch(
                 res
             };
             Ok(index.format_matches(&matches, workspace_root))
+        })()),
+        "hybrid_search" => Some((|| {
+            let query = args["query"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "hybrid_search".to_string(),
+                    reason: "Missing 'query'".to_string(),
+                })?;
+            let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
+            let include_symbols = args
+                .get("include_symbols")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            let mut index = crate::context::hybrid::HybridIndex::new();
+            index.build_index(workspace_root)?;
+            let results = index.search(query, limit, include_symbols);
+
+            Ok(crate::context::hybrid::HybridIndex::format_markdown(
+                query, &results,
+            ))
         })()),
         "semantic_search" => Some((|| {
             let query = args["query"]
