@@ -516,6 +516,23 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "sync_code_graph".to_string(),
+            description: "Incrementally update or rebuild the AST CodeGraph dependency index to reflect recent disk changes.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "Optional specific file to synchronize"
+                    },
+                    "force_full": {
+                        "type": "boolean",
+                        "description": "Whether to force a complete cold-start re-indexing (default: false)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1209,6 +1226,21 @@ pub async fn dispatch(
             };
 
             Ok(response)
+        })()),
+        "sync_code_graph" => Some((|| {
+            let target_file = args.get("target_file").and_then(|v| v.as_str());
+            let force_full = args
+                .get("force_full")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let stats = crate::context::graph_sync::GraphSynchronizer::sync(
+                workspace_root,
+                target_file,
+                force_full,
+            )?;
+
+            Ok(stats.format_markdown())
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

@@ -1386,8 +1386,13 @@
 - [x] 71.3: Version bump → `v0.0.91`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 72: Real-Time Incremental CodeGraph Synchronizer & File Watcher (v0.0.92)
-- [ ] 72.1: Implement file system event debouncer & dirty AST diff graph patching
-- [ ] 72.2: Add `sync_code_graph` agent tool
-- [ ] 72.3: Version bump → `v0.0.92`, changelog with ideas/sources, commit, tag, push
+- [x] 72.1: Implement file system event debouncer & dirty AST diff graph patching
+- [x] 72.2: Add `sync_code_graph` agent tool
+- [x] 72.3: Version bump → `v0.0.92`, changelog with ideas/sources, commit, tag, push
+
+### Phase 73: Multi-Workspace Virtual Monorepo Context Orchestrator (v0.0.93)
+- [ ] 73.1: Implement cross-crate multi-workspace dependency resolution
+- [ ] 73.2: Add `workspace_monorepo_map` agent tool
+- [ ] 73.3: Version bump → `v0.0.93`, changelog with ideas/sources, commit, tag, push
 
 

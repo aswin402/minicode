@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.92] — 2026-09-01
+
+### Real-Time Incremental CodeGraph Synchronizer & File Watcher (Phase 72)
+
+#### 💡 Ideas & Inspirations
+- **Sub-Millisecond CodeGraph Freshness**: During continuous editing and iterative refactoring loops, rebuilding the entire repository AST graph on every turn introduces latency. Inspired by Salsa incremental computation in `rust-analyzer` and Language Server Protocol (LSP) `textDocument/didChange` syncing, `minicode` introduces sub-millisecond delta AST graph patching.
+- **Granular Synchronization Telemetry**: Giving agents and developers visibility into exactly which files changed, which symbol nodes were updated, and the exact sync latency in milliseconds.
+
+#### 📚 References & Sources
+- **Incremental Computation & Salsa Framework in rust-analyzer**: Memoization and dirty subtree invalidation architectures.
+- **Language Server Protocol (LSP 3.17)**: Incremental document synchronization paradigms.
+- **Fast Content Fingerprinting (FNV-1a / xxHash)**: Rapid non-cryptographic cache invalidation.
+
+#### 🚀 Features & Changes
+- **`GraphSynchronizer` Engine (`src/context/graph_sync.rs`, `src/context/mod.rs`)**:
+  - Leverages cached disk snapshots in `.minicode/graph.json` and selectively re-parses only dirty or newly created files.
+  - Automatically prunes deleted file subtrees and associated dependency edges from the graph.
+  - Records real-time performance telemetry (`files_scanned`, `files_modified`, `files_added`, `files_deleted`, `sync_latency_ms`).
+- **`sync_code_graph` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing on-demand incremental updates or forced cold-start rebuilds.
+- **Integration Test Suite (`tests/integration_graph_sync.rs`)**:
+  - Added 3 integration tests covering full cold rebuilds, incremental delta sync on modified files, and async tool dispatch.
+
 ## [0.0.91] — 2026-09-01
 
 ### Autonomous Workspace Architecture Documentation Synthesizer (Phase 71)
