@@ -137,15 +137,21 @@ fn test_subagent_swarm_matrix_toggle() {
     timeline.add_subagent_swarm(swarm);
     assert_eq!(timeline.entries.len(), 1);
 
-    if let TimelineEntry::SubagentSwarm(ref s) = timeline.entries[0] {
-        assert!(!s.is_expanded);
-        assert_eq!(s.workers.len(), 2);
+    match timeline.entries.first() {
+        Some(TimelineEntry::SubagentSwarm(s)) => {
+            assert!(!s.is_expanded);
+            assert_eq!(s.workers.len(), 2);
+        }
+        other => panic!("Expected TimelineEntry::SubagentSwarm, got {:?}", other),
     }
 
     // Toggle expansion
     timeline.toggle_subagent_swarm();
 
-    if let TimelineEntry::SubagentSwarm(ref s) = timeline.entries[0] {
-        assert!(s.is_expanded);
+    match timeline.entries.first() {
+        Some(TimelineEntry::SubagentSwarm(s)) => {
+            assert!(s.is_expanded);
+        }
+        other => panic!("Expected TimelineEntry::SubagentSwarm, got {:?}", other),
     }
 }

@@ -496,7 +496,8 @@ impl GitHubService {
             match logs {
                 Ok(l) if !l.trim().is_empty() => {
                     let snippet = if l.len() > 3000 {
-                        format!("... (truncated)\n{}", &l[l.len() - 3000..])
+                        let offset = l.floor_char_boundary(l.len().saturating_sub(3000));
+                        format!("... (truncated)\n{}", &l[offset..])
                     } else {
                         l
                     };

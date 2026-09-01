@@ -41,7 +41,7 @@ impl OnpkgScaffolder {
             }
         })?;
 
-        let dest_dir: PathBuf = match target_dir_opt {
+        let raw_dest: PathBuf = match target_dir_opt {
             Some(rel) if !rel.trim().is_empty() => {
                 let p = Path::new(rel.trim());
                 if p.is_absolute() {
@@ -52,6 +52,7 @@ impl OnpkgScaffolder {
             }
             _ => workspace_root.to_path_buf(),
         };
+        let dest_dir = crate::sandbox::path::validate_path_in_workspace(workspace_root, &raw_dest)?;
 
         fs::create_dir_all(&dest_dir).map_err(|e| ToolError::FileOp {
             path: dest_dir.display().to_string(),

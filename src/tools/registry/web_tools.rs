@@ -504,9 +504,10 @@ pub async fn dispatch(
 
                 if let Some(first) = report.pages.first() {
                     let preview = if first.markdown.len() > 1200 {
+                        let limit = first.markdown.floor_char_boundary(1200);
                         format!(
                             "{}...\n*(truncated, {} total chars)*",
-                            &first.markdown[..1200],
+                            &first.markdown[..limit],
                             first.char_count
                         )
                     } else {
@@ -598,7 +599,8 @@ pub async fn dispatch(
                     );
                     for (i, (page, score)) in results.iter().enumerate() {
                         let snippet = if page.markdown.len() > 300 {
-                            format!("{}...", &page.markdown[..300])
+                            let limit = page.markdown.floor_char_boundary(300);
+                            format!("{}...", &page.markdown[..limit])
                         } else {
                             page.markdown.clone()
                         };

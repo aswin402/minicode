@@ -52,7 +52,13 @@ pub struct PaletteCommand {
 }
 
 pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
-    // System Commands
+    PaletteCommand {
+        slash_name: "/commands",
+        title: "Command Catalog",
+        description: "Interactive catalog of all slash commands & shortcuts",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
     PaletteCommand {
         slash_name: "/new",
         title: "New Session",
@@ -146,6 +152,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("ctrl+e"),
     },
     PaletteCommand {
+        slash_name: "/map",
+        title: "Codebase Map",
+        description: "Render AST PageRank repository hierarchy & dependency graph",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/compact",
         title: "Compact Context",
         description: "Manually compact conversation context tokens",
@@ -206,6 +219,20 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         slash_name: "/export",
         title: "Export Session",
         description: "Export conversation trajectory to markdown",
+        category: CommandCategory::Tools,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/save",
+        title: "Save Session Transcript",
+        description: "Export full conversation history transcript to a target file",
+        category: CommandCategory::Tools,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/load",
+        title: "Load Session",
+        description: "Load and replay past session events into active timeline",
         category: CommandCategory::Tools,
         shortcut: None,
     },
@@ -327,10 +354,15 @@ impl<'a> InputDock<'a> {
     /// Cycles the active category (Tab / BackTab)
     pub fn cycle_category(&mut self, forward: bool) {
         let total = CommandCategory::all().len();
+        if total == 0 {
+            return;
+        }
         if forward {
             self.category_index = (self.category_index + 1) % total;
+        } else if self.category_index == 0 {
+            self.category_index = total.saturating_sub(1);
         } else {
-            self.category_index = (self.category_index + total - 1) % total;
+            self.category_index = self.category_index.saturating_sub(1);
         }
         self.slash_selected_index = 0;
     }

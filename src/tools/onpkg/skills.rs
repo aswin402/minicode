@@ -92,10 +92,25 @@ impl OnpkgSkillsManager {
 
     /// Installs a skill package into the workspace `.minicode/skills/<name>/SKILL.md`.
     pub fn install_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
+        let clean_name = skill_name.trim();
+        if clean_name.is_empty()
+            || clean_name.contains('/')
+            || clean_name.contains('\\')
+            || clean_name.contains("..")
+        {
+            return Err(ToolError::InvalidArguments {
+                name: "onpkg_skill_install".to_string(),
+                reason: format!(
+                    "Invalid skill name '{}': must not contain path separators or traversal",
+                    skill_name
+                ),
+            }
+            .into());
+        }
         let dest_dir = workspace_root
             .join(".minicode")
             .join("skills")
-            .join(skill_name);
+            .join(clean_name);
         fs::create_dir_all(&dest_dir).map_err(|e| ToolError::FileOp {
             path: dest_dir.display().to_string(),
             source: e,

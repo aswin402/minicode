@@ -26,7 +26,9 @@ impl AstTransformer {
         node_kind_filter: Option<&str>,
         name_filter: Option<&str>,
     ) -> Result<Vec<AstNodeInfo>> {
-        let full_path = workspace_root.join(file_path);
+        let raw_path = workspace_root.join(file_path);
+        let full_path =
+            crate::sandbox::path::validate_path_in_workspace(workspace_root, &raw_path)?;
         if !full_path.exists() {
             return Err(ToolError::NotFound {
                 name: file_path.to_string(),

@@ -464,16 +464,40 @@ impl AutoCompactor {
             }
 
             // Ensure no orphaned tool results at the beginning
-            while messages.len() > 2
-                && messages
+            loop {
+                let orphan_idx = if messages
+                    .first()
+                    .map(|m| m.role == Role::System)
+                    .unwrap_or(false)
+                {
+                    if messages
+                        .get(1)
+                        .map(|m| m.role == Role::Tool)
+                        .unwrap_or(false)
+                    {
+                        Some(1)
+                    } else {
+                        None
+                    }
+                } else if messages
                     .first()
                     .map(|m| m.role == Role::Tool)
                     .unwrap_or(false)
-            {
-                let removed = messages.remove(0);
-                let removed_tokens = self.compressor.count_tokens(&removed.content);
-                current_tokens =
-                    current_tokens.saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
+                {
+                    Some(0)
+                } else {
+                    None
+                };
+
+                match orphan_idx {
+                    Some(idx) if messages.len() > 2 => {
+                        let removed = messages.remove(idx);
+                        let removed_tokens = self.compressor.count_tokens(&removed.content);
+                        current_tokens = current_tokens
+                            .saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
+                    }
+                    _ => break,
+                }
             }
 
             let final_tokens = self.compressor.count_messages_tokens(messages);

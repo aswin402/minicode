@@ -53,10 +53,12 @@ pub struct SubAgent {
     pub workspace_root: PathBuf,
     pub use_worktree: bool,
     pub timeout_secs: u64,
+    pub config: Option<SubagentConfig>,
 }
 
 impl SubAgent {
     /// Creates a new SubAgent task runner.
+    #[allow(dead_code)]
     pub fn new(
         workspace_root: &Path,
         task_id: &str,
@@ -68,6 +70,24 @@ impl SubAgent {
             workspace_root: workspace_root.to_path_buf(),
             use_worktree,
             timeout_secs,
+            config: None,
+        }
+    }
+
+    /// Creates a new SubAgent task runner with role configuration.
+    pub fn with_config(
+        workspace_root: &Path,
+        task_id: &str,
+        use_worktree: bool,
+        timeout_secs: u64,
+        config: Option<SubagentConfig>,
+    ) -> Self {
+        Self {
+            task_id: task_id.to_string(),
+            workspace_root: workspace_root.to_path_buf(),
+            use_worktree,
+            timeout_secs,
+            config,
         }
     }
 
@@ -85,9 +105,17 @@ impl SubAgent {
 
         let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("minicode"));
 
-        let mut child = Command::new(current_exe)
-            .args(["run", "--json-stream", "--yes", "--dir"])
-            .arg(&target_dir)
+        let mut cmd = Command::new(current_exe);
+        cmd.args(["run", "--json-stream", "--yes", "--dir"])
+            .arg(&target_dir);
+
+        if let Some(ref cfg) = self.config {
+            if let Some(ref m) = cfg.model {
+                cmd.arg("--model").arg(m);
+            }
+        }
+
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -151,11 +179,16 @@ impl SubAgent {
                 }
             };
 
-            let _ = tokio::time::timeout(
+            let timeout_res = tokio::time::timeout(
                 std::time::Duration::from_secs(self.timeout_secs),
                 run_future,
             )
             .await;
+
+            if timeout_res.is_err() {
+                tracing::warn!(task_id = %self.task_id, timeout_secs = self.timeout_secs, "Subagent process timed out");
+                success = false;
+            }
         }
 
         let _ = child.kill().await;

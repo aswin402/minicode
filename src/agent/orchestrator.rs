@@ -13,10 +13,29 @@ impl MultiAgentOrchestrator {
         use_worktree: bool,
         timeout_secs: Option<u64>,
     ) -> Result<SubAgentResult> {
+        Self::delegate_with_config(
+            workspace_root,
+            task_prompt,
+            use_worktree,
+            timeout_secs,
+            None,
+        )
+        .await
+    }
+
+    /// Spawns an autonomous subagent with custom configuration.
+    pub async fn delegate_with_config(
+        workspace_root: &Path,
+        task_prompt: &str,
+        use_worktree: bool,
+        timeout_secs: Option<u64>,
+        config: Option<crate::agent::subagent::SubagentConfig>,
+    ) -> Result<SubAgentResult> {
         let task_id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let timeout = timeout_secs.unwrap_or(120);
 
-        let subagent = SubAgent::new(workspace_root, &task_id, use_worktree, timeout);
+        let subagent =
+            SubAgent::with_config(workspace_root, &task_id, use_worktree, timeout, config);
         subagent.run_task(task_prompt).await
     }
 

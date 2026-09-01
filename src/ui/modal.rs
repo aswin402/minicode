@@ -84,6 +84,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/configure | /init",
     },
     CommandCatalogItem {
+        name: "/provider",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Select active LLM provider (OpenRouter, Groq, Ollama, etc.)",
+        example: "/provider",
+    },
+    CommandCatalogItem {
         name: "/index",
         category: "Code & Inspection",
         shortcut: "F5",
@@ -639,7 +646,18 @@ impl ModalState {
             haystack.to_lowercase().contains(needle_lower)
         }
     }
+}
 
+/// Safely computes viewport window scroll offset for list views.
+pub fn compute_scroll_offset(selected_index: usize, max_visible: usize) -> usize {
+    if max_visible > 0 && selected_index >= max_visible {
+        selected_index.saturating_sub(max_visible.saturating_sub(1))
+    } else {
+        0
+    }
+}
+
+impl ModalState {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match self {
             ModalState::None => {}
@@ -664,11 +682,7 @@ impl ModalState {
 
                 let inner_area = block.inner(popup_area);
                 let max_visible = (inner_area.height as usize).max(1);
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
 
                 let items: Vec<ListItem> = providers
                     .iter()
@@ -753,11 +767,7 @@ impl ModalState {
 
                 // Models list with viewport scrolling
                 let max_visible = chunks[1].height as usize;
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
 
                 let items: Vec<ListItem> = filtered_indices
                     .iter()
@@ -826,17 +836,13 @@ impl ModalState {
 
                 let total = checkpoints.len();
                 let max_visible = UNDO_CHECKPOINT_MAX_VISIBLE;
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
                 let visible_checkpoints = checkpoints.iter().skip(scroll_offset).take(max_visible);
 
                 for (idx_rel, cp) in visible_checkpoints.enumerate() {
                     let idx = scroll_offset + idx_rel;
                     let is_selected = idx == *selected_index;
-                    let is_last = idx == total - 1;
+                    let is_last = idx == total.saturating_sub(1);
 
                     let node_sym = if is_selected {
                         "  ◉─ "
@@ -983,11 +989,7 @@ impl ModalState {
                 lines.push(Line::from(""));
 
                 let max_visible = THEME_MODAL_MAX_VISIBLE;
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
                 let visible_themes = themes.iter().skip(scroll_offset).take(max_visible);
 
                 for (idx_rel, t) in visible_themes.enumerate() {
@@ -1099,11 +1101,7 @@ impl ModalState {
                     let available_height = inner_area.height as usize;
                     // Each item takes SESSION_LIST_ITEM_HEIGHT lines
                     let max_visible = (available_height / SESSION_LIST_ITEM_HEIGHT).max(1);
-                    let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                        selected_index.saturating_sub(max_visible.saturating_sub(1))
-                    } else {
-                        0
-                    };
+                    let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
                     let visible_sessions = sessions
                         .iter()
                         .enumerate()
@@ -1384,11 +1382,7 @@ impl ModalState {
                     .split(v_chunks[1]);
 
                 let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
 
                 // Left: Stacks List with viewport scrolling
                 let items: Vec<ListItem> = filtered_indices
@@ -1612,11 +1606,7 @@ impl ModalState {
 
                 let mut list_lines = Vec::new();
                 let max_visible = (h_chunks[0].height as usize).saturating_sub(2).max(1);
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
 
                 for (idx_rel, &item_idx) in filtered_indices
                     .iter()
@@ -1785,11 +1775,7 @@ impl ModalState {
                     .split(inner);
 
                 let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
-                let file_scroll_offset = if max_visible > 0 && *selected_file_index >= max_visible {
-                    selected_file_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let file_scroll_offset = compute_scroll_offset(*selected_file_index, max_visible);
 
                 // Left: Files list with viewport scrolling
                 let items: Vec<ListItem> = diff_files
@@ -1957,11 +1943,7 @@ impl ModalState {
                     .split(v_chunks[1]);
 
                 let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
-                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
-                    selected_index.saturating_sub(max_visible.saturating_sub(1))
-                } else {
-                    0
-                };
+                let scroll_offset = compute_scroll_offset(*selected_index, max_visible);
 
                 // Left: Symbols list with viewport scrolling
                 let items: Vec<ListItem> = filtered_indices

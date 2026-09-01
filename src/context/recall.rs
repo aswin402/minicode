@@ -90,7 +90,8 @@ impl RecallStore {
             .into());
         }
 
-        let content = &content[..content.len().min(MAX_DOC_CHARS)];
+        let limit = content.floor_char_boundary(content.len().min(MAX_DOC_CHARS));
+        let content = &content[..limit];
         let chunks: Vec<RecallChunk> = chunk_text(content)
             .into_iter()
             .map(|text| RecallChunk {
@@ -208,13 +209,10 @@ impl RecallStore {
         hits.dedup_by(|a, b| a.url == b.url && a.snippet == b.snippet);
         hits.truncate(max_results);
         hits
-
-        // note: `use_vector` is intentionally not flipped after keyword rescue;
-        // mixed scoring still ranks keyword-rich chunks above noise.
     }
 }
 
-/// Splits text into overlapping windows on paragraph boundaries where possible.
+/// Split document into overlapping chunks. Tries to split on paragraphs or sentence boundaries.
 fn chunk_text(content: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     if content.len() <= CHUNK_CHARS {
@@ -226,8 +224,12 @@ fn chunk_text(content: &str) -> Vec<String> {
 
     let mut start = 0usize;
     while start < content.len() {
-        let end = (start + CHUNK_CHARS).min(content.len());
-        // Extend/trim to a paragraph or sentence boundary inside the window.
+        start = content.floor_char_boundary(start);
+        let raw_end = (start + CHUNK_CHARS).min(content.len());
+        let end = content.floor_char_boundary(raw_end);
+        if end <= start {
+            break;
+        }
         let slice = &content[start..end];
         let cut = slice
             .rfind("\n\n")
@@ -239,14 +241,22 @@ fn chunk_text(content: &str) -> Vec<String> {
         } else {
             cut
         };
-        let piece = content[start..start + cut].trim();
+        let cut_end = content.floor_char_boundary(start + cut);
+        let piece = content[start..cut_end].trim();
         if !piece.is_empty() {
             chunks.push(piece.to_string());
         }
-        if start + cut >= content.len() {
+        if cut_end >= content.len() {
             break;
         }
-        start = start + cut - CHUNK_OVERLAP.min(cut);
+        let advance = cut_end.saturating_sub(start);
+        let overlap = CHUNK_OVERLAP.min(advance);
+        let next_start = cut_end.saturating_sub(overlap);
+        if next_start <= start {
+            start = cut_end;
+        } else {
+            start = next_start;
+        }
     }
     chunks
 }

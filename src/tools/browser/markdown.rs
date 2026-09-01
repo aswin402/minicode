@@ -198,6 +198,27 @@ impl SmartMarkdownExtractor {
     }
 }
 
+/// Finds the byte index of an ASCII pattern case-insensitively within a UTF-8 string
+fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    let needle_bytes = needle.as_bytes();
+    let haystack_bytes = haystack.as_bytes();
+    for i in 0..=haystack_bytes.len().saturating_sub(needle_bytes.len()) {
+        if haystack.is_char_boundary(i)
+            && haystack.is_char_boundary(i + needle_bytes.len())
+            && haystack_bytes[i..i + needle_bytes.len()]
+                .iter()
+                .zip(needle_bytes.iter())
+                .all(|(h, n)| h.eq_ignore_ascii_case(n))
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Strips intrusive non-content sections (<header>, <nav>, <footer>, <aside>, <script>, <style>)
 fn strip_noisy_html_blocks(html: &str) -> String {
     let mut s = html.to_string();
@@ -209,9 +230,13 @@ fn strip_noisy_html_blocks(html: &str) -> String {
         let open = format!("<{}", tag);
         let close = format!("</{}>", tag);
 
-        while let Some(start_idx) = s.to_lowercase().find(&open) {
-            if let Some(end_rel) = s.to_lowercase()[start_idx..].find(&close) {
-                let end_idx = start_idx + end_rel + close.len();
+        while let Some(start_idx) = find_ascii_ci(&s, &open) {
+            let end_rel = match find_ascii_ci(&s[start_idx..], &close) {
+                Some(idx) => idx,
+                None => break,
+            };
+            let end_idx = start_idx + end_rel + close.len();
+            if s.is_char_boundary(start_idx) && s.is_char_boundary(end_idx) {
                 s.replace_range(start_idx..end_idx, " ");
             } else {
                 break;

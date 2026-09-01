@@ -8,7 +8,8 @@ pub struct GitHubClient;
 impl GitHubClient {
     /// Extracts `owner/repo` from a remote Git URL.
     pub fn parse_repo_slug(url: &str) -> Option<String> {
-        let trimmed = url.trim().trim_end_matches(".git");
+        let trimmed = url.trim();
+        let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
 
         // Format 1: git@github.com:owner/repo
         if let Some(idx) = trimmed.find("github.com:") {

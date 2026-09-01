@@ -81,13 +81,26 @@ impl SemanticIndex {
             vec[idx] += sign * 1.5;
 
             // Project 3-grams
-            if token.len() >= 3 {
-                for i in 0..=token.len() - 3 {
-                    let gram = &token[i..i + 3];
-                    let gh = hash_token(gram);
-                    let gidx = (gh as usize) % VECTOR_DIM;
-                    let gsign = if (gh >> 8) & 1 == 0 { 1.0 } else { -1.0 };
-                    vec[gidx] += gsign * 0.8;
+            if token.is_ascii() {
+                if token.len() >= 3 {
+                    for i in 0..=token.len() - 3 {
+                        let gram = &token[i..i + 3];
+                        let gh = hash_token(gram);
+                        let gidx = (gh as usize) % VECTOR_DIM;
+                        let gsign = if (gh >> 8) & 1 == 0 { 1.0 } else { -1.0 };
+                        vec[gidx] += gsign * 0.8;
+                    }
+                }
+            } else {
+                let chars: Vec<char> = token.chars().collect();
+                if chars.len() >= 3 {
+                    for window in chars.windows(3) {
+                        let gram: String = window.iter().collect();
+                        let gh = hash_token(&gram);
+                        let gidx = (gh as usize) % VECTOR_DIM;
+                        let gsign = if (gh >> 8) & 1 == 0 { 1.0 } else { -1.0 };
+                        vec[gidx] += gsign * 0.8;
+                    }
                 }
             }
         }

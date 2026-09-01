@@ -5,6 +5,39 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.80] — 2026-09-01
+
+### UTF-8 Character Boundary Safety, Subagent Tool Alignment, Confinement & Dependency Pruning
+
+- **Subagent Default Tool Whitelist Alignment (`src/agent/subagent/types.rs`)**:
+  - Replaced obsolete legacy tool names (`ripgrep_search` $\rightarrow$ `grep_search`, `symbol_search` $\rightarrow$ `locate_symbol`, `file_structure` $\rightarrow$ `view_outline`) across all subagent role definitions (`Researcher`, `CodeReviewer`, `TestEngineer`, `SecurityAuditor`, `Custom`), fixing tool dispatch failures during subagent swarm delegation.
+- **UTF-8 Multi-Byte Character Boundary Panic Prevention (`src/context/recall.rs`, `src/context/semantic.rs`, `src/tools/registry/web_tools.rs`, `src/tools/github/mod.rs`, `src/tools/browser/markdown.rs`)**:
+  - Added `content.floor_char_boundary()` to document indexing and chunking in `src/context/recall.rs` to prevent slice panics on multi-byte UTF-8 boundaries.
+  - Rewrote 3-gram indexing in `src/context/semantic.rs` using safe character window iteration.
+  - Applied `floor_char_boundary` to preview truncation in `src/tools/registry/web_tools.rs` and log tail slicing in `src/tools/github/mod.rs`.
+  - Replaced case-conversion slicing in `src/tools/browser/markdown.rs` with `find_ascii_ci` helper using `.eq_ignore_ascii_case()` to prevent panics and character corruption.
+- **Suffix Truncation Logic Fixes (`src/context/okf.rs`, `src/tools/github/client.rs`)**:
+  - Replaced `trim_end_matches(".md")` with `.strip_suffix(".md")` in `src/context/okf.rs` to prevent corrupting filenames ending with letters in `m`, `d`, or `.`.
+  - Replaced `trim_end_matches(".git")` with `.strip_suffix(".git")` in `src/tools/github/client.rs`.
+- **CDP Driver Channel & Subagent Timeout Fixes (`src/tools/browser/driver.rs`, `src/agent/subagent/mod.rs`)**:
+  - Removed duplicate disconnected `console_log` allocation in `CdpClient::connect` so console events flow to the active reader.
+  - Added explicit `success = false` on subagent timeout expiry in `SubAgent::run_task`.
+- **Workspace Sandbox Confinement & SSRF Hardening (`src/tools/browser/mod.rs`, `src/tools/onpkg/scaffolder.rs`, `src/tools/onpkg/skills.rs`, `src/context/ast_transform.rs`, `src/tools/crawler/engine.rs`)**:
+  - Enforced `validate_path_in_workspace` on `file://` URLs in browser tools, stack scaffolder target paths, and AST transform node queries.
+  - Validated skill package names against path separators and traversal in `onpkg_skill_install`.
+  - Enforced `validate_ssrf` on crawl root and discovered links in `crawler/engine.rs`.
+- **Subagent Configuration Forwarding & Auto-Compaction Pruning (`src/agent/subagent/mod.rs`, `src/agent/orchestrator.rs`, `src/tools/registry/agent_tools.rs`, `src/context/auto_compact.rs`)**:
+  - Added `with_config` and `delegate_with_config` to forward subagent models and budgets to worker processes.
+  - Hardened Tier 3 compaction in `auto_compact.rs` to prune orphaned `Role::Tool` messages at both index 0 and index 1 after system summaries.
+- **UI & Palette Command Alignment & Scroll Deduplication (`src/ui/input.rs`, `src/ui/modal.rs`, `src/ui/view.rs`)**:
+  - Synchronized `/commands`, `/map`, `/save`, `/load`, `/provider` between palette and catalog.
+  - Extracted shared `compute_scroll_offset` helper in `src/ui/modal.rs`, deduplicating viewport scrolling calculations across 9 modal types.
+  - Fixed mouse hit testing using `area.right()` / `area.bottom()` and saturating line folding math in `src/ui/view.rs`.
+  - Added underflow-safe category cycling in `src/ui/input.rs`.
+- **Dependency Pruning & Test Suite Hardening (`Cargo.toml`, `tests/`)**:
+  - Pruned 9 unused dependencies (`rmcp`, `lsp-types`, `grep-regex`, `grep-searcher`, `glob`, `colored`, `indicatif`, `terminal-colorsaurus`, `anstyle-query`).
+  - Added explicit panic branches to `if let` blocks in integration tests to prevent silent test passes.
+
 ## [0.0.79] — 2026-09-01
 
 ### Crash-Risk Overflow Fixes, Viewport Scroll Standardization, SSRF Hardening & Code Health

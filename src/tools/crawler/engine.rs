@@ -41,6 +41,7 @@ impl CrawlerEngine {
             name: "crawl_documentation".to_string(),
             reason: format!("Invalid root URL `{}`: {}", root_url, e),
         })?;
+        crate::tools::web::validate_ssrf(root_url)?;
 
         let base_origin = parsed_root.origin().ascii_serialization();
         let path_prefix = parsed_root.path().trim_end_matches('/');
@@ -187,7 +188,9 @@ impl CrawlerEngine {
                         let mut q_lock = queue_clone.lock().await;
 
                         for link in links {
-                            if !v_lock.contains(&link) {
+                            if !v_lock.contains(&link)
+                                && crate::tools::web::validate_ssrf(&link).is_ok()
+                            {
                                 v_lock.insert(link.clone());
                                 q_lock.push_back((link, depth + 1));
                             }

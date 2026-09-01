@@ -211,24 +211,26 @@ fn test_command_catalog_filtering() {
     }
     modal.update_filter();
 
-    if let ModalState::CommandCatalog {
-        ref filtered_indices,
-        ..
-    } = modal
-    {
-        assert!(!filtered_indices.is_empty());
-        for &idx in filtered_indices {
-            let item = &COMMAND_CATALOG_ITEMS[idx];
-            let matches = item.name.contains("diff")
-                || item.description.to_lowercase().contains("diff")
-                || item.category.to_lowercase().contains("diff")
-                || item.shortcut.to_lowercase().contains("diff");
-            assert!(
-                matches,
-                "Filtered item does not match query 'diff': {:?}",
-                item
-            );
+    match modal {
+        ModalState::CommandCatalog {
+            ref filtered_indices,
+            ..
+        } => {
+            assert!(!filtered_indices.is_empty());
+            for &idx in filtered_indices {
+                let item = &COMMAND_CATALOG_ITEMS[idx];
+                let matches = item.name.contains("diff")
+                    || item.description.to_lowercase().contains("diff")
+                    || item.category.to_lowercase().contains("diff")
+                    || item.shortcut.to_lowercase().contains("diff");
+                assert!(
+                    matches,
+                    "Filtered item does not match query 'diff': {:?}",
+                    item
+                );
+            }
         }
+        _ => panic!("Expected ModalState::CommandCatalog"),
     }
 }
 

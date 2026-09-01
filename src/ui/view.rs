@@ -454,8 +454,7 @@ impl TimelineView {
     /// Handles mouse button press to begin text selection
     pub fn handle_mouse_down(&self, col: u16, row: u16) {
         let area = self.selection.timeline_area.get();
-        if col >= area.x && col < area.x + area.width && row >= area.y && row < area.y + area.height
-        {
+        if col >= area.x && col < area.right() && row >= area.y && row < area.bottom() {
             self.selection
                 .handle_mouse_down(col, row, self.scroll_offset.get());
         } else {
@@ -803,8 +802,10 @@ impl TimelineView {
                             ]));
                         }
                         if trimmed.lines().count() > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
-                            let remaining = trimmed.lines().count()
-                                - crate::constants::UI_MAX_TOOL_OUTPUT_LINES;
+                            let remaining = trimmed
+                                .lines()
+                                .count()
+                                .saturating_sub(crate::constants::UI_MAX_TOOL_OUTPUT_LINES);
                             lines.push(Line::from(vec![Span::styled(
                                 format!("    ... +{} lines (output folded)", remaining),
                                 Style::default().fg(theme.border),

@@ -881,13 +881,15 @@ pub async fn dispatch(
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
             let id = pool.next_id(&role).await;
 
-            let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate(
-                workspace_root,
-                prompt,
-                false,
-                Some(120),
-            )
-            .await?;
+            let res =
+                crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
+                    workspace_root,
+                    prompt,
+                    false,
+                    Some(120),
+                    Some(config),
+                )
+                .await?;
 
             let report = format!(
                 "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",

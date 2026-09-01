@@ -90,6 +90,7 @@ impl BrowserController {
                 let path = parsed.to_file_path().map_err(|_| {
                     ToolError::CommandExec(format!("Invalid file:// URL '{}'", url))
                 })?;
+                let path = crate::sandbox::path::validate_path_in_workspace(workspace_root, &path)?;
                 let html = std::fs::read_to_string(&path).map_err(|e| {
                     ToolError::CommandExec(format!(
                         "Failed to read '{}' from disk: {}",

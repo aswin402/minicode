@@ -229,7 +229,9 @@ impl OkfManager {
                         let title = fm_opt
                             .as_ref()
                             .and_then(|f| f.title.clone())
-                            .unwrap_or_else(|| fname.trim_end_matches(".md").to_string());
+                            .unwrap_or_else(|| {
+                                fname.strip_suffix(".md").unwrap_or(fname).to_string()
+                            });
                         let concept_type = fm_opt
                             .as_ref()
                             .map(|f| f.concept_type.clone())

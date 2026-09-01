@@ -162,14 +162,13 @@ impl CdpClient {
             }
         });
 
-        let console_log = Arc::new(Mutex::new(Vec::new()));
         let client = Self {
             tx,
             next_id: AtomicU64::new(1),
             pending,
             page_ws_url,
             session_id: Mutex::new(None),
-            console_log: Arc::clone(&console_log),
+            console_log,
         };
 
         if wants_session {

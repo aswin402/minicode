@@ -27,9 +27,9 @@ impl SubagentRole {
                 // Read-only tools
                 for t in &[
                     "read_file",
-                    "ripgrep_search",
-                    "symbol_search",
-                    "file_structure",
+                    "grep_search",
+                    "locate_symbol",
+                    "view_outline",
                     "fetch_or_browse",
                     "search_web",
                 ] {
@@ -40,9 +40,9 @@ impl SubagentRole {
                 // Inspection and analysis tools
                 for t in &[
                     "read_file",
-                    "ripgrep_search",
-                    "symbol_search",
-                    "file_structure",
+                    "grep_search",
+                    "locate_symbol",
+                    "view_outline",
                     "browser_snapshot",
                     "browser_eval",
                 ] {
@@ -53,8 +53,8 @@ impl SubagentRole {
                 // Testing & diagnostic execution
                 for t in &[
                     "read_file",
-                    "ripgrep_search",
-                    "file_structure",
+                    "grep_search",
+                    "view_outline",
                     "exec_cmd",
                     "write_file",
                 ] {
@@ -63,12 +63,7 @@ impl SubagentRole {
             }
             SubagentRole::SecurityAuditor => {
                 // Security inspection
-                for t in &[
-                    "read_file",
-                    "ripgrep_search",
-                    "symbol_search",
-                    "file_structure",
-                ] {
+                for t in &["read_file", "grep_search", "locate_symbol", "view_outline"] {
                     set.insert(t.to_string());
                 }
             }
@@ -78,9 +73,9 @@ impl SubagentRole {
                     "read_file",
                     "write_file",
                     "patch_file",
-                    "ripgrep_search",
-                    "symbol_search",
-                    "file_structure",
+                    "grep_search",
+                    "locate_symbol",
+                    "view_outline",
                     "fetch_or_browse",
                     "search_web",
                     "exec_cmd",
