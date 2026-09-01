@@ -1391,8 +1391,13 @@
 - [x] 72.3: Version bump → `v0.0.92`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 73: Multi-Workspace Virtual Monorepo Context Orchestrator (v0.0.93)
-- [ ] 73.1: Implement cross-crate multi-workspace dependency resolution
-- [ ] 73.2: Add `workspace_monorepo_map` agent tool
-- [ ] 73.3: Version bump → `v0.0.93`, changelog with ideas/sources, commit, tag, push
+- [x] 73.1: Implement cross-crate multi-workspace dependency resolution
+- [x] 73.2: Add `workspace_monorepo_map` agent tool
+- [x] 73.3: Version bump → `v0.0.93`, changelog with ideas/sources, commit, tag, push
+
+### Phase 74: Dynamic Session Memory Checkpointer & Time-Travel Debugger (v0.0.94)
+- [ ] 74.1: Implement tree-structured state checkpoints with rollback and fork
+- [ ] 74.2: Add `checkpoint_session` and `rewind_session` agent tools
+- [ ] 74.3: Version bump → `v0.0.94`, changelog with ideas/sources, commit, tag, push
 
 

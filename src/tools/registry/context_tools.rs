@@ -533,6 +533,23 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "workspace_monorepo_map".to_string(),
+            description: "Analyze multi-package monorepo topology (Cargo Workspaces, npm/pnpm), cross-package dependencies, and topological build order.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "include_external": {
+                        "type": "boolean",
+                        "description": "Whether to include third-party package dependencies (default: false)"
+                    },
+                    "target_package": {
+                        "type": "string",
+                        "description": "Optional specific package name or path to focus the analysis on"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1241,6 +1258,21 @@ pub async fn dispatch(
             )?;
 
             Ok(stats.format_markdown())
+        })()),
+        "workspace_monorepo_map" => Some((|| {
+            let include_external = args
+                .get("include_external")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let target_package = args.get("target_package").and_then(|v| v.as_str());
+
+            let report = crate::context::monorepo::MonorepoOrchestrator::analyze_workspace(
+                workspace_root,
+                include_external,
+                target_package,
+            )?;
+
+            Ok(report.format_markdown())
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

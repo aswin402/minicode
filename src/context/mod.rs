@@ -19,6 +19,7 @@ pub mod index;
 pub mod invariants;
 pub mod layers;
 pub mod memory;
+pub mod monorepo;
 pub mod okf;
 pub mod progressive_memory;
 pub mod recall;

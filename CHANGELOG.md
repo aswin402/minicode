@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.93] — 2026-09-01
+
+### Multi-Workspace Virtual Monorepo Context Orchestrator (Phase 73)
+
+#### 💡 Ideas & Inspirations
+- **Holistic Cross-Package Intelligence in Monorepos**: Modern repositories are frequently split into multiple crates or packages (e.g. `crates/core`, `crates/cli`, `packages/web`, `packages/api`). Treating each folder as an isolated silo blinds the agent to cross-package APIs and shared types. Inspired by Turborepo, Nx, and Cargo Workspaces, `minicode` introduces multi-ecosystem virtual monorepo context orchestration.
+- **Topological Build Order & Cycle Detection**: Automatically resolves internal package dependency graphs, derives topological compilation order, and flags dangerous circular package dependencies.
+
+#### 📚 References & Sources
+- **Turborepo & Nx Monorepo Task Graph Architecture**: Topological DAG execution models.
+- **Cargo Workspaces Specification (The Cargo Book)**: Multi-package workspace root and member resolution.
+- **npm/pnpm/Yarn Workspaces RFC**: Standardized `package.json` workspace glob definitions.
+
+#### 🚀 Features & Changes
+- **`MonorepoOrchestrator` Engine (`src/context/monorepo.rs`, `src/context/mod.rs`)**:
+  - Automatically discovers multi-crate Cargo workspaces, npm/pnpm package monorepos, and standalone projects.
+  - Resolves internal package-to-package dependency edges and computes topological compilation DAGs.
+  - Detects cross-package circular dependencies and generates interactive Mermaid dependency flowcharts.
+- **`workspace_monorepo_map` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing agents and developers to audit monorepo package boundaries and topological build sequences.
+- **Integration Test Suite (`tests/integration_monorepo.rs`)**:
+  - Added 3 integration tests covering Cargo workspace member discovery, npm monorepo resolution, and async tool dispatch.
+
 ## [0.0.92] — 2026-09-01
 
 ### Real-Time Incremental CodeGraph Synchronizer & File Watcher (Phase 72)
