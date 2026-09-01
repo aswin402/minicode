@@ -1361,8 +1361,13 @@
 - [x] 66.3: Version bump → `v0.0.86`, changelog, commit, tag, push
 
 ### Phase 67: Semantic Patch Synthesizer & AST Refactoring Actions (v0.0.87)
-- [ ] 67.1: Implement AST refactoring actions (extract function, inline variable, rename symbol)
-- [ ] 67.2: Expose `ast_refactor` agent tool
-- [ ] 67.3: Version bump → `v0.0.87`, changelog with ideas/sources, commit, tag, push
+- [x] 67.1: Implement AST refactoring actions (extract function, inline variable, rename symbol)
+- [x] 67.2: Expose `ast_refactor` agent tool
+- [x] 67.3: Version bump → `v0.0.87`, changelog with ideas/sources, commit, tag, push
+
+### Phase 68: Multi-File Symbol Dependency Invariant Checker (v0.0.88)
+- [ ] 68.1: Implement layer violation and circular dependency invariant rules
+- [ ] 68.2: Add `architecture_invariants` agent tool
+- [ ] 68.3: Version bump → `v0.0.88`, changelog with ideas/sources, commit, tag, push
 
 

@@ -391,6 +391,57 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "ast_refactor".to_string(),
+            description: "Perform deterministic AST-aware refactoring actions (extract_function, rename_symbol, inline_variable) with unified diff previews.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["extract_function", "rename_symbol", "inline_variable"],
+                        "description": "Refactoring action to execute"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Target file path relative to workspace root (e.g. 'src/agent/loop.rs')"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Starting line number (1-indexed, for extract_function)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Ending line number (1-indexed, for extract_function)"
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "New function name (for extract_function) or replacement identifier (for rename_symbol)"
+                    },
+                    "target_symbol": {
+                        "type": "string",
+                        "description": "Target symbol to rename (for rename_symbol) or variable to inline (for inline_variable)"
+                    },
+                    "params": {
+                        "type": "string",
+                        "description": "Function parameter signature for extract_function (e.g. 'a: i32, b: &str')"
+                    },
+                    "call_args": {
+                        "type": "string",
+                        "description": "Arguments to pass at the extracted call site (e.g. 'a, b')"
+                    },
+                    "return_type": {
+                        "type": "string",
+                        "description": "Optional return type for extract_function (e.g. 'Result<()>', 'bool')"
+                    },
+                    "is_public": {
+                        "type": "boolean",
+                        "description": "Whether extracted function should be public (default: false)"
+                    }
+                },
+                "required": ["action", "file_path"]
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -881,6 +932,119 @@ pub async fn dispatch(
                 max_depth,
             )?;
             Ok(diagram)
+        })()),
+        "ast_refactor" => Some((|| {
+            let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "ast_refactor".to_string(),
+                    reason: "Missing required argument 'action'".to_string(),
+                }
+            })?;
+            let file_path = args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "ast_refactor".to_string(),
+                    reason: "Missing required argument 'file_path'".to_string(),
+                })?;
+
+            match action {
+                "extract_function" => {
+                    let start_line = parse_u64_param(args.get("start_line"))
+                        .map(|v| v as usize)
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_refactor".to_string(),
+                            reason: "Missing 'start_line'".to_string(),
+                        })?;
+                    let end_line = parse_u64_param(args.get("end_line"))
+                        .map(|v| v as usize)
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_refactor".to_string(),
+                            reason: "Missing 'end_line'".to_string(),
+                        })?;
+                    let new_fn_name = args
+                        .get("new_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("extracted_helper");
+                    let params = args.get("params").and_then(|v| v.as_str()).unwrap_or("");
+                    let call_args = args.get("call_args").and_then(|v| v.as_str()).unwrap_or("");
+                    let return_type = args.get("return_type").and_then(|v| v.as_str());
+                    let is_public = args
+                        .get("is_public")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    let res = crate::context::ast_refactor::AstRefactorer::extract_function(
+                        workspace_root,
+                        file_path,
+                        start_line,
+                        end_line,
+                        new_fn_name,
+                        params,
+                        call_args,
+                        return_type,
+                        is_public,
+                    )?;
+                    Ok(format!(
+                        "✔ Refactored `{}`:\n```diff\n{}\n```",
+                        res.action, res.diff_preview
+                    ))
+                }
+                "rename_symbol" => {
+                    let target_symbol = args
+                        .get("target_symbol")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_refactor".to_string(),
+                            reason: "Missing 'target_symbol'".to_string(),
+                        })?;
+                    let new_name =
+                        args.get("new_name")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| ToolError::InvalidArguments {
+                                name: "ast_refactor".to_string(),
+                                reason: "Missing 'new_name'".to_string(),
+                            })?;
+
+                    let res = crate::context::ast_refactor::AstRefactorer::rename_symbol(
+                        workspace_root,
+                        target_symbol,
+                        new_name,
+                        Some(file_path),
+                    )?;
+                    Ok(format!(
+                        "✔ Refactored `{}` across {} file(s):\n```diff\n{}\n```",
+                        res.action,
+                        res.files_modified.len(),
+                        res.diff_preview
+                    ))
+                }
+                "inline_variable" => {
+                    let var_name = args
+                        .get("target_symbol")
+                        .or_else(|| args.get("new_name"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "ast_refactor".to_string(),
+                            reason: "Missing 'target_symbol' (variable name)".to_string(),
+                        })?;
+
+                    let res = crate::context::ast_refactor::AstRefactorer::inline_variable(
+                        workspace_root,
+                        file_path,
+                        var_name,
+                    )?;
+                    Ok(format!(
+                        "✔ Refactored `{}`:\n```diff\n{}\n```",
+                        res.action, res.diff_preview
+                    ))
+                }
+                other => Err(ToolError::InvalidArguments {
+                    name: "ast_refactor".to_string(),
+                    reason: format!("Unknown refactoring action: '{}'", other),
+                }
+                .into()),
+            }
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

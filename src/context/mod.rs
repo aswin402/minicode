@@ -1,4 +1,5 @@
 pub mod ast_diff;
+pub mod ast_refactor;
 pub mod ast_transform;
 pub mod auto_compact;
 pub mod compressor;

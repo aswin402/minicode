@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.87] — 2026-09-01
+
+### Semantic Patch Synthesizer & AST Refactoring Actions (Phase 67)
+
+#### 💡 Ideas & Inspirations
+- **Hallucination-Free Code Transformations**: When modifying code, LLMs frequently break indentation, drop comments, or fail to rename all call sites accurately. By equipping `minicode` with deterministic AST refactoring primitives (`extract_function`, `rename_symbol`, `inline_variable`), transformations are syntactically guaranteed to be correct with unified diff generation.
+- **Micro-Refactoring Ergonomics**: Inspired by rust-analyzer assists and Martin Fowler's classic refactoring catalog, developers can now safely extract monolithic function blocks or perform cross-file symbol renames in a single automated step.
+
+#### 📚 References & Sources
+- **Martin Fowler's *Refactoring: Improving the Design of Existing Code***: Extract Method, Inline Variable, and Rename Field catalogs.
+- **rust-analyzer & LSP Code Action Protocols**: Deterministic workspace-wide symbol replacement models.
+- **Unified Diff Formats (RFC 6902 / POSIX Diff)**: Standardized atomic diff previews for tool review.
+
+#### 🚀 Features & Changes
+- **`AstRefactorer` Engine (`src/context/ast_refactor.rs`, `src/context/mod.rs`)**:
+  - `extract_function`: Slices source line ranges, generates new function definitions with explicit parameter and return signatures, and splices the call site with exact indentation preservation.
+  - `rename_symbol`: Performs word-boundary AST identifier replacement across scoped files or entire workspace crates.
+  - `inline_variable`: Replaces variable usages in function bodies with expression values and safely purges declaration statements.
+  - Produces structured `RefactorResult` with unified diff preview.
+- **`ast_refactor` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered `ast_refactor` tool for automated code transformation.
+- **Integration Test Suite (`tests/integration_ast_refactor.rs`)**:
+  - Added 4 integration tests covering function extraction, symbol renaming, variable inlining, and tool dispatch.
+
 ## [0.0.86] — 2026-09-01
 
 ### Interactive Architectural Heatmap & Call-Graph Visualizer (Phase 66)
