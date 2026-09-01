@@ -1,12 +1,17 @@
 use crate::agent::models::ModelInfo;
 use crate::constants::{
     CHECKPOINT_FILES_PREVIEW, CHECKPOINT_PROMPT_MAX_CHARS, CHECKPOINT_PROMPT_PREVIEW_CHARS,
-    COMMAND_NAME_DISPLAY_COLS, EXIT_CONFIRM_MODAL_HEIGHT, EXIT_CONFIRM_MODAL_WIDTH,
-    EXPLORER_BADGE_DISPLAY_COLS, SESSION_BROWSER_MAX_HEIGHT, SESSION_BROWSER_MAX_WIDTH,
-    SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MIN_WIDTH, SESSION_ID_DISPLAY_COLS,
-    SESSION_LIST_ITEM_HEIGHT, SESSION_TIME_AGO_COLS, STACK_PREVIEW_MAX_FILES,
-    THEME_MODAL_MAX_VISIBLE, THEME_NAME_DISPLAY_COLS, UNDO_CHECKPOINT_MAX_VISIBLE,
-    WORKSPACE_ANALYSIS_HEIGHT, WORKSPACE_ANALYSIS_WIDTH,
+    CODE_EXPLORER_HEIGHT_PCT, CODE_EXPLORER_WIDTH_PCT, COMMAND_CATALOG_HEIGHT_PCT,
+    COMMAND_CATALOG_WIDTH_PCT, COMMAND_NAME_DISPLAY_COLS, EXIT_CONFIRM_MODAL_HEIGHT,
+    EXIT_CONFIRM_MODAL_WIDTH, EXPLORER_BADGE_DISPLAY_COLS, GIT_DIFF_HEIGHT_PCT, GIT_DIFF_WIDTH_PCT,
+    HELP_HEIGHT_PCT, HELP_WIDTH_PCT, MODEL_SELECT_HEIGHT_PCT, MODEL_SELECT_WIDTH_PCT,
+    PROVIDER_SELECT_HEIGHT_PCT, PROVIDER_SELECT_WIDTH_PCT, SESSION_BROWSER_MAX_HEIGHT,
+    SESSION_BROWSER_MAX_WIDTH, SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MIN_WIDTH,
+    SESSION_ID_DISPLAY_COLS, SESSION_LIST_ITEM_HEIGHT, SESSION_TIME_AGO_COLS,
+    STACK_PREVIEW_MAX_FILES, STACK_SELECT_HEIGHT_PCT, STACK_SELECT_WIDTH_PCT,
+    THEME_MODAL_MAX_VISIBLE, THEME_NAME_DISPLAY_COLS, THEME_SELECT_HEIGHT_PCT,
+    THEME_SELECT_WIDTH_PCT, UNDO_CHECKPOINT_HEIGHT_PCT, UNDO_CHECKPOINT_MAX_VISIBLE,
+    UNDO_CHECKPOINT_WIDTH_PCT, WORKSPACE_ANALYSIS_HEIGHT, WORKSPACE_ANALYSIS_WIDTH,
 };
 use crate::session::store::truncate_display;
 use crate::ui::theme::Theme;
@@ -15,6 +20,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone)]
 pub struct TurnCheckpointInfo {
@@ -64,11 +70,25 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/commands",
     },
     CommandCatalogItem {
-        name: "/init",
-        category: "Code & Inspection",
+        name: "/new",
+        category: "History & Sessions",
+        shortcut: "Ctrl+N",
+        description: "Start fresh session & reset conversation timeline",
+        example: "/new",
+    },
+    CommandCatalogItem {
+        name: "/configure",
+        category: "Config & Runtime",
         shortcut: "F2",
-        description: "Interactive workspace analysis & AST CodeGraph manager",
-        example: "/init | /index | /analyze",
+        description: "Interactive API key & endpoint manager for providers",
+        example: "/configure | /init",
+    },
+    CommandCatalogItem {
+        name: "/index",
+        category: "Code & Inspection",
+        shortcut: "F5",
+        description: "Scan AST symbols & build PageRank code graph",
+        example: "/index | /analyze",
     },
     CommandCatalogItem {
         name: "/stack",
@@ -108,7 +128,7 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
     CommandCatalogItem {
         name: "/review",
         category: "Code & Inspection",
-        shortcut: "",
+        shortcut: "Ctrl+R",
         description: "Multi-dimensional adversarial code review on git changes",
         example: "/review | /review --staged",
     },
@@ -120,11 +140,11 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/map",
     },
     CommandCatalogItem {
-        name: "/history",
+        name: "/sessions",
         category: "History & Sessions",
         shortcut: "Ctrl+H",
-        description: "Interactive 2-column session history, inspector & time-travel explorer",
-        example: "/history | /sessions",
+        description: "Interactive session history & time-travel explorer",
+        example: "/sessions | /history",
     },
     CommandCatalogItem {
         name: "/undo",
@@ -157,7 +177,7 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
     CommandCatalogItem {
         name: "/model",
         category: "Config & Runtime",
-        shortcut: "",
+        shortcut: "Ctrl+L",
         description: "Choose active LLM model & provider interactively",
         example: "/model",
     },
@@ -213,14 +233,14 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
     CommandCatalogItem {
         name: "/help",
         category: "Discovery & Help",
-        shortcut: "",
+        shortcut: "F1",
         description: "Display quick help and keyboard shortcuts",
         example: "/help",
     },
     CommandCatalogItem {
         name: "/exit",
         category: "Discovery & Help",
-        shortcut: "Esc / Ctrl+C",
+        shortcut: "Ctrl+C",
         description: "Quit minicode interactive session cleanly",
         example: "/exit",
     },
@@ -627,7 +647,8 @@ impl ModalState {
                 providers,
                 selected_index,
             } => {
-                let popup_area = centered_rect(50, 45, area);
+                let popup_area =
+                    centered_rect(PROVIDER_SELECT_WIDTH_PCT, PROVIDER_SELECT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let block = Block::default()
@@ -641,9 +662,19 @@ impl ModalState {
                     )
                     .style(Style::default().bg(theme.bg_elevated));
 
+                let inner_area = block.inner(popup_area);
+                let max_visible = (inner_area.height as usize).max(1);
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
+                } else {
+                    0
+                };
+
                 let items: Vec<ListItem> = providers
                     .iter()
                     .enumerate()
+                    .skip(scroll_offset)
+                    .take(max_visible)
                     .map(|(i, p)| {
                         let is_selected = i == *selected_index;
                         let prefix = if is_selected { " › " } else { "   " };
@@ -673,7 +704,8 @@ impl ModalState {
                 filter,
                 loading,
             } => {
-                let popup_area = centered_rect(75, 70, area);
+                let popup_area =
+                    centered_rect(MODEL_SELECT_WIDTH_PCT, MODEL_SELECT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let outer_block = Block::default()
@@ -785,7 +817,8 @@ impl ModalState {
                 checkpoints,
                 selected_index,
             } => {
-                let popup_area = centered_rect(72, 65, area);
+                let popup_area =
+                    centered_rect(UNDO_CHECKPOINT_WIDTH_PCT, UNDO_CHECKPOINT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let mut lines = Vec::new();
@@ -793,8 +826,8 @@ impl ModalState {
 
                 let total = checkpoints.len();
                 let max_visible = UNDO_CHECKPOINT_MAX_VISIBLE;
-                let scroll_offset = if *selected_index >= max_visible {
-                    *selected_index - max_visible + 1
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
                 } else {
                     0
                 };
@@ -942,15 +975,16 @@ impl ModalState {
                 themes,
                 selected_index,
             } => {
-                let popup_area = centered_rect(74, 68, area);
+                let popup_area =
+                    centered_rect(THEME_SELECT_WIDTH_PCT, THEME_SELECT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let mut lines = Vec::new();
                 lines.push(Line::from(""));
 
                 let max_visible = THEME_MODAL_MAX_VISIBLE;
-                let scroll_offset = if *selected_index >= max_visible {
-                    *selected_index - max_visible + 1
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
                 } else {
                     0
                 };
@@ -1065,8 +1099,8 @@ impl ModalState {
                     let available_height = inner_area.height as usize;
                     // Each item takes SESSION_LIST_ITEM_HEIGHT lines
                     let max_visible = (available_height / SESSION_LIST_ITEM_HEIGHT).max(1);
-                    let scroll_offset = if *selected_index >= max_visible {
-                        *selected_index - max_visible + 1
+                    let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                        selected_index.saturating_sub(max_visible.saturating_sub(1))
                     } else {
                         0
                     };
@@ -1168,7 +1202,7 @@ impl ModalState {
                 }
             }
             ModalState::Help => {
-                let popup_area = centered_rect(60, 50, area);
+                let popup_area = centered_rect(HELP_WIDTH_PCT, HELP_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let help_text = vec![
@@ -1305,7 +1339,8 @@ impl ModalState {
                 selected_index,
                 filter,
             } => {
-                let popup_area = centered_rect(84, 76, area);
+                let popup_area =
+                    centered_rect(STACK_SELECT_WIDTH_PCT, STACK_SELECT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let outer_block = Block::default()
@@ -1498,7 +1533,8 @@ impl ModalState {
                 selected_index,
                 ref filter,
             } => {
-                let popup_area = centered_rect(82, 74, area);
+                let popup_area =
+                    centered_rect(COMMAND_CATALOG_WIDTH_PCT, COMMAND_CATALOG_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let root_block = Block::default()
@@ -1554,7 +1590,8 @@ impl ModalState {
                         format!(
                             "{:>width$}",
                             count_badge,
-                            width = (v_chunks[0].width as usize).saturating_sub(filter.len() + 8)
+                            width = (v_chunks[0].width as usize)
+                                .saturating_sub(UnicodeWidthStr::width(filter.as_str()) + 8)
                         ),
                         Style::default().fg(theme.muted),
                     ),
@@ -1574,9 +1611,9 @@ impl ModalState {
                     .border_style(Style::default().fg(theme.bg_elevated));
 
                 let mut list_lines = Vec::new();
-                let max_visible = (h_chunks[0].height as usize).saturating_sub(2);
-                let scroll_offset = if *selected_index >= max_visible {
-                    *selected_index - max_visible + 1
+                let max_visible = (h_chunks[0].height as usize).saturating_sub(2).max(1);
+                let scroll_offset = if max_visible > 0 && *selected_index >= max_visible {
+                    selected_index.saturating_sub(max_visible.saturating_sub(1))
                 } else {
                     0
                 };
@@ -1715,7 +1752,7 @@ impl ModalState {
                 scroll_offset,
                 staged_view,
             } => {
-                let modal_area = centered_rect(88, 84, area);
+                let modal_area = centered_rect(GIT_DIFF_WIDTH_PCT, GIT_DIFF_HEIGHT_PCT, area);
                 frame.render_widget(Clear, modal_area);
 
                 let title = if *staged_view {
@@ -1874,7 +1911,8 @@ impl ModalState {
                 filter,
                 active_tab,
             } => {
-                let popup_area = centered_rect(85, 80, area);
+                let popup_area =
+                    centered_rect(CODE_EXPLORER_WIDTH_PCT, CODE_EXPLORER_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
 
                 let outer_block = Block::default()
@@ -2057,11 +2095,18 @@ impl ModalState {
                     match *active_tab {
                         0 => {
                             if let Some(src) = &sym.source_code {
-                                for src_line in src.lines() {
-                                    detail_lines.push(Line::from(Span::styled(
-                                        src_line,
-                                        Style::default().fg(theme.text_primary),
-                                    )));
+                                let start_line = sym.line_range.0;
+                                for (i, src_line) in src.lines().enumerate() {
+                                    detail_lines.push(Line::from(vec![
+                                        Span::styled(
+                                            format!("{:>4} │ ", start_line + i),
+                                            Style::default().fg(theme.muted),
+                                        ),
+                                        Span::styled(
+                                            src_line,
+                                            Style::default().fg(theme.text_primary),
+                                        ),
+                                    ]));
                                 }
                             } else {
                                 detail_lines.push(Line::from(Span::styled(

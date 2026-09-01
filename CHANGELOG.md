@@ -5,6 +5,32 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.79] — 2026-09-01
+
+### Crash-Risk Overflow Fixes, Viewport Scroll Standardization, SSRF Hardening & Code Health
+
+- **Crash-Risk Overflow Prevention (`src/ui/view.rs`, `src/ui/input.rs`)**:
+  - Fixed `visual_row_count` integer overflow by accumulating into `usize` and clamping to `u16::MAX`, preventing panics during long sessions or large diff outputs.
+  - Cast `area.width` to `u32` during command palette width calculation to prevent `u16` multiplication overflow on wide terminals.
+- **Viewport Scroll Standardization & Bug Fixes (`src/ui/modal.rs`)**:
+  - Standardized all modals (`UndoCheckpoint`, `ThemeSelect`, `SessionBrowser`, `CommandCatalog`, `ProviderSelect`) to use the safe `saturating_sub` scroll pattern with `.max(1)` bounds.
+  - Added viewport windowing to `ProviderSelect` modal.
+  - Switched `CommandCatalog` search counter padding to `UnicodeWidthStr::width()`.
+  - Added line number gutter formatting to `CodeExplorer` source code inspection tab.
+- **Palette & Catalog Command Alignment (`src/ui/input.rs`, `src/ui/modal.rs`)**:
+  - Aligned all slash command shortcuts between `PALETTE_COMMANDS` and `COMMAND_CATALOG_ITEMS` (added `Ctrl+U` for `/undo`, aligned `F2`, `F5`, `Ctrl+H`, `Ctrl+R`, `Ctrl+L`, `Ctrl+N`, `Ctrl+D`, `Ctrl+T`, `F1`, `Ctrl+C`).
+- **Data Durability & Security Hardening (`src/session/store.rs`, `src/constants.rs`, `src/tools/github/client.rs`)**:
+  - Switched `create_session` from `.create(true).truncate(true)` to `.create_new(true)` to prevent accidental overwrite on collision.
+  - Added `sync_all()` on markdown export to ensure disk durability.
+  - Added `"metadata.google.internal"` and `"instance-data"` to `SSRF_BLOCKED_HOSTS`.
+  - Replaced hardcoded GitHub client user-agent version with dynamic `CARGO_PKG_VERSION`.
+- **DRY & Code Health Polish (`src/constants.rs`, `src/ui/input.rs`, `src/ui/view.rs`)**:
+  - Extracted 9 modal percentage dimension pairs into `src/constants.rs`.
+  - Extracted shared `SPINNER_FRAMES` constant and unified across all 3 view branches.
+  - Extracted `InputDock::reset()` helper method for clean prompt resets.
+  - Derived `CHECKPOINT_PROMPT_PREVIEW_CHARS = CHECKPOINT_PROMPT_MAX_CHARS - 3`.
+  - Pruned unused constants and imports.
+
 ## [0.0.78] — 2026-08-31
 
 ### Critical Stability Hardening, Unicode Safety & Comprehensive Code Health

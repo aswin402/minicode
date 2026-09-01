@@ -395,6 +395,8 @@ pub const SSRF_BLOCKED_HOSTS: &[&str] = &[
     "::1",
     "0.0.0.0",
     "169.254.169.254",
+    "metadata.google.internal",
+    "instance-data",
 ];
 /// Hostnames blocked from browser navigation (cloud metadata services, while permitting localhost dev servers)
 pub const BROWSER_BLOCKED_HOSTS: &[&str] = &[
@@ -489,12 +491,6 @@ pub const SESSION_FIRST_PROMPT_MAX_BYTES: usize = 120;
 pub const SESSION_TOOL_OUTPUT_MAX_BYTES: usize = 1000;
 /// Display columns for session ID in TUI session browser list
 pub const SESSION_ID_DISPLAY_COLS: usize = 14;
-/// Display columns for last response snippet in TUI preview pane
-#[allow(dead_code)]
-pub const SESSION_RESPONSE_SNIPPET_COLS: usize = 80;
-/// Maximum files shown in session preview pane before "+N more"
-#[allow(dead_code)]
-pub const SESSION_MAX_FILES_PREVIEW: usize = 4;
 /// Git commit hash short display length in bytes
 pub const GIT_SHORT_HASH_BYTES: usize = 7;
 /// Height in lines of each session list item (for viewport calculation)
@@ -545,9 +541,6 @@ pub const TOTAL_TOOL_COUNT: usize = 94;
 pub const SPINNER_FRAME_MS: u64 = 80;
 /// Number of lines scrolled per normal arrow/wheel event
 pub const SCROLL_LINES_NORMAL: u16 = 3;
-/// Number of lines scrolled per fast/page scroll event
-#[allow(dead_code)]
-pub const SCROLL_LINES_FAST: u16 = 5;
 
 /// Maximum file size in bytes to snapshot for inline diff preview (512 KB)
 pub const MAX_DIFF_SNAPSHOT_BYTES: usize = 512 * 1024;
@@ -579,7 +572,7 @@ pub const STACK_PREVIEW_MAX_FILES: usize = 12;
 /// Maximum character length of checkpoint prompt display before truncation
 pub const CHECKPOINT_PROMPT_MAX_CHARS: usize = 55;
 /// Preview slice length for truncated checkpoint prompts
-pub const CHECKPOINT_PROMPT_PREVIEW_CHARS: usize = 52;
+pub const CHECKPOINT_PROMPT_PREVIEW_CHARS: usize = CHECKPOINT_PROMPT_MAX_CHARS - 3;
 /// Number of files shown inline for undo checkpoints before "+N more"
 pub const CHECKPOINT_FILES_PREVIEW: usize = 2;
 
@@ -602,3 +595,27 @@ pub const COMMAND_PALETTE_WIDTH_PCT: u16 = 64;
 pub const COMMAND_PALETTE_MIN_WIDTH: u16 = 62;
 /// Maximum width in columns for floating spotlight command palette
 pub const COMMAND_PALETTE_MAX_WIDTH: u16 = 78;
+
+// === Modal Percentage Dimensions (Screen % Width and Height) ===
+pub const PROVIDER_SELECT_WIDTH_PCT: u16 = 50;
+pub const PROVIDER_SELECT_HEIGHT_PCT: u16 = 45;
+pub const MODEL_SELECT_WIDTH_PCT: u16 = 75;
+pub const MODEL_SELECT_HEIGHT_PCT: u16 = 70;
+pub const UNDO_CHECKPOINT_WIDTH_PCT: u16 = 72;
+pub const UNDO_CHECKPOINT_HEIGHT_PCT: u16 = 65;
+pub const THEME_SELECT_WIDTH_PCT: u16 = 74;
+pub const THEME_SELECT_HEIGHT_PCT: u16 = 68;
+pub const HELP_WIDTH_PCT: u16 = 60;
+pub const HELP_HEIGHT_PCT: u16 = 50;
+pub const STACK_SELECT_WIDTH_PCT: u16 = 84;
+pub const STACK_SELECT_HEIGHT_PCT: u16 = 76;
+pub const COMMAND_CATALOG_WIDTH_PCT: u16 = 82;
+pub const COMMAND_CATALOG_HEIGHT_PCT: u16 = 74;
+pub const GIT_DIFF_WIDTH_PCT: u16 = 88;
+pub const GIT_DIFF_HEIGHT_PCT: u16 = 84;
+pub const CODE_EXPLORER_WIDTH_PCT: u16 = 85;
+pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
+
+// === UI Animation ===
+/// Standard 10-frame braille spinner sequence for async tool/agent activity
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

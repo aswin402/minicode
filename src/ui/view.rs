@@ -1,3 +1,4 @@
+use crate::constants::SPINNER_FRAMES;
 use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -894,11 +895,10 @@ impl TimelineView {
                             "  ├─── "
                         };
 
-                        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                         let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS)
                             as usize)
-                            % spinner_frames.len();
-                        let spinner = spinner_frames[frame_idx];
+                            % SPINNER_FRAMES.len();
+                        let spinner = SPINNER_FRAMES[frame_idx];
 
                         let (item_bullet, item_color) = match &item.status {
                             SubagentItemStatus::Running => (spinner, theme.warning),
@@ -948,11 +948,10 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SubagentSwarm(swarm) => {
-                    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                     let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS)
                         as usize)
-                        % spinner_frames.len();
-                    let spinner = spinner_frames[frame_idx];
+                        % SPINNER_FRAMES.len();
+                    let spinner = SPINNER_FRAMES[frame_idx];
 
                     let top_bullet = if swarm.is_running { spinner } else { "✔" };
                     let bullet_color = if swarm.is_running {
@@ -1170,10 +1169,9 @@ impl TimelineView {
 
         // Live working / thinking status spinner at bottom if running
         if ctx.is_working {
-            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS) as usize)
-                % spinner_frames.len();
-            let spinner = spinner_frames[frame_idx];
+                % SPINNER_FRAMES.len();
+            let spinner = SPINNER_FRAMES[frame_idx];
             let elapsed_secs = (ctx.working_millis as f64) / 1000.0;
 
             lines.push(Line::from(vec![
@@ -1224,13 +1222,14 @@ impl TimelineView {
     /// point past reachable content (blank screen / hidden tail).
     fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
         let usable = usize::from(width.max(1));
-        lines
+        let total: usize = lines
             .iter()
             .map(|line| {
                 let w: usize = line.spans.iter().map(|s| s.width()).sum();
-                (w.div_ceil(usable)).max(1) as u16
+                (w.div_ceil(usable)).max(1)
             })
-            .sum()
+            .sum();
+        total.min(u16::MAX as usize) as u16
     }
 
     /// Renders assistant Markdown text into highlighted Ratatui lines

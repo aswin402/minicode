@@ -107,27 +107,31 @@ fn test_slash_commands_contain_stack_plan_goal() {
 #[test]
 fn test_stack_select_modal_state_and_filter() {
     let mut modal = ModalState::new_stack_select();
-    if let ModalState::StackSelect {
-        ref stacks,
-        ref filtered_indices,
-        ref mut filter,
-        ..
-    } = modal
-    {
-        assert!(!stacks.is_empty());
-        assert_eq!(filtered_indices.len(), stacks.len());
+    match modal {
+        ModalState::StackSelect {
+            ref stacks,
+            ref filtered_indices,
+            ref mut filter,
+            ..
+        } => {
+            assert!(!stacks.is_empty());
+            assert_eq!(filtered_indices.len(), stacks.len());
 
-        // Test filtering
-        *filter = "fastapi".to_string();
+            // Test filtering
+            *filter = "fastapi".to_string();
+        }
+        _ => panic!("Expected ModalState::StackSelect"),
     }
     modal.update_filter();
 
-    if let ModalState::StackSelect {
-        ref filtered_indices,
-        ..
-    } = modal
-    {
-        assert_eq!(filtered_indices.len(), 1);
+    match modal {
+        ModalState::StackSelect {
+            ref filtered_indices,
+            ..
+        } => {
+            assert_eq!(filtered_indices.len(), 1);
+        }
+        _ => panic!("Expected ModalState::StackSelect"),
     }
 }
 

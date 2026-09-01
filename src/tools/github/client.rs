@@ -101,7 +101,7 @@ impl GitHubClient {
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
-            .user_agent("minicode-agent/0.0.54")
+            .user_agent(format!("minicode-agent/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_default();
 

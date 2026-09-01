@@ -193,7 +193,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         title: "Undo Changes",
         description: "Revert file modifications from previous turn",
         category: CommandCategory::Tools,
-        shortcut: None,
+        shortcut: Some("ctrl+u"),
     },
     PaletteCommand {
         slash_name: "/retry",
@@ -240,6 +240,15 @@ impl<'a> InputDock<'a> {
             slash_selected_index: 0,
             category_index: 0,
         }
+    }
+
+    /// Resets the input dock textarea to an empty prompt state
+    pub fn reset(&mut self) {
+        let mut ta = TextArea::default();
+        ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
+        ta.set_cursor_line_style(Style::default());
+        self.textarea = ta;
+        self.slash_selected_index = 0;
     }
 
     /// Checks if the input starts with '/' and is actively triggering the command palette
@@ -337,11 +346,7 @@ impl<'a> InputDock<'a> {
 
         // Handle Escape to dismiss command palette immediately
         if is_slash_open && key.code == KeyCode::Esc {
-            let mut ta = TextArea::default();
-            ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
-            ta.set_cursor_line_style(Style::default());
-            self.textarea = ta;
-            self.slash_selected_index = 0;
+            self.reset();
             return None;
         }
 
@@ -390,11 +395,7 @@ impl<'a> InputDock<'a> {
                 };
 
                 if !final_prompt.is_empty() {
-                    let mut ta = TextArea::default();
-                    ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
-                    ta.set_cursor_line_style(Style::default());
-                    self.textarea = ta;
-                    self.slash_selected_index = 0;
+                    self.reset();
                     Some(final_prompt)
                 } else {
                     None
@@ -478,7 +479,7 @@ impl<'a> InputDock<'a> {
         let matches = self.matching_palette_commands();
 
         // Modal dimensions (responsive spotlight centered on screen)
-        let width = (area.width * COMMAND_PALETTE_WIDTH_PCT / 100)
+        let width = ((area.width as u32 * COMMAND_PALETTE_WIDTH_PCT as u32 / 100) as u16)
             .clamp(COMMAND_PALETTE_MIN_WIDTH, COMMAND_PALETTE_MAX_WIDTH);
         let height = COMMAND_PALETTE_HEIGHT;
 

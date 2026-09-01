@@ -90,9 +90,8 @@ impl SessionStore {
 
         let session_path = self.session_file_path(&session_id);
         let mut file = OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .write(true)
-            .truncate(true)
             .open(&session_path)?;
 
         let meta = SessionMetadata {
@@ -643,6 +642,9 @@ impl SessionStore {
             }
         }
         std::fs::write(output_path, md)?;
+        if let Ok(file) = std::fs::File::open(output_path) {
+            let _ = file.sync_all();
+        }
         tracing::info!(
             session = session_id,
             path = %output_path.display(),

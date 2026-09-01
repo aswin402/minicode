@@ -93,8 +93,11 @@ index 1111111..2222222 100644
 #[tokio::test]
 async fn test_git_reviewer_clean_repo_score() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let report = GitReviewer::review_workspace(temp_dir.path(), false)
-        .await
-        .unwrap();
+    let path = temp_dir.path();
+    let _ = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(path)
+        .output();
+    let report = GitReviewer::review_workspace(path, false).await.unwrap();
     assert_eq!(report.total_score, 100);
 }
