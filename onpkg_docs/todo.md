@@ -1325,10 +1325,10 @@
 - [x] 60.10.8: Version bump → `v0.0.80`, changelog, commit, tag, push
 
 ### Phase 61: Diff-to-Symbol Projection for `/review` (v0.0.81)
-- [ ] 61.1: Create `DiffProjector` module with symbol-level diff mapping
-- [ ] 61.2: Integrate into `diff_impact` tool with enhanced output
-- [ ] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
-- [ ] 61.4: Version bump → `v0.0.81`, changelog, commit, tag, push
+- [x] 61.1: Create `DiffProjector` module with symbol-level diff mapping
+- [x] 61.2: Integrate into `diff_impact` tool with enhanced output
+- [x] 61.3: Add 6th review pillar to `GitReviewer`: Structural Impact Analysis
+- [x] 61.4: Version bump → `v0.0.81`, changelog, commit, tag, push
 
 ### Phase 62: Hybrid BM25 + Vector + PageRank Retrieval (v0.0.82)
 - [ ] 62.1: Create `HybridIndex` with BM25 inverted index + RRF fusion

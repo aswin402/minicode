@@ -145,10 +145,32 @@ pub async fn dispatch(
                 return Some(Err(e));
             }
 
+            let projection = crate::git::diff_projector::DiffProjector::project_workspace_diff(
+                workspace_root,
+                staged_only,
+                Some(&graph),
+            )
+            .await
+            .unwrap_or(crate::git::diff_projector::DiffProjectionReport {
+                total_files: 0,
+                total_symbols_modified: 0,
+                changes: vec![],
+                affected_caller_files: vec![],
+                high_risk_symbols: vec![],
+                breaking_changes: vec![],
+            });
+
             let mut out = format!(
                 "### 📊 Diff Impact & Blast Radius Report ({} modified files)\n\n",
                 modified_files.len()
             );
+
+            if !projection.is_empty() {
+                out.push_str(&crate::git::diff_projector::DiffProjector::format_markdown(
+                    &projection,
+                ));
+                out.push_str("\n---\n\n### 📁 File-Level Architectural Breakdown\n\n");
+            }
 
             let mut affected_layers = HashSet::new();
             let mut total_dependents = HashSet::new();

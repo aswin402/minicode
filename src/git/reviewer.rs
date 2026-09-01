@@ -142,6 +142,53 @@ impl GitReviewer {
             score = score.saturating_sub(15);
         }
 
+        // 5. Structural & Public API Impact Analysis (DiffProjector)
+        if let Ok(projection) = crate::git::diff_projector::DiffProjector::project_workspace_diff(
+            workspace_root,
+            staged_only,
+            None,
+        )
+        .await
+        {
+            for b in projection.breaking_changes {
+                findings.push(ReviewFinding {
+                    category: "Structural & Public API Impact".to_string(),
+                    severity: "HIGH".to_string(),
+                    title: format!("Breaking API Change in `{}`", b.symbol_name),
+                    details: b.breaking_reason.unwrap_or_else(|| {
+                        format!(
+                            "Public symbol `{}` in `{}` modified (affects {} callers)",
+                            b.symbol_name,
+                            b.file_path,
+                            b.direct_callers.len()
+                        )
+                    }),
+                    line_hint: Some(format!("lines {}-{}", b.start_line, b.end_line)),
+                });
+                score = score.saturating_sub(20);
+            }
+
+            for h in projection.high_risk_symbols {
+                if !h.is_breaking && h.pagerank_score > 0.04 {
+                    findings.push(ReviewFinding {
+                        category: "Architectural Risk & Blast Radius".to_string(),
+                        severity: "MEDIUM".to_string(),
+                        title: format!("High-Centrality Symbol Modified: `{}`", h.symbol_name),
+                        details: format!(
+                            "Symbol has PageRank score {:.4} and {} direct incoming callers.",
+                            h.pagerank_score,
+                            h.direct_callers.len()
+                        ),
+                        line_hint: Some(format!(
+                            "{}:lines {}-{}",
+                            h.file_path, h.start_line, h.end_line
+                        )),
+                    });
+                    score = score.saturating_sub(10);
+                }
+            }
+        }
+
         let summary = format!(
             "🛡️ **Multi-Agent Code Review Scorecard**\n\n\
             • **Overall Quality Score:** {} / 100\n\

@@ -150,6 +150,12 @@ impl GitService {
         Ok(DiffFilter::filter_diff(&raw_diff))
     }
 
+    /// Returns the content of a file at git HEAD (useful for AST diffs).
+    pub async fn show_file_at_head(&self, relative_path: &str) -> Result<String> {
+        let target = format!("HEAD:{}", relative_path.trim_start_matches('/'));
+        self.run_git(&["show", &target]).await
+    }
+
     /// Returns the recent git commit log.
     pub async fn log(&self, count: usize) -> Result<String> {
         let count_arg = format!("-n{}", count);

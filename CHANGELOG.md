@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.81] — 2026-09-01
+
+### Diff-to-Symbol AST Projection for `/review` & `diff_impact` (Phase 61)
+
+- **`DiffProjector` Engine (`src/git/diff_projector.rs`, `src/git/mod.rs`)**:
+  - Implemented surgical symbol-level git diff projection mapping raw diff line spans directly to Tree-sitter AST symbol definitions (functions, methods, structs, traits, enums).
+  - Categorizes symbol mutations into `Added`, `BodyModified`, `SignatureChanged`, and `Deleted`.
+  - Computes symbol-level call-graph blast radius: incoming callers, transitive dependencies, and PageRank architectural scores for every changed symbol.
+- **6th Review Pillar in `GitReviewer` (`src/git/reviewer.rs`)**:
+  - Added **Structural & Public API Impact Analysis** to the multi-agent code reviewer.
+  - Automatically flags breaking public API modifications, deleted symbols with active references, and high-PageRank architectural risk.
+- **Enhanced `diff_impact` Tool (`src/tools/registry/explore_tools.rs`)**:
+  - Integrated `DiffProjector` into the `diff_impact` tool to provide symbol-level breakdown, caller trees, and downstream file risk alongside file-level analysis.
+- **Integration Test Suite (`tests/integration_diff_projector.rs`)**:
+  - Added tests covering clean repository projection, added symbols, body vs signature mutations, and the 6th review pillar.
+
 ## [0.0.80] — 2026-09-01
 
 ### UTF-8 Character Boundary Safety, Subagent Tool Alignment, Confinement & Dependency Pruning
