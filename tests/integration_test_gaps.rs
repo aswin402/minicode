@@ -93,12 +93,9 @@ pub fn run_service() -> bool {
         "untested_only": true
     });
 
-    let res = minicode::tools::registry::context_tools::dispatch(
-        "test_coverage_gaps",
-        &args,
-        dir.path(),
-    )
-    .await;
+    let res =
+        minicode::tools::registry::context_tools::dispatch("test_coverage_gaps", &args, dir.path())
+            .await;
 
     assert!(res.is_some());
     let output = res.unwrap().expect("tool execution success");

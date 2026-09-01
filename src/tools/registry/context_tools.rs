@@ -355,6 +355,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "code_smells".to_string(),
+            description: "Run AST code smell and anti-pattern linter to detect god functions (>80 lines), excessive parameters, deep nesting, dead public exports, and complex boolean expressions.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "Optional specific file to limit code smell audit to (e.g. 'src/agent/loop.rs')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -800,6 +813,24 @@ pub async fn dispatch(
 
             let markdown =
                 crate::context::test_gap::TestGapAnalyzer::format_markdown(&report, target_file);
+            Ok(markdown)
+        })()),
+        "code_smells" => Some((|| {
+            let target_file = args.get("target_file").and_then(|v| v.as_str());
+
+            let mut graph = crate::context::graph::CodeGraph::new();
+            let _ = graph.build_graph(workspace_root);
+
+            let report = crate::context::smell_detector::AstSmellDetector::scan_workspace(
+                workspace_root,
+                Some(&graph),
+                target_file,
+            )?;
+
+            let markdown = crate::context::smell_detector::AstSmellDetector::format_markdown(
+                &report,
+                target_file,
+            );
             Ok(markdown)
         })()),
         "prune_context" => Some(Ok(

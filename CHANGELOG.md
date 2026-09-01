@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.85] — 2026-09-01
+
+### AST Code Smells & Architectural Health Linter (Phase 65)
+
+- **`AstSmellDetector` Code Health Engine (`src/context/smell_detector.rs`, `src/context/mod.rs`)**:
+  - Implemented multi-dimensional code smell inspection detecting:
+    - **God Functions / Monolithic Methods**: Functions exceeding 80 lines (`>80 lines`).
+    - **Excessive Parameter Lists**: Functions accepting $\ge 6$ arguments.
+    - **Deep Nesting & Complexity**: Indentation depth $\ge 5$ levels (20 spaces or 5 tabs).
+    - **Dead Public Exports**: Exported symbols with 0 incoming callers across the `CodeGraph`.
+    - **Complex Boolean Logic**: Conditionals with $\ge 4$ logical operators (`&&`, `||`).
+  - Computes composite codebase/file **Code Health Score** ($0 \dots 100$) with actionable refactoring remediations.
+- **`code_smells` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Exposed tool for the LLM agent to audit architectural quality and request targeted file inspections.
+- **Pillar 7 in `/review` Pipeline (`src/git/reviewer.rs`)**:
+  - Integrated AST code smell checks into git diff review to proactively flag anti-patterns in newly written code.
+- **Integration Test Suite (`tests/integration_code_smells.rs`)**:
+  - Added 4 tests verifying god function detection, excessive parameters, deep nesting, and tool dispatch.
+
 ## [0.0.84] — 2026-09-01
 
 ### Test Gap Detection & Composite Risk Scoring (Phase 64)

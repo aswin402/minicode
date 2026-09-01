@@ -1350,9 +1350,14 @@
 - [x] 64.4: Version bump → `v0.0.84`, changelog, commit, tag, push
 
 ### Phase 65: AST Code Smells & Antipattern Linter (v0.0.85)
-- [ ] 65.1: Implement `AstSmellDetector` for god functions, deep nesting, magic literals, dead exports
-- [ ] 65.2: Expose `code_smells` agent tool
-- [ ] 65.3: Integrate smell checks into `/review` pipeline
-- [ ] 65.4: Version bump → `v0.0.85`, changelog, commit, tag, push
+- [x] 65.1: Implement `AstSmellDetector` for god functions, deep nesting, magic literals, dead exports
+- [x] 65.2: Expose `code_smells` agent tool
+- [x] 65.3: Integrate smell checks into `/review` pipeline
+- [x] 65.4: Version bump → `v0.0.85`, changelog, commit, tag, push
+
+### Phase 66: Interactive Architectural Heatmap & Call-Graph Visualizer (v0.0.86)
+- [ ] 66.1: Implement ASCII/Unicode Tree & Box Call-Graph Visualizer
+- [ ] 66.2: Add `graph_visualize` tool and TUI `/graph` modal
+- [ ] 66.3: Version bump → `v0.0.86`, changelog, commit, tag, push
 
 

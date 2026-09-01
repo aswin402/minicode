@@ -189,6 +189,31 @@ impl GitReviewer {
             }
         }
 
+        // 6. AST Code Smells & Complexity Anti-Patterns
+        for f in &target_files {
+            if let Ok(smell_report) =
+                crate::context::smell_detector::AstSmellDetector::scan_workspace(
+                    workspace_root,
+                    None,
+                    Some(f),
+                )
+            {
+                for smell in smell_report.smells {
+                    findings.push(ReviewFinding {
+                        category: "AST Code Health & Antipatterns".to_string(),
+                        severity: smell.severity,
+                        title: format!("{}: {}", smell.category.badge(), smell.message),
+                        details: smell.remediation,
+                        line_hint: Some(format!(
+                            "{}:lines {}-{}",
+                            smell.file_path, smell.start_line, smell.end_line
+                        )),
+                    });
+                    score = score.saturating_sub(5);
+                }
+            }
+        }
+
         let summary = format!(
             "🛡️ **Multi-Agent Code Review Scorecard**\n\n\
             • **Overall Quality Score:** {} / 100\n\
