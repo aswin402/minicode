@@ -625,6 +625,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {}
             }),
         },
+        ToolSchema {
+            name: "optimize_token_budget".to_string(),
+            description: "Predict multi-turn token consumption velocity, forecast headroom until model context limits, and generate compaction optimization recommendations.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "model_name": {
+                        "type": "string",
+                        "description": "Optional model name to evaluate context limits for (default: 'gpt-4o')"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1470,6 +1483,19 @@ pub async fn dispatch(
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),
         )),
+        "optimize_token_budget" => Some({
+            let model_name = args
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("gpt-4o");
+
+            let report = crate::context::budget_optimizer::TokenBudgetOptimizer::analyze_messages(
+                &[],
+                model_name,
+            );
+
+            Ok(report.format_markdown())
+        }),
         _ => None,
     }
 }

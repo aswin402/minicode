@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.97] — 2026-09-02
+
+### Predictive Multi-Turn Token Budget Optimizer & Context Compactor (Phase 77)
+
+#### 💡 Ideas & Inspirations
+- **Proactive vs Reactive Context Management**: Waiting until an LLM context window is completely exhausted before triggering emergency truncation causes abrupt amnesia and dropped conversational constraints. Inspired by OS kernel page-cache lookahead and MemGPT/Letta tiered memory architectures, `minicode` introduces proactive multi-turn token forecasting and predictive compaction.
+- **Velocity-Aware Horizon Modeling**: Computes historical token consumption velocity across recent turns to project exact exhaustion horizons, recommending tiered optimizations (Observation Masking, Rolling-Window Anchors, Observation Deduplication) before context limits are reached.
+
+#### 📚 References & Sources
+- **MemGPT / Letta Context Management Architecture**: Tiered hierarchical working memory and recursive summarization.
+- **Anthropic & OpenAI Context Window Guidelines**: Prompt caching, token accounting, and structured message framing.
+- **Operating Systems Lookahead Page Replacement & Memory Budgeting**: Proactive horizon estimation and LRU cache eviction.
+
+#### 🚀 Features & Changes
+- **`TokenBudgetOptimizer` Engine (`src/context/budget_optimizer.rs`, `src/context/mod.rs`)**:
+  - Predicts token exhaustion horizon based on multi-turn burn rate velocities.
+  - Formulates actionable, prioritized optimization plans with concrete token saving estimates.
+  - Automatically identifies candidate tool outputs for observation masking and older turns for semantic memory anchors.
+- **`optimize_token_budget` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing agents and developers to query predictive token budget forecasts and context health metrics.
+- **Integration Test Suite (`tests/integration_budget_optimizer.rs`)**:
+  - Added 3 integration tests covering horizon forecasting, observation masking analysis, and async tool dispatch.
+
 ## [0.0.96] — 2026-09-02
 
 ### Autonomous Semantic Git Conflict Resolver & Merge Engine (Phase 76)

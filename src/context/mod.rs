@@ -2,6 +2,7 @@ pub mod ast_diff;
 pub mod ast_refactor;
 pub mod ast_transform;
 pub mod auto_compact;
+pub mod budget_optimizer;
 pub mod checkpoint;
 pub mod compressor;
 pub mod dataflow;

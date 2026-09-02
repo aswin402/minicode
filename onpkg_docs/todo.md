@@ -1411,8 +1411,13 @@
 - [x] 76.3: Version bump → `v0.0.96`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 77: Predictive Multi-Turn Token Budget Optimizer & Context Compactor (v0.0.97)
-- [ ] 77.1: Implement lookahead token usage estimation and dynamic rolling-window message compression
-- [ ] 77.2: Add `optimize_token_budget` agent tool
-- [ ] 77.3: Version bump → `v0.0.97`, changelog with ideas/sources, commit, tag, push
+- [x] 77.1: Implement lookahead token usage estimation and dynamic rolling-window message compression
+- [x] 77.2: Add `optimize_token_budget` agent tool
+- [x] 77.3: Version bump → `v0.0.97`, changelog with ideas/sources, commit, tag, push
+
+### Phase 78: Distributed Multi-Agent Consensus & Peer Review Council (v0.0.98)
+- [ ] 78.1: Implement multi-perspective voting protocols, debate deliberation, and divergence resolution
+- [ ] 78.2: Add `convene_agent_council` agent tool
+- [ ] 78.3: Version bump → `v0.0.98`, changelog with ideas/sources, commit, tag, push
 
 
