@@ -96,7 +96,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::StackScaffold,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/stack".to_string()),
         });
@@ -110,7 +110,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::MilestonePlan,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/plan".to_string()),
         });
@@ -124,7 +124,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::AutonomousGoal,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/goal".to_string()),
         });
@@ -138,7 +138,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::CodeReview,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/review".to_string()),
         });
@@ -147,7 +147,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     if lower == "/diff" || lower == "/diffs" || lower.starts_with("/diff ") {
         return Some(IntentMatch {
             intent: AgentIntent::GitDiff,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query: String::new(),
             suggested_command: Some("/diff".to_string()),
         });
@@ -161,7 +161,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::CodeExplore,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/explore".to_string()),
         });
@@ -170,7 +170,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     if lower == "/history" || lower == "/sessions" || lower.starts_with("/sessions ") {
         return Some(IntentMatch {
             intent: AgentIntent::SessionHistory,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query: String::new(),
             suggested_command: Some("/history".to_string()),
         });
@@ -184,7 +184,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::UndoRollback,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query,
             suggested_command: Some("/undo".to_string()),
         });
@@ -193,7 +193,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     if lower == "/map" {
         return Some(IntentMatch {
             intent: AgentIntent::RepoMap,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query: String::new(),
             suggested_command: Some("/map".to_string()),
         });
@@ -202,7 +202,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     if lower == "/compact" {
         return Some(IntentMatch {
             intent: AgentIntent::ContextCompact,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query: String::new(),
             suggested_command: Some("/compact".to_string()),
         });
@@ -211,7 +211,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     if lower == "/commands" || lower == "/help" {
         return Some(IntentMatch {
             intent: AgentIntent::CommandCatalog,
-            confidence: 1.0,
+            confidence: clamp_confidence(1.0),
             query: String::new(),
             suggested_command: Some("/commands".to_string()),
         });
@@ -239,7 +239,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::StackScaffold,
-            confidence: 0.90,
+            confidence: clamp_confidence(0.90),
             query: trimmed.to_string(),
             suggested_command: Some("/stack".to_string()),
         });
@@ -258,7 +258,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
         let query = extract_planning_query(trimmed);
         return Some(IntentMatch {
             intent: AgentIntent::MilestonePlan,
-            confidence: 0.88,
+            confidence: clamp_confidence(0.88),
             query,
             suggested_command: Some("/plan".to_string()),
         });
@@ -275,7 +275,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::AutonomousGoal,
-            confidence: 0.92,
+            confidence: clamp_confidence(0.92),
             query: trimmed.to_string(),
             suggested_command: Some("/goal".to_string()),
         });
@@ -292,7 +292,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::CodeReview,
-            confidence: 0.89,
+            confidence: clamp_confidence(0.89),
             query: trimmed.to_string(),
             suggested_command: Some("/review".to_string()),
         });
@@ -309,7 +309,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::GitDiff,
-            confidence: 0.90,
+            confidence: clamp_confidence(0.90),
             query: String::new(),
             suggested_command: Some("/diff".to_string()),
         });
@@ -327,7 +327,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::CodeExplore,
-            confidence: 0.91,
+            confidence: clamp_confidence(0.91),
             query: trimmed.to_string(),
             suggested_command: Some("/explore".to_string()),
         });
@@ -346,7 +346,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::SessionHistory,
-            confidence: 0.88,
+            confidence: clamp_confidence(0.88),
             query: String::new(),
             suggested_command: Some("/history".to_string()),
         });
@@ -361,7 +361,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::UndoRollback,
-            confidence: 0.92,
+            confidence: clamp_confidence(0.92),
             query: trimmed.to_string(),
             suggested_command: Some("/undo".to_string()),
         });
@@ -375,7 +375,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::RepoMap,
-            confidence: 0.95,
+            confidence: clamp_confidence(0.95),
             query: String::new(),
             suggested_command: Some("/map".to_string()),
         });
@@ -389,7 +389,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::ContextCompact,
-            confidence: 0.95,
+            confidence: clamp_confidence(0.95),
             query: String::new(),
             suggested_command: Some("/compact".to_string()),
         });
@@ -403,13 +403,20 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     {
         return Some(IntentMatch {
             intent: AgentIntent::CommandCatalog,
-            confidence: 0.90,
+            confidence: clamp_confidence(0.90),
             query: String::new(),
             suggested_command: Some("/commands".to_string()),
         });
     }
 
     None
+}
+
+/// Clamps a confidence score to the valid [0.0, 1.0] range.
+/// Applied defensively at every return site in match_intent.
+#[inline]
+fn clamp_confidence(val: f64) -> f32 {
+    (val.clamp(0.0_f64, 1.0_f64)) as f32
 }
 
 /// Helper to strip common conversational prefixes from planning queries

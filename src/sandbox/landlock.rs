@@ -172,3 +172,19 @@ pub fn apply_landlock_sandbox(_workspace_root: &Path, _allow_network: bool) -> R
     tracing::debug!("Landlock is Linux-only; skipping on this platform");
     Ok(())
 }
+
+/// Returns true if the Linux kernel supports Landlock (>= 5.13).
+/// The handle_access() call probes kernel support; if it succeeds, Landlock is available.
+#[cfg(target_os = "linux")]
+pub fn is_landlock_supported() -> bool {
+    use landlock::{Access, AccessFs, Ruleset, RulesetAttr, ABI};
+    Ruleset::default()
+        .handle_access(AccessFs::from_all(ABI::V1))
+        .is_ok()
+}
+
+/// Returns false on non-Linux platforms.
+#[cfg(not(target_os = "linux"))]
+pub fn is_landlock_supported() -> bool {
+    false
+}

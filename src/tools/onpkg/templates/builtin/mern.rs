@@ -151,7 +151,10 @@ export default router;"##.into(),
             },
             StackFile {
                 path: "backend/.env".into(),
-                content: "MONGODB_URI=mongodb://localhost:27017/mern\nPORT=5000\nJWT_SECRET=your_jwt_secret".into(), binary_content: None,
+                content: format!(
+                    "MONGODB_URI=mongodb://localhost:27017/mern\nPORT=5000\nJWT_SECRET={}",
+                    uuid::Uuid::new_v4()
+                ).into(), binary_content: None,
             },
 
             // Frontend (same as react_vite_full)

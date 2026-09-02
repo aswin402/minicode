@@ -175,7 +175,11 @@ export default router;"##.into(),
             },
             StackFile {
                 path: "backend/.env".into(),
-                content: "DATABASE_URL=\"postgresql://postgres:password@localhost:5432/pern\"\nPORT=5000\nJWT_SECRET=your_jwt_secret".into(), binary_content: None,
+                content: format!(
+                    "DATABASE_URL=\"postgresql://postgres:{}@localhost:5432/pern\"\nPORT=5000\nJWT_SECRET={}",
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4()
+                ).into(), binary_content: None,
             },
 
             // Frontend (same as PERN but proxy to 5000)
@@ -271,7 +275,7 @@ export default function App() {
             },
             StackFile {
                 path: "docker-compose.yml".into(),
-                content: r##"version: '3.8'
+                content: format!(r##"version: '3.8'
 services:
   postgres:
     image: postgres:16
@@ -280,13 +284,10 @@ services:
     environment:
       POSTGRES_DB: pern
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
+      POSTGRES_PASSWORD: {}
 volumes:
   postgres_data:
-"##.into(),
+"##, uuid::Uuid::new_v4()).into(),
                 binary_content: None,
             },
         ],

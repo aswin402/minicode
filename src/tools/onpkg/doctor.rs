@@ -42,6 +42,21 @@ impl OnpkgDoctor {
             }
         }
 
+        // OS sandbox status
+        res.push_str("\n| **OS Sandbox** |");
+        if crate::sandbox::landlock::is_landlock_supported() {
+            res.push_str(" ✔ | Landlock available — path enforcement active |\n");
+        } else {
+            #[cfg(target_os = "linux")]
+            {
+                res.push_str(" ⚠ | Landlock unavailable (kernel < 5.13) — path checks only |\n");
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                res.push_str(" ○ | Landlock not supported on this OS |\n");
+            }
+        }
+
         res
     }
 }
