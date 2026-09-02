@@ -639,3 +639,21 @@ pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
 // === UI Animation ===
 /// Standard 10-frame braille spinner sequence for async tool/agent activity
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// === Automated Tool Count Validation ===
+// This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
+// If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.
+#[cfg(test)]
+mod tool_count_validation {
+    use super::*;
+
+    #[test]
+    fn total_tool_count_matches_registry() {
+        let actual = crate::tools::ToolRegistry::get_tool_schemas().len();
+        assert_eq!(
+            actual, TOTAL_TOOL_COUNT,
+            "TOTAL_TOOL_COUNT ({}) doesn't match actual tool schemas ({}). Update the constant in constants.rs.",
+            TOTAL_TOOL_COUNT, actual
+        );
+    }
+}
