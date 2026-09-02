@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.99] — 2026-09-02
+
+### Streaming Mode Toggle
+
+#### 💡 Ideas & Inspirations
+- **Per-Session Streaming Preference**: Streaming LLM responses are great for interactivity but noisy for scripted/headless use. A runtime toggle lets users choose per-session without a config file restart. Inspired by CLI tools like `htop` and `vim` that persist mode preferences in-session.
+
+#### 🚀 Features & Changes
+- **`/streaming` slash command** (`src/app.rs`, `src/ui/modal.rs`):
+  - Opens a 3-option modal: Enable, Disable, Back
+  - Current streaming state is shown with a `◉` marker
+  - Changes take effect immediately on the next agent turn
+- **Streaming toggle** (`src/config.rs`, `src/agent/loop.rs`):
+  - Added `streaming: bool` to `AgentConfig` (default `true`, preserving current behavior)
+  - Non-streaming mode: calls `completion()`, accumulates full response, emits a single `StreamDelta` + `ToolCall` events when done
+  - Streaming mode: unchanged — emits `StreamDelta` events incrementally as chunks arrive
+- **`Provider::completion()` default method** (`src/agent/provider.rs`):
+  - Added default `completion()` to the `Provider` trait
+  - Wraps `stream_completion()` and collects all deltas into a single string
+
 ## [0.0.98] — 2026-09-02
 
 ### Critical Security & Correctness Hardening (Phase N — Round 1)

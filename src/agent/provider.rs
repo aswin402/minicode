@@ -50,6 +50,25 @@ pub trait Provider: Send + Sync {
         tools: &[ToolSchema],
         options: &CompletionOptions,
     ) -> Result<ChunkStream>;
+
+    /// Non-streaming completion: returns the full response text as a single string.
+    /// Default implementation wraps `stream_completion` and collects all deltas.
+    async fn completion(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        options: &CompletionOptions,
+    ) -> Result<String> {
+        let mut stream = self.stream_completion(messages, tools, options).await?;
+        let mut text = String::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk? {
+                StreamChunk::Delta(delta) => text.push_str(&delta),
+                StreamChunk::ToolCallChunk(_) | StreamChunk::Usage { .. } | StreamChunk::Done => {}
+            }
+        }
+        Ok(text)
+    }
 }
 
 /// Google Gemini API Provider implementation

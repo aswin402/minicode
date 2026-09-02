@@ -100,6 +100,61 @@ impl AgentLoop {
         );
     }
 
+    /// Runs a single non-streaming LLM iteration: calls completion(), collects all
+    /// tool calls and usage metadata internally, then emits aggregated events.
+    async fn run_nonstreaming_iteration(
+        &self,
+        messages: &[Message],
+        tools: &[crate::agent::provider::ToolSchema],
+        options: &CompletionOptions,
+        event_sender: &mpsc::UnboundedSender<AgentEvent>,
+        session_id: &str,
+        turn_id: usize,
+    ) -> Result<(String, Vec<ToolCall>, usize, usize)> {
+        let text = self.provider.completion(messages, tools, options).await?;
+        let mut pending_tool_calls = Vec::new();
+        let mut last_prompt_tokens = 0_usize;
+        let mut cumulative_completion_tokens = 0_usize;
+
+        // Re-parse via the stream to extract structured tool calls and usage.
+        let mut stream = self.provider.stream_completion(messages, tools, options).await?;
+        while let Some(chunk) = stream.next().await {
+            match chunk? {
+                StreamChunk::Delta(_) => {}
+                StreamChunk::ToolCallChunk(tc) => {
+                    pending_tool_calls.push(tc);
+                }
+                StreamChunk::Usage { prompt_tokens, completion_tokens } => {
+                    last_prompt_tokens = prompt_tokens;
+                    cumulative_completion_tokens += completion_tokens;
+                }
+                StreamChunk::Done => {}
+            }
+        }
+
+        // Emit a single StreamDelta with the full accumulated text.
+        let delta_event = AgentEvent::StreamDelta {
+            turn_id,
+            delta: text.clone(),
+        };
+        let _ = self.session_store.append_event(session_id, &delta_event);
+        let _ = event_sender.send(delta_event);
+
+        // Emit ToolCall events for each detected tool call.
+        for tc in &pending_tool_calls {
+            let call_event = AgentEvent::ToolCall {
+                turn_id,
+                tool_id: tc.id.clone(),
+                tool: tc.name.clone(),
+                args: tc.arguments.clone(),
+            };
+            let _ = self.session_store.append_event(session_id, &call_event);
+            let _ = event_sender.send(call_event);
+        }
+
+        Ok((text, pending_tool_calls, last_prompt_tokens, cumulative_completion_tokens))
+    }
+
     /// Prunes conversation message history progressively via 4-tier auto-compaction,
     /// or deduplicates repetitive file reads/diagnostics across turns.
     pub fn prune_context(&mut self) -> Option<crate::context::auto_compact::CompactionMetrics> {
@@ -259,23 +314,145 @@ impl AgentLoop {
             let mut success = false;
             while !success && retry_count <= max_retries {
                 let completions_before = cumulative_completion_tokens;
-                let mut stream = match self
-                    .provider
-                    .stream_completion(&self.messages, &tools, &options)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
+
+                if self.config.agent.streaming {
+                    // --- Streaming mode: consume chunks incrementally, emit deltas live ---
+                    let mut stream = match self
+                        .provider
+                        .stream_completion(&self.messages, &tools, &options)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            if retry_count < max_retries {
+                                retry_count += 1;
+                                let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
+                                let retry_msg = format!(
+                                    "Provider connection error. Retrying in {}s (attempt {}/{})...",
+                                    delay_secs, retry_count, max_retries
+                                );
+                                let event = AgentEvent::Error {
+                                    turn_id: Some(turn_id),
+                                    code: "provider_error".to_string(),
+                                    message: retry_msg,
+                                    retrying: true,
+                                    retry_after_ms: Some(delay_secs * 1000),
+                                };
+                                if let Err(e) = event_sender.send(event) {
+                                    tracing::debug!(error = %e, "Failed to send retry error event");
+                                }
+                                if let Some(cancel) = &cancel_token {
+                                    tokio::select! {
+                                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
+                                        _ = cancel.cancelled() => {
+                                            tracing::info!("Turn #{} cancelled during retry backoff", turn_id);
+                                            was_cancelled = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs))
+                                        .await;
+                                }
+                                iteration_text.clear();
+                                pending_tool_calls.clear();
+                                turn_response.truncate(turn_response_len_before);
+                                cumulative_completion_tokens = completions_before;
+                                continue;
+                            }
+                            return Err(e);
+                        }
+                    };
+
+                    let mut stream_error = None;
+                    let mut cancelled = false;
+
+                    loop {
+                        let next_chunk = if let Some(ref cancel) = cancel_token {
+                            tokio::select! {
+                                _ = cancel.cancelled() => {
+                                    cancelled = true;
+                                    break;
+                                }
+                                chunk = stream.next() => chunk,
+                            }
+                        } else {
+                            stream.next().await
+                        };
+
+                        match next_chunk {
+                            Some(Ok(StreamChunk::Delta(delta))) => {
+                                iteration_text.push_str(&delta);
+                                turn_response.push_str(&delta);
+                                let delta_event = AgentEvent::StreamDelta {
+                                    turn_id,
+                                    delta: delta.clone(),
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &delta_event)
+                                {
+                                    tracing::warn!("Failed to persist StreamDelta event: {}", e);
+                                }
+                                if let Err(e) = event_sender.send(delta_event) {
+                                    tracing::debug!(error = %e, "Failed to send stream delta event");
+                                }
+                            }
+                            Some(Ok(StreamChunk::ToolCallChunk(tool_call))) => {
+                                let call_event = AgentEvent::ToolCall {
+                                    turn_id,
+                                    tool_id: tool_call.id.clone(),
+                                    tool: tool_call.name.clone(),
+                                    args: tool_call.arguments.clone(),
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &call_event)
+                                {
+                                    tracing::warn!("Failed to persist ToolCall event: {}", e);
+                                }
+                                if let Err(e) = event_sender.send(call_event) {
+                                    tracing::debug!(error = %e, "Failed to send tool call event");
+                                }
+                                pending_tool_calls.push(tool_call);
+                            }
+                            Some(Ok(StreamChunk::Usage {
+                                prompt_tokens,
+                                completion_tokens,
+                            })) => {
+                                last_prompt_tokens = prompt_tokens;
+                                cumulative_completion_tokens += completion_tokens;
+                            }
+                            Some(Ok(StreamChunk::Done)) => {
+                                break;
+                            }
+                            Some(Err(e)) => {
+                                stream_error = Some(e);
+                                break;
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+
+                    if cancelled {
+                        tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
+                        was_cancelled = true;
+                        break;
+                    }
+
+                    if let Some(err) = stream_error {
                         if retry_count < max_retries {
                             retry_count += 1;
                             let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
                             let retry_msg = format!(
-                                "Provider connection error. Retrying in {}s (attempt {}/{})...",
+                                "Rate limit or network error. Retrying in {}s (attempt {}/{})...",
                                 delay_secs, retry_count, max_retries
                             );
                             let event = AgentEvent::Error {
                                 turn_id: Some(turn_id),
-                                code: "provider_error".to_string(),
+                                code: "rate_limited".to_string(),
                                 message: retry_msg,
                                 retrying: true,
                                 retry_after_ms: Some(delay_secs * 1000),
@@ -287,14 +464,13 @@ impl AgentLoop {
                                 tokio::select! {
                                     _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
                                     _ = cancel.cancelled() => {
-                                        tracing::info!("Turn #{} cancelled during retry backoff", turn_id);
+                                        tracing::info!("Turn #{} cancelled during rate-limit backoff", turn_id);
                                         was_cancelled = true;
                                         break;
                                     }
                                 }
                             } else {
-                                tokio::time::sleep(std::time::Duration::from_secs(delay_secs))
-                                    .await;
+                                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
                             }
                             iteration_text.clear();
                             pending_tool_calls.clear();
@@ -302,128 +478,67 @@ impl AgentLoop {
                             cumulative_completion_tokens = completions_before;
                             continue;
                         }
-                        return Err(e);
+                        return Err(err);
                     }
-                };
 
-                let mut stream_error = None;
-                let mut cancelled = false;
-
-                loop {
-                    let next_chunk = if let Some(ref cancel) = cancel_token {
-                        tokio::select! {
-                            _ = cancel.cancelled() => {
-                                cancelled = true;
-                                break;
-                            }
-                            chunk = stream.next() => chunk,
+                    success = true;
+                } else {
+                    // --- Non-streaming mode: collect full response, emit aggregated events ---
+                    match self
+                        .run_nonstreaming_iteration(
+                            &self.messages,
+                            &tools,
+                            &options,
+                            &event_sender,
+                            &self.session_id,
+                            turn_id,
+                        )
+                        .await
+                    {
+                        Ok((iter_text, tool_calls, last_pt, cum_ct)) => {
+                            iteration_text = iter_text;
+                            pending_tool_calls = tool_calls;
+                            last_prompt_tokens = last_pt;
+                            cumulative_completion_tokens = cum_ct;
                         }
-                    } else {
-                        stream.next().await
-                    };
-
-                    match next_chunk {
-                        Some(Ok(StreamChunk::Delta(delta))) => {
-                            iteration_text.push_str(&delta);
-                            turn_response.push_str(&delta);
-                            let delta_event = AgentEvent::StreamDelta {
-                                turn_id,
-                                delta: delta.clone(),
-                            };
-                            if let Err(e) = self
-                                .session_store
-                                .append_event(&self.session_id, &delta_event)
-                            {
-                                tracing::warn!("Failed to persist StreamDelta event: {}", e);
-                            }
-                            if let Err(e) = event_sender.send(delta_event) {
-                                tracing::debug!(error = %e, "Failed to send stream delta event");
-                            }
-                        }
-                        Some(Ok(StreamChunk::ToolCallChunk(tool_call))) => {
-                            let call_event = AgentEvent::ToolCall {
-                                turn_id,
-                                tool_id: tool_call.id.clone(),
-                                tool: tool_call.name.clone(),
-                                args: tool_call.arguments.clone(),
-                            };
-                            if let Err(e) = self
-                                .session_store
-                                .append_event(&self.session_id, &call_event)
-                            {
-                                tracing::warn!("Failed to persist ToolCall event: {}", e);
-                            }
-                            if let Err(e) = event_sender.send(call_event) {
-                                tracing::debug!(error = %e, "Failed to send tool call event");
-                            }
-                            pending_tool_calls.push(tool_call);
-                        }
-                        Some(Ok(StreamChunk::Usage {
-                            prompt_tokens,
-                            completion_tokens,
-                        })) => {
-                            last_prompt_tokens = prompt_tokens;
-                            cumulative_completion_tokens += completion_tokens;
-                        }
-                        Some(Ok(StreamChunk::Done)) => {
-                            break;
-                        }
-                        Some(Err(e)) => {
-                            stream_error = Some(e);
-                            break;
-                        }
-                        None => {
-                            break;
-                        }
-                    }
-                }
-
-                if cancelled {
-                    tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
-                    was_cancelled = true;
-                    break;
-                }
-
-                if let Some(err) = stream_error {
-                    if retry_count < max_retries {
-                        retry_count += 1;
-                        let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
-                        let retry_msg = format!(
-                            "Rate limit or network error. Retrying in {}s (attempt {}/{})...",
-                            delay_secs, retry_count, max_retries
-                        );
-                        let event = AgentEvent::Error {
-                            turn_id: Some(turn_id),
-                            code: "rate_limited".to_string(),
-                            message: retry_msg,
-                            retrying: true,
-                            retry_after_ms: Some(delay_secs * 1000),
-                        };
-                        if let Err(e) = event_sender.send(event) {
-                            tracing::debug!(error = %e, "Failed to send retry error event");
-                        }
-                        if let Some(cancel) = &cancel_token {
-                            tokio::select! {
-                                _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
-                                _ = cancel.cancelled() => {
-                                    tracing::info!("Turn #{} cancelled during rate-limit backoff", turn_id);
-                                    was_cancelled = true;
-                                    break;
+                        Err(e) => {
+                            if retry_count < max_retries {
+                                retry_count += 1;
+                                let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
+                                let retry_msg = format!(
+                                    "Provider connection error. Retrying in {}s (attempt {}/{})...",
+                                    delay_secs, retry_count, max_retries
+                                );
+                                let event = AgentEvent::Error {
+                                    turn_id: Some(turn_id),
+                                    code: "provider_error".to_string(),
+                                    message: retry_msg,
+                                    retrying: true,
+                                    retry_after_ms: Some(delay_secs * 1000),
+                                };
+                                let _ = event_sender.send(event);
+                                if let Some(cancel) = &cancel_token {
+                                    tokio::select! {
+                                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {}
+                                        _ = cancel.cancelled() => {
+                                            was_cancelled = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
                                 }
+                                iteration_text.clear();
+                                pending_tool_calls.clear();
+                                turn_response.truncate(turn_response_len_before);
+                                cumulative_completion_tokens = completions_before;
+                                continue;
                             }
-                        } else {
-                            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                            return Err(e);
                         }
-                        iteration_text.clear();
-                        pending_tool_calls.clear();
-                        turn_response.truncate(turn_response_len_before);
-                        cumulative_completion_tokens = completions_before;
-                        continue;
                     }
-                    return Err(err);
+                    success = true;
                 }
-
-                success = true;
             }
 
             if was_cancelled {

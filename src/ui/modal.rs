@@ -5,7 +5,7 @@ use crate::constants::{
     COMMAND_CATALOG_WIDTH_PCT, COMMAND_NAME_DISPLAY_COLS, EXIT_CONFIRM_MODAL_HEIGHT,
     EXIT_CONFIRM_MODAL_WIDTH, EXPLORER_BADGE_DISPLAY_COLS, GIT_DIFF_HEIGHT_PCT, GIT_DIFF_WIDTH_PCT,
     HELP_HEIGHT_PCT, HELP_WIDTH_PCT, MODEL_SELECT_HEIGHT_PCT, MODEL_SELECT_WIDTH_PCT,
-    PROVIDER_SELECT_HEIGHT_PCT, PROVIDER_SELECT_WIDTH_PCT, SESSION_BROWSER_MAX_HEIGHT,
+    PROVIDER_SELECT_HEIGHT_PCT, PROVIDER_SELECT_WIDTH_PCT, STREAMING_SELECT_HEIGHT_PCT, SESSION_BROWSER_MAX_HEIGHT,
     SESSION_BROWSER_MAX_WIDTH, SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MIN_WIDTH,
     SESSION_ID_DISPLAY_COLS, SESSION_LIST_ITEM_HEIGHT, SESSION_TIME_AGO_COLS,
     STACK_PREVIEW_MAX_FILES, STACK_SELECT_HEIGHT_PCT, STACK_SELECT_WIDTH_PCT,
@@ -217,6 +217,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/terminal",
     },
     CommandCatalogItem {
+        name: "/streaming",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Enable or disable streaming LLM responses",
+        example: "/streaming",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",
@@ -306,6 +313,10 @@ pub enum ModalState {
         staged_view: bool,
     },
     Help,
+    StreamingSelect {
+        selected_index: usize,
+        current_streaming: bool,
+    },
     Approval(crate::ui::approval::ApprovalModalState),
     WorkspaceAnalysis {
         workspace_path: String,
@@ -584,6 +595,10 @@ impl ModalState {
                 *selected_index = filtered_indices.len().saturating_sub(1);
             }
         }
+    }
+
+    pub fn new_streaming_select(current_streaming: bool) -> Self {
+        ModalState::StreamingSelect { selected_index: 0, current_streaming }
     }
 
     pub fn new_workspace_analysis(workspace_root: &std::path::Path) -> Self {
@@ -1198,6 +1213,49 @@ impl ModalState {
                     let list = List::new(items);
                     frame.render_widget(list, inner_area);
                 }
+            }
+            ModalState::StreamingSelect { current_streaming, .. } => {
+                let popup_area =
+                    centered_rect(PROVIDER_SELECT_WIDTH_PCT, STREAMING_SELECT_HEIGHT_PCT, area);
+                frame.render_widget(Clear, popup_area);
+
+                let block = Block::default()
+                    .title(" Streaming Mode ")
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner_area = block.inner(popup_area);
+                frame.render_widget(block, popup_area);
+
+                // Determine which option is the "active" one based on current state
+                let active_idx = if *current_streaming { 0 } else { 1 }; // 0=Enable active, 1=Disable active
+                let items: Vec<ListItem> = ["Enable", "Disable", "Back"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| {
+                        let is_active = i == active_idx;
+                        let marker = if is_active { " ◉" } else { " ○" };
+                        let label = if i == 2 { "Back".to_string() } else { opt.to_string() };
+                        let style = if is_active {
+                            Style::default().fg(theme.success)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        };
+                        ListItem::new(format!("  {}{}", label, marker)).style(style)
+                    })
+                    .collect();
+
+                let list = List::new(items)
+                    .style(Style::default().bg(theme.bg_elevated))
+                    .block(Block::default().borders(Borders::NONE));
+
+                frame.render_widget(list, inner_area);
             }
             ModalState::Help => {
                 let popup_area = centered_rect(HELP_WIDTH_PCT, HELP_HEIGHT_PCT, area);

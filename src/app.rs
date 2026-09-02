@@ -1538,6 +1538,37 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
+            ModalState::StreamingSelect { selected_index, current_streaming: _ } => {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.modal = ModalState::None;
+                    }
+                    KeyCode::Up => {
+                        *selected_index = selected_index.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if *selected_index + 1 < 3 {
+                            *selected_index += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match *selected_index {
+                            0 => {
+                                self.config.agent.streaming = true;
+                                self.timeline.add_status("✔ Streaming mode enabled".to_string());
+                            }
+                            1 => {
+                                self.config.agent.streaming = false;
+                                self.timeline.add_status("✔ Streaming mode disabled".to_string());
+                            }
+                            2 => {}
+                            _ => {}
+                        }
+                        self.modal = ModalState::None;
+                    }
+                    _ => {}
+                }
+            }
             ModalState::CommandCatalog {
                 ref filtered_indices,
                 ref mut selected_index,
@@ -1635,6 +1666,9 @@ impl<'a> App<'a> {
                             }
                             "/terminal" => {
                                 self.pty_drawer.toggle();
+                            }
+                            "/streaming" => {
+                                self.modal = ModalState::new_streaming_select(self.config.agent.streaming);
                             }
                             other => {
                                 self.input_dock.textarea = tui_textarea::TextArea::default();

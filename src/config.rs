@@ -116,6 +116,9 @@ pub struct AgentConfig {
 
     #[serde(default = "default_true")]
     pub auto_heal: bool,
+
+    #[serde(default = "default_true")]
+    pub streaming: bool,
 }
 
 impl Default for AgentConfig {
@@ -127,6 +130,7 @@ impl Default for AgentConfig {
             map_tokens: default_map_tokens(),
             warning_threshold: default_warning_threshold(),
             auto_heal: true,
+            streaming: true,
         }
     }
 }
@@ -346,6 +350,7 @@ pub struct RawAgentConfig {
     pub map_tokens: Option<usize>,
     pub warning_threshold: Option<f32>,
     pub auto_heal: Option<bool>,
+    pub streaming: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -582,6 +587,9 @@ impl Config {
         }
         if let Some(auto_heal) = other.agent.auto_heal {
             self.agent.auto_heal = auto_heal;
+        }
+        if let Some(streaming) = other.agent.streaming {
+            self.agent.streaming = streaming;
         }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
