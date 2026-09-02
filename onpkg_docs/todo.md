@@ -1401,8 +1401,13 @@
 - [x] 74.3: Version bump → `v0.0.94`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 75: High-Precision Type-Flow & Dataflow Reachability Analyzer (v0.0.95)
-- [ ] 75.1: Implement static inter-procedural type-flow propagation and data taintedness analysis
-- [ ] 75.2: Add `trace_dataflow` agent tool
-- [ ] 75.3: Version bump → `v0.0.95`, changelog with ideas/sources, commit, tag, push
+- [x] 75.1: Implement static inter-procedural type-flow propagation and data taintedness analysis
+- [x] 75.2: Add `trace_dataflow` agent tool
+- [x] 75.3: Version bump → `v0.0.95`, changelog with ideas/sources, commit, tag, push
+
+### Phase 76: Autonomous Semantic Git Conflict Resolver & Merge Engine (v0.0.96)
+- [ ] 76.1: Implement 3-way AST merge and structural conflict mediation
+- [ ] 76.2: Add `resolve_git_conflicts` agent tool
+- [ ] 76.3: Version bump → `v0.0.96`, changelog with ideas/sources, commit, tag, push
 
 

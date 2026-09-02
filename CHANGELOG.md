@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.95] — 2026-09-02
+
+### High-Precision Type-Flow & Dataflow Reachability Analyzer (Phase 75)
+
+#### 💡 Ideas & Inspirations
+- **Inter-Procedural Dataflow & Taint Visibility**: In complex multi-file codebases, understanding how arguments, return types, and untrusted inputs flow through function call hierarchies is crucial for safe refactoring and vulnerability auditing. Inspired by static taint analysis in Semgrep/CodeQL and Mark Weiser's Program Slicing, `minicode` introduces inter-procedural type-flow and reachability analysis directly over the live `CodeGraph`.
+- **Bidirectional Tracing (Forward Propagation & Backward Slicing)**: Empowers agents to trace either forward (where does this variable or API result flow?) or backward (which upstream inputs determine this sink parameter?).
+
+#### 📚 References & Sources
+- **Mark Weiser's *Program Slicing*** (IEEE Transactions on Software Engineering): Decomposition of computer programs by data flow analysis.
+- **CodeQL / Semgrep Data Flow & Taint Analysis Models**: Sources, sanitizers, and sensitive sink detection.
+- **Cousot & Cousot's *Abstract Interpretation***: Systematic static approximation of program semantics.
+
+#### 🚀 Features & Changes
+- **`DataflowAnalyzer` Engine (`src/context/dataflow.rs`, `src/context/mod.rs`)**:
+  - Performs inter-procedural BFS graph traversal along `Calls` and `References` edges up to configurable depth.
+  - Supports both forward propagation and backward program slicing.
+  - Automatically identifies sensitive sinks (`Command`, `exec`, `write`, `delete`, `query`) and flags potentially tainted data paths.
+  - Generates interactive Mermaid sequence flowcharts illustrating dataflow pathways.
+- **`trace_dataflow` Agent Tool (`src/tools/registry/context_tools.rs`)**:
+  - Registered tool allowing agents and developers to query call paths and taint warnings for any symbol.
+- **Integration Test Suite (`tests/integration_dataflow.rs`)**:
+  - Added 3 integration tests covering forward call propagation, backward slicing, and async tool dispatch.
+
 ## [0.0.94] — 2026-09-02
 
 ### Dynamic Session Memory Checkpointer & Time-Travel Debugger (Phase 74)

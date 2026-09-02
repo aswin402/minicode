@@ -4,6 +4,7 @@ pub mod ast_transform;
 pub mod auto_compact;
 pub mod checkpoint;
 pub mod compressor;
+pub mod dataflow;
 pub mod dead_code;
 pub mod decay;
 pub mod dedup;

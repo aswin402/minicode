@@ -591,6 +591,33 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "trace_dataflow".to_string(),
+            description: "Trace inter-procedural type-flow, caller/callee propagation, and taint reachability to sensitive sinks.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target_symbol": {
+                        "type": "string",
+                        "description": "Symbol name (function, method, variable) to trace dataflow for"
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["forward", "backward"],
+                        "description": "Direction: 'forward' (origin to sink) or 'backward' (sink to origin / program slicing, default: 'forward')"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum call chain depth to traverse (default: 5)"
+                    },
+                    "taint_check": {
+                        "type": "boolean",
+                        "description": "Whether to perform security taint analysis for dangerous sinks (default: true)"
+                    }
+                },
+                "required": ["target_symbol"]
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1316,13 +1343,12 @@ pub async fn dispatch(
             Ok(report.format_markdown())
         })()),
         "checkpoint_session" => Some((|| {
-            let label = args
-                .get("label")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+            let label = args.get("label").and_then(|v| v.as_str()).ok_or_else(|| {
+                crate::error::ToolError::InvalidArguments {
                     name: "checkpoint_session".to_string(),
                     reason: "Missing required parameter 'label'".to_string(),
-                })?;
+                }
+            })?;
             let description = args.get("description").and_then(|v| v.as_str());
 
             let info = crate::context::checkpoint::SessionCheckpointer::create_checkpoint(
@@ -1412,6 +1438,34 @@ pub async fn dispatch(
                 }
                 .into()),
             }
+        })()),
+        "trace_dataflow" => Some((|| {
+            let target_symbol = args
+                .get("target_symbol")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "trace_dataflow".to_string(),
+                    reason: "Missing required parameter 'target_symbol'".to_string(),
+                })?;
+            let direction = args
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("forward");
+            let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+            let taint_check = args
+                .get("taint_check")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            let report = crate::context::dataflow::DataflowAnalyzer::trace(
+                workspace_root,
+                target_symbol,
+                direction,
+                max_depth,
+                taint_check,
+            )?;
+
+            Ok(report.format_markdown())
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),
