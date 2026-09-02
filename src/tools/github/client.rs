@@ -1,3 +1,28 @@
+// ============================================================
+// Token resolution — single source of truth for GITHUB_TOKEN / GH_TOKEN
+// ============================================================
+const GITHUB_TOKEN_VARS: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN"];
+
+/// Returns the first available GitHub token from the environment,
+/// or an error if neither is set.
+pub fn get_github_token() -> crate::error::Result<String> {
+    let token = GITHUB_TOKEN_VARS
+        .iter()
+        .find_map(|v| std::env::var(v).ok())
+        .ok_or_else(|| {
+            crate::error::ToolError::CommandExec(
+                "GitHub authentication required: set GITHUB_TOKEN or GH_TOKEN".into(),
+            )
+        })?;
+    if token.is_empty() {
+        return Err(crate::error::ToolError::CommandExec(
+            "GitHub authentication required: set GITHUB_TOKEN or GH_TOKEN".into(),
+        )
+        .into());
+    }
+    Ok(token)
+}
+
 use crate::error::{Result, ToolError};
 use std::path::Path;
 use std::process::Command;
@@ -76,20 +101,13 @@ impl GitHubClient {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    /// Executes a call to the GitHub REST API using `GITHUB_TOKEN` or `GH_TOKEN`.
+    /// Executes a call to the GitHub REST API using the shared token helper.
     pub async fn rest_api(
         endpoint: &str,
         method: reqwest::Method,
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let token = std::env::var("GITHUB_TOKEN")
-            .or_else(|_| std::env::var("GH_TOKEN"))
-            .map_err(|_| {
-                ToolError::CommandExec(
-                    "GitHub authentication required: Install and auth `gh` CLI, or set GITHUB_TOKEN environment variable."
-                        .to_string(),
-                )
-            })?;
+        let token = get_github_token()?;
 
         let url = if endpoint.starts_with("https://") {
             endpoint.to_string()

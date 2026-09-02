@@ -1,7 +1,9 @@
+use crate::constants::{
+    DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER,
+};
 use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Config {
     #[serde(default)]
@@ -62,11 +64,11 @@ impl Default for ProviderConfig {
 }
 
 fn default_provider_name() -> String {
-    "gemini".to_string()
+    DEFAULT_PROVIDER.to_string()
 }
 
 fn default_model_name() -> String {
-    "gemini-2.5-pro".to_string()
+    DEFAULT_MODEL_GEMINI.to_string()
 }
 
 fn default_temperature() -> f32 {

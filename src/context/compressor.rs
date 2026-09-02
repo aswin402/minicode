@@ -1,13 +1,11 @@
 use crate::agent::types::{Message, Role};
+use crate::context::auto_compact::CompactionConfig;
 use crate::error::Result;
 use tiktoken_rs::CoreBPE;
 
 pub struct ContextCompressor {
     bpe: Option<CoreBPE>,
-    #[allow(dead_code)]
-    warning_threshold: f64,
-    #[allow(dead_code)]
-    safety_margin: f64,
+    config: CompactionConfig,
 }
 
 impl ContextCompressor {
@@ -17,8 +15,7 @@ impl ContextCompressor {
 
         Ok(Self {
             bpe: Some(bpe),
-            warning_threshold: crate::constants::COMPRESSOR_WARNING_THRESHOLD,
-            safety_margin: crate::constants::COMPRESSOR_SAFETY_MARGIN,
+            config: CompactionConfig::default(),
         })
     }
 
@@ -26,8 +23,7 @@ impl ContextCompressor {
     pub fn default_safe() -> Self {
         Self {
             bpe: tiktoken_rs::cl100k_base().ok(),
-            warning_threshold: crate::constants::COMPRESSOR_WARNING_THRESHOLD,
-            safety_margin: crate::constants::COMPRESSOR_SAFETY_MARGIN,
+            config: CompactionConfig::default(),
         }
     }
 
@@ -91,7 +87,7 @@ impl ContextCompressor {
     pub fn compact_history(&self, messages: &mut [Message], max_window_tokens: usize) {
         let current_tokens = self.count_messages_tokens(messages);
         let threshold = (max_window_tokens as f64
-            * (self.warning_threshold - self.safety_margin).max(0.0))
+            * (self.config.tier1_ratio - self.config.safety_margin).max(0.0))
             as usize;
 
         if current_tokens <= threshold

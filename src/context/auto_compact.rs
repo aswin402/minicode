@@ -3,14 +3,40 @@ use crate::agent::types::{Message, Role};
 use crate::constants::{
     COMPACT_MAX_DECISIONS_IN_ANCHOR, COMPACT_MAX_DECISIONS_PER_TURN, COMPACT_MAX_DECISION_CHARS,
     COMPACT_MAX_ERRORS_PER_TURN, COMPACT_MAX_ERROR_CHARS, COMPACT_MAX_FILES_IN_ANCHOR,
-    COMPACT_PRESERVE_RECENT_MESSAGES, COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO,
-    COMPACT_TIER3_RATIO, MESSAGE_FRAMING_TOKEN_OVERHEAD,
+    COMPACT_PRESERVE_RECENT_MESSAGES, MESSAGE_FRAMING_TOKEN_OVERHEAD,
 };
 use crate::context::compressor::ContextCompressor;
 use crate::error::Result;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+
+/// Unified compaction tier configuration.
+/// All threshold ratios are expressed as a fraction of the model's context window limit.
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionConfig {
+    /// Ratio that triggers Tier 1 (Observation Masking). Default: 0.60.
+    pub tier1_ratio: f64,
+    /// Ratio that triggers Tier 2 (Turn Summarization). Default: 0.80.
+    pub tier2_ratio: f64,
+    /// Ratio that triggers Tier 3 (Memory Anchor + Aggressive Prune). Default: 0.95.
+    pub tier3_ratio: f64,
+    /// Safety headroom subtracted from warning_threshold in simple compress mode. Default: 0.15.
+    pub safety_margin: f64,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        use crate::constants::{COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO, COMPACT_TIER3_RATIO, COMPRESSOR_SAFETY_MARGIN};
+        Self {
+            tier1_ratio: COMPACT_TIER1_RATIO,
+            tier2_ratio: COMPACT_TIER2_RATIO,
+            tier3_ratio: COMPACT_TIER3_RATIO,
+            safety_margin: COMPRESSOR_SAFETY_MARGIN,
+        }
+    }
+}
 
 /// Structured representation of compressed turn history.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -142,6 +168,7 @@ pub struct AutoCompactor {
     anchor: MemoryAnchor,
     model: String,
     custom_limit: Option<usize>,
+    compaction_config: CompactionConfig,
 }
 
 impl AutoCompactor {
@@ -153,6 +180,7 @@ impl AutoCompactor {
             anchor: MemoryAnchor::default(),
             model: model.to_string(),
             custom_limit: None,
+            compaction_config: CompactionConfig::default(),
         })
     }
 
@@ -163,6 +191,7 @@ impl AutoCompactor {
             anchor: MemoryAnchor::default(),
             model: "default".to_string(),
             custom_limit: None,
+            compaction_config: CompactionConfig::default(),
         }
     }
 
@@ -359,9 +388,9 @@ impl AutoCompactor {
         let initial_tokens = self.compressor.count_messages_tokens(messages);
         let limit = self.model_token_limit();
 
-        let tier1_threshold = (limit as f64 * COMPACT_TIER1_RATIO) as usize;
-        let tier2_threshold = (limit as f64 * COMPACT_TIER2_RATIO) as usize;
-        let tier3_threshold = (limit as f64 * COMPACT_TIER3_RATIO) as usize;
+        let tier1_threshold = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
+        let tier2_threshold = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+        let tier3_threshold = (limit as f64 * self.compaction_config.tier3_ratio) as usize;
 
         // Invariant: Never compact if token count is safely below Tier 1 or message count is tiny
         if initial_tokens <= tier1_threshold || messages.len() <= COMPACT_PRESERVE_RECENT_MESSAGES {

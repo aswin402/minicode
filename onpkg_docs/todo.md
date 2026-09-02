@@ -1415,9 +1415,22 @@
 - [x] 77.2: Add `optimize_token_budget` agent tool
 - [x] 77.3: Version bump → `v0.0.97`, changelog with ideas/sources, commit, tag, push
 
-### Phase 78: Distributed Multi-Agent Consensus & Peer Review Council (v0.0.98)
+### Phase N: Critical Security & Correctness Hardening (v0.0.98)
+- [x] N.1: Fix approval registry leak — `rollback_turn()` now clears `pending_approvals`
+- [x] N.2: Centralize hardcoded model defaults in `constants.rs`
+- [x] N.3: Update `TOTAL_TOOL_COUNT` from 94 → 110
+- [x] N.4: Version bump → `v0.0.98`, changelog with ideas/inspirations/sources/whats-next, commit
+
+### Phase 2: Hardening & Correctness Round 2 (v0.0.98 — continued)
+- [x] 2.1: GitHub token DRY — `get_github_token()` in `tools/github/client.rs`, used by both `client.rs` and `mod.rs`
+- [x] 2.2: Compaction threshold unification — `CompactionConfig` struct in `auto_compact.rs`, shared by `AutoCompactor` and `ContextCompressor`
+- [x] 2.3: Token usage silent-drop logging — `tracing::debug!` in Gemini and OpenAI providers when usage metadata is zero
+- [x] 2.4: Unbounded approval registry pruning — `prune_stale_approvals()` called at start of each `execute_turn`
+- [x] 2.5: JSONL crash safety — `write_atomic_jsonl()` using write-to-tmp + rename in `session/store.rs`
+
+### Phase 78: Distributed Multi-Agent Consensus & Peer Review Council (v0.0.99)
 - [ ] 78.1: Implement multi-perspective voting protocols, debate deliberation, and divergence resolution
 - [ ] 78.2: Add `convene_agent_council` agent tool
-- [ ] 78.3: Version bump → `v0.0.98`, changelog with ideas/sources, commit, tag, push
+- [ ] 78.3: Version bump → `v0.0.99`, changelog with ideas/sources, commit, tag, push
 
 

@@ -3,7 +3,7 @@ pub mod types;
 
 use crate::error::{Result, ToolError};
 #[allow(unused_imports)]
-pub use client::GitHubClient;
+pub use client::{GitHubClient, get_github_token};
 use std::path::Path;
 #[allow(unused_imports)]
 pub use types::{GitHubComment, GitHubIssue, GitHubPR, GitHubWorkflowRun};
@@ -300,11 +300,7 @@ impl GitHubService {
             ));
         }
 
-        let token = std::env::var("GITHUB_TOKEN")
-            .or_else(|_| std::env::var("GH_TOKEN"))
-            .map_err(|_| {
-                ToolError::CommandExec("GitHub authentication required for diff fetch".to_string())
-            })?;
+        let token = crate::tools::github::client::get_github_token()?;
 
         let url = format!(
             "https://api.github.com/repos/{}/pulls/{}",

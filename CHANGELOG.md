@@ -5,6 +5,64 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.98] — 2026-09-02
+
+### Critical Security & Correctness Hardening (Phase N — Round 1)
+
+#### 💡 Ideas & Inspirations
+- **Zero-Approval-Leak Rollback**: Approval requests registered in an `Arc<Mutex<HashMap>>` represent in-flight user decisions. When a conversation is rolled back via `/undo`, those approval senders must be explicitly dropped — otherwise a future host response arrives for a turn that no longer exists, causing silent hangs. Inspired by the cancellation pattern in `tokio` oneshot channels and the principle that any rollback operation must leave the system in a clean state.
+- **Single Source of Truth for Defaults**: Scattered hardcoded model name strings (`"gemini-2.5-pro"` in `config.rs`, `provider.rs`, and test fixtures) drift silently when new models are released. A single `constants.rs` constant that every call site references prevents desync — the same principle behind `ERRNO` macros in C and `HTTP_STATUS` constants in web frameworks.
+- **Defensive Cleanup on State Transitions**: The `rollback_turn` operation is a state transition that must be atomic with respect to all dependent state (messages, turn counter, approval registry). Inspired by RAII destructor semantics and database transaction rollback guarantees.
+
+#### 📚 References & Sources
+- **Tokio `oneshot` Channel Cancellation**: Dropped receivers/senders signal via `is_closed()` — used here to detect stale approval entries.
+- **JWT / OAuth State Machines**: RFC 7009 token invalidation and session teardown patterns.
+- **Rust Clippy ` ArcMut` Lints**: `clippy::arc_with_non_send_sync` and `clippy::mutex_atomic` guidance on `Arc<Mutex<>>` cleanup.
+
+#### 🚀 Features & Changes
+- **`rollback_turn()` now clears pending approvals** (`src/agent/loop.rs`):
+  - Added `guard.clear()` to drain all in-flight `ApprovalRegistry` entries on rollback.
+  - Logs `cleared_approvals=N` at `debug` level when approvals were pending.
+  - Prevents silent hangs when a host responds to an approval from a rolled-back turn.
+- **Centralized model default constants** (`src/constants.rs`):
+  - Added `DEFAULT_PROVIDER = "gemini"`, `DEFAULT_MODEL_GEMINI = "gemini-2.5-pro"`, `DEFAULT_MODEL_ANTHROPIC = "anthropic/claude-3.5-sonnet"`.
+  - `config.rs:default_model_name()` and `config.rs:default_provider_name()` now reference `constants.rs`.
+  - `GeminiProvider::default_model()` now references `DEFAULT_MODEL_GEMINI`.
+  - Single source of truth eliminates 3-way drift risk.
+- **`TOTAL_TOOL_COUNT` updated** (`src/constants.rs`):
+  - Updated from `94` to `110` to reflect actual registered tool schemas.
+
+#### 🔧 Bug Fixes
+- **FIX**: `rollback_turn()` left `pending_approvals` HashMap uncleared — in-flight user approval decisions for rolled-back turns were never answered, causing turns to hang indefinitely.
+- **FIX**: Hardcoded `"gemini-2.5-pro"` in 3 separate locations (`config.rs`, `provider.rs`, test fixtures) — maintenance hazard when adding new models.
+
+
+#### 🛡️ Phase 2 Hardening (v0.0.98 — continued)
+- **GitHub Token DRY** (`src/tools/github/client.rs`, `src/tools/github/mod.rs`):
+  - Added `get_github_token()` helper — single source of truth for `GITHUB_TOKEN` / `GH_TOKEN` env vars.
+  - Both `client.rs:rest_api()` and `mod.rs:view_pr_diff()` now call the shared helper.
+- **Compaction Threshold Unification** (`src/context/auto_compact.rs`, `src/context/compressor.rs`):
+  - New `CompactionConfig` struct holds `tier1_ratio`, `tier2_ratio`, `tier3_ratio`, `safety_margin` — defaults from `constants.rs`.
+  - Both `AutoCompactor` and `ContextCompressor` now hold a `CompactionConfig` instance.
+  - `COMPACT_TIER*_RATIO` pulled into the config; ratio access consolidated to one place.
+  - `COMPRESSOR_WARNING_THRESHOLD` (0.70, previously unused) removed as dead code.
+- **Token Usage Silent-Drop Logging** (`src/agent/provider.rs`):
+  - Both Gemini and OpenAI-compatible providers now emit `tracing::debug!` when usage metadata is absent or zero.
+  - Prevents silent token accounting drops in observability logs.
+- **Unbounded ApprovalRegistry Pruning** (`src/agent/loop.rs`):
+  - New `prune_stale_approvals()` method: retains only entries whose oneshot sender is still open.
+  - Called at the start of every `execute_turn` to prevent unbounded registry growth.
+  - Logs pruned count at `debug` level.
+- **JSONL Crash Safety** (`src/session/store.rs`):
+  - New `write_atomic_jsonl()` helper: write to `.tmp` sibling, `sync_all()` on Unix, then `rename`.
+  - `append_event()` now uses atomic writes — a crash mid-write cannot corrupt existing JSONL data.
+
+#### ⚠️ What's Next
+- **Phase 3 items** (pending): Tool count test automation, dead code audit, intent clamp, Landlock TOCTOU warning, PERN template UUID generation.
+- **Pre-existing test**: `test_prune_context_compacts_and_prunes_large_history` in `src/agent/loop.rs` is a known failing test introduced in v0.0.97 — unrelated to this fix, tracked separately.
+
+---
+
 ## [0.0.97] — 2026-09-02
 
 ### Predictive Multi-Turn Token Budget Optimizer & Context Compactor (Phase 77)

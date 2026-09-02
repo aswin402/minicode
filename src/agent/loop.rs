@@ -123,6 +123,11 @@ impl AgentLoop {
         event_sender: mpsc::UnboundedSender<AgentEvent>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Turn> {
+        // Drop stale approval senders from abandoned turns before doing anything else.
+        // This prevents the registry from growing unboundedly when hosts disappear
+        // or turns get rolled back without draining their approval entries.
+        self.prune_stale_approvals();
+
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
 
@@ -756,6 +761,37 @@ impl AgentLoop {
                 target_turn = target_turn_id,
                 remaining_messages = self.messages.len(),
                 "Agent conversation history rolled back"
+            );
+        }
+
+        // Drop all in-flight approval senders — the conversation state that would
+        // answer them no longer exists.  Callers who already received ApprovalRequest
+        // events will simply never receive a decision; the cancellation path handles
+        // those cleanly (see cancelled_while_awaiting_approval_cleans_registry_and_reports_cancelled).
+        let mut guard = self.pending_approvals.lock().unwrap_or_else(|p| p.into_inner());
+        let count = guard.len();
+        guard.clear();
+        if count > 0 {
+            tracing::debug!(
+                cleared_approvals = count,
+                "Cleared in-flight approvals during rollback"
+            );
+        }
+    }
+
+    /// Removes entries whose sender half has already been dropped (e.g. host closed
+    /// without responding, or turn was rolled back).  Calling this at the start of
+    /// each turn prevents the registry from growing unboundedly across long sessions.
+    pub fn prune_stale_approvals(&self) {
+        let mut guard = self.pending_approvals.lock().unwrap_or_else(|p| p.into_inner());
+        let before = guard.len();
+        guard.retain(|_id, sender| !sender.is_closed());
+        let pruned = before.saturating_sub(guard.len());
+        if pruned > 0 {
+            tracing::debug!(
+                pruned = pruned,
+                remaining = guard.len(),
+                "Pruned stale approval senders from registry"
             );
         }
     }

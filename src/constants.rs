@@ -151,9 +151,8 @@ pub const WEB_TIMEOUT_SECS: u64 = 15;
 pub const WEB_MAX_BODY_BYTES: usize = 40 * 1024;
 
 // === Context / Compressor ===
-/// Context window utilization threshold to trigger observation masking
-pub const COMPRESSOR_WARNING_THRESHOLD: f64 = 0.70;
 /// Context window safety headroom margin below provider hard limit
+/// Used in: `CompactionConfig::safety_margin` (via `ContextCompressor::compact_history`)
 pub const COMPRESSOR_SAFETY_MARGIN: f64 = 0.15;
 /// Preserved head and tail lines when masking verbose observations
 pub const COMPRESSOR_HEAD_TAIL_LINES: usize = 15;
@@ -377,7 +376,12 @@ pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 /// Ollama default API base URL
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
+/// Default provider name
+pub const DEFAULT_PROVIDER: &str = "gemini";
+/// Default Gemini model
+pub const DEFAULT_MODEL_GEMINI: &str = "gemini-2.5-pro";
 /// OpenRouter default model used when config omits one
+#[allow(dead_code)]
 pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
 /// OpenAI default model used when config omits one
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
@@ -551,7 +555,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 94;
+pub const TOTAL_TOOL_COUNT: usize = 110;
 
 /// Milliseconds per animation frame for TUI thinking spinner
 pub const SPINNER_FRAME_MS: u64 = 80;

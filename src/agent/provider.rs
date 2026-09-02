@@ -1,4 +1,5 @@
 use crate::agent::types::{Message, Role, ToolCall};
+use crate::constants::DEFAULT_MODEL_GEMINI;
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
 use futures::Stream;
@@ -197,7 +198,7 @@ impl Provider for GeminiProvider {
     }
 
     fn default_model(&self) -> &str {
-        "gemini-2.5-pro"
+        DEFAULT_MODEL_GEMINI
     }
 
     async fn stream_completion(
@@ -348,6 +349,11 @@ impl Provider for GeminiProvider {
                                     let completion_tokens = usage.get("candidatesTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
                                     if prompt_tokens > 0 || completion_tokens > 0 {
                                         yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens });
+                                    } else {
+                                        tracing::debug!(
+                                            provider = "gemini",
+                                            "Usage metadata absent or zero in Gemini response                                             (prompt_tokens=0, completion_tokens=0)"
+                                        );
                                     }
                                 }
                             }
@@ -585,10 +591,13 @@ impl Provider for OpenAiCompatibleProvider {
 
         let request = req_builder.json(&request_body);
 
+        // Clone now — both the EventSource closure and the usage-missing log closure need owned data
+        let provider_name = self.provider_name.clone();
+
         let event_source = EventSource::new(request).map_err(|e| {
             ProviderError::StreamDecode(format!(
                 "Failed to connect to {}: {}",
-                self.provider_name, e
+                provider_name, e
             ))
         })?;
 
@@ -682,6 +691,11 @@ impl Provider for OpenAiCompatibleProvider {
                                     let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
                                     if prompt_tokens > 0 || completion_tokens > 0 {
                                         yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens });
+                                    } else {
+                                        tracing::debug!(
+                                            provider = provider_name.clone(),
+                                            "Usage metadata absent or zero in response                                             (prompt_tokens=0, completion_tokens=0)"
+                                        );
                                     }
                                 }
                             }

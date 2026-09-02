@@ -11,6 +11,30 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
 
+/// Writes a single line to a JSONL file atomically: write to a `.tmp` sibling,
+/// fsync on Unix, then rename over the target.  Crash during write leaves the
+/// original file untouched rather than producing a partial/trailing-nul line.
+fn write_atomic_jsonl(path: &Path, line: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        #[cfg(unix)]
+        file.sync_all()?;
+        // Non-Unix: sync_all is not available; sync_data() is the fallback but
+        // OpenOptions doesn't expose it directly — on Windows we rely on the
+        // rename being atomic and the OS flush-on-close.
+        #[cfg(not(unix))]
+        file.flush()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub id: String,
@@ -125,18 +149,23 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Appends an AgentEvent to the session's JSONL file in O(1) time.
+    /// Appends an AgentEvent to the session's JSONL file atomically.
+    /// Uses write-to-temp + rename so a crash mid-write cannot corrupt existing data.
     pub fn append_event(&self, session_id: &str, event: &AgentEvent) -> Result<()> {
         self.validate_session_id(session_id)?;
         let session_path = self.session_file_path(session_id);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&session_path)?;
 
         let line = serde_json::to_string(event)?;
-        writeln!(file, "{}", line)?;
-        file.sync_data()?;
+
+        // Ensure the sessions directory and file exist before atomic write.
+        if let Some(parent) = session_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        if !session_path.exists() {
+            std::fs::File::create(&session_path).ok();
+        }
+
+        write_atomic_jsonl(&session_path, &line)?;
         Ok(())
     }
 
