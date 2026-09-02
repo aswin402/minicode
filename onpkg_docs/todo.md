@@ -1428,6 +1428,9 @@
 - [x] 2.4: Unbounded approval registry pruning — `prune_stale_approvals()` called at start of each `execute_turn`
 - [x] 2.5: JSONL crash safety — `write_atomic_jsonl()` using write-to-tmp + rename in `session/store.rs`
 
+### Phase 3: Cleanup & Polish (v0.0.98 — continued)
+- [x] 3.1: Tool count validation — automated test in `constants.rs` ensures `TOTAL_TOOL_COUNT` matches live `ToolRegistry` schema count
+
 ### Phase 78: Distributed Multi-Agent Consensus & Peer Review Council (v0.0.99)
 - [ ] 78.1: Implement multi-perspective voting protocols, debate deliberation, and divergence resolution
 - [ ] 78.2: Add `convene_agent_council` agent tool
