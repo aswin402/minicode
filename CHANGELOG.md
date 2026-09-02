@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.96] — 2026-09-02
+
+### Autonomous Semantic Git Conflict Resolver & Merge Engine (Phase 76)
+
+#### 💡 Ideas & Inspirations
+- **AST-Aware Merge Mediation**: Standard line-based `git merge` routinely triggers painful merge conflicts when concurrent branches add non-conflicting imports, independent methods, or adjacent struct fields. Inspired by semantic 3-way merge engines (e.g. `kdiff3`, `semantic-merge`, and language-specific merge drivers), `minicode` introduces autonomous AST-aware merge conflict parsing and semantic reconciliation.
+- **Automated Import Union & Clean Marker Eradication**: Automatically dedupes and unions diverging import statements (`use ...` / `import ...`), concatenates non-overlapping symbol additions, and ensures zero leftover conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+
+#### 📚 References & Sources
+- **POSIX 3-Way Diff & Merge Specifications (`diff3`)**: Common base ancestor reconciliation.
+- **Tree-sitter Grammar-Aware AST Merging Strategies**: Structural diffing over syntax trees.
+- **Git Merge Conflict Markers & Plumbing (`git merge`, `git checkout --ours/--theirs`)**.
+
+#### 🚀 Features & Changes
+- **`ConflictResolver` Engine (`src/git/conflict_resolver.rs`, `src/git/mod.rs`)**:
+  - Parses diff2 and diff3 conflict blocks (`<<<<<<<`, `|||||||`, `=======`, `>>>>>>>`).
+  - Supports versatile merge strategies (`Auto`, `Ours`, `Theirs`, `UnionImports`, `Concatenate`).
+  - Provides autonomous heuristic import deduplication and alphabetical sorting.
+  - Automatically verifies marker eradication and stages resolved files into git.
+- **`resolve_git_conflicts` Agent Tool (`src/tools/registry/git_tools.rs`)**:
+  - Registered tool enabling agents to scan workspace conflicts and autonomously resolve them with chosen strategies.
+- **Integration Test Suite (`tests/integration_conflict_resolver.rs`)**:
+  - Added 3 integration tests covering import conflict union, non-overlapping function insertion, and async tool dispatch.
+
 ## [0.0.95] — 2026-09-02
 
 ### High-Precision Type-Flow & Dataflow Reachability Analyzer (Phase 75)

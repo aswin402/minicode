@@ -1,4 +1,5 @@
 pub mod commit;
+pub mod conflict_resolver;
 pub mod diff_filter;
 pub mod diff_projector;
 pub mod diff_viewer;
@@ -7,6 +8,9 @@ pub mod service;
 pub mod worktree;
 
 pub use commit::GitCommitService;
+pub use conflict_resolver::{
+    ConflictBlock, ConflictResolver, ConflictResolverReport, FileResolutionReport, MergeStrategy,
+};
 pub use diff_filter::DiffFilter;
 pub use diff_projector::{
     DiffProjectionReport, DiffProjector, ProjectedSymbolChange, SymbolMutationType,

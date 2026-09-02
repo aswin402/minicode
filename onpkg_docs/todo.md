@@ -1406,8 +1406,13 @@
 - [x] 75.3: Version bump → `v0.0.95`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 76: Autonomous Semantic Git Conflict Resolver & Merge Engine (v0.0.96)
-- [ ] 76.1: Implement 3-way AST merge and structural conflict mediation
-- [ ] 76.2: Add `resolve_git_conflicts` agent tool
-- [ ] 76.3: Version bump → `v0.0.96`, changelog with ideas/sources, commit, tag, push
+- [x] 76.1: Implement 3-way AST merge and structural conflict mediation
+- [x] 76.2: Add `resolve_git_conflicts` agent tool
+- [x] 76.3: Version bump → `v0.0.96`, changelog with ideas/sources, commit, tag, push
+
+### Phase 77: Predictive Multi-Turn Token Budget Optimizer & Context Compactor (v0.0.97)
+- [ ] 77.1: Implement lookahead token usage estimation and dynamic rolling-window message compression
+- [ ] 77.2: Add `optimize_token_budget` agent tool
+- [ ] 77.3: Version bump → `v0.0.97`, changelog with ideas/sources, commit, tag, push
 
 

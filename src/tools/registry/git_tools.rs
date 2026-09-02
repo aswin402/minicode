@@ -279,6 +279,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["run_id"]
             }),
         },
+        ToolSchema {
+            name: "resolve_git_conflicts".to_string(),
+            description: "Autonomously parse and resolve 3-way Git merge conflict markers (<<<<<<<, =======, >>>>>>>) with AST-aware semantic union or explicit strategies.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional specific file path with merge conflicts (if omitted, scans and resolves all conflicted files)"
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "enum": ["auto", "ours", "theirs", "union_imports", "concat"],
+                        "description": "Merge strategy: 'auto' (AST/import union heuristic), 'ours' (HEAD), 'theirs' (incoming), 'union_imports', or 'concat' (default: 'auto')"
+                    },
+                    "stage": {
+                        "type": "boolean",
+                        "description": "Whether to stage resolved files with 'git add' (default: true)"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -604,6 +626,28 @@ pub async fn dispatch(
                 })?;
                 let repo = args.get("repo").and_then(|v| v.as_str());
                 crate::tools::github::GitHubService::get_ci_logs(workspace_root, repo, run_id).await
+            }
+            .await,
+        ),
+        "resolve_git_conflicts" => Some(
+            async {
+                let file_path = args.get("file_path").and_then(|v| v.as_str());
+                let strategy_str = args
+                    .get("strategy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("auto");
+                let stage = args.get("stage").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                let strategy = crate::git::MergeStrategy::from_strategy_str(strategy_str);
+                let report = crate::git::ConflictResolver::resolve_workspace(
+                    workspace_root,
+                    file_path,
+                    strategy,
+                    stage,
+                )
+                .await?;
+
+                Ok(report.format_markdown())
             }
             .await,
         ),
