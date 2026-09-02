@@ -550,6 +550,47 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "checkpoint_session".to_string(),
+            description: "Capture an immutable point-in-time snapshot of the current session conversation and working memory.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Short mnemonic label for the checkpoint (e.g. 'before-ast-refactor')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional detailed context or rationale for creating this checkpoint"
+                    }
+                },
+                "required": ["label"]
+            }),
+        },
+        ToolSchema {
+            name: "rewind_session".to_string(),
+            description: "List checkpoints, rewind working memory to an earlier snapshot, or fork a new exploration branch.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "rewind", "fork"],
+                        "description": "Action to perform: 'list' all checkpoints, 'rewind' to checkpoint, or 'fork' a new branch"
+                    },
+                    "checkpoint_id": {
+                        "type": "string",
+                        "description": "Target checkpoint ID (required for 'rewind' and 'fork')"
+                    },
+                    "fork_label": {
+                        "type": "string",
+                        "description": "Optional label when forking a checkpoint"
+                    }
+                },
+                "required": ["action"]
+            }),
+        },
+        ToolSchema {
             name: "prune_context".to_string(),
             description: "Manually trigger observation deduplication across conversational turns to save tokens and eliminate redundant file reads.".to_string(),
             parameters: json!({
@@ -1273,6 +1314,104 @@ pub async fn dispatch(
             )?;
 
             Ok(report.format_markdown())
+        })()),
+        "checkpoint_session" => Some((|| {
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "checkpoint_session".to_string(),
+                    reason: "Missing required parameter 'label'".to_string(),
+                })?;
+            let description = args.get("description").and_then(|v| v.as_str());
+
+            let info = crate::context::checkpoint::SessionCheckpointer::create_checkpoint(
+                workspace_root,
+                "current_session",
+                label,
+                description,
+                &[],
+            )?;
+
+            Ok(format!(
+                "✔ Created session checkpoint `{}` (`{}`)\n- **Timestamp:** {}\n- **Working Memory Saved:** {}",
+                info.label,
+                info.id,
+                info.timestamp,
+                if info.has_working_plan { "Yes" } else { "No" }
+            ))
+        })()),
+        "rewind_session" => Some((|| {
+            let action = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("list");
+
+            match action {
+                "list" => {
+                    let list = crate::context::checkpoint::SessionCheckpointer::list_checkpoints(
+                        workspace_root,
+                        None,
+                    )?;
+                    if list.is_empty() {
+                        return Ok("*(No checkpoints recorded for this workspace yet)*".to_string());
+                    }
+                    let mut out =
+                        format!("# ⏱️ Workspace Session Checkpoints ({})\n\n", list.len());
+                    out.push_str("| Checkpoint ID | Label | Timestamp | Plan Saved |\n");
+                    out.push_str("| :--- | :--- | :--- | :--- |\n");
+                    for ckpt in list {
+                        out.push_str(&format!(
+                            "| `{}` | **{}** | {} | {} |\n",
+                            ckpt.id,
+                            ckpt.label,
+                            ckpt.timestamp,
+                            if ckpt.has_working_plan { "✔" } else { "—" }
+                        ));
+                    }
+                    Ok(out)
+                }
+                "rewind" => {
+                    let ckpt_id = args
+                        .get("checkpoint_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                            name: "rewind_session".to_string(),
+                            reason: "Missing required parameter 'checkpoint_id'".to_string(),
+                        })?;
+                    let (report, _) =
+                        crate::context::checkpoint::SessionCheckpointer::rewind_checkpoint(
+                            workspace_root,
+                            "current_session",
+                            ckpt_id,
+                        )?;
+                    Ok(report.format_markdown())
+                }
+                "fork" => {
+                    let ckpt_id = args
+                        .get("checkpoint_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                            name: "rewind_session".to_string(),
+                            reason: "Missing required parameter 'checkpoint_id'".to_string(),
+                        })?;
+                    let fork_label = args.get("fork_label").and_then(|v| v.as_str());
+                    let forked = crate::context::checkpoint::SessionCheckpointer::fork_checkpoint(
+                        workspace_root,
+                        ckpt_id,
+                        fork_label,
+                    )?;
+                    Ok(format!(
+                        "✔ Successfully forked checkpoint `{}` into new branch `{}` (`{}`)",
+                        ckpt_id, forked.label, forked.id
+                    ))
+                }
+                other => Err(crate::error::ToolError::InvalidArguments {
+                    name: "rewind_session".to_string(),
+                    reason: format!("Unknown action: {}", other),
+                }
+                .into()),
+            }
         })()),
         "prune_context" => Some(Ok(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),

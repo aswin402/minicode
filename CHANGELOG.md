@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.94] — 2026-09-02
+
+### Dynamic Session Memory Checkpointer & Time-Travel Debugger (Phase 74)
+
+#### 💡 Ideas & Inspirations
+- **Time-Travel Debugging & State Reversibility**: Long autonomous agent reasoning and editing sequences occasionally make flawed architectural assumptions or go down dead ends. Inspired by Git branch/reflog trees, Redux DevTools Time Travel, and LangGraph checkpointers, `minicode` introduces dynamic immutable state checkpoints and state rewind.
+- **Exploration Forking & Branching**: Allows human developers and agents to save intermediate milestones, rewind to earlier conversational turns, or fork parallel exploration hypotheses without losing prior work.
+
+#### 📚 References & Sources
+- **LangGraph Checkpoint & State Graph Specification**: State persistence, memory rollback, and thread branching.
+- **Redux DevTools Time-Travel Architecture**: Deterministic event-replay and immutable snapshots.
+- **Git Tree & Reflog Semantics**: Content-addressed commit DAGs and non-destructive branch resets.
+
+#### 🚀 Features & Changes
+- **`SessionCheckpointer` Engine (`src/context/checkpoint.rs`, `src/context/mod.rs`)**:
+  - Captures complete immutable state snapshots including conversation event streams and working memory (`TASK_PLAN`, `FINDINGS`, `PROGRESS`).
+  - Implements tree-structured checkpoints with `parent_id` tracking, enabling complex branch hierarchies.
+  - Provides deterministic state rewind and branch forking operations.
+- **`checkpoint_session` & `rewind_session` Agent Tools (`src/tools/registry/context_tools.rs`)**:
+  - Registered tools allowing agents to snapshot milestones and list, rewind, or fork checkpoints.
+- **Integration Test Suite (`tests/integration_checkpoints.rs`)**:
+  - Added 3 integration tests covering snapshot creation, state rewind restoration, and async tool dispatch.
+
 ## [0.0.93] — 2026-09-01
 
 ### Multi-Workspace Virtual Monorepo Context Orchestrator (Phase 73)

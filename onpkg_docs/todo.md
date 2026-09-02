@@ -1396,8 +1396,13 @@
 - [x] 73.3: Version bump → `v0.0.93`, changelog with ideas/sources, commit, tag, push
 
 ### Phase 74: Dynamic Session Memory Checkpointer & Time-Travel Debugger (v0.0.94)
-- [ ] 74.1: Implement tree-structured state checkpoints with rollback and fork
-- [ ] 74.2: Add `checkpoint_session` and `rewind_session` agent tools
-- [ ] 74.3: Version bump → `v0.0.94`, changelog with ideas/sources, commit, tag, push
+- [x] 74.1: Implement tree-structured state checkpoints with rollback and fork
+- [x] 74.2: Add `checkpoint_session` and `rewind_session` agent tools
+- [x] 74.3: Version bump → `v0.0.94`, changelog with ideas/sources, commit, tag, push
+
+### Phase 75: High-Precision Type-Flow & Dataflow Reachability Analyzer (v0.0.95)
+- [ ] 75.1: Implement static inter-procedural type-flow propagation and data taintedness analysis
+- [ ] 75.2: Add `trace_dataflow` agent tool
+- [ ] 75.3: Version bump → `v0.0.95`, changelog with ideas/sources, commit, tag, push
 
 
