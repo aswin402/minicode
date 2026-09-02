@@ -1431,6 +1431,14 @@
 ### Phase 3: Cleanup & Polish (v0.0.98 — continued)
 - [x] 3.1: Tool count validation — automated test in `constants.rs` ensures `TOTAL_TOOL_COUNT` matches live `ToolRegistry` schema count
 
+### Phase N: Streaming Mode Toggle (v0.0.99)
+- [x] N.1: Add `streaming: bool` to `AgentConfig` (default `true`) in `src/config.rs`
+- [x] N.2: Add `Provider::completion()` default method wrapping `stream_completion()` in `src/agent/provider.rs`
+- [x] N.3: Branch `execute_turn` on `streaming` config — non-streaming accumulates full response then emits aggregated events in `src/agent/loop.rs`
+- [x] N.4: Add `StreamingSelect` modal with Enable/Disable/Back options and current state marker (◉) in `src/ui/modal.rs`
+- [x] N.5: Add `/streaming` slash command to `COMMAND_CATALOG_ITEMS` and wire to modal in `src/app.rs`
+- [x] N.6: Version bump → `v0.0.99`, changelog with ideas/inspirations/sources/whats-next, commit
+
 ### Phase 78: Distributed Multi-Agent Consensus & Peer Review Council (v0.0.99)
 - [ ] 78.1: Implement multi-perspective voting protocols, debate deliberation, and divergence resolution
 - [ ] 78.2: Add `convene_agent_council` agent tool
