@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] — 2026-09-03
+
+### Universal Thinking Tag Parsing (`<think>`, `<thought>`, `<reasoning>`) & Chunk Boundary Buffering
+
+#### 💡 Ideas & Inspirations
+- **Zero Raw XML Leakage into Chat**: Modern reasoning and thinking models (such as MiniMax, DeepSeek R1, Qwen QwQ, Ollama) emit their reasoning chains inside explicit delimiter tags like `<think>...</think>`, `<thought>...</thought>`, or `<reasoning>...</reasoning>`. Dumping raw thinking XML blocks into the user's conversation timeline breaks formatting, clutters conversation history, and leaks chain-of-thought into clipboard copy operations. All thinking tags must be transparently intercepted and directed to the collapsible `• Thought for X.Xs` block.
+- **Cross-Chunk Tag Resilience**: Streaming LLM token delivery chunks arbitrarily across byte boundaries. An opening tag `<think>` or closing tag `</think>` may be split across multiple streaming events (e.g. `"<th"` in chunk 1, `"ink>"` in chunk 2). A stateless parser misses split tags entirely, dumping partial XML tags into the output. A sliding tag buffer reassembles partial tag boundaries across chunks with zero visual artifacts.
+- **Defensive Multi-Layer Sanitization**: Even if a model outputs dangling, unclosed, or malformed tags, the rendering layer defensively strips all delimiter markers, ensuring pristine markdown output.
+
+#### 📚 References & Sources
+- **MiniMax API & Model Specifications**: MiniMax-M2.5/M2.7 reasoning output structures utilizing inline `<think>` delimiters.
+- **DeepSeek R1 Specification**: Reasoning content conventions and `<think>` delimiter standard in chat completions.
+- **Ratatui Terminal Streaming Paradigms**: Dynamic state parsing during high-throughput token streaming.
+
+#### 🚀 Features & Changes
+- **Universal Thought Tag Recognition** (`src/ui/view.rs`):
+  - Supported all standard opening tags: `<think>`, `<thought>`, `<reasoning>`, `<antThinking>`.
+  - Supported all standard closing tags: `</think>`, `</thought>`, `</reasoning>`, `</antThinking>`.
+  - Automatically consumes immediate newlines following closing tags to avoid blank gaps before assistant responses.
+- **Streaming Chunk Boundary Buffering** (`src/ui/view.rs`):
+  - Added `thought_tag_buffer` to `TimelineView` to buffer partial tag prefixes across streaming deltas.
+  - Flushes any pending buffer content cleanly upon turn finalization (`finalize_pending_thoughts`).
+- **Defensive Content Sanitization** (`src/ui/view.rs`):
+  - Added `sanitize_thought_text` and `sanitize_assistant_text` to strip any lingering raw thinking tags.
+  - Prevents raw thinking text and tags from being copied when copying assistant responses to clipboard.
+- **Unit Tests** (`src/ui/view.rs`):
+  - Added `test_minimax_think_tag_parsing_single_chunk` verifying single-pass `<think>` tag extraction.
+  - Added `test_minimax_think_tag_parsing_split_chunks` verifying chunk boundary buffering for split `<th` + `ink>` tokens.
+
 ## [0.1.2] — 2026-09-03
 
 ### SSE Stream Termination & Non-Streaming Single-Pass Fix

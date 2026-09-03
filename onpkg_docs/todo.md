@@ -1464,4 +1464,10 @@
 - [x] 81.3: Refactor non-streaming mode to single-pass collection without duplicate LLM requests
 - [x] 81.4: Version bump → `v0.1.2`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
 
+### Phase 82: Universal Thinking Tag Parsing & Chunk Boundary Buffering (v0.1.3)
+- [x] 82.1: Intercept and route `<think>`, `<thought>`, `<reasoning>`, `<antThinking>` tags into `ThoughtBlock`
+- [x] 82.2: Add sliding tag buffer (`thought_tag_buffer`) in `TimelineView` to handle tags split across streaming chunks
+- [x] 82.3: Add defensive sanitization on thought and assistant text to eliminate stray delimiter tokens
+- [x] 82.4: Version bump → `v0.1.3`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
+
 

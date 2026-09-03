@@ -97,6 +97,7 @@ pub struct TimelineView {
     pub in_thought_mode: bool,
     pub thought_start: Option<std::time::Instant>,
     pub turn_start: Option<std::time::Instant>,
+    pub thought_tag_buffer: String,
 }
 
 pub struct TimelineContext<'a> {
@@ -125,6 +126,7 @@ impl TimelineView {
             in_thought_mode: false,
             thought_start: None,
             turn_start: None,
+            thought_tag_buffer: String::new(),
         }
     }
 
@@ -199,17 +201,22 @@ impl TimelineView {
         self.turn_start = Some(std::time::Instant::now());
         self.thought_start = None;
         self.in_thought_mode = false;
+        self.thought_tag_buffer.clear();
     }
 
     pub fn append_thought_delta(&mut self, delta: &str) {
+        let cleaned = Self::sanitize_thought_text(delta);
+        if cleaned.is_empty() {
+            return;
+        }
         if self.thought_start.is_none() {
             self.thought_start = self.turn_start.or_else(|| Some(std::time::Instant::now()));
         }
         if let Some(TimelineEntry::ThoughtBlock { text, .. }) = self.entries.last_mut() {
-            text.push_str(delta);
+            text.push_str(&cleaned);
         } else {
             self.entries.push(TimelineEntry::ThoughtBlock {
-                text: delta.to_string(),
+                text: cleaned,
                 duration_secs: None,
             });
         }
@@ -217,14 +224,30 @@ impl TimelineView {
 
     #[allow(dead_code)]
     pub fn add_thought_block(&mut self, text: String, duration_secs: Option<f64>) {
-        self.entries.push(TimelineEntry::ThoughtBlock {
-            text,
-            duration_secs,
-        });
+        let cleaned = Self::sanitize_thought_text(&text);
+        if !cleaned.is_empty() {
+            self.entries.push(TimelineEntry::ThoughtBlock {
+                text: cleaned,
+                duration_secs,
+            });
+        }
     }
 
     pub fn finalize_pending_thoughts(&mut self, elapsed_secs: Option<f64>) {
-        if let Some(TimelineEntry::ThoughtBlock { duration_secs, .. }) = self.entries.last_mut() {
+        if !self.thought_tag_buffer.is_empty() {
+            let pending = std::mem::take(&mut self.thought_tag_buffer);
+            if self.in_thought_mode {
+                self.append_thought_delta(&pending);
+            } else {
+                self.append_assistant_text(&pending);
+            }
+        }
+        if let Some(TimelineEntry::ThoughtBlock {
+            duration_secs,
+            text,
+        }) = self.entries.last_mut()
+        {
+            *text = Self::sanitize_thought_text(text);
             if duration_secs.is_none() || duration_secs.unwrap_or(0.0) < 0.1 {
                 *duration_secs = elapsed_secs
                     .or_else(|| self.thought_start.take().map(|s| s.elapsed().as_secs_f64()))
@@ -234,13 +257,63 @@ impl TimelineView {
         self.in_thought_mode = false;
     }
 
-    pub fn append_assistant_delta(&mut self, delta: &str) {
-        let mut text = delta;
+    /// Strips any raw thinking XML tags (<think>, </think>, <thought>, </thought>, etc.)
+    pub fn sanitize_thought_text(raw: &str) -> String {
+        let mut s = raw.to_string();
+        for tag in &[
+            "<think>",
+            "</think>",
+            "<thought>",
+            "</thought>",
+            "<reasoning>",
+            "</reasoning>",
+            "<antThinking>",
+            "</antThinking>",
+        ] {
+            s = s.replace(tag, "");
+        }
+        s
+    }
 
-        while !text.is_empty() {
+    /// Strips any stray thinking XML tags that might leak into assistant markdown
+    pub fn sanitize_assistant_text(raw: &str) -> String {
+        let mut s = raw.to_string();
+        for tag in &[
+            "<think>",
+            "</think>",
+            "<thought>",
+            "</thought>",
+            "<reasoning>",
+            "</reasoning>",
+            "<antThinking>",
+            "</antThinking>",
+        ] {
+            s = s.replace(tag, "");
+        }
+        s
+    }
+
+    pub fn append_assistant_delta(&mut self, delta: &str) {
+        const OPEN_TAGS: &[&str] = &["<think>", "<thought>", "<reasoning>", "<antThinking>"];
+        const CLOSE_TAGS: &[&str] = &["</think>", "</thought>", "</reasoning>", "</antThinking>"];
+
+        let mut working_text = if self.thought_tag_buffer.is_empty() {
+            delta.to_string()
+        } else {
+            let mut s = std::mem::take(&mut self.thought_tag_buffer);
+            s.push_str(delta);
+            s
+        };
+
+        while !working_text.is_empty() {
             if self.in_thought_mode {
-                if let Some(end_idx) = text.find("</thought>") {
-                    let thought_chunk = &text[..end_idx];
+                let earliest_close = CLOSE_TAGS
+                    .iter()
+                    .filter_map(|&tag| working_text.find(tag).map(|idx| (idx, tag.len())))
+                    .min_by_key(|&(idx, _)| idx);
+
+                if let Some((end_idx, tag_len)) = earliest_close {
+                    let thought_chunk = &working_text[..end_idx];
                     if !thought_chunk.is_empty() {
                         self.append_thought_delta(thought_chunk);
                     }
@@ -257,32 +330,77 @@ impl TimelineView {
                             *duration_secs = dur;
                         }
                     }
-                    text = &text[end_idx + "</thought>".len()..];
+                    let mut next_start = end_idx + tag_len;
+                    if working_text[next_start..].starts_with("\r\n") {
+                        next_start += 2;
+                    } else if working_text[next_start..].starts_with('\n') {
+                        next_start += 1;
+                    }
+                    working_text = working_text[next_start..].to_string();
                 } else {
-                    self.append_thought_delta(text);
+                    if let Some(pos) = working_text.rfind('<') {
+                        let tail = &working_text[pos..];
+                        if CLOSE_TAGS.iter().any(|tag| tag.starts_with(tail)) {
+                            let thought_chunk = &working_text[..pos];
+                            if !thought_chunk.is_empty() {
+                                self.append_thought_delta(thought_chunk);
+                            }
+                            self.thought_tag_buffer = tail.to_string();
+                            break;
+                        }
+                    }
+                    self.append_thought_delta(&working_text);
                     break;
                 }
-            } else if let Some(start_idx) = text.find("<thought>") {
-                let prefix = &text[..start_idx];
-                if !prefix.is_empty() {
-                    self.append_assistant_text(prefix);
-                }
-                self.in_thought_mode = true;
-                self.thought_start = self.turn_start.or_else(|| Some(std::time::Instant::now()));
-                text = &text[start_idx + "<thought>".len()..];
             } else {
-                self.append_assistant_text(text);
-                break;
+                let earliest_open = OPEN_TAGS
+                    .iter()
+                    .filter_map(|&tag| working_text.find(tag).map(|idx| (idx, tag.len())))
+                    .min_by_key(|&(idx, _)| idx);
+
+                if let Some((start_idx, tag_len)) = earliest_open {
+                    let prefix = &working_text[..start_idx];
+                    if !prefix.is_empty() {
+                        self.append_assistant_text(prefix);
+                    }
+                    self.in_thought_mode = true;
+                    self.thought_start =
+                        self.turn_start.or_else(|| Some(std::time::Instant::now()));
+                    let mut next_start = start_idx + tag_len;
+                    if working_text[next_start..].starts_with("\r\n") {
+                        next_start += 2;
+                    } else if working_text[next_start..].starts_with('\n') {
+                        next_start += 1;
+                    }
+                    working_text = working_text[next_start..].to_string();
+                } else {
+                    if let Some(pos) = working_text.rfind('<') {
+                        let tail = &working_text[pos..];
+                        if OPEN_TAGS.iter().any(|tag| tag.starts_with(tail)) {
+                            let prefix = &working_text[..pos];
+                            if !prefix.is_empty() {
+                                self.append_assistant_text(prefix);
+                            }
+                            self.thought_tag_buffer = tail.to_string();
+                            break;
+                        }
+                    }
+                    self.append_assistant_text(&working_text);
+                    break;
+                }
             }
         }
     }
 
     fn append_assistant_text(&mut self, text: &str) {
+        let cleaned = Self::sanitize_assistant_text(text);
+        if cleaned.is_empty() {
+            return;
+        }
         if let Some(TimelineEntry::AssistantMarkdown(ref mut existing)) = self.entries.last_mut() {
-            existing.push_str(text);
+            existing.push_str(&cleaned);
         } else {
-            self.entries
-                .push(TimelineEntry::AssistantMarkdown(text.to_string()));
+            self.entries.push(TimelineEntry::AssistantMarkdown(cleaned));
         }
     }
 
@@ -1331,5 +1449,71 @@ mod tests {
             .style
             .add_modifier
             .contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn test_minimax_think_tag_parsing_single_chunk() {
+        let mut view = TimelineView::new();
+        view.add_user_message("hii".to_string());
+        let raw = "<think>\nThinking about greeting.\n</think>\n\nHey! How can I help you?";
+        view.append_assistant_delta(raw);
+        view.finalize_pending_thoughts(Some(1.5));
+
+        let mut has_thought = false;
+        let mut has_assistant = false;
+        for entry in &view.entries {
+            match entry {
+                TimelineEntry::ThoughtBlock { text, .. } => {
+                    assert!(text.contains("Thinking about greeting."));
+                    assert!(!text.contains("<think>"));
+                    assert!(!text.contains("</think>"));
+                    has_thought = true;
+                }
+                TimelineEntry::AssistantMarkdown(text) => {
+                    assert!(text.contains("Hey! How can I help you?"));
+                    assert!(!text.contains("<think>"));
+                    assert!(!text.contains("</think>"));
+                    has_assistant = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(has_thought, "Expected a ThoughtBlock for <think>");
+        assert!(has_assistant, "Expected AssistantMarkdown without <think>");
+    }
+
+    #[test]
+    fn test_minimax_think_tag_parsing_split_chunks() {
+        let mut view = TimelineView::new();
+        view.add_user_message("hii".to_string());
+        view.append_assistant_delta("<th");
+        view.append_assistant_delta("ink>\nStep 1 reasoning.\n</th");
+        view.append_assistant_delta("ink>\nHello world!");
+        view.finalize_pending_thoughts(Some(2.0));
+
+        let mut has_thought = false;
+        let mut has_assistant = false;
+        for entry in &view.entries {
+            match entry {
+                TimelineEntry::ThoughtBlock { text, .. } => {
+                    assert!(text.contains("Step 1 reasoning."));
+                    assert!(!text.contains("<think>"));
+                    assert!(!text.contains("</think>"));
+                    has_thought = true;
+                }
+                TimelineEntry::AssistantMarkdown(text) => {
+                    assert!(text.contains("Hello world!"));
+                    assert!(!text.contains("<think>"));
+                    assert!(!text.contains("</think>"));
+                    has_assistant = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(has_thought, "Expected ThoughtBlock from split chunks");
+        assert!(
+            has_assistant,
+            "Expected clean AssistantMarkdown from split chunks"
+        );
     }
 }
