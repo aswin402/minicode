@@ -1452,4 +1452,10 @@
 - [x] 79.5: Add integration test suite (`tests/integration_local_providers.rs`) and verify with `cargo test --test integration_local_providers -j 1`
 - [x] 79.6: Version bump → `v0.1.0`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
 
+### Phase 80: Streaming Mode Interactive Navigation & State Persistence Fix (v0.1.1)
+- [x] 80.1: Fix `selected_index` rendering in `StreamingSelect` modal so active selection is prominently highlighted
+- [x] 80.2: Add wrap-around navigation, Tab/BackTab, Home/End, and numeric 1/2 quick-select keys
+- [x] 80.3: Persist streaming configuration changes to `config.toml` and propagate immediately to background agent actor
+- [x] 80.4: Version bump → `v0.1.1`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
+
 

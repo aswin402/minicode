@@ -619,7 +619,7 @@ pub const COMMAND_PALETTE_MAX_WIDTH: u16 = 78;
 // === Modal Percentage Dimensions (Screen % Width and Height) ===
 pub const PROVIDER_SELECT_WIDTH_PCT: u16 = 50;
 pub const PROVIDER_SELECT_HEIGHT_PCT: u16 = 45;
-pub const STREAMING_SELECT_HEIGHT_PCT: u16 = 30;
+pub const STREAMING_SELECT_HEIGHT_PCT: u16 = 35;
 pub const MODEL_SELECT_WIDTH_PCT: u16 = 75;
 pub const MODEL_SELECT_HEIGHT_PCT: u16 = 70;
 pub const UNDO_CHECKPOINT_WIDTH_PCT: u16 = 72;

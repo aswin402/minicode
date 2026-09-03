@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-09-03
+
+### Streaming Mode Interactive Navigation & State Persistence Fix
+
+#### 💡 Ideas & Inspirations
+- **Consistent TUI Visual Affordance**: In terminal user interfaces, every active navigation state must provide unambiguous visual feedback (cursor prefix, inverse selection background, bold text). When visual feedback is decoupled from state changes, users experience perceived input lock even if state updates in memory. Inspired by Elm architecture and unidirectional UI rendering standards where rendered view is a pure function of model state.
+- **Multi-Modal Keyboard Accessibility**: Users navigate selection dialogs with various muscle memory inputs: Up/Down arrow keys, Vim keys (`j`/`k`), Tab/BackTab cycling, and direct numeric shortcuts (`1`, `2`, `3`). Supporting all standard key conventions ensures seamless accessibility across diverse terminal configurations.
+- **Immediate State Persistence & Actor Propagation**: Dynamic runtime preferences (such as streaming vs non-streaming response output) should not only take effect on the very next LLM turn, but also persist to `config.toml` on disk so preferences survive restarts.
+
+#### 📚 References & Sources
+- **Ratatui Widget Documentation**: `List` and `ListItem` state styling best practices with `selected` and `highlight_style`.
+- **ANSI Terminal Keyboard Protocols (VT100/Xterm)**: Arrow key sequences, Tab/BackTab cycle handling, and key navigation standards.
+
+#### 🚀 Features & Changes
+- **Fixed `StreamingSelect` Navigation Rendering** (`src/ui/modal.rs`):
+  - Fixed root cause where `selected_index` was completely ignored during rendering (`..`), causing the menu to appear frozen when pressing Up/Down arrows.
+  - Implemented prominent selection highlighting: active cursor ` › `, inverse selection background (`theme.brand_accent`), bold styling, and descriptive option captions.
+  - Added current state status badges (`[Active ◉]` in green for current setting).
+  - Modal initialization now places cursor directly on the currently active streaming option.
+- **Enhanced Keyboard Navigation & Quick Select** (`src/app.rs`):
+  - Added wrap-around navigation for Up/Down arrow keys.
+  - Added `Tab` / `BackTab` cycling support.
+  - Added numeric hotkeys: `1` immediately toggles Enable, `2` immediately toggles Disable, `3`/`Esc` exits without changes.
+  - Added `Home` and `End` keys to jump to top and bottom options.
+- **Configuration Persistence & Actor Sync** (`src/app.rs`):
+  - Selecting an option now writes the updated streaming setting to disk (`config.save`) and sends an `AgentCommand::UpdateConfig` event to the background agent actor immediately.
+  - Fixed modal height constant reference `STREAMING_SELECT_HEIGHT_PCT` in `src/constants.rs`.
+
 ## [0.1.0] — 2026-09-03
 
 ### Localhost Model Key Exemption & TUI Startup Unblocking

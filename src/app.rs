@@ -1658,28 +1658,65 @@ impl<'a> App<'a> {
                 selected_index,
                 current_streaming: _,
             } => match key.code {
-                KeyCode::Esc => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
                     self.modal = ModalState::None;
                 }
-                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                    *selected_index = selected_index.saturating_sub(1);
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') | KeyCode::BackTab => {
+                    if *selected_index == 0 {
+                        *selected_index = 2;
+                    } else {
+                        *selected_index = selected_index.saturating_sub(1);
+                    }
                 }
-                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                    if *selected_index + 1 < 3 {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') | KeyCode::Tab => {
+                    if *selected_index >= 2 {
+                        *selected_index = 0;
+                    } else {
                         *selected_index += 1;
                     }
+                }
+                KeyCode::Home => {
+                    *selected_index = 0;
+                }
+                KeyCode::End => {
+                    *selected_index = 2;
+                }
+                KeyCode::Char('1') => {
+                    self.config.agent.streaming = true;
+                    self.propagate_session_config(control_tx);
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    self.timeline
+                        .add_status("✔ Streaming mode enabled (persisted to config)".to_string());
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('2') => {
+                    self.config.agent.streaming = false;
+                    self.propagate_session_config(control_tx);
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    self.timeline
+                        .add_status("✔ Streaming mode disabled (persisted to config)".to_string());
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('3') => {
+                    self.modal = ModalState::None;
                 }
                 KeyCode::Enter => {
                     match *selected_index {
                         0 => {
                             self.config.agent.streaming = true;
-                            self.timeline
-                                .add_status("✔ Streaming mode enabled".to_string());
+                            self.propagate_session_config(control_tx);
+                            let _ = self.config.save(Some(&self.workspace_root));
+                            self.timeline.add_status(
+                                "✔ Streaming mode enabled (persisted to config)".to_string(),
+                            );
                         }
                         1 => {
                             self.config.agent.streaming = false;
-                            self.timeline
-                                .add_status("✔ Streaming mode disabled".to_string());
+                            self.propagate_session_config(control_tx);
+                            let _ = self.config.save(Some(&self.workspace_root));
+                            self.timeline.add_status(
+                                "✔ Streaming mode disabled (persisted to config)".to_string(),
+                            );
                         }
                         2 => {}
                         _ => {}
