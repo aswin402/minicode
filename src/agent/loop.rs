@@ -253,7 +253,14 @@ impl AgentLoop {
                 Some(&anchor_block)
             },
         );
-        let mut tools = crate::tools::ToolRegistry::get_tool_schemas();
+        let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
+            std::collections::HashSet::new();
+
+        let mut tools = crate::tools::category::assemble_active_tools(
+            self.config.agent.tool_mode,
+            user_prompt,
+            &active_categories,
+        );
 
         // Idempotent initialization of MCP client
         if !self.mcp_client.is_initialized() {
@@ -262,7 +269,7 @@ impl AgentLoop {
             }
         }
         let mcp_tools = self.mcp_client.get_tool_schemas().await;
-        tools.extend(mcp_tools);
+        tools.extend(mcp_tools.clone());
 
         let now_ts = chrono::Utc::now().to_rfc3339();
 
@@ -747,6 +754,32 @@ impl AgentLoop {
                         &tool_call.arguments,
                         file_before.as_deref(),
                     );
+
+                    // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
+                    if tool_call.name == "activate_tools" && tool_result.success {
+                        if let Some(cat_str) =
+                            tool_call.arguments.get("category").and_then(|v| v.as_str())
+                        {
+                            if cat_str == "all" {
+                                active_categories.extend(crate::tools::category::ToolCategory::ALL);
+                            } else if let Ok(cat) =
+                                cat_str.parse::<crate::tools::category::ToolCategory>()
+                            {
+                                active_categories.insert(cat);
+                            }
+                            tools = crate::tools::category::assemble_active_tools(
+                                self.config.agent.tool_mode,
+                                user_prompt,
+                                &active_categories,
+                            );
+                            tools.extend(mcp_tools.clone());
+                            tracing::info!(
+                                "Dynamically activated '{}' tool category; active schemas count now {}",
+                                cat_str,
+                                tools.len()
+                            );
+                        }
+                    }
 
                     let res_event = AgentEvent::ToolResult {
                         turn_id,

@@ -108,6 +108,10 @@ struct Cli {
     /// Path to custom config file
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 110 tools)
+    #[arg(long, global = true)]
+    tools: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -270,6 +274,11 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(t) = cli.timeout {
         config.agent.timeout = t;
+    }
+    if let Some(tool_mode_str) = &cli.tools {
+        if let Ok(mode) = tool_mode_str.parse::<crate::config::ToolFilterMode>() {
+            config.agent.tool_mode = mode;
+        }
     }
     if let Some(lvl) = cli.log_level {
         config.logging.level = lvl;

@@ -117,6 +117,47 @@ pub struct AgentConfig {
 
     #[serde(default = "default_true")]
     pub streaming: bool,
+
+    #[serde(default = "default_tool_mode")]
+    pub tool_mode: ToolFilterMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolFilterMode {
+    #[default]
+    Dynamic,
+    CoreOnly,
+    Full,
+}
+
+impl std::fmt::Display for ToolFilterMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dynamic => write!(f, "dynamic"),
+            Self::CoreOnly => write!(f, "core_only"),
+            Self::Full => write!(f, "full"),
+        }
+    }
+}
+
+impl std::str::FromStr for ToolFilterMode {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().trim() {
+            "dynamic" | "auto" | "tier" => Ok(Self::Dynamic),
+            "core" | "core_only" | "minimal" => Ok(Self::CoreOnly),
+            "full" | "all" | "legacy" => Ok(Self::Full),
+            other => Err(format!(
+                "Unknown tool mode '{}'. Available: dynamic, core_only, full",
+                other
+            )),
+        }
+    }
+}
+
+fn default_tool_mode() -> ToolFilterMode {
+    ToolFilterMode::Dynamic
 }
 
 impl Default for AgentConfig {
@@ -129,6 +170,7 @@ impl Default for AgentConfig {
             warning_threshold: default_warning_threshold(),
             auto_heal: true,
             streaming: true,
+            tool_mode: default_tool_mode(),
         }
     }
 }

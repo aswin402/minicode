@@ -19,6 +19,7 @@ pub mod graph_sync;
 pub mod graph_visualizer;
 pub mod hybrid;
 pub mod index;
+pub mod intent_filter;
 pub mod invariants;
 pub mod layers;
 pub mod memory;

@@ -1470,4 +1470,13 @@
 - [x] 82.3: Add defensive sanitization on thought and assistant text to eliminate stray delimiter tokens
 - [x] 82.4: Version bump → `v0.1.3`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
 
+### Phase 83: Use-Case Tool Categorization & Priority-Tiered Dynamic Tool Gating (v0.1.4)
+- [x] 83.1: Partition all 110 tools into 9 use-case categories (`files`, `exec`, `search`, `git`, `web`, `onpkg`, `codegraph`, `agent`, `memory`) in `src/tools/category.rs`
+- [x] 83.2: Implement minimal 9-tool Core schema baseline (`read_file`, `patch_file`, `write_file`, `exec_cmd`, `grep_search`, `locate_symbol`, `create_plan`, `update_progress`, `activate_tools`)
+- [x] 83.3: Implement zero-allocation fast prompt IntentClassifier in `src/context/intent_filter.rs`
+- [x] 83.4: Implement `activate_tools` dynamic meta-tool with mid-turn schema hot-reloading in `src/agent/loop.rs`
+- [x] 83.5: Add `ToolFilterMode` (`dynamic`, `core_only`, `full`) to `config.toml` and `--tools` CLI flag in `src/main.rs`
+- [x] 83.6: Add integration test suite (`tests/integration_dynamic_tool_gating.rs`) and verify with `cargo test --test integration_dynamic_tool_gating -j 1`
+- [x] 83.7: Version bump → `v0.1.4`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
+
 

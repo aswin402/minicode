@@ -1,4 +1,5 @@
 pub mod browser;
+pub mod category;
 pub mod compactor;
 pub mod crawler;
 pub mod diff;
@@ -97,6 +98,45 @@ impl ToolRegistry {
                 reason: format!("{}. Raw arguments: '{}'", err_msg, raw),
             }
             .into());
+        }
+
+        // 0. Dynamic Meta-Tool
+        if tool_name == "activate_tools" {
+            let cat_str = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "activate_tools".to_string(),
+                    reason: "Missing required argument 'category'".to_string(),
+                })?;
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Dynamic on-demand activation");
+
+            if cat_str == "all" {
+                return Ok("All tool categories successfully activated.".to_string());
+            }
+
+            match cat_str.parse::<crate::tools::category::ToolCategory>() {
+                Ok(cat) => {
+                    let tool_count = cat.get_schemas().len();
+                    return Ok(format!(
+                        "Successfully activated '{}' category ({} tools: {}). Reason: {}. These tools are now active in your context.",
+                        cat.name(),
+                        tool_count,
+                        cat.description(),
+                        reason
+                    ));
+                }
+                Err(err) => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "activate_tools".to_string(),
+                        reason: err,
+                    }
+                    .into());
+                }
+            }
         }
 
         // 1. Filesystem Tools
