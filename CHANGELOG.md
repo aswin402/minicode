@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-09-03
+
+### SSE Stream Termination & Non-Streaming Single-Pass Fix
+
+#### 💡 Ideas & Inspirations
+- **Clean EventSource Lifecycle (EOF ≠ Error)**: In Server-Sent Events (SSE) over HTTP chunked transfer or HTTP/2, remote providers and local inference engines (MiniMax, Gemini, Ollama, OpenRouter, vLLM) close the connection upon turn completion. The `reqwest-eventsource` crate signals this normal stream completion via `reqwest_eventsource::Error::StreamEnded`. Treating stream termination as a transport failure caused the agent to discard completed model turns and trigger repetitive retry storms. Normal stream close must always be treated as clean EOF.
+- **Benign Trailing Transport Tolerance**: If a network connection drops, resets, or ends after the model has already generated a complete response and/or valid tool calls, the assistant's work must never be wiped out or re-executed. The runtime safely accepts and commits the generated turn.
+- **Single-Pass Non-Streaming Architecture**: In non-streaming mode, making two separate HTTP requests (one for text completion and a second streaming request to parse tool calls/tokens) needlessly doubled latency, billing tokens, and risk of divergence. A single-pass collection cleanly aggregates streaming chunks internally before emitting a unified turn event to the TUI.
+
+#### 📚 References & Sources
+- **W3C Server-Sent Events Specification**: Section 5 on connection teardown, end of stream handling, and client reconnection rules.
+- **`reqwest-eventsource` Crate Docs**: `reqwest_eventsource::Error::StreamEnded` as the expected terminal state when the server terminates the SSE stream.
+- **OpenAI & MiniMax API Streaming Protocol**: Streaming chunks conclude with `data: [DONE]` followed by socket closure.
+
+#### 🚀 Features & Changes
+- **Fixed Stream Termination Handling** (`src/agent/provider.rs`):
+  - Added explicit match for `reqwest_eventsource::Error::StreamEnded` in both `OpenAiCompatibleProvider` and `GeminiProvider` to break the stream cleanly instead of yielding a `StreamDecode` error.
+  - Added fallback string matching for `"stream ended"` to prevent unhandled EOF errors from bubbling up to the retry loop.
+- **Trailing EOF Tolerance in Agent Loop** (`src/agent/loop.rs`):
+  - `execute_turn` now tolerates benign trailing socket closures (`stream ended`, `connection reset`, `broken pipe`) if response text or tool calls have already been received, preventing catastrophic retry cascades.
+- **Single-Pass Non-Streaming Execution** (`src/agent/loop.rs`):
+  - Refactored `run_nonstreaming_iteration` to consume the stream in a single pass without firing redundant secondary HTTP requests.
+  - Added graceful error handling to `Provider::completion` trait method.
+
 ## [0.1.1] — 2026-09-03
 
 ### Streaming Mode Interactive Navigation & State Persistence Fix

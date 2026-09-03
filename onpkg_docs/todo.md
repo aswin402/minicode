@@ -1458,4 +1458,10 @@
 - [x] 80.3: Persist streaming configuration changes to `config.toml` and propagate immediately to background agent actor
 - [x] 80.4: Version bump → `v0.1.1`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
 
+### Phase 81: SSE Stream Termination & Non-Streaming Single-Pass Fix (v0.1.2)
+- [x] 81.1: Fix SSE stream termination in `OpenAiCompatibleProvider` and `GeminiProvider` to treat `StreamEnded` as normal EOF
+- [x] 81.2: Add trailing benign transport closure tolerance in `AgentLoop::execute_turn` when response tokens are already received
+- [x] 81.3: Refactor non-streaming mode to single-pass collection without duplicate LLM requests
+- [x] 81.4: Version bump → `v0.1.2`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
+
 

@@ -111,30 +111,43 @@ impl AgentLoop {
         session_id: &str,
         turn_id: usize,
     ) -> Result<(String, Vec<ToolCall>, usize, usize)> {
-        let text = self.provider.completion(messages, tools, options).await?;
-        let mut pending_tool_calls = Vec::new();
-        let mut last_prompt_tokens = 0_usize;
-        let mut cumulative_completion_tokens = 0_usize;
-
-        // Re-parse via the stream to extract structured tool calls and usage.
         let mut stream = self
             .provider
             .stream_completion(messages, tools, options)
             .await?;
+
+        let mut text = String::new();
+        let mut pending_tool_calls = Vec::new();
+        let mut last_prompt_tokens = 0_usize;
+        let mut cumulative_completion_tokens = 0_usize;
+
         while let Some(chunk) = stream.next().await {
-            match chunk? {
-                StreamChunk::Delta(_) => {}
-                StreamChunk::ToolCallChunk(tc) => {
+            match chunk {
+                Ok(StreamChunk::Delta(delta)) => {
+                    text.push_str(&delta);
+                }
+                Ok(StreamChunk::ToolCallChunk(tc)) => {
                     pending_tool_calls.push(tc);
                 }
-                StreamChunk::Usage {
+                Ok(StreamChunk::Usage {
                     prompt_tokens,
                     completion_tokens,
-                } => {
+                }) => {
                     last_prompt_tokens = prompt_tokens;
                     cumulative_completion_tokens += completion_tokens;
                 }
-                StreamChunk::Done => {}
+                Ok(StreamChunk::Done) => {
+                    break;
+                }
+                Err(e) => {
+                    let err_str = e.to_string().to_lowercase();
+                    if (!text.is_empty() || !pending_tool_calls.is_empty())
+                        && err_str.contains("stream ended")
+                    {
+                        break;
+                    }
+                    return Err(e);
+                }
             }
         }
 
@@ -454,7 +467,19 @@ impl AgentLoop {
                     }
 
                     if let Some(err) = stream_error {
-                        if retry_count < max_retries {
+                        let err_msg = err.to_string().to_lowercase();
+                        let is_benign_eof = err_msg.contains("stream ended")
+                            || err_msg.contains("connection reset")
+                            || err_msg.contains("broken pipe");
+
+                        if is_benign_eof
+                            && (!iteration_text.is_empty() || !pending_tool_calls.is_empty())
+                        {
+                            tracing::info!(
+                                "Tolerating trailing stream closure after receiving response ({} chars)",
+                                iteration_text.len()
+                            );
+                        } else if retry_count < max_retries {
                             retry_count += 1;
                             let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
                             let retry_msg = format!(
@@ -489,8 +514,9 @@ impl AgentLoop {
                             turn_response.truncate(turn_response_len_before);
                             cumulative_completion_tokens = completions_before;
                             continue;
+                        } else {
+                            return Err(err);
                         }
-                        return Err(err);
                     }
 
                     success = true;

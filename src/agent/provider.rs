@@ -53,6 +53,7 @@ pub trait Provider: Send + Sync {
 
     /// Non-streaming completion: returns the full response text as a single string.
     /// Default implementation wraps `stream_completion` and collects all deltas.
+    #[allow(dead_code)]
     async fn completion(
         &self,
         messages: &[Message],
@@ -62,9 +63,18 @@ pub trait Provider: Send + Sync {
         let mut stream = self.stream_completion(messages, tools, options).await?;
         let mut text = String::new();
         while let Some(chunk) = stream.next().await {
-            match chunk? {
-                StreamChunk::Delta(delta) => text.push_str(&delta),
-                StreamChunk::ToolCallChunk(_) | StreamChunk::Usage { .. } | StreamChunk::Done => {}
+            match chunk {
+                Ok(StreamChunk::Delta(delta)) => text.push_str(&delta),
+                Ok(
+                    StreamChunk::ToolCallChunk(_) | StreamChunk::Usage { .. } | StreamChunk::Done,
+                ) => {}
+                Err(e) => {
+                    let err_str = e.to_string().to_lowercase();
+                    if !text.is_empty() && err_str.contains("stream ended") {
+                        break;
+                    }
+                    return Err(e);
+                }
             }
         }
         Ok(text)
@@ -379,6 +389,10 @@ impl Provider for GeminiProvider {
                             Err(e) => yield Err(e),
                         }
                     }
+                    Err(reqwest_eventsource::Error::StreamEnded) => {
+                        // The server cleanly ended the SSE stream — this is normal EOF
+                        break;
+                    }
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
                         let status_code = status.as_u16();
                         if status_code == 429 {
@@ -403,7 +417,11 @@ impl Provider for GeminiProvider {
                         break;
                     }
                     Err(e) => {
-                        yield Err(ProviderError::StreamDecode(format!("EventSource stream error: {}", e)).into());
+                        let err_str = e.to_string();
+                        if err_str.to_lowercase().contains("stream ended") {
+                            break;
+                        }
+                        yield Err(ProviderError::StreamDecode(format!("EventSource stream error: {}", err_str)).into());
                         break;
                     }
                 }
@@ -718,6 +736,10 @@ impl Provider for OpenAiCompatibleProvider {
                             Err(e) => yield Err(e),
                         }
                     }
+                    Err(reqwest_eventsource::Error::StreamEnded) => {
+                        // The server cleanly ended the SSE stream — this is normal EOF
+                        break;
+                    }
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
                         let status_code = status.as_u16();
                         if status_code == 429 {
@@ -742,7 +764,11 @@ impl Provider for OpenAiCompatibleProvider {
                         break;
                     }
                     Err(e) => {
-                        yield Err(ProviderError::StreamDecode(format!("SSE stream error: {}", e)).into());
+                        let err_str = e.to_string();
+                        if err_str.to_lowercase().contains("stream ended") {
+                            break;
+                        }
+                        yield Err(ProviderError::StreamDecode(format!("SSE stream error: {}", err_str)).into());
                         break;
                     }
                 }
