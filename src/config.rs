@@ -1,6 +1,4 @@
-use crate::constants::{
-    DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER,
-};
+use crate::constants::{DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
 use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -677,8 +675,85 @@ impl Config {
         }
     }
 
+    /// Returns true if the provider runs locally (e.g. Ollama, LM Studio, vLLM, LocalAI, or localhost endpoint)
+    /// where API keys are strictly optional.
+    pub fn is_local_provider(&self, provider_name: &str) -> bool {
+        let norm = provider_name.to_lowercase();
+        if matches!(
+            norm.as_str(),
+            "ollama"
+                | "localhost"
+                | "local"
+                | "localai"
+                | "lmstudio"
+                | "lm-studio"
+                | "vllm"
+                | "llama.cpp"
+                | "llamacpp"
+                | "jan"
+                | "text-generation-webui"
+                | "oobabooga"
+        ) {
+            return true;
+        }
+
+        // Also check if custom_endpoints for this provider points to localhost or a loopback address
+        if let Some(endpoint) = self.provider.custom_endpoints.get(&norm) {
+            let lower = endpoint.to_lowercase();
+            if lower.contains("localhost")
+                || lower.contains("127.0.0.1")
+                || lower.contains("0.0.0.0")
+                || lower.contains("::1")
+                || lower.contains("[::1]")
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Resolves the base URL for a provider, taking into account custom_endpoints,
+    /// provider-specific defaults (Ollama, LM Studio, vLLM, etc.), or None.
+    pub fn get_provider_base_url(&self, provider_name: &str) -> Option<String> {
+        let norm = provider_name.to_lowercase();
+        if let Some(url) = self.provider.custom_endpoints.get(&norm) {
+            return Some(url.clone());
+        }
+
+        match norm.as_str() {
+            "ollama" => Some(self.provider.ollama.host.clone()),
+            "lmstudio" | "lm-studio" => Some("http://localhost:1234/v1".to_string()),
+            "vllm" => Some("http://localhost:8000/v1".to_string()),
+            "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
+                Some("http://localhost:8080/v1".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns default fallback model for a provider
+    pub fn get_default_model_for_provider(provider_name: &str) -> &'static str {
+        match provider_name.to_lowercase().as_str() {
+            "gemini" | "google" => "gemini-2.5-pro",
+            "anthropic" | "claude" => "claude-3-7-sonnet-20250219",
+            "openrouter" => "anthropic/claude-3.7-sonnet",
+            "openai" => "gpt-4o",
+            "deepseek" => "deepseek-chat",
+            "groq" => "llama-3.3-70b-versatile",
+            "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "minimax" => "MiniMax-Text-01",
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-plus",
+            "mistral" => "codestral-latest",
+            "ollama" => "qwen2.5-coder",
+            "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
+            _ => "default-model",
+        }
+    }
+
     /// Resolves the API key for a specific provider.
     /// Checks environment variables first, then persistent `[provider.api_keys]` in config.toml.
+    /// For local models (Ollama, LM Studio, vLLM, localhost endpoints), API keys are strictly optional.
     pub fn get_api_key(&self, provider_name: &str) -> Result<String> {
         let env_trimmed = |key: &str| std::env::var(key).map(|v| v.trim().to_string());
         let norm = provider_name.to_lowercase();
@@ -743,8 +818,8 @@ impl Config {
             }
         }
 
-        // 3. Ollama runs locally without requiring an API key
-        if norm == "ollama" {
+        // 3. Localhost and local models run without requiring an API key (it is optional)
+        if self.is_local_provider(provider_name) {
             return Ok(String::new());
         }
 
@@ -898,5 +973,50 @@ mod tests {
         assert_eq!(config.get_api_key("z.ai").unwrap(), "glm-test-key");
         assert_eq!(config.get_api_key("zhipu").unwrap(), "glm-test-key");
         assert_eq!(config.get_api_key("ollama").unwrap(), "");
+    }
+
+    #[test]
+    fn test_local_providers_key_optional() {
+        let mut config = Config::default();
+        // Ollama, LM Studio, vLLM, localhost all return Ok("") without requiring API keys
+        assert_eq!(config.get_api_key("ollama").unwrap(), "");
+        assert_eq!(config.get_api_key("localhost").unwrap(), "");
+        assert_eq!(config.get_api_key("local").unwrap(), "");
+        assert_eq!(config.get_api_key("lmstudio").unwrap(), "");
+        assert_eq!(config.get_api_key("vllm").unwrap(), "");
+        assert_eq!(config.get_api_key("localai").unwrap(), "");
+        assert_eq!(config.get_api_key("llama.cpp").unwrap(), "");
+
+        // Custom endpoint on localhost is also detected as local
+        config.provider.custom_endpoints.insert(
+            "my-local-server".to_string(),
+            "http://127.0.0.1:9090/v1".to_string(),
+        );
+        assert!(config.is_local_provider("my-local-server"));
+        assert_eq!(config.get_api_key("my-local-server").unwrap(), "");
+
+        // Base URL resolution
+        assert_eq!(
+            config.get_provider_base_url("lmstudio").unwrap(),
+            "http://localhost:1234/v1"
+        );
+        assert_eq!(
+            config.get_provider_base_url("vllm").unwrap(),
+            "http://localhost:8000/v1"
+        );
+        assert_eq!(
+            config.get_provider_base_url("my-local-server").unwrap(),
+            "http://127.0.0.1:9090/v1"
+        );
+
+        // Default models
+        assert_eq!(
+            Config::get_default_model_for_provider("ollama"),
+            "qwen2.5-coder"
+        );
+        assert_eq!(
+            Config::get_default_model_for_provider("lmstudio"),
+            "local-model"
+        );
     }
 }

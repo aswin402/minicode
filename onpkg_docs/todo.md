@@ -1444,4 +1444,12 @@
 - [ ] 78.2: Add `convene_agent_council` agent tool
 - [ ] 78.3: Version bump → `v0.0.99`, changelog with ideas/sources, commit, tag, push
 
+### Phase 79: Localhost Model Key Exemption & TUI Startup Unblocking (v0.1.0)
+- [x] 79.1: Make API keys optional for all local providers (Ollama, LM Studio, vLLM, localhost, localai, custom loopback endpoints)
+- [x] 79.2: Never exit early on unconfigured provider / missing API key; always launch TUI or REPL with banner warning
+- [x] 79.3: Add `UnconfiguredProvider` fallback so agent loop initializes gracefully without panic
+- [x] 79.4: Add in-TUI `ApiKeyInput` modal and hot-reload active provider upon selection or config change
+- [x] 79.5: Add integration test suite (`tests/integration_local_providers.rs`) and verify with `cargo test --test integration_local_providers -j 1`
+- [x] 79.6: Version bump → `v0.1.0`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
+
 

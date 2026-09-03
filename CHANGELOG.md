@@ -5,6 +5,40 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] — 2026-09-03
+
+### Localhost Model Key Exemption & TUI Startup Unblocking
+
+#### 💡 Ideas & Inspirations
+- **Resilient Offline-First TUI Lifecycle**: Blocking the interactive UI on missing credentials locks out users who want to use the interface itself to configure keys, select local models, or troubleshoot connectivity. A coding assistant TUI should always launch and remain interactive, treating credential absence as a runtime warning state rather than a fatal process exit. Inspired by tools like `lazygit`, `htop`, and VS Code where missing extensions or remote credentials never prevent the application shell from rendering.
+- **First-Class Localhost Model Autonomy**: Local inference engines (Ollama, LM Studio, vLLM, LocalAI, llama.cpp) run entirely on private loopback interfaces (`127.0.0.1`, `localhost`) without requiring authentication or metered billing. Forcing mandatory API keys on local endpoints degrades developer velocity. Local models now have optional keys and automatic zero-key authorization.
+- **Graceful Provider Fallback (`UnconfiguredProvider`)**: Rather than throwing fatal startup errors or crashing the background actor, unconfigured or errored providers gracefully mount a placeholder provider that safely responds with instructive recovery options (e.g. `Press F2 or run /model to switch providers`).
+
+#### 📚 References & Sources
+- **Ollama API Documentation**: Local HTTP endpoints (`http://localhost:11434`) operate without mandatory `Authorization` bearer tokens.
+- **vLLM & LM Studio OpenAI Compatibility**: Both serve `/v1/models` and `/v1/chat/completions` on localhost without requiring actual API tokens.
+- **Twelve-Factor App (Config & Degraded Modes)**: Graceful degradation when external services or credentials are not yet initialized.
+
+#### 🚀 Features & Changes
+- **Unblocked TUI Startup** (`src/main.rs`, `src/app.rs`):
+  - Removed early CLI exit when default provider credentials are not found.
+  - Interactive mode (`minicode` or `minicode -c`) now ALWAYS opens the Aura Ratatui TUI or plain REPL.
+  - Displays a clean status notification on the timeline when a provider is unconfigured, instructing the user how to switch or configure.
+- **Localhost & Local Models Key Exemption** (`src/config.rs`, `src/agent/provider.rs`):
+  - Added `Config::is_local_provider()`: Recognizes `ollama`, `lmstudio`, `vllm`, `localhost`, `local`, `localai`, `llama.cpp`, and any custom endpoint pointing to `localhost`, `127.0.0.1`, `0.0.0.0`, or `::1`.
+  - `Config::get_api_key()` returns `Ok("")` for all local providers without requiring environment variables or config keys.
+  - `create_provider_with_base_url()` provides default local endpoints: LM Studio (`http://localhost:1234/v1`), vLLM (`http://localhost:8000/v1`), Localhost (`http://localhost:8080/v1`), and Ollama (`http://localhost:11434`).
+- **Resilient Fallback Provider** (`src/agent/provider.rs`):
+  - Introduced `UnconfiguredProvider` implementing `Provider`. Safely returns clear turn errors directing the user to `/model` or `F2` without crashing or panicking.
+  - Added `create_provider_or_fallback()` factory helper used at application startup and model hot-swapping.
+- **In-TUI API Key Configuration & Resilient Switching** (`src/ui/modal.rs`, `src/app.rs`, `src/ui/input.rs`):
+  - Added `ModalState::ApiKeyInput` modal to paste or enter API keys directly within the TUI.
+  - When selecting a cloud provider without a key in `ProviderSelect`, the user is prompted with `ApiKeyInput`.
+  - Added `/keys` and `/api` shortcuts to the command palette.
+  - If model listing fails or is offline, provider switching automatically assigns sensible defaults (`qwen2.5-coder`, `local-model`, etc.) and hot-updates the running agent actor via `AgentCommand::UpdateConfig`.
+- **Integration Test Suite** (`tests/integration_local_providers.rs`):
+  - Verified local model key exemptions, local provider instantiation with empty keys, and `UnconfiguredProvider` fallback resilience.
+
 ## [0.0.99] — 2026-09-02
 
 ### Streaming Mode Toggle

@@ -3,7 +3,7 @@ pub mod types;
 
 use crate::error::{Result, ToolError};
 #[allow(unused_imports)]
-pub use client::{GitHubClient, get_github_token};
+pub use client::{get_github_token, GitHubClient};
 use std::path::Path;
 #[allow(unused_imports)]
 pub use types::{GitHubComment, GitHubIssue, GitHubPR, GitHubWorkflowRun};

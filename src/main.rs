@@ -396,30 +396,6 @@ async fn main() -> anyhow::Result<()> {
                     cli.resume
                 };
 
-                // Check if API key for default provider is configured
-                if config.get_api_key(&config.provider.default).is_err() {
-                    println!("\n\x1b[1;35m⚡ Welcome to minicode!\x1b[0m");
-                    println!(
-                        "\x1b[33mNo API key found for provider '{}'.\x1b[0m\n\
-                         Let's configure your provider and API key in a few seconds...\n",
-                        config.provider.default
-                    );
-                    if let Err(wizard_err) = ConfigMenu::run_interactive(&workspace_canonical).await
-                    {
-                        tracing::warn!(error = %wizard_err, "Configuration wizard exited");
-                    }
-                    // Reload configuration after wizard
-                    config = Config::load(Some(&workspace_canonical), cli.config.as_deref())?;
-
-                    // If still missing API key after wizard (e.g. user exited), exit gracefully
-                    if config.get_api_key(&config.provider.default).is_err() {
-                        println!(
-                            "\n\x1b[90mℹ No API key configured. You can run \x1b[1;36mminicode configure\x1b[0m\x1b[90m anytime to set up your keys.\x1b[0m\n"
-                        );
-                        return Ok(());
-                    }
-                }
-
                 run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref())
                     .await?;
             }
@@ -915,17 +891,13 @@ async fn run_interactive_mode(
     config: &Config,
     resume_session_id: Option<&str>,
 ) -> Result<()> {
-    let api_key = config.get_api_key(&config.provider.default)?;
-    let custom_url = config
-        .provider
-        .custom_endpoints
-        .get(&config.provider.default)
-        .cloned();
-    let provider = crate::agent::provider::create_provider_with_base_url(
+    let api_key_res = config.get_api_key(&config.provider.default);
+    let custom_url = config.get_provider_base_url(&config.provider.default);
+    let (provider, startup_err) = crate::agent::provider::create_provider_or_fallback(
         &config.provider.default,
-        &api_key,
+        api_key_res,
         custom_url.as_deref(),
-    )?;
+    );
     let agent = AgentLoop::new(workspace, config.clone(), provider);
 
     let past_events = if let Some(sid) = resume_session_id {
@@ -958,6 +930,13 @@ async fn run_interactive_mode(
             "Model: {} ({})\n",
             config.provider.model, config.provider.default
         );
+        if let Some(ref err_msg) = startup_err {
+            println!(
+                "\x1b[33m⚠️ Provider warning:\x1b[0m {}\n\
+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
+                err_msg
+            );
+        }
         if let Some(sid) = resume_session_id {
             println!(
                 "Resumed session: {} ({} events loaded)\n",
@@ -1062,6 +1041,12 @@ async fn run_interactive_mode(
     } else {
         // Run the interactive Aura Ratatui TUI
         let mut app = App::new(workspace, config.clone());
+        if let Some(ref err_msg) = startup_err {
+            app.add_timeline_status(format!(
+                "⚠️ Provider '{}' issue: {}. Press F2 or run /model to switch providers or enter your API key.",
+                config.provider.default, err_msg
+            ));
+        }
         if !past_events.is_empty() {
             app.hydrate_session(&past_events);
         }

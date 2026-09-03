@@ -117,14 +117,20 @@ impl AgentLoop {
         let mut cumulative_completion_tokens = 0_usize;
 
         // Re-parse via the stream to extract structured tool calls and usage.
-        let mut stream = self.provider.stream_completion(messages, tools, options).await?;
+        let mut stream = self
+            .provider
+            .stream_completion(messages, tools, options)
+            .await?;
         while let Some(chunk) = stream.next().await {
             match chunk? {
                 StreamChunk::Delta(_) => {}
                 StreamChunk::ToolCallChunk(tc) => {
                     pending_tool_calls.push(tc);
                 }
-                StreamChunk::Usage { prompt_tokens, completion_tokens } => {
+                StreamChunk::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
                     last_prompt_tokens = prompt_tokens;
                     cumulative_completion_tokens += completion_tokens;
                 }
@@ -152,7 +158,12 @@ impl AgentLoop {
             let _ = event_sender.send(call_event);
         }
 
-        Ok((text, pending_tool_calls, last_prompt_tokens, cumulative_completion_tokens))
+        Ok((
+            text,
+            pending_tool_calls,
+            last_prompt_tokens,
+            cumulative_completion_tokens,
+        ))
     }
 
     /// Prunes conversation message history progressively via 4-tier auto-compaction,
@@ -470,7 +481,8 @@ impl AgentLoop {
                                     }
                                 }
                             } else {
-                                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                                tokio::time::sleep(std::time::Duration::from_secs(delay_secs))
+                                    .await;
                             }
                             iteration_text.clear();
                             pending_tool_calls.clear();
@@ -526,7 +538,8 @@ impl AgentLoop {
                                         }
                                     }
                                 } else {
-                                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                                    tokio::time::sleep(std::time::Duration::from_secs(delay_secs))
+                                        .await;
                                 }
                                 iteration_text.clear();
                                 pending_tool_calls.clear();
@@ -883,7 +896,10 @@ impl AgentLoop {
         // answer them no longer exists.  Callers who already received ApprovalRequest
         // events will simply never receive a decision; the cancellation path handles
         // those cleanly (see cancelled_while_awaiting_approval_cleans_registry_and_reports_cancelled).
-        let mut guard = self.pending_approvals.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let count = guard.len();
         guard.clear();
         if count > 0 {
@@ -898,7 +914,10 @@ impl AgentLoop {
     /// without responding, or turn was rolled back).  Calling this at the start of
     /// each turn prevents the registry from growing unboundedly across long sessions.
     pub fn prune_stale_approvals(&self) {
-        let mut guard = self.pending_approvals.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self
+            .pending_approvals
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let before = guard.len();
         guard.retain(|_id, sender| !sender.is_closed());
         let pruned = before.saturating_sub(guard.len());

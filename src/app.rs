@@ -87,6 +87,11 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Adds a status banner notification directly to the timeline
+    pub fn add_timeline_status(&mut self, message: impl Into<String>) {
+        self.timeline.add_status(message.into());
+    }
+
     /// Hydrates past session events into the timeline view
     pub fn hydrate_session(&mut self, events: &[AgentEvent]) {
         self.modal = ModalState::None;
@@ -693,7 +698,7 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                if prompt == "/configure" || prompt == "/config" || prompt == "/setup" {
+                                if prompt == "/configure" || prompt == "/config" || prompt == "/setup" || prompt == "/keys" || prompt == "/key" || prompt == "/api" {
                                     self.modal = ModalState::new_provider_select();
                                     continue;
                                 }
@@ -854,6 +859,11 @@ impl<'a> App<'a> {
                                         self.config.agent.warning_threshold * 100.0
                                     );
                                     self.timeline.add_status(card);
+                                    continue;
+                                }
+
+                                if prompt == "/streaming" {
+                                    self.modal = ModalState::new_streaming_select(self.config.agent.streaming);
                                     continue;
                                 }
 
@@ -1095,27 +1105,22 @@ impl<'a> App<'a> {
     /// Pushes the current config (e.g. after AllowSession) into the agent actor
     /// so the approval gate observes the updated `auto_approve` policy.
     fn propagate_session_config(&self, control_tx: &mpsc::UnboundedSender<AgentCommand>) {
-        match self.config.get_api_key(&self.config.provider.default) {
-            Ok(key) => {
-                match crate::agent::provider::create_provider_with_base_url(
-                    &self.config.provider.default,
-                    &key,
-                    None,
-                ) {
-                    Ok(new_prov) => {
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
-                    }
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        "AllowSession: provider rebuild failed; auto_approve applies next turn"
-                    ),
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "AllowSession: API key unavailable"),
+        let key_res = self.config.get_api_key(&self.config.provider.default);
+        let custom_url = self
+            .config
+            .get_provider_base_url(&self.config.provider.default);
+        let (new_prov, prov_err) = crate::agent::provider::create_provider_or_fallback(
+            &self.config.provider.default,
+            key_res,
+            custom_url.as_deref(),
+        );
+        if let Some(e) = prov_err {
+            tracing::warn!(error = %e, "AllowSession: provider fallback in use; auto_approve applies next turn");
         }
+        let _ = control_tx.send(AgentCommand::UpdateConfig {
+            config: Box::new(self.config.clone()),
+            provider: new_prov,
+        });
     }
 
     /// Handles keyboard interaction within in-TUI modal dialogs
@@ -1148,6 +1153,100 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::ApiKeyInput {
+                provider,
+                env_var,
+                input,
+                cursor,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::new_provider_select();
+                }
+                KeyCode::Left => {
+                    *cursor = cursor.saturating_sub(1);
+                }
+                KeyCode::Right => {
+                    if *cursor < input.len() {
+                        *cursor += 1;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if *cursor > 0 && *cursor <= input.len() {
+                        input.remove(*cursor - 1);
+                        *cursor -= 1;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    input.insert(*cursor, c);
+                    *cursor += 1;
+                }
+                KeyCode::Enter => {
+                    let entered_key = input.trim().to_string();
+                    let prov_name = provider.clone();
+                    let env_name = env_var.clone();
+
+                    if !entered_key.is_empty() {
+                        self.config
+                            .provider
+                            .api_keys
+                            .insert(prov_name.clone(), entered_key.clone());
+                        std::env::set_var(&env_name, &entered_key);
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        self.timeline
+                            .add_status(format!("✔ Saved API key for '{}'", prov_name));
+                    }
+
+                    let custom_url = self.config.get_provider_base_url(&prov_name);
+                    let models_res = self
+                        .model_fetcher
+                        .fetch_models(&prov_name, &entered_key, custom_url.as_deref())
+                        .await;
+                    let models = match models_res {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!(error = %e, provider = %prov_name, "Failed to fetch live model list");
+                            Vec::new()
+                        }
+                    };
+
+                    if models.is_empty() {
+                        let default_model =
+                            crate::config::Config::get_default_model_for_provider(&prov_name)
+                                .to_string();
+                        self.config.provider.default = prov_name.clone();
+                        self.config.provider.model = default_model.clone();
+
+                        let key_res = self.config.get_api_key(&prov_name);
+                        let (new_prov, prov_err) =
+                            crate::agent::provider::create_provider_or_fallback(
+                                &prov_name,
+                                key_res,
+                                custom_url.as_deref(),
+                            );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                        let _ = self.config.save(Some(&self.workspace_root));
+
+                        if let Some(err) = prov_err {
+                            self.timeline.add_status(format!(
+                                "⚠️ Switched provider to '{}' ({}), but provider reported: {}",
+                                prov_name, default_model, err
+                            ));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Switched active provider to '{}' and model to '{}'",
+                                prov_name, default_model
+                            ));
+                        }
+                        self.modal = ModalState::None;
+                    } else {
+                        self.modal = ModalState::new_model_select(prov_name, models);
+                    }
+                }
+                _ => {}
+            },
             ModalState::ProviderSelect {
                 providers,
                 selected_index,
@@ -1165,26 +1264,38 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Enter => {
                     let provider = providers[*selected_index].clone();
-                    let api_key = self.config.get_api_key(&provider).unwrap_or_else(|e| {
-                        tracing::warn!(error = %e, provider = %provider, "Failed to resolve API key for provider switch");
-                        String::new()
-                    });
+                    let is_local = self.config.is_local_provider(&provider);
+                    let custom_url = self.config.get_provider_base_url(&provider);
+                    let api_key = self.config.get_api_key(&provider).unwrap_or_default();
 
-                    let custom_url = self
-                        .config
-                        .provider
-                        .custom_endpoints
-                        .get(&provider)
-                        .cloned()
-                        .or_else(|| {
-                            if provider == "ollama" {
-                                Some(self.config.provider.ollama.host.clone())
-                            } else {
-                                None
-                            }
-                        });
+                    // If cloud provider and no key is configured, prompt with in-TUI ApiKeyInput modal
+                    if !is_local && api_key.is_empty() {
+                        let env_var = match provider.as_str() {
+                            "gemini" | "google" => "GEMINI_API_KEY",
+                            "anthropic" | "claude" => "ANTHROPIC_API_KEY",
+                            "openrouter" => "OPENROUTER_API_KEY",
+                            "openai" => "OPENAI_API_KEY",
+                            "deepseek" => "DEEPSEEK_API_KEY",
+                            "groq" => "GROQ_API_KEY",
+                            "together" => "TOGETHER_API_KEY",
+                            "minimax" => "MINIMAX_API_KEY",
+                            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
+                            "mistral" => "MISTRAL_API_KEY",
+                            _ => "",
+                        };
+                        let env_str = if env_var.is_empty() {
+                            format!(
+                                "{}_API_KEY",
+                                provider.to_uppercase().replace(['-', '.'], "_")
+                            )
+                        } else {
+                            env_var.to_string()
+                        };
+                        self.modal = ModalState::new_api_key_input(provider, env_str, None);
+                        return;
+                    }
 
-                    // Switch modal to loading models state
+                    // Fetch models (will use static fallbacks if offline)
                     let models_res = self
                         .model_fetcher
                         .fetch_models(&provider, &api_key, custom_url.as_deref())
@@ -1198,12 +1309,36 @@ impl<'a> App<'a> {
                     };
 
                     if models.is_empty() {
-                        self.timeline.add_status(format!(
-                            "ℹ No live models list found for {}. Keeping current model: {}",
-                            provider, self.config.provider.model
-                        ));
-                        self.config.provider.default = provider;
+                        let default_model =
+                            crate::config::Config::get_default_model_for_provider(&provider)
+                                .to_string();
+                        self.config.provider.default = provider.clone();
+                        self.config.provider.model = default_model.clone();
+
+                        let key_res = self.config.get_api_key(&provider);
+                        let (new_prov, prov_err) =
+                            crate::agent::provider::create_provider_or_fallback(
+                                &provider,
+                                key_res,
+                                custom_url.as_deref(),
+                            );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
                         let _ = self.config.save(Some(&self.workspace_root));
+
+                        if let Some(err) = prov_err {
+                            self.timeline.add_status(format!(
+                                "⚠️ Switched provider to '{}' ({}), but provider reported: {}",
+                                provider, default_model, err
+                            ));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Switched active provider to '{}' and model to '{}'",
+                                provider, default_model
+                            ));
+                        }
                         self.modal = ModalState::None;
                     } else {
                         self.modal = ModalState::new_model_select(provider, models);
@@ -1247,50 +1382,31 @@ impl<'a> App<'a> {
 
                         let custom_url = self
                             .config
-                            .provider
-                            .custom_endpoints
-                            .get(&self.config.provider.default)
-                            .cloned()
-                            .or_else(|| {
-                                if self.config.provider.default == "ollama" {
-                                    Some(self.config.provider.ollama.host.clone())
-                                } else {
-                                    None
-                                }
-                            });
+                            .get_provider_base_url(&self.config.provider.default);
+                        let key_res = self.config.get_api_key(&self.config.provider.default);
+                        let (new_prov, prov_err) =
+                            crate::agent::provider::create_provider_or_fallback(
+                                &self.config.provider.default,
+                                key_res,
+                                custom_url.as_deref(),
+                            );
 
-                        match self.config.get_api_key(&self.config.provider.default) {
-                            Ok(key) => {
-                                match crate::agent::provider::create_provider_with_base_url(
-                                    &self.config.provider.default,
-                                    &key,
-                                    custom_url.as_deref(),
-                                ) {
-                                    Ok(new_prov) => {
-                                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                            config: Box::new(self.config.clone()),
-                                            provider: new_prov,
-                                        });
-                                        let _ = self.config.save(Some(&self.workspace_root));
-                                        self.timeline.add_status(format!(
-                                            "✔ Switched active provider to '{}' and model to '{}'",
-                                            provider, selected_model
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!(
-                                            "✗ Failed to create provider '{}': {}",
-                                            provider, e
-                                        ));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                self.timeline.add_status(format!(
-                                    "✗ Missing API key for provider '{}': {}",
-                                    provider, e
-                                ));
-                            }
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                        let _ = self.config.save(Some(&self.workspace_root));
+
+                        if let Some(err) = prov_err {
+                            self.timeline.add_status(format!(
+                                "⚠️ Switched provider to '{}' and model to '{}', but provider reported: {}",
+                                provider, selected_model, err
+                            ));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Switched active provider to '{}' and model to '{}'",
+                                provider, selected_model
+                            ));
                         }
                     }
                     self.modal = ModalState::None;
@@ -1538,37 +1654,40 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
-            ModalState::StreamingSelect { selected_index, current_streaming: _ } => {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.modal = ModalState::None;
-                    }
-                    KeyCode::Up => {
-                        *selected_index = selected_index.saturating_sub(1);
-                    }
-                    KeyCode::Down => {
-                        if *selected_index + 1 < 3 {
-                            *selected_index += 1;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        match *selected_index {
-                            0 => {
-                                self.config.agent.streaming = true;
-                                self.timeline.add_status("✔ Streaming mode enabled".to_string());
-                            }
-                            1 => {
-                                self.config.agent.streaming = false;
-                                self.timeline.add_status("✔ Streaming mode disabled".to_string());
-                            }
-                            2 => {}
-                            _ => {}
-                        }
-                        self.modal = ModalState::None;
-                    }
-                    _ => {}
+            ModalState::StreamingSelect {
+                selected_index,
+                current_streaming: _,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
                 }
-            }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    if *selected_index + 1 < 3 {
+                        *selected_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    match *selected_index {
+                        0 => {
+                            self.config.agent.streaming = true;
+                            self.timeline
+                                .add_status("✔ Streaming mode enabled".to_string());
+                        }
+                        1 => {
+                            self.config.agent.streaming = false;
+                            self.timeline
+                                .add_status("✔ Streaming mode disabled".to_string());
+                        }
+                        2 => {}
+                        _ => {}
+                    }
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
             ModalState::CommandCatalog {
                 ref filtered_indices,
                 ref mut selected_index,
@@ -1668,7 +1787,8 @@ impl<'a> App<'a> {
                                 self.pty_drawer.toggle();
                             }
                             "/streaming" => {
-                                self.modal = ModalState::new_streaming_select(self.config.agent.streaming);
+                                self.modal =
+                                    ModalState::new_streaming_select(self.config.agent.streaming);
                             }
                             other => {
                                 self.input_dock.textarea = tui_textarea::TextArea::default();

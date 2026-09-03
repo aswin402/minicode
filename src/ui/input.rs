@@ -81,6 +81,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("F2"),
     },
     PaletteCommand {
+        slash_name: "/keys",
+        title: "Manage API Keys",
+        description: "Configure or update provider API keys",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/provider",
         title: "Switch Provider",
         description: "Select active LLM provider (OpenRouter, Groq, Ollama, etc.)",
@@ -105,6 +112,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         slash_name: "/tokens",
         title: "Token Breakdown",
         description: "Display detailed token usage & context stats",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/streaming",
+        title: "Streaming Mode",
+        description: "Enable or disable LLM response streaming",
         category: CommandCategory::System,
         shortcut: None,
     },

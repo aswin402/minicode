@@ -17,10 +17,7 @@ use unicode_width::UnicodeWidthStr;
 fn write_atomic_jsonl(path: &Path, line: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         #[cfg(unix)]

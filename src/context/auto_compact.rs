@@ -11,7 +11,6 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-
 /// Unified compaction tier configuration.
 /// All threshold ratios are expressed as a fraction of the model's context window limit.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +27,9 @@ pub struct CompactionConfig {
 
 impl Default for CompactionConfig {
     fn default() -> Self {
-        use crate::constants::{COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO, COMPACT_TIER3_RATIO, COMPRESSOR_SAFETY_MARGIN};
+        use crate::constants::{
+            COMPACT_TIER1_RATIO, COMPACT_TIER2_RATIO, COMPACT_TIER3_RATIO, COMPRESSOR_SAFETY_MARGIN,
+        };
         Self {
             tier1_ratio: COMPACT_TIER1_RATIO,
             tier2_ratio: COMPACT_TIER2_RATIO,

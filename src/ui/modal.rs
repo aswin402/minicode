@@ -5,13 +5,14 @@ use crate::constants::{
     COMMAND_CATALOG_WIDTH_PCT, COMMAND_NAME_DISPLAY_COLS, EXIT_CONFIRM_MODAL_HEIGHT,
     EXIT_CONFIRM_MODAL_WIDTH, EXPLORER_BADGE_DISPLAY_COLS, GIT_DIFF_HEIGHT_PCT, GIT_DIFF_WIDTH_PCT,
     HELP_HEIGHT_PCT, HELP_WIDTH_PCT, MODEL_SELECT_HEIGHT_PCT, MODEL_SELECT_WIDTH_PCT,
-    PROVIDER_SELECT_HEIGHT_PCT, PROVIDER_SELECT_WIDTH_PCT, STREAMING_SELECT_HEIGHT_PCT, SESSION_BROWSER_MAX_HEIGHT,
+    PROVIDER_SELECT_HEIGHT_PCT, PROVIDER_SELECT_WIDTH_PCT, SESSION_BROWSER_MAX_HEIGHT,
     SESSION_BROWSER_MAX_WIDTH, SESSION_BROWSER_MIN_HEIGHT, SESSION_BROWSER_MIN_WIDTH,
     SESSION_ID_DISPLAY_COLS, SESSION_LIST_ITEM_HEIGHT, SESSION_TIME_AGO_COLS,
     STACK_PREVIEW_MAX_FILES, STACK_SELECT_HEIGHT_PCT, STACK_SELECT_WIDTH_PCT,
-    THEME_MODAL_MAX_VISIBLE, THEME_NAME_DISPLAY_COLS, THEME_SELECT_HEIGHT_PCT,
-    THEME_SELECT_WIDTH_PCT, UNDO_CHECKPOINT_HEIGHT_PCT, UNDO_CHECKPOINT_MAX_VISIBLE,
-    UNDO_CHECKPOINT_WIDTH_PCT, WORKSPACE_ANALYSIS_HEIGHT, WORKSPACE_ANALYSIS_WIDTH,
+    STREAMING_SELECT_HEIGHT_PCT, THEME_MODAL_MAX_VISIBLE, THEME_NAME_DISPLAY_COLS,
+    THEME_SELECT_HEIGHT_PCT, THEME_SELECT_WIDTH_PCT, UNDO_CHECKPOINT_HEIGHT_PCT,
+    UNDO_CHECKPOINT_MAX_VISIBLE, UNDO_CHECKPOINT_WIDTH_PCT, WORKSPACE_ANALYSIS_HEIGHT,
+    WORKSPACE_ANALYSIS_WIDTH,
 };
 use crate::session::store::truncate_display;
 use crate::ui::theme::Theme;
@@ -263,6 +264,12 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
 #[derive(Debug, Clone)]
 pub enum ModalState {
     None,
+    ApiKeyInput {
+        provider: String,
+        env_var: String,
+        input: String,
+        cursor: usize,
+    },
     ProviderSelect {
         providers: Vec<String>,
         selected_index: usize,
@@ -348,6 +355,17 @@ impl ModalState {
         }
     }
 
+    pub fn new_api_key_input(provider: String, env_var: String, initial: Option<String>) -> Self {
+        let input = initial.unwrap_or_default();
+        let cursor = input.len();
+        ModalState::ApiKeyInput {
+            provider,
+            env_var,
+            input,
+            cursor,
+        }
+    }
+
     pub fn new_provider_select() -> Self {
         let providers = vec![
             "openrouter".to_string(),
@@ -360,6 +378,9 @@ impl ModalState {
             "together".to_string(),
             "mistral".to_string(),
             "ollama".to_string(),
+            "lmstudio".to_string(),
+            "vllm".to_string(),
+            "localhost".to_string(),
         ];
         ModalState::ProviderSelect {
             providers,
@@ -598,7 +619,10 @@ impl ModalState {
     }
 
     pub fn new_streaming_select(current_streaming: bool) -> Self {
-        ModalState::StreamingSelect { selected_index: 0, current_streaming }
+        ModalState::StreamingSelect {
+            selected_index: 0,
+            current_streaming,
+        }
     }
 
     pub fn new_workspace_analysis(workspace_root: &std::path::Path) -> Self {
@@ -676,6 +700,78 @@ impl ModalState {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         match self {
             ModalState::None => {}
+            ModalState::ApiKeyInput {
+                provider,
+                env_var,
+                input,
+                ..
+            } => {
+                let popup_area = centered_rect(65, 30, area);
+                frame.render_widget(Clear, popup_area);
+
+                let block = Block::default()
+                    .title(format!(" Configure API Key: {} ", provider))
+                    .title_alignment(Alignment::Center)
+                    .borders(Borders::ALL)
+                    .border_style(
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .bg(theme.bg_elevated),
+                    )
+                    .style(Style::default().bg(theme.bg_elevated));
+
+                let inner = block.inner(popup_area);
+                frame.render_widget(block, popup_area);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(2),
+                        Constraint::Length(3),
+                        Constraint::Min(1),
+                    ])
+                    .split(inner);
+
+                let hint_line = Line::from(vec![
+                    Span::styled("Environment variable: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        env_var.as_str(),
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "  (Enter to save, Esc to cancel)",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(hint_line), chunks[0]);
+
+                let display_text = if input.is_empty() {
+                    Span::styled(
+                        "Paste or type API key here...",
+                        Style::default().fg(theme.muted),
+                    )
+                } else {
+                    let masked: String = input
+                        .chars()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            if i < 4 || i >= input.len().saturating_sub(4) {
+                                c
+                            } else {
+                                '•'
+                            }
+                        })
+                        .collect();
+                    Span::styled(masked, Style::default().fg(theme.text_primary))
+                };
+
+                let input_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.brand_accent));
+                frame.render_widget(Paragraph::new(display_text).block(input_block), chunks[1]);
+            }
             ModalState::ProviderSelect {
                 providers,
                 selected_index,
@@ -715,7 +811,14 @@ impl ModalState {
                         } else {
                             Style::default().fg(theme.text_primary)
                         };
-                        ListItem::new(format!("{}{}", prefix, p)).style(style)
+                        let is_local =
+                            p == "ollama" || p == "lmstudio" || p == "vllm" || p == "localhost";
+                        let suffix = if is_local {
+                            " [Localhost - Key Optional]"
+                        } else {
+                            ""
+                        };
+                        ListItem::new(format!("{}{}{}", prefix, p, suffix)).style(style)
                     })
                     .collect();
 
@@ -1214,7 +1317,9 @@ impl ModalState {
                     frame.render_widget(list, inner_area);
                 }
             }
-            ModalState::StreamingSelect { current_streaming, .. } => {
+            ModalState::StreamingSelect {
+                current_streaming, ..
+            } => {
                 let popup_area =
                     centered_rect(PROVIDER_SELECT_WIDTH_PCT, STREAMING_SELECT_HEIGHT_PCT, area);
                 frame.render_widget(Clear, popup_area);
@@ -1241,7 +1346,11 @@ impl ModalState {
                     .map(|(i, opt)| {
                         let is_active = i == active_idx;
                         let marker = if is_active { " ◉" } else { " ○" };
-                        let label = if i == 2 { "Back".to_string() } else { opt.to_string() };
+                        let label = if i == 2 {
+                            "Back".to_string()
+                        } else {
+                            opt.to_string()
+                        };
                         let style = if is_active {
                             Style::default().fg(theme.success)
                         } else {

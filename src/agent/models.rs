@@ -197,6 +197,18 @@ impl ModelFetcher {
                 let url = custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
+            "lmstudio" | "lm-studio" => {
+                let url = custom_base_url.unwrap_or("http://localhost:1234/v1");
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "vllm" => {
+                let url = custom_base_url.unwrap_or("http://localhost:8000/v1");
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
+                let url = custom_base_url.unwrap_or("http://localhost:8080/v1");
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
             _ => {
                 // Custom provider with provided base URL
                 if let Some(base_url) = custom_base_url {
@@ -237,6 +249,55 @@ impl ModelFetcher {
                         return Ok(cached_models.clone());
                     }
                 }
+
+                // Fallback to static defaults for local providers if offline
+                let defaults = match provider_lower.as_str() {
+                    "ollama" => vec![
+                        ModelInfo {
+                            id: "qwen2.5-coder".to_string(),
+                            name: "qwen2.5-coder".to_string(),
+                            description: Some("Ollama default code model".to_string()),
+                            context_length: Some(32_768),
+                            is_free: true,
+                        },
+                        ModelInfo {
+                            id: "llama3.2".to_string(),
+                            name: "llama3.2".to_string(),
+                            description: Some("Meta LLaMA 3.2 local model".to_string()),
+                            context_length: Some(128_000),
+                            is_free: true,
+                        },
+                    ],
+                    "lmstudio" | "lm-studio" => vec![ModelInfo {
+                        id: "local-model".to_string(),
+                        name: "Loaded LM Studio Model".to_string(),
+                        description: Some("Currently active model loaded in LM Studio".to_string()),
+                        context_length: Some(128_000),
+                        is_free: true,
+                    }],
+                    "vllm" => vec![ModelInfo {
+                        id: "default".to_string(),
+                        name: "vLLM Served Model".to_string(),
+                        description: Some("Model served by vLLM local instance".to_string()),
+                        context_length: Some(128_000),
+                        is_free: true,
+                    }],
+                    "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
+                        vec![ModelInfo {
+                            id: "local-model".to_string(),
+                            name: "Localhost AI Model".to_string(),
+                            description: Some("Default local model on localhost:8080".to_string()),
+                            context_length: Some(128_000),
+                            is_free: true,
+                        }]
+                    }
+                    _ => Vec::new(),
+                };
+
+                if !defaults.is_empty() {
+                    return Ok(defaults);
+                }
+
                 Err(e)
             }
         }

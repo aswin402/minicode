@@ -614,10 +614,7 @@ impl Provider for OpenAiCompatibleProvider {
         let provider_name = self.provider_name.clone();
 
         let event_source = EventSource::new(request).map_err(|e| {
-            ProviderError::StreamDecode(format!(
-                "Failed to connect to {}: {}",
-                provider_name, e
-            ))
+            ProviderError::StreamDecode(format!("Failed to connect to {}: {}", provider_name, e))
         })?;
 
         let stream = async_stream::stream! {
@@ -846,17 +843,54 @@ pub fn create_provider_with_base_url(
         ))),
         "ollama" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "ollama",
-            "",
+            if api_key.is_empty() {
+                "ollama"
+            } else {
+                api_key
+            },
             custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL),
             "qwen2.5-coder",
         ))),
+        "lmstudio" | "lm-studio" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "lmstudio",
+            if api_key.is_empty() {
+                "lm-studio"
+            } else {
+                api_key
+            },
+            custom_base_url.unwrap_or("http://localhost:1234/v1"),
+            "local-model",
+        ))),
+        "vllm" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "vllm",
+            if api_key.is_empty() { "none" } else { api_key },
+            custom_base_url.unwrap_or("http://localhost:8000/v1"),
+            "default",
+        ))),
+        "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
+            Ok(Box::new(OpenAiCompatibleProvider::new(
+                provider_name,
+                if api_key.is_empty() { "none" } else { api_key },
+                custom_base_url.unwrap_or("http://localhost:8080/v1"),
+                "local-model",
+            )))
+        }
         custom_name => {
             if let Some(url) = custom_base_url {
+                let key = if api_key.is_empty() { "none" } else { api_key };
                 Ok(Box::new(OpenAiCompatibleProvider::new(
                     custom_name,
-                    api_key,
+                    key,
                     url,
                     "default-model",
+                )))
+            } else if custom_name.contains("local") || custom_name.contains("127.0.0.1") {
+                let key = if api_key.is_empty() { "none" } else { api_key };
+                Ok(Box::new(OpenAiCompatibleProvider::new(
+                    custom_name,
+                    key,
+                    "http://localhost:8080/v1",
+                    "local-model",
                 )))
             } else {
                 Err(ProviderError::UnsupportedModel {
@@ -865,6 +899,78 @@ pub fn create_provider_with_base_url(
                 }
                 .into())
             }
+        }
+    }
+}
+
+/// A fallback placeholder provider used when a requested provider is not configured
+/// (e.g. missing API key or invalid configuration) so that the TUI can always launch
+/// safely and allow the user to switch models interactively.
+pub struct UnconfiguredProvider {
+    provider_name: String,
+    reason: String,
+}
+
+impl UnconfiguredProvider {
+    pub fn new(provider_name: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for UnconfiguredProvider {
+    fn name(&self) -> &str {
+        &self.provider_name
+    }
+
+    fn default_model(&self) -> &str {
+        "unconfigured"
+    }
+
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        Err(crate::error::ProviderError::Api {
+            status: 400,
+            message: format!(
+                "Provider '{}' is not configured: {}. Press F2 or run /model to switch providers or enter your API key.",
+                self.provider_name, self.reason
+            ),
+        }
+        .into())
+    }
+}
+
+/// Creates a provider, or returns a safe UnconfiguredProvider fallback so that
+/// the application / TUI never crashes at startup due to missing keys or invalid configurations.
+pub fn create_provider_or_fallback(
+    provider_name: &str,
+    api_key: Result<String>,
+    custom_base_url: Option<&str>,
+) -> (Box<dyn Provider>, Option<String>) {
+    match api_key {
+        Ok(key) => match create_provider_with_base_url(provider_name, &key, custom_base_url) {
+            Ok(p) => (p, None),
+            Err(e) => {
+                let reason = e.to_string();
+                (
+                    Box::new(UnconfiguredProvider::new(provider_name, &reason)),
+                    Some(reason),
+                )
+            }
+        },
+        Err(e) => {
+            let reason = e.to_string();
+            (
+                Box::new(UnconfiguredProvider::new(provider_name, &reason)),
+                Some(reason),
+            )
         }
     }
 }
