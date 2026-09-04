@@ -11,6 +11,7 @@ pub mod pricing;
 pub mod prompt;
 pub mod provider;
 pub mod replay;
+pub mod reproducer_guard;
 pub mod sequential_thinking;
 pub mod stuck_detector;
 pub mod subagent;
@@ -25,5 +26,7 @@ pub use orchestrator::MultiAgentOrchestrator;
 #[allow(unused_imports)]
 pub use provider::*;
 pub use r#loop::AgentLoop;
+#[allow(unused_imports)]
+pub use reproducer_guard::{ReproducerGuard, ReproducerPhase, ReproducerRecord, ReproducerReport};
 #[allow(unused_imports)]
 pub use subagent::{SubAgent, SubAgentResult};

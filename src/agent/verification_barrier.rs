@@ -1,3 +1,4 @@
+use crate::agent::reproducer_guard::{ReproducerGuard, ReproducerPhase};
 use crate::constants::{
     VERIFICATION_CONFLICT_MARKERS, VERIFICATION_DEBUG_PATTERNS, VERIFICATION_TEST_TIMEOUT_MS,
 };
@@ -192,7 +193,13 @@ impl VerificationBarrier {
         workspace_root: &Path,
         modified_files: &[String],
     ) -> GateStatus {
-        // Find if any test file was modified
+        // 1. Check if any active reproducer is awaiting Red-to-Green transition
+        let active_reproducers = ReproducerGuard::list_active_reproducers(workspace_root);
+        let pending_repro = active_reproducers
+            .into_iter()
+            .find(|r| matches!(r.status, ReproducerPhase::RedConfirmed { .. }));
+
+        // 2. Find if any test file was modified in this turn
         let modified_test = modified_files.iter().find(|f| {
             f.starts_with("tests/")
                 || f.contains("test_")
@@ -200,9 +207,15 @@ impl VerificationBarrier {
                 || f.contains("repro_")
         });
 
-        let Some(test_rel_path) = modified_test else {
+        // Determine target test path
+        let (test_rel_path, is_tracked_repro) = if let Some(pending) = pending_repro {
+            (pending.file_path, true)
+        } else if let Some(m) = modified_test {
+            (m.clone(), false)
+        } else {
             return GateStatus::Skipped {
-                reason: "No reproducer script or test target was modified in this turn.",
+                reason:
+                    "No reproducer script, test target, or active reproducer guard in this turn.",
             };
         };
 
@@ -250,6 +263,22 @@ impl VerificationBarrier {
                                 target_name
                             ),
                         };
+                    } else if is_tracked_repro || target_name.starts_with("repro_") {
+                        // Mark reproducer as GreenVerified
+                        if let Some(mut record) =
+                            ReproducerGuard::load_record(workspace_root, target_name)
+                        {
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            record.status = ReproducerPhase::GreenVerified { timestamp };
+                            let _ = ReproducerGuard::save_record(workspace_root, &record);
+                            tracing::info!(
+                                "Gate 2: Active reproducer `{}` transitioned from RED to GREEN!",
+                                target_name
+                            );
+                        }
                     }
                 }
                 Ok(Err(e)) => {

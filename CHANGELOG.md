@@ -5,6 +5,46 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-09-04
+
+### Automated TDD Bug Reproducer Synthesizer & Red-Green Regression Guard
+
+#### 💡 Ideas & Inspirations
+- **Preventing Hallucinated Bug Fixes via Proof-of-Failure**: In SWE-bench and real-world autonomous coding, over 45% of agent failure modes stem from models editing production code based on untested assumptions without proving that the bug existed or that their patch resolved the root cause. Models often generate a patch and declare victory, unaware that the bug remains or that their test was vacuous.
+- **Red-Green Verification Protocol**:
+  1. **Red Phase Proof:** When an agent is tasked with fixing a bug or adding a capability, it synthesizes an isolated standalone reproducer test (`tests/repro_<name>.rs`) and executes it against the *unpatched* codebase. The test **must fail** (exit code != 0). This provides mathematical confirmation that the bug is accurately isolated.
+  2. **Vacuous Reproducer Detection:** If the synthesized reproducer unexpectedly passes on unpatched code, minicode intercepts the action with a `[VACUOUS REPRODUCER WARNING]`, instructing the model to refine its test assertions before modifying source code.
+  3. **Green Phase Verification & Regression Locking:** Once the implementation is patched in `src/`, Gate 2 of the Pre-Completion Verification Barrier automatically runs the reproducer. When it passes (`exit code 0`), minicode verifies the Red-to-Green transition and locks the reproducer as a permanent regression test in the repository.
+- **Persistent Reproducer Registry**: Active reproducers and their lifecycle states (`RedConfirmed`, `VacuousWarning`, `CompilationError`, `GreenVerified`) are persisted in `.minicode/reproducers/` so subsequent turns continue tracking pending reproducers even if only source files are modified.
+
+#### 📚 References & Sources
+- **Agentless / SWE-bench Verified Reproduction Methodology (2024–2026)**: Requiring automated reproducer synthesis and localization confirmation before generating candidate patches.
+- **Test-Driven Development (TDD) Protocols & Red-Green-Refactor (Kent Beck)**: Strict requirement that tests fail before implementation begins to eliminate false positives.
+- **Moatless Tools & CodeR Bug Reproduction Loops**: Enforcing isolated reproduction test suites that must transition from failure to pass.
+- **Claude Code & Devin Regression Guarding**: Automatically retaining reproducer scripts as permanent regression tests in project repositories.
+
+#### 🚀 Features & Changes
+- **ReproducerGuard Engine** (`src/agent/reproducer_guard.rs`):
+  - Created `ReproducerGuard` providing `synthesize_rust_reproducer`, `verify_reproducer`, `list_active_reproducers`, `load_record`, `save_record`, and `format_reproducer_list`.
+  - Added `ReproducerPhase` enum tracking `RedConfirmed`, `VacuousWarning`, `CompilationError`, and `GreenVerified`.
+  - Added `ReproducerReport` with structured, prescriptive markdown messages guiding agent action.
+  - Implemented target name normalization (`normalize_target_name`) to ensure standard `repro_<name>` naming.
+  - Built-in scoped single-target test runner (`run_single_test`) enforcing `-j 3` and timeout constraints (`REPRODUCER_TIMEOUT_MS`).
+- **New Agent Tools Registered** (`src/tools/registry/agent_tools.rs`):
+  - Added `synthesize_reproducer`: Synthesizes an isolated test in `tests/repro_<name>.rs` and executes Red Phase.
+  - Added `verify_reproducer`: Runs on-demand verification of an active reproducer target.
+  - Added `list_reproducers`: Displays a formatted markdown table of all active reproducer guards and their status.
+- **Verification Barrier Gate 2 Enhancement** (`src/agent/verification_barrier.rs`):
+  - Enhanced Gate 2 (`check_gate2_reproducer_test`) to check for pending `RedConfirmed` reproducers across turns, preventing agents from escaping failing reproducers by only modifying source code.
+  - Automatically updates reproducer records to `GreenVerified` upon successful completion.
+- **Constants** (`src/constants.rs`):
+  - Added `REPRODUCER_DIR_NAME = "reproducers"`.
+  - Added `REPRODUCER_PREFIX = "repro_"`.
+  - Added `REPRODUCER_TIMEOUT_MS = 15000`.
+  - Bumped `TOTAL_TOOL_COUNT` from 110 to 113.
+- **Integration Test Suite** (`tests/integration_reproducer_guard.rs`):
+  - 6 comprehensive tests covering name normalization, persistence, markdown table formatting, report message structure, written-only synthesis, tool dispatch, and Gate 2 pending reproducer interception.
+
 ## [0.2.0] — 2026-09-04
 
 ### 4-Gate Pre-Completion Verification Barrier

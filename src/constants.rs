@@ -43,6 +43,12 @@ pub const SKILL_MD_FILE: &str = "SKILL.md";
 pub const SKILLS_DIR_NAME: &str = ".skills";
 /// Model cache JSON filename
 pub const MODELS_CACHE_FILE: &str = "models_cache.json";
+/// Subdirectory storing active reproducer test records (.minicode/reproducers)
+pub const REPRODUCER_DIR_NAME: &str = "reproducers";
+/// Prefix required for standalone reproducer test files
+pub const REPRODUCER_PREFIX: &str = "repro_";
+/// Default timeout for single reproducer test execution in milliseconds (15s)
+pub const REPRODUCER_TIMEOUT_MS: u64 = 15000;
 
 // === Agent Loop Limits ===
 /// Maximum tool calling steps per turn to prevent infinite loops
@@ -628,7 +634,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 110;
+pub const TOTAL_TOOL_COUNT: usize = 113;
 
 /// Milliseconds per animation frame for TUI thinking spinner
 pub const SPINNER_FRAME_MS: u64 = 80;
