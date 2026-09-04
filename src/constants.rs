@@ -168,6 +168,50 @@ pub const STUCK_MAX_HISTORY_ENTRIES: usize = 16;
 /// Minimum oscillation cycles before alternating ping-pong loop is flagged
 pub const STUCK_OSCILLATION_MIN_CYCLES: usize = 2;
 
+// === Smart Donut Truncator (Phase 88) ===
+/// Total line threshold before Smart Donut truncation activates
+pub const DONUT_THRESHOLD_LINES: usize = 300;
+/// Number of initial lines preserved from the start of tool output
+pub const DONUT_HEAD_LINES: usize = 100;
+/// Number of trailing lines preserved from the end of tool output
+pub const DONUT_TAIL_LINES: usize = 200;
+/// Maximum error and diagnostic lines extracted from the omitted middle donut section
+pub const DONUT_MAX_ERROR_LINES: usize = 60;
+/// Maximum character length allowed for any single line before in-line truncation
+pub const DONUT_MAX_LINE_CHARS: usize = 2000;
+/// Error keywords and signatures searched inside the omitted middle section
+pub const DONUT_ERROR_CUES: &[&str] = &[
+    "error:",
+    "error[",
+    "failed:",
+    "failure:",
+    "fatal:",
+    "panic:",
+    "panicked at",
+    "exception:",
+    "traceback (most recent call last):",
+    "assertionerror",
+    "undefined reference",
+    "cannot find",
+    "no such file",
+    "syntaxerror",
+    "typeerror",
+    "referenceerror",
+    "[error]",
+    "err!",
+    "critical:",
+    "segmentation fault",
+    "aborted",
+];
+
+// === Context Budget Bar (Phase 88) ===
+/// Visual width in characters for the context budget progress bar
+pub const BUDGET_PROGRESS_BAR_WIDTH: usize = 20;
+/// Utilization percentage threshold that triggers high context pressure warning
+pub const BUDGET_PRESSURE_HIGH_THRESHOLD: f64 = 80.0;
+/// Utilization percentage threshold that triggers moderate context pressure advisory
+pub const BUDGET_PRESSURE_MODERATE_THRESHOLD: f64 = 60.0;
+
 // === Context / Compressor ===
 /// Context window safety headroom margin below provider hard limit
 /// Used in: `CompactionConfig::safety_margin` (via `ContextCompressor::compact_history`)

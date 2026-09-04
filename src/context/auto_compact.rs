@@ -210,6 +210,19 @@ impl AutoCompactor {
             .unwrap_or_else(|| get_model_context_limit(&self.model))
     }
 
+    /// Counts total tokens for a slice of messages using the internal compressor.
+    #[must_use]
+    pub fn count_tokens(&self, messages: &[Message]) -> usize {
+        self.compressor.count_messages_tokens(messages)
+    }
+
+    /// Returns a reference to the internal context compressor.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn compressor(&self) -> &ContextCompressor {
+        &self.compressor
+    }
+
     pub fn anchor(&self) -> &MemoryAnchor {
         &self.anchor
     }

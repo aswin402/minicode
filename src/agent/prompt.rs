@@ -92,18 +92,24 @@ impl PromptBuilder {
     }
 
     /// Builds the dynamic Zone 3 (Recency Zone) context injected into the conversation tail.
-    /// Contains turn-varying state: git status, active working set, memory anchor, progressive memory.
+    /// Contains turn-varying state: git status, active working set, memory anchor, progressive memory, and context budget.
     #[must_use]
     pub fn build_recency_context(
         workspace_dir: &Path,
         memory_anchor: Option<&str>,
         active_working_set: &[String],
         git_status: Option<&crate::git::GitStatus>,
+        context_budget: Option<&crate::context::budget::ContextBudget>,
     ) -> String {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
 
-        // 1. Git Status & Active Branch
+        // 1. Context Budget & Headroom Bar
+        if let Some(budget) = context_budget {
+            recency.push_str(&budget.to_prompt_block());
+        }
+
+        // 2. Git Status & Active Branch
         if let Some(status) = git_status {
             recency.push_str(&format!(
                 "  <git_status branch=\"{}\" clean=\"{}\">\n",
@@ -304,15 +310,18 @@ mod tests {
             conflicted: vec![],
         };
         let anchor = "Active Goal: Implement Tri-Zone Prompts\nStep 1/3: In progress";
+        let budget = crate::context::budget::ContextBudget::new(25_000, 128_000, 45_000);
 
         let recency = PromptBuilder::build_recency_context(
             &temp_dir,
             Some(anchor),
             &active_set,
             Some(&status),
+            Some(&budget),
         );
 
         assert!(recency.contains("<workspace_context>"));
+        assert!(recency.contains("<context_budget used=\"25000\" limit=\"128000\""));
         assert!(recency.contains("branch=\"feature/prompts\""));
         assert!(recency.contains("clean=\"false\""));
         assert!(recency.contains("<file path=\"src/main.rs\" />"));

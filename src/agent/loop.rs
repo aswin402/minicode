@@ -37,6 +37,8 @@ pub struct AgentLoop {
     active_working_set: std::collections::VecDeque<String>,
     /// Algorithmic stuck detector halting repetitive tool loops.
     pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
+    /// Cumulative tokens expended across all turns in this session.
+    pub cumulative_tokens_used: usize,
 }
 
 impl AgentLoop {
@@ -71,6 +73,7 @@ impl AgentLoop {
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
+            cumulative_tokens_used: 0,
         }
     }
 
@@ -94,6 +97,13 @@ impl AgentLoop {
     #[allow(dead_code)]
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Returns the total cumulative tokens consumed across all turns in this session.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn cumulative_tokens_used(&self) -> usize {
+        self.cumulative_tokens_used
     }
 
     /// Records a file path into the active working set (Zone 3 Recency).
@@ -241,11 +251,20 @@ impl AgentLoop {
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
         let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
 
-        // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor)
+        // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor, context budget)
         let git_service = crate::git::GitService::new(self.workspace_root.clone());
         let git_status = git_service.get_status().await.ok();
         let anchor_block = self.compactor.anchor().to_prompt_block();
         let working_set_vec: Vec<String> = self.active_working_set.iter().cloned().collect();
+
+        let active_context_tokens = self.compactor.count_tokens(&self.messages);
+        let model_token_limit = self.compactor.model_token_limit();
+        let context_budget = crate::context::budget::ContextBudget::new(
+            active_context_tokens,
+            model_token_limit,
+            self.cumulative_tokens_used,
+        );
+
         let recency_block = PromptBuilder::build_recency_context(
             &self.workspace_root,
             if anchor_block.is_empty() {
@@ -255,6 +274,7 @@ impl AgentLoop {
             },
             &working_set_vec,
             git_status.as_ref(),
+            Some(&context_budget),
         );
 
         let prompt_with_context = format!("{}{}", user_prompt, recency_block);
@@ -789,6 +809,10 @@ impl AgentLoop {
                         file_before.as_deref(),
                     );
 
+                    // === Smart Donut Truncator (Phase 88) ===
+                    tool_result.output =
+                        crate::context::donut::SmartDonutTruncator::truncate(&tool_result.output);
+
                     // === Algorithmic Stuck Detector & Loop Breaker ===
                     if let Some(intervention) = self.stuck_detector.record_and_check(
                         &tool_call.name,
@@ -897,6 +921,7 @@ impl AgentLoop {
         }
 
         let turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
+        self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
         // Autonomous Git Auto-Commit if files were modified during this turn
         if !turn_files_modified.is_empty() && self.config.git.auto_commit {

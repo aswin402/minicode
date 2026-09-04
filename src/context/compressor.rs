@@ -53,7 +53,7 @@ impl ContextCompressor {
     }
 
     /// Masks observation outputs that exceed max lines (Observation Masking).
-    /// Retains first 15 lines (head) and last 15 lines (tail) to preserve crucial context & errors.
+    /// Leverages Smart Donut truncation to preserve head, tail, and critical error lines from the middle.
     pub fn mask_observation(output: &str, max_lines: usize) -> String {
         let total_lines = output.lines().count();
         if total_lines <= max_lines {
@@ -64,21 +64,14 @@ impl ContextCompressor {
         let head_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
         let tail_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
 
-        if head_count + tail_count >= total_lines {
-            return output.to_string();
-        }
-
-        let truncated_count = total_lines - (head_count + tail_count);
-
-        let head: Vec<&str> = output.lines().take(head_count).collect();
-        let tail: Vec<&str> = output.lines().skip(total_lines - tail_count).collect();
-
-        format!(
-            "{}\n\n[... Truncated {} lines of verbose tool output ...]\n\n{}",
-            head.join("\n"),
-            truncated_count,
-            tail.join("\n")
+        crate::context::donut::SmartDonutTruncator::truncate_custom(
+            output,
+            max_lines,
+            head_count,
+            tail_count,
+            crate::constants::DONUT_MAX_ERROR_LINES,
         )
+        .content
     }
 
     /// Compacts message history if context consumption exceeds threshold.
@@ -137,6 +130,21 @@ mod tests {
         let masked = ContextCompressor::mask_observation(&long_output, 30);
         assert!(masked.contains("Line 1"));
         assert!(masked.contains("Line 100"));
-        assert!(masked.contains("Truncated 70 lines"));
+        assert!(masked.contains("Omitted 70 lines"));
+    }
+
+    #[test]
+    fn test_mask_observation_preserves_errors() {
+        let mut long_output = String::new();
+        for i in 1..=100 {
+            if i == 50 {
+                long_output.push_str("error: critical build failure\n");
+            } else {
+                long_output.push_str(&format!("Log line {}\n", i));
+            }
+        }
+
+        let masked = ContextCompressor::mask_observation(&long_output, 30);
+        assert!(masked.contains("error: critical build failure"));
     }
 }

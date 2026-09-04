@@ -77,15 +77,18 @@ fn test_recency_context_formats_git_and_working_set() {
 
     let anchor =
         "Active Objective: Refactor prompt architecture to Tri-Zone Model\nStep 1/2: In progress";
+    let budget = minicode::context::budget::ContextBudget::new(18_000, 128_000, 30_000);
 
     let recency = PromptBuilder::build_recency_context(
         workspace,
         Some(anchor),
         &working_set,
         Some(&git_status),
+        Some(&budget),
     );
 
     assert!(recency.contains("<workspace_context>"));
+    assert!(recency.contains("<context_budget used=\"18000\" limit=\"128000\""));
     assert!(recency.contains("<git_status branch=\"main\" clean=\"false\">"));
     assert!(recency.contains("<file path=\"src/lib.rs\" />"));
     assert!(recency.contains("<file path=\"src/agent/loop.rs\" />"));

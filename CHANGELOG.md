@@ -5,6 +5,45 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] — 2026-09-04
+
+### Dynamic Context Budgeting & Smart Donut Truncation
+
+#### 💡 Ideas & Inspirations
+- **Smart Donut Truncation (Preserving the Dough and Mining the Hole)**: A common trap in AI coding assistants is naive head/tail truncation of command outputs. During massive test suites, compilation steps, or search operations, the head is typically initial setup logs and the tail is just the exit code. The critical compiler errors or panic tracebacks often occur in the *middle*. Smart Donut truncation preserves the head (first 100 lines) and tail (last 200 lines), while systematically mining the middle "donut hole" for error, failure, panic, exception, and stack trace lines, extracting them along with their exact 1-based original line numbers and location pointers.
+- **Dynamic Context Budget Visualization & Headroom Awareness**: LLMs suffer from "context fatigue" when context utilization grows high without their knowledge, often leading to sudden context window exhaustion or unbounded tool queries. By injecting a high-density, visual `<context_budget>` block (complete with a 20-character unicode progress bar, exact used vs limit token counts, remaining headroom, and prescriptive status advice) into the recency context of every turn, models stay fully aware of their resource budget and proactively adjust their verbosity.
+- **Cumulative Session Token Ledger**: Tracking token expenditure across all turns in `AgentLoop` provides visibility into session-wide token consumption for both the model and downstream reporting without relying solely on backend API invoices.
+
+#### 📚 References & Sources
+- **Cursor / Anthropic Context Budget Management (2025–2026)**: Dynamic token telemetry injection in model conversation turns.
+- **Aider Output Compression and Diagnostic Extraction (Paul Gauthier)**: Preventing context blowout in large test runs by retaining compiler diagnostics from discarded log streams.
+- **SWE-bench Execution Log Processing Guidelines**: Extracting relevant failure traces and line pointers from long build outputs.
+- **Unicode Block Progress Bars (U+2588, U+2591)**: Intuitive, token-efficient graphical representation for LLM cognitive awareness.
+
+#### 🚀 Features & Changes
+- **Smart Donut Truncator** (`src/context/donut.rs`):
+  - Added `SmartDonutTruncator` supporting configurable line thresholds, head lines (100), tail lines (200), and max error extraction (60 lines).
+  - Implemented `is_diagnostic_line` recognizing 21 error cues (`error:`, `fatal:`, `panic:`, `panicked at`, `exception:`, `traceback`, `cannot find`, etc.).
+  - Implemented `is_location_pointer` capturing code source lines (`-->`, `File "`, `at `).
+  - Implemented `clamp_line_width` safely limiting individual line width to 2000 chars without multi-byte UTF-8 boundary panics.
+  - Integrated into `AgentLoop::execute_tool` to truncate massive tool outputs before they reach model context.
+  - Upgraded `ContextCompressor::mask_observation` to leverage Smart Donut truncation for older conversation turns.
+- **Dynamic Context Budget System** (`src/context/budget.rs`):
+  - Added `ContextBudget` tracking `used_tokens`, `max_tokens`, and `cumulative_session_tokens`.
+  - Added `render_progress_bar` generating 20-character block progress bars (e.g. `[█████░░░░░░░░░░░░░░░] 25.0%`).
+  - Added adaptive status advice (`HEALTHY`, `WARNING`, `CRITICAL` at 60% and 80% thresholds).
+  - Added `to_prompt_block()` formatting `<context_budget>` XML tags.
+- **Prompt Recency Injection** (`src/agent/prompt.rs`):
+  - Updated `PromptBuilder::build_recency_context` to accept `context_budget: Option<&ContextBudget>` and embed it into `<workspace_context>`.
+- **Agent Loop Enhancements** (`src/agent/loop.rs`):
+  - Added `cumulative_tokens_used` field to `AgentLoop` accumulating turn completion and prompt tokens across turns.
+  - Wired `context_budget` computation and recency injection into every turn.
+- **Constants** (`src/constants.rs`):
+  - Added `DONUT_THRESHOLD_LINES = 300`, `DONUT_HEAD_LINES = 100`, `DONUT_TAIL_LINES = 200`, `DONUT_MAX_ERROR_LINES = 60`, `DONUT_MAX_LINE_CHARS = 2000`.
+  - Added `BUDGET_PROGRESS_BAR_WIDTH = 20`, `BUDGET_PRESSURE_HIGH_THRESHOLD = 80.0`, `BUDGET_PRESSURE_MODERATE_THRESHOLD = 60.0`.
+- **Integration Test Suite** (`tests/integration_context_budget_donut.rs`):
+  - 8 comprehensive integration tests verifying metrics, progress bars, recency injection, donut bounds, diagnostic extraction with location pointers, unicode clamping, and compressor integration.
+
 ## [0.1.8] — 2026-09-04
 
 ### Algorithmic Stuck Detector & Loop Breaker

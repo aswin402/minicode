@@ -1511,10 +1511,10 @@
 - [x] 87.4: Version bump → `v0.1.8`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 88: Dynamic Context Budgeting & Smart Donut Truncation (v0.1.9)
-- [ ] 88.1: Track cumulative turn tokens against model context window limit
-- [ ] 88.2: Implement "smart donut" truncation (keep first 100 lines + last 200 lines + error lines for large tool outputs)
-- [ ] 88.3: Expose context budget bar in prompt recency context
-- [ ] 88.4: Version bump → `v0.1.9`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+- [x] 88.1: Track cumulative turn tokens against model context window limit
+- [x] 88.2: Implement "smart donut" truncation (keep first 100 lines + last 200 lines + error lines for large tool outputs)
+- [x] 88.3: Expose context budget bar in prompt recency context
+- [x] 88.4: Version bump → `v0.1.9`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 89: 4-Gate Pre-Completion Verification Barrier (v0.2.0)
 - [ ] 89.1: Intercept completion claims and verify 4 gates (modified files exist, tests pass, git diff clean/expected, compiler checks pass)
