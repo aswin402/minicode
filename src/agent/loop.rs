@@ -33,6 +33,8 @@ pub struct AgentLoop {
     interactive_approvals: bool,
     /// Smart 4-tier progressive context auto-compactor with memory anchor.
     compactor: crate::context::auto_compact::AutoCompactor,
+    /// Active working set tracking recently accessed/modified files (Zone 3 Recency).
+    active_working_set: std::collections::VecDeque<String>,
 }
 
 impl AgentLoop {
@@ -65,6 +67,7 @@ impl AgentLoop {
             pending_approvals: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             interactive_approvals: true,
             compactor,
+            active_working_set: std::collections::VecDeque::with_capacity(10),
         }
     }
 
@@ -88,6 +91,19 @@ impl AgentLoop {
     #[allow(dead_code)]
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// Records a file path into the active working set (Zone 3 Recency).
+    pub fn record_file_access(&mut self, file_path: &str) {
+        let trimmed = file_path.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.active_working_set.retain(|p| p != trimmed);
+        self.active_working_set.push_front(trimmed.to_string());
+        if self.active_working_set.len() > 10 {
+            self.active_working_set.pop_back();
+        }
     }
 
     pub fn update_config(&mut self, config: Config, provider: Box<dyn Provider>) {
@@ -214,10 +230,32 @@ impl AgentLoop {
             self.compactor.set_working_context(user_prompt);
         }
 
-        // 1. Prune/compact conversation context if approaching budget, then append user prompt
+        // 1. Prune/compact conversation context if approaching budget
         let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
-        self.messages.push(Message::user(user_prompt));
+
+        // 2. Build Tri-Zone context:
+        // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
+        let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+
+        // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor)
+        let git_service = crate::git::GitService::new(self.workspace_root.clone());
+        let git_status = git_service.get_status().await.ok();
+        let anchor_block = self.compactor.anchor().to_prompt_block();
+        let working_set_vec: Vec<String> = self.active_working_set.iter().cloned().collect();
+        let recency_block = PromptBuilder::build_recency_context(
+            &self.workspace_root,
+            if anchor_block.is_empty() {
+                None
+            } else {
+                Some(&anchor_block)
+            },
+            &working_set_vec,
+            git_status.as_ref(),
+        );
+
+        let prompt_with_context = format!("{}{}", user_prompt, recency_block);
+        self.messages.push(Message::user(prompt_with_context));
 
         if let Some(metrics) = compaction_metrics {
             let compact_event = AgentEvent::ContextCompacted {
@@ -243,16 +281,6 @@ impl AgentLoop {
             tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
         }
 
-        let anchor_block = self.compactor.anchor().to_prompt_block();
-        let system_prompt = PromptBuilder::build_system_prompt_with_anchor(
-            &self.workspace_root,
-            None,
-            if anchor_block.is_empty() {
-                None
-            } else {
-                Some(&anchor_block)
-            },
-        );
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
             std::collections::HashSet::new();
 
@@ -622,10 +650,10 @@ impl AgentLoop {
 
                     turn_tool_calls.push(tool_call.clone());
 
-                    // Check if file modification tool to record file
-                    if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                        if let Some(path) = tool_call.arguments.get("path").and_then(|p| p.as_str())
-                        {
+                    // Record file access into active working set (Zone 3 Recency)
+                    if let Some(path) = tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                        self.record_file_access(path);
+                        if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
                             turn_files_modified.push(path.to_string());
                         }
                     }

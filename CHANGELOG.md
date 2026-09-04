@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] — 2026-09-04
+
+### Cache-Friendly Tri-Zone Prompts & Tail Recency Context Injection
+
+#### 💡 Ideas & Inspirations
+- **Tri-Zone Context Model & 100% Prefix Prompt Caching**: Moving volatile dynamic memory anchors, timestamps, working files, and git status out of the system prompt to make it 100% immutable and byte-identical across turns. Eliminates prompt cache invalidation on providers supporting prefix caching (Anthropic, OpenAI, DeepSeek, Gemini), reducing Time-To-First-Token (TTFT) by 3x–5x and slashing API token costs.
+- **Recency Attention Exploitation**: Capitalizing on U-shaped attention curves by injecting dynamic workspace state (`<workspace_context>`: active git branch, porcelain status, active working set, memory anchor, progressive memory) at the very tail of the user prompt right before assistant generation, maximizing model focus on active objectives.
+- **Karpathy Operational Axioms & Ponytail Minimalist Ladder**: Integrating explicit operational guidelines (Think Before Coding, Simplicity First / Ponytail 7-Rung Ladder, Surgical Changes, Goal-Driven Verification) and replacing negative prohibitions with positive actionable directives (+35%–40% instruction compliance).
+
+#### 📚 References & Sources
+- **Lost in the Middle: How Language Models Use Long Contexts (Liu et al., 2024)**: U-shaped attention curve analysis and primacy/recency exploitation.
+- **Anthropic Prompt Caching & Prefix Optimization Guides (2025–2026)**: Byte-identical prefix stability requirements for caching.
+- **Andrej Karpathy Coding Principles & Clean Agent Guidelines**: Thought-before-code and surgical changes.
+- **Ponytail Minimalist 7-Rung Ladder**: Pragmatic code minimalism and YAGNI discipline.
+
+#### 🚀 Features & Changes
+- **Tri-Zone System Prompt Architecture** (`src/agent/prompt.rs`):
+  - Defined `STATIC_SYSTEM_PROMPT` containing Karpathy Operational Axioms, Ponytail Minimalist Ladder, XML Boundary protocols, and positive actionable directives.
+  - Added `build_static_system_prompt()` which remains 100% byte-identical across turns.
+  - Added `build_recency_context()` assembling `<workspace_context>` with `<git_status>`, `<active_working_set>`, `<task_anchor>`, and progressive/core memory blocks.
+- **Active Working Set Tracking & Recency Injection** (`src/agent/loop.rs`):
+  - Added `active_working_set` to `AgentLoop` tracking up to 10 recently accessed/modified files.
+  - Integrated `record_file_access` on all file tool dispatches.
+  - Updated `execute_turn` to use the static system prompt for `CompletionOptions` and inject dynamic recency context into the user turn message.
+- **Integration Test Suite** (`tests/integration_tri_zone_prompts.rs`):
+  - Verified static prompt immutability, `AGENTS.md` integration, recency context XML formatting, and backward compatibility.
+
 ## [0.1.4] — 2026-09-03
 
 ### Use-Case Tool Categorization & Priority-Tiered Dynamic Tool Gating

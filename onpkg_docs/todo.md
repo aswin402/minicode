@@ -1479,4 +1479,13 @@
 - [x] 83.6: Add integration test suite (`tests/integration_dynamic_tool_gating.rs`) and verify with `cargo test --test integration_dynamic_tool_gating -j 1`
 - [x] 83.7: Version bump → `v0.1.4`, changelog with ideas/sources, run localupdate.sh, commit, tag, push
 
+### Phase 84: Cache-Friendly Tri-Zone Prompts & Tail Recency Context Injection (v0.1.5)
+- [x] 84.1: Extract immutable `STATIC_SYSTEM_PROMPT` containing Karpathy Operational Axioms, Ponytail Minimalist Ladder, and positive actionable directives
+- [x] 84.2: Implement `build_static_system_prompt()` ensuring 100% byte-identical system instructions across turns for prompt caching
+- [x] 84.3: Implement `build_recency_context()` assembling dynamic `<workspace_context>` (`git_status`, `active_working_set`, `task_anchor`, memory)
+- [x] 84.4: Add `active_working_set` and `record_file_access` to `AgentLoop` for automatic working set tracking
+- [x] 84.5: Update `AgentLoop::execute_turn` to inject dynamic recency context into the user turn message at the context tail
+- [x] 84.6: Create integration test suite (`tests/integration_tri_zone_prompts.rs`) verifying prompt immutability and recency formatting
+- [x] 84.7: Version bump → `v0.1.5`, changelog with ideas/sources, run localupdate.sh (-j 3), commit, tag, push
+
 
