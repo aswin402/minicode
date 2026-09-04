@@ -12,6 +12,7 @@ pub mod prompt;
 pub mod provider;
 pub mod replay;
 pub mod sequential_thinking;
+pub mod stuck_detector;
 pub mod subagent;
 pub mod task_dag;
 pub mod types;

@@ -5,6 +5,43 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] — 2026-09-04
+
+### Algorithmic Stuck Detector & Loop Breaker
+
+#### 💡 Ideas & Inspirations
+- **Algorithmic Loop Detection in Autonomous ReAct Loops**: One of the most token-expensive failure modes in autonomous coding agents is repetitive oscillation or infinite loops. Models can repeatedly issue identical tool calls with identical arguments (e.g. repeatedly attempting a failed search/replace, or looping on a failing test command), oscillate in a ping-pong pattern between two actions ($A \to B \to A \to B$, such as reading a file then listing a directory then reading the file again), or get trapped in triangular cycles ($A \to B \to C \to A \to B \to C$).
+- **Canonical Deterministic Argument Hashing**: LLMs generate JSON arguments with varying key orders across turns (e.g. `{"path": "foo", "line": 10}` vs `{"line": 10, "path": "foo"}`). By recursively sorting object keys before hashing, we guarantee deterministic identity matching regardless of key order or whitespace formatting.
+- **Asymmetric Failure vs Success Thresholds**: Repeating a *failing* tool call twice with the exact same arguments almost never succeeds on the third attempt and signals that the model is hallucinating or ignoring error feedback. In minicode, repeated failures trigger circuit breaking at $N=2$, while exploratory successful tool executions allow up to $N=3$ identical calls before intervening.
+- **Prescriptive Circuit-Breaker Interventions**: Passive warnings are often overlooked by autoregressive models. Minicode injects a bold, prescriptive `[CIRCUIT BREAKER: LOOP DETECTED]` banner directly into the immediate tool output stream, clearly diagnosing the oscillation pattern, diagnosing the root cause, and commanding the model to change strategy (e.g. read the file, run diagnostics, or summarize status to the user).
+
+#### 📚 References & Sources
+- **SWE-agent Agentic Loop Safeguards (Yang et al., Princeton NLP 2024)**: Cycle detection in interactive shell sessions and tool execution histories.
+- **Anthropic Claude Code Loop Detection Mechanisms (2025–2026)**: Detecting repeated tool call signatures and forcing conversational pivots.
+- **OpenHands / Devin Agent Loop Architecture (2025)**: Asymmetric thresholds for consecutive tool execution errors vs read operations.
+- **Canonical JSON Specification (RFC 8785 / JCS)**: Deterministic serialization and hashing of unordered JSON trees.
+
+#### 🚀 Features & Changes
+- **Stuck Detector Engine** (`src/agent/stuck_detector.rs`):
+  - Added `StuckDetector` maintaining a bounded sliding window of tool call history (`STUCK_MAX_HISTORY_ENTRIES = 16`).
+  - Added `compute_args_hash` and `canonicalize_json` to recursively sort and hash JSON arguments using `DefaultHasher`.
+  - Added `check_loop` supporting:
+    - Consecutive identical calls ($N=3$ for success, $N=2$ for failure).
+    - Ping-pong alternating oscillations (Period 2, e.g. $A \to B \to A \to B$).
+    - Triangular cyclic loops (Period 3, e.g. $A \to B \to C \to A \to B \to C$).
+  - Added `format_intervention` generating tailored, actionable instructions for each loop archetype.
+- **Agent Loop Integration** (`src/agent/loop.rs`):
+  - Wired `StuckDetector` into `AgentLoop`, recording every tool execution result.
+  - Injected circuit-breaker interventions directly into the tool output returned to the LLM.
+  - Automatically reset the detector on each user turn boundary (`reset()`) to maintain a clean slate for new goals.
+- **Constants & Configuration** (`src/constants.rs`):
+  - Added `STUCK_CONSECUTIVE_TOOL_CALL_THRESHOLD = 3`.
+  - Added `STUCK_CONSECUTIVE_FAILURE_THRESHOLD = 2`.
+  - Added `STUCK_MAX_HISTORY_ENTRIES = 16`.
+  - Added `STUCK_OSCILLATION_MIN_CYCLES = 2`.
+- **Test Suite** (`tests/integration_stuck_detector.rs` & inline unit tests):
+  - Comprehensive unit and integration test coverage for canonical JSON hashing, consecutive failure/success circuit breakers, ping-pong oscillations, triangular loops, and turn-boundary resets.
+
 ## [0.1.7] — 2026-09-04
 
 ### In-Memory Tree-Sitter AST Syntax Barrier & Scoped Compiler Injection

@@ -1505,10 +1505,10 @@
 - [x] 86.4: Version bump → `v0.1.7`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 87: Algorithmic Stuck Detector & Loop Breaker (v0.1.8)
-- [ ] 87.1: Implement tool call fingerprinting (hash of tool name + normalized arguments)
-- [ ] 87.2: Detect consecutive duplicate calls and ping-pong state oscillation (A -> B -> A -> B)
-- [ ] 87.3: Inject prescriptive circuit-breaker intervention prompting the model to change strategy
-- [ ] 87.4: Version bump → `v0.1.8`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+- [x] 87.1: Implement tool call fingerprinting (hash of tool name + normalized arguments)
+- [x] 87.2: Detect consecutive duplicate calls and ping-pong state oscillation (A -> B -> A -> B)
+- [x] 87.3: Inject prescriptive circuit-breaker intervention prompting the model to change strategy
+- [x] 87.4: Version bump → `v0.1.8`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 88: Dynamic Context Budgeting & Smart Donut Truncation (v0.1.9)
 - [ ] 88.1: Track cumulative turn tokens against model context window limit

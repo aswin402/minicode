@@ -158,6 +158,16 @@ pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages
 pub const WEB_MAX_BODY_BYTES: usize = 40 * 1024;
 
+// === Stuck Detector & Loop Breaker ===
+/// Number of consecutive identical tool calls before circuit breaker triggers
+pub const STUCK_CONSECUTIVE_TOOL_CALL_THRESHOLD: usize = 3;
+/// Number of consecutive identical failing tool calls before circuit breaker triggers
+pub const STUCK_CONSECUTIVE_FAILURE_THRESHOLD: usize = 2;
+/// Maximum entries maintained in tool call ring buffer for loop detection
+pub const STUCK_MAX_HISTORY_ENTRIES: usize = 16;
+/// Minimum oscillation cycles before alternating ping-pong loop is flagged
+pub const STUCK_OSCILLATION_MIN_CYCLES: usize = 2;
+
 // === Context / Compressor ===
 /// Context window safety headroom margin below provider hard limit
 /// Used in: `CompactionConfig::safety_margin` (via `ContextCompressor::compact_history`)

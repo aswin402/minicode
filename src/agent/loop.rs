@@ -35,6 +35,8 @@ pub struct AgentLoop {
     compactor: crate::context::auto_compact::AutoCompactor,
     /// Active working set tracking recently accessed/modified files (Zone 3 Recency).
     active_working_set: std::collections::VecDeque<String>,
+    /// Algorithmic stuck detector halting repetitive tool loops.
+    pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
 }
 
 impl AgentLoop {
@@ -68,6 +70,7 @@ impl AgentLoop {
             interactive_approvals: true,
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
+            stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
         }
     }
 
@@ -280,6 +283,9 @@ impl AgentLoop {
         if let Err(e) = backup_manager.record_turn_start(turn_id, user_prompt, message_index) {
             tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
         }
+
+        // Reset stuck detector at start of user turn
+        self.stuck_detector.reset();
 
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
             std::collections::HashSet::new();
@@ -775,13 +781,27 @@ impl AgentLoop {
                     };
 
                     // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
-                    let tool_result = self.tool_pipeline.run(
+                    let mut tool_result = self.tool_pipeline.run(
                         tool_result,
                         &tool_call.name,
                         &self.workspace_root,
                         &tool_call.arguments,
                         file_before.as_deref(),
                     );
+
+                    // === Algorithmic Stuck Detector & Loop Breaker ===
+                    if let Some(intervention) = self.stuck_detector.record_and_check(
+                        &tool_call.name,
+                        &tool_call.arguments,
+                        tool_result.success,
+                    ) {
+                        tracing::warn!(
+                            tool = %tool_call.name,
+                            "Stuck detector triggered circuit breaker intervention"
+                        );
+                        tool_result.output.push_str("\n\n");
+                        tool_result.output.push_str(&intervention);
+                    }
 
                     // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
                     if tool_call.name == "activate_tools" && tool_result.success {
