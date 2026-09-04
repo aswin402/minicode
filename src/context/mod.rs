@@ -33,6 +33,7 @@ pub mod semantic;
 pub mod skill_forge;
 pub mod skills;
 pub mod smell_detector;
+pub mod syntax_guard;
 pub mod test_gap;
 pub mod walker;
 pub mod wiki;

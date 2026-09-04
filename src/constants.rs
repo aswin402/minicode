@@ -137,6 +137,12 @@ pub const FUZZY_UNIQUENESS_GAP: f64 = 0.12;
 pub const MAX_SEARCH_RESULTS: usize = 50;
 /// Maximum allowed length in characters for regular expression search queries
 pub const MAX_REGEX_QUERY_LEN: usize = 1024;
+/// Maximum milliseconds allowed for scoped auto-compiler / linter checks
+pub const AUTO_LINT_TIMEOUT_MS: u64 = 4000;
+/// Maximum number of diagnostic error snippets injected into tool output
+pub const MAX_COMPILER_DIAGNOSTICS: usize = 3;
+/// Maximum output lines for each compiler diagnostic snippet
+pub const MAX_COMPILER_ERROR_LINES: usize = 8;
 /// Default execution timeout in seconds for exec_cmd
 pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum raw output bytes captured before hard truncation

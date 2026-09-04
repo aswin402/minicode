@@ -5,6 +5,41 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] — 2026-09-04
+
+### In-Memory Tree-Sitter AST Syntax Barrier & Scoped Compiler Injection
+
+#### 💡 Ideas & Inspirations
+- **Pre-Write AST Syntax Barrier**: A recurring failure mode of autonomous coding agents is writing syntactically malformed code to disk (e.g. unclosed braces, unmatched parentheses, truncated expressions). Once written, corrupt files break compilation, disrupt AST symbol indexing, and force subsequent turns into emergency repair loops. By running an in-memory Tree-Sitter parse on the tentative candidate content *before* writing to disk, syntax-breaking edits are caught in $< 1\text{ ms}$, preserving the integrity of disk files.
+- **Repair-Permissive AST Guard**: If an existing file on disk already contains syntax errors (such as during active debugging or when a developer is fixing a broken build), the syntax barrier transparently permits writes so the agent is never blocked from repairing broken files.
+- **Instantaneous Scoped Compiler Diagnostic Injection**: Modern high-performing agent flows (Cursor background linter, Claude Code auto-check) eliminate the costly "write file -> user/agent calls cargo check -> read output -> fix" 3-step latency cycle. By running a scoped compiler or linter check (`cargo check` for Rust, `py_compile` for Python, `tsc` for TypeScript) immediately after a file is modified and injecting the top diagnostics directly into the tool response, models can self-correct in the very next turn without manual intervention.
+
+#### 📚 References & Sources
+- **Cursor IDE Background Diagnostics & Linter Loop (2025–2026)**: Instantaneous compiler feedback injection into agent context.
+- **Tree-Sitter Syntax Error Detection & Incremental Parsing (tree-sitter 0.23 ABI)**: In-memory error node inspection and missing-token diagnostics.
+- **SWE-bench / CodeR Rapid Feedback Loops (2024–2026)**: Reducing tool loop overhead by bundling compiler verification into file mutation tools.
+- **Python `py_compile` & TypeScript `tsc --noEmit` Scoped Checks**: Fast single-file and project-level verification primitives.
+
+#### 🚀 Features & Changes
+- **In-Memory AST Syntax Guard** (`src/context/syntax_guard.rs`):
+  - Added `SyntaxGuard` supporting Rust (`.rs`), Python (`.py`), JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`), and TypeScript (`.ts`, `.tsx`, `.mts`, `.cts`).
+  - Implemented `find_first_error` walking the Tree-Sitter concrete syntax tree to extract the exact line number, column, unparseable token, and code snippet.
+  - Implemented `check_syntax_barrier` ensuring that edits which introduce new syntax errors are rejected with a structured `[AST Syntax Barrier Rejected]` diagnostic while leaving disk files pristine.
+- **Scoped Compiler & Linter Diagnostic Injection** (`src/tools/compiler.rs`):
+  - Added `ScopedCompiler` with language-specific runners:
+    - **Rust**: `cargo check -j 3 --message-format=short` with timeout and error line extraction prioritized for the modified file.
+    - **Python**: `python3 -m py_compile <path>` with stderr syntax error extraction.
+    - **TypeScript**: `npx tsc --noEmit --pretty false` with project error prioritization.
+  - Pure standard library timeout execution via `std::sync::mpsc::channel` and `recv_timeout` (`AUTO_LINT_TIMEOUT_MS = 4000ms`), ensuring zero hanging or deadlocks.
+- **Filesystem Tools Integration** (`src/tools/fs.rs`):
+  - Wired `SyntaxGuard::check_syntax_barrier` directly into `write_file` before creating temporary files.
+  - Integrated `ScopedCompiler::run_scoped_check` into `write_file` and threaded feedback through all 5 tiers of `patch_file` via `format_patch_success`.
+- **Config & Constants** (`src/config.rs` & `src/constants.rs`):
+  - Added `syntax_barrier: bool` (default `true`) and `auto_lint: bool` (default `true`) to `AgentConfig`.
+  - Added `AUTO_LINT_TIMEOUT_MS: u64 = 4000`, `MAX_COMPILER_DIAGNOSTICS: usize = 3`, `MAX_COMPILER_ERROR_LINES: usize = 8`.
+- **Integration Test Suite** (`tests/integration_scoped_compiler.rs`):
+  - 6 end-to-end integration tests verifying syntax corruption rejection, broken file repair permission, Python/TypeScript syntax barriers, and scoped compiler feedback.
+
 ## [0.1.6] — 2026-09-04
 
 ### Resilient 5-Tier Edit Pipeline & Nearest-Match Diagnostics

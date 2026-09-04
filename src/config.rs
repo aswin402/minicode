@@ -120,6 +120,12 @@ pub struct AgentConfig {
 
     #[serde(default = "default_tool_mode")]
     pub tool_mode: ToolFilterMode,
+
+    #[serde(default = "default_true")]
+    pub syntax_barrier: bool,
+
+    #[serde(default = "default_true")]
+    pub auto_lint: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -171,6 +177,8 @@ impl Default for AgentConfig {
             auto_heal: true,
             streaming: true,
             tool_mode: default_tool_mode(),
+            syntax_barrier: true,
+            auto_lint: true,
         }
     }
 }

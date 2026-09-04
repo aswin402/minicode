@@ -1499,10 +1499,10 @@
 - [x] 85.8: Version bump → `v0.1.6`, changelog with ideas/sources, run localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 86: In-Memory Tree-Sitter AST & Scoped Compiler Injection (v0.1.7)
-- [ ] 86.1: Add lightweight in-memory Tree-Sitter syntax verification hook before committing disk writes
-- [ ] 86.2: Implement auto-compiler diagnostic injection (`cargo check`, `tsc --noEmit`, `py_compile`) appended to edit tool result
-- [ ] 86.3: Integration tests for syntax barrier and diagnostic feedback loop
-- [ ] 86.4: Version bump → `v0.1.7`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+- [x] 86.1: Add lightweight in-memory Tree-Sitter syntax verification hook before committing disk writes
+- [x] 86.2: Implement auto-compiler diagnostic injection (`cargo check`, `tsc --noEmit`, `py_compile`) appended to edit tool result
+- [x] 86.3: Integration tests for syntax barrier and diagnostic feedback loop
+- [x] 86.4: Version bump → `v0.1.7`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
 
 ### Phase 87: Algorithmic Stuck Detector & Loop Breaker (v0.1.8)
 - [ ] 87.1: Implement tool call fingerprinting (hash of tool name + normalized arguments)

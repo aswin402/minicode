@@ -1,6 +1,7 @@
 pub mod browser;
 pub mod category;
 pub mod compactor;
+pub mod compiler;
 pub mod crawler;
 pub mod diff;
 pub mod exec;

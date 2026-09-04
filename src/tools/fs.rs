@@ -69,6 +69,23 @@ pub fn read_file(
 pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
+    // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
+    let orig_content = if target_path.exists() {
+        std::fs::read_to_string(&target_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
+        &target_path,
+        &orig_content,
+        content,
+    )
+    .map_err(|reason| ToolError::PatchFailed {
+        path: relative_path.to_string(),
+        reason,
+    })?;
+
     if let Some(parent) = target_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
             path: relative_path.to_string(),
@@ -121,10 +138,19 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
     })?;
 
     let line_count = content.lines().count();
-    Ok(format!(
+    let mut msg = format!(
         "Successfully wrote {} lines to {}",
         line_count, relative_path
-    ))
+    );
+
+    if let Some(feedback) =
+        crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, relative_path)
+    {
+        msg.push_str("\n\n");
+        msg.push_str(&feedback);
+    }
+
+    Ok(msg)
 }
 
 /// Diagnostic structure for nearest match during failed search-and-replace patching.
@@ -187,6 +213,20 @@ fn find_all_match_lines(content: &str, needle: &str) -> Vec<usize> {
     lines
 }
 
+/// Formats patch success message, preserving optional compiler or linter diagnostic feedback.
+fn format_patch_success(tier_desc: &str, relative_path: &str, write_res: &str) -> String {
+    let mut msg = format!("Successfully patched {}", relative_path);
+    if !tier_desc.is_empty() {
+        msg.push_str(&format!(" ({})", tier_desc));
+    }
+    if let Some(feedback_start) = write_res.find("\n\n[Compiler") {
+        msg.push_str(&write_res[feedback_start..]);
+    } else if let Some(feedback_start) = write_res.find("\n\n[Linter") {
+        msg.push_str(&write_res[feedback_start..]);
+    }
+    msg
+}
+
 /// Applies a search-and-replace block patch to a file with a 5-tier resilient matching pipeline.
 ///
 /// 5-Tier Resilient Hierarchy:
@@ -229,18 +269,19 @@ pub fn patch_file(
         if original.ends_with('\n') && !new_content.ends_with('\n') {
             new_content.push('\n');
         }
-        write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format!("Successfully patched {}", relative_path));
+        let write_res = write_file(workspace_root, relative_path, &new_content)?;
+        return Ok(format_patch_success("", relative_path, &write_res));
     }
 
     // 2. Tier 2: CRLF & Trailing Whitespace Normalization
     if let Some(new_content) =
         try_crlf_and_trailing_whitespace_replace(&original, search_block, replace_block)
     {
-        write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format!(
-            "Successfully patched {} (whitespace-normalized match)",
-            relative_path
+        let write_res = write_file(workspace_root, relative_path, &new_content)?;
+        return Ok(format_patch_success(
+            "whitespace-normalized match",
+            relative_path,
+            &write_res,
         ));
     }
 
@@ -248,10 +289,11 @@ pub fn patch_file(
     if let Some(new_content) =
         try_whitespace_normalized_replace(&original, search_block, replace_block)
     {
-        write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format!(
-            "Successfully patched {} (auto-reindented match)",
-            relative_path
+        let write_res = write_file(workspace_root, relative_path, &new_content)?;
+        return Ok(format_patch_success(
+            "auto-reindented match",
+            relative_path,
+            &write_res,
         ));
     }
 
@@ -259,19 +301,21 @@ pub fn patch_file(
     if let Some(new_content) =
         try_blank_line_relaxed_replace(&original, search_block, replace_block)
     {
-        write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format!(
-            "Successfully patched {} (blank-line relaxed match)",
-            relative_path
+        let write_res = write_file(workspace_root, relative_path, &new_content)?;
+        return Ok(format_patch_success(
+            "blank-line relaxed match",
+            relative_path,
+            &write_res,
         ));
     }
 
     // 5. Tier 5: High-Threshold Fuzzy Diff with Strict Uniqueness Gap & Auto-Re-Indentation
     if let Some(new_content) = try_fuzzy_replace(&original, search_block, replace_block) {
-        write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format!(
-            "Successfully patched {} (fuzzy matched with auto-reindentation)",
-            relative_path
+        let write_res = write_file(workspace_root, relative_path, &new_content)?;
+        return Ok(format_patch_success(
+            "fuzzy matched with auto-reindentation",
+            relative_path,
+            &write_res,
         ));
     }
 
