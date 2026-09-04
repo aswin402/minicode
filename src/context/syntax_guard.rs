@@ -74,6 +74,20 @@ impl SyntaxGuard {
         None
     }
 
+    /// Parses a file's content and returns syntax error details if any syntax error exists.
+    #[must_use]
+    pub fn check_syntax(path: &Path, content: &str) -> Option<SyntaxErrorDetail> {
+        let lang = Self::language_for_path(path)?;
+        let mut parser = Parser::new();
+        parser.set_language(&lang).ok()?;
+        let tree = parser.parse(content, None)?;
+        if tree.root_node().has_error() {
+            Self::find_first_error(tree.root_node(), content)
+        } else {
+            None
+        }
+    }
+
     /// Verifies whether the proposed candidate content introduces new syntax errors.
     ///
     /// - Returns `Ok(())` if:

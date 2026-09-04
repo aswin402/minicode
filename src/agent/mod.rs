@@ -16,6 +16,7 @@ pub mod stuck_detector;
 pub mod subagent;
 pub mod task_dag;
 pub mod types;
+pub mod verification_barrier;
 
 #[allow(unused_imports)]
 pub use models::{ModelFetcher, ModelInfo};

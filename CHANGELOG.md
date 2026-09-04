@@ -5,6 +5,46 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-09-04
+
+### 4-Gate Pre-Completion Verification Barrier
+
+#### 💡 Ideas & Inspirations
+- **Preventing Premature Completion & Hallucinatory Success Claims**: A major failure mode in autonomous coding agents (highlighted repeatedly in SWE-bench evaluations) is the "rationalization of premature victory". Models frequently announce that an edit or task is complete when in reality the code still has syntax errors, broken builds, failing tests, leftover debugging `println!` calls, or even merge conflict markers.
+- **4-Gate Verification Guard**: By intercepting turn completion claims when files have been modified, minicode enforces an automated 4-Gate Barrier:
+  1. **Gate 1 (AST Syntax & Compiler Integrity):** Verifies that all modified files parse into clean ASTs (Rust, Python, JavaScript, TypeScript) and compile cleanly without errors.
+  2. **Gate 2 (Reproducer & Targeted Test Execution):** If a reproducer script or test target was modified or added, automatically executes the single target test with resource constraints (`-j 3`) and verifies a clean exit code (0).
+  3. **Gate 3 (Structural Integrity & Merge Conflicts):** Scans all modified files to ensure zero unresolved git merge conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+  4. **Gate 4 (Diff Sanity & Secret Leak Audit):** Inspects modified production code (`src/`) for forbidden raw stdout debug prints (`println!`, `eprintln!`, `console.log`, `debugger;`) and checks against accidental secret/credential leakage (`sk-`, `ghp_`, `AIzaSy`, private keys).
+- **Actionable Self-Correction Loop**: If any gate fails, completion is rejected, and a structured, prescriptive remediation prompt detailing the exact file, line number, and corrective action is returned to the model, guiding it to self-correct in its next action.
+
+#### 📚 References & Sources
+- **SWE-bench Verification Protocols & Agentless / SWE-agent (2024–2026)**: Enforcing automated verification before submitting agent pull requests.
+- **Anthropic Claude Code Quality Gates**: Pre-commit linting, syntax verification, and secret scanning before declaring subtasks completed.
+- **CodeR / Moatless Tools Bug Reproduction Loop**: Requiring reproducer test targets to pass cleanly before concluding turn.
+- **Rust Tree-sitter & rustc Error Extraction**: Deterministic in-memory syntax error location.
+
+#### 🚀 Features & Changes
+- **4-Gate Pre-Completion Verification Barrier** (`src/agent/verification_barrier.rs`):
+  - Added `VerificationBarrier` with 4 independent gate checkers:
+    - `check_gate1_syntax_compiler` (Tree-sitter AST syntax and scoped compiler diagnostics).
+    - `check_gate2_reproducer_test` (Scoped single-target test runner with timeout and exit code verification).
+    - `check_gate3_regression_conflicts` (Git merge conflict marker scanner).
+    - `check_gate4_diff_sanity` (Production debug statement checker and hardcoded secret scanner).
+  - Added `VerificationReport` and `format_remediation_prompt()` generating structured, actionable feedback.
+- **SyntaxGuard Enhancement** (`src/context/syntax_guard.rs`):
+  - Added `check_syntax(path, content) -> Option<SyntaxErrorDetail>` for direct in-memory AST syntax error querying.
+- **Agent Loop Integration** (`src/agent/loop.rs`):
+  - Wired `VerificationBarrier::verify` into `AgentLoop` when the model produces no tool calls following file mutations.
+  - Added bounded retry loop (`VERIFICATION_MAX_ATTEMPTS = 2`) to prompt the model for immediate self-correction.
+- **Constants** (`src/constants.rs`):
+  - Added `VERIFICATION_MAX_ATTEMPTS = 2`.
+  - Added `VERIFICATION_DEBUG_PATTERNS = &["println!", "eprintln!", "console.log(", "debugger;"]`.
+  - Added `VERIFICATION_CONFLICT_MARKERS = &["<<<<<<<", "=======", ">>>>>>>"]`.
+  - Added `VERIFICATION_TEST_TIMEOUT_MS = 5000`.
+- **Integration Test Suite** (`tests/integration_verification_barrier.rs`):
+  - 7 comprehensive integration tests covering syntax rejection, reproducer skipping, conflict marker rejection, production debug print rejection, test debug print permission, secret leak rejection, and end-to-end clean verification.
+
 ## [0.1.9] — 2026-09-04
 
 ### Dynamic Context Budgeting & Smart Donut Truncation

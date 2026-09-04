@@ -879,8 +879,41 @@ impl AgentLoop {
                     turn_tool_results.push(tool_result);
                 }
             } else {
-                // If files were modified and auto-healing is active, verify workspace compiles cleanly
+                // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===
                 if !turn_files_modified.is_empty()
+                    && heal_attempts < crate::constants::VERIFICATION_MAX_ATTEMPTS
+                {
+                    let report = crate::agent::verification_barrier::VerificationBarrier::verify(
+                        &self.workspace_root,
+                        &turn_files_modified,
+                    )
+                    .await;
+
+                    if !report.all_passed {
+                        heal_attempts += 1;
+                        let error_feedback = report.format_remediation_prompt();
+                        let error_feedback = crate::sandbox::redact::SecretRedactor::global()
+                            .redact(&error_feedback);
+                        tracing::warn!(
+                            "Pre-completion verification barrier rejected completion, attempt #{}/{}",
+                            heal_attempts,
+                            crate::constants::VERIFICATION_MAX_ATTEMPTS
+                        );
+                        let status_event = AgentEvent::ToolResult {
+                            turn_id,
+                            tool_id: format!("verification_barrier_{}", heal_attempts),
+                            tool: "verification_barrier".to_string(),
+                            success: false,
+                            output: error_feedback.clone(),
+                            duration_ms: 50,
+                        };
+                        let _ = event_sender.send(status_event);
+
+                        self.messages.push(Message::assistant(iteration_text));
+                        self.messages.push(Message::user(error_feedback));
+                        continue;
+                    }
+                } else if !turn_files_modified.is_empty()
                     && self.config.agent.auto_heal
                     && heal_attempts < 2
                 {
