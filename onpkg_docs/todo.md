@@ -1488,4 +1488,37 @@
 - [x] 84.6: Create integration test suite (`tests/integration_tri_zone_prompts.rs`) verifying prompt immutability and recency formatting
 - [x] 84.7: Version bump → `v0.1.5`, changelog with ideas/sources, run localupdate.sh (-j 3), commit, tag, push
 
+### Phase 85: Resilient 5-Tier Edit Pipeline & Nearest-Match Diagnostics (v0.1.6)
+- [x] 85.1: Implement Tier 1 exact match with duplicate occurrence line reporting in `src/tools/fs.rs`
+- [x] 85.2: Implement Tier 2 CRLF and trailing whitespace normalization
+- [x] 85.3: Implement Tier 3 whitespace/indentation-insensitive match with automatic base indentation alignment (`align_indentation` & `detect_leading_indent`)
+- [x] 85.4: Implement Tier 4 blank-line relaxed match ignoring empty line differences
+- [x] 85.5: Implement Tier 5 character-level Myers fuzzy diff with strict `FUZZY_MATCH_THRESHOLD` (0.85) and `FUZZY_UNIQUENESS_GAP` (0.12)
+- [x] 85.6: Implement 4-part actionable "What-Where-Why-Next" diagnostic (`find_nearest_match`, `NearestMatchDiagnostic`, prescriptive `read_file` command)
+- [x] 85.7: Add comprehensive unit tests in `src/tools/fs.rs` and integration test suite `tests/integration_resilient_patch.rs`
+- [x] 85.8: Version bump → `v0.1.6`, changelog with ideas/sources, run localupdate.sh (-j 3), commit, tag, push
+
+### Phase 86: In-Memory Tree-Sitter AST & Scoped Compiler Injection (v0.1.7)
+- [ ] 86.1: Add lightweight in-memory Tree-Sitter syntax verification hook before committing disk writes
+- [ ] 86.2: Implement auto-compiler diagnostic injection (`cargo check`, `tsc --noEmit`, `py_compile`) appended to edit tool result
+- [ ] 86.3: Integration tests for syntax barrier and diagnostic feedback loop
+- [ ] 86.4: Version bump → `v0.1.7`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+
+### Phase 87: Algorithmic Stuck Detector & Loop Breaker (v0.1.8)
+- [ ] 87.1: Implement tool call fingerprinting (hash of tool name + normalized arguments)
+- [ ] 87.2: Detect consecutive duplicate calls and ping-pong state oscillation (A -> B -> A -> B)
+- [ ] 87.3: Inject prescriptive circuit-breaker intervention prompting the model to change strategy
+- [ ] 87.4: Version bump → `v0.1.8`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+
+### Phase 88: Dynamic Context Budgeting & Smart Donut Truncation (v0.1.9)
+- [ ] 88.1: Track cumulative turn tokens against model context window limit
+- [ ] 88.2: Implement "smart donut" truncation (keep first 100 lines + last 200 lines + error lines for large tool outputs)
+- [ ] 88.3: Expose context budget bar in prompt recency context
+- [ ] 88.4: Version bump → `v0.1.9`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+
+### Phase 89: 4-Gate Pre-Completion Verification Barrier (v0.2.0)
+- [ ] 89.1: Intercept completion claims and verify 4 gates (modified files exist, tests pass, git diff clean/expected, compiler checks pass)
+- [ ] 89.2: Provide self-correction prompt if any verification gate fails
+- [ ] 89.3: Version bump → `v0.2.0`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+
 

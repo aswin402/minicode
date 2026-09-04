@@ -131,6 +131,8 @@ pub const ASCII_WORDMARK_LINES: &[&str] = &[
 // === Tools Configuration ===
 /// Similarity threshold for sliding-window fuzzy file patching
 pub const FUZZY_MATCH_THRESHOLD: f64 = 0.85;
+/// Minimum gap between best and second-best fuzzy match to prevent ambiguous edits
+pub const FUZZY_UNIQUENESS_GAP: f64 = 0.12;
 /// Maximum search results returned by grep tool
 pub const MAX_SEARCH_RESULTS: usize = 50;
 /// Maximum allowed length in characters for regular expression search queries

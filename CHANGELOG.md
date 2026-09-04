@@ -5,6 +5,38 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] — 2026-09-04
+
+### Resilient 5-Tier Edit Pipeline & Nearest-Match Diagnostics
+
+#### 💡 Ideas & Inspirations
+- **Resilient Multi-Tier Patch Fallbacks**: Frontier coding models frequently produce file edits that diverge by trivial formatting artifacts (Windows CRLF vs Unix LF, trailing spaces, altered indentation levels, or missing blank lines). Rather than failing outright and burning tokens on blind retries, a multi-tier fallback pipeline systematically relaxes superficial differences while strictly guaranteeing that only 100% unique targets are patched.
+- **Automatic Base Indentation Alignment**: When an LLM generates a replacement block with zero leading indentation or a 4-space base for code that lives nested inside a 12-space method, naive substitution damages code structure. `align_indentation` detects the file's target indentation and the search block's base indentation, preserving the patch's internal relative indentation while seamlessly aligning with the file.
+- **Strict Uniqueness Gap in Fuzzy Patching**: Unconstrained fuzzy matching risks matching wrong methods or duplicate signatures. Requiring both high similarity (`>= 0.85`) and a minimum uniqueness gap (`best - second_best >= 0.12`) prevents silent code corruption.
+- **Actionable 4-Part "What-Where-Why-Next" Diagnostics**: Rather than returning opaque "Patch failed: search block not found" errors that trigger repetitive LLM retry loops, the nearest-match diagnostic identifies the closest candidate line window using Myers character-level diffing, reports disk line numbers, displays expected vs actual content, and recommends a prescriptive `read_file` command.
+
+#### 📚 References & Sources
+- **Aider File Editing Benchmark & Multi-Tier Matcher (Paul Gauthier, 2024–2026)**: Search/replace block matching resilience, whitespace normalization, and fuzzy fallback thresholds.
+- **Cursor Edit Engine Architecture**: Structural indentation alignment and nearest-match context recovery.
+- **SWE-bench / SWE-agent Error Feedback Lessons (Yang et al., 2024)**: Mitigating LLM retry loops via actionable error diagnostics with concrete tool commands.
+- **similar (Rust Crates)**: Character-level Myers diff similarity calculation.
+
+#### 🚀 Features & Changes
+- **5-Tier Resilient File Patch Pipeline** (`src/tools/fs.rs`):
+  - **Tier 1 (Exact Match, 0ms)**: Direct substring matching with exact duplicate line reporting (`"matches multiple (N times) locations at lines: [...]"`).
+  - **Tier 2 (CRLF & Trailing Whitespace Normalization)**: Transparently reconciles `\r\n` line endings and per-line trailing whitespace differences.
+  - **Tier 3 (Whitespace & Indentation-Insensitive Match with Auto-Re-Indentation)**: Line-by-line trimmed matching combined with `align_indentation` and `detect_leading_indent`, preserving relative child indentation.
+  - **Tier 4 (Blank-Line Relaxed Match with Auto-Re-Indentation)**: Windowed non-empty line matching ignoring interleaved empty lines.
+  - **Tier 5 (Sliding-Window Character-Level Fuzzy Diff)**: Character-level similarity evaluation via `similar::TextDiff::from_chars` with `FUZZY_MATCH_THRESHOLD` (0.85) and `FUZZY_UNIQUENESS_GAP` (0.12).
+- **Nearest-Match 4-Part Diagnostic** (`src/tools/fs.rs`):
+  - Added `find_nearest_match()` and `NearestMatchDiagnostic` returning start line, end line, percentage similarity, and disk snippet.
+  - Formatted failure feedback with clear section tags: `[Where] Nearest match found at lines X-Y`, `[Expected Search Block]`, and `[Suggested Next Action]` providing a ready-to-call `read_file(path: "...", start_line: ..., end_line: ...)` command.
+- **Constants Configuration** (`src/constants.rs`):
+  - Added `pub const FUZZY_UNIQUENESS_GAP: f64 = 0.12;`.
+- **Test Suite**:
+  - Added 5 unit tests in `src/tools/fs.rs`: ambiguous match reporting, indentation auto-alignment, CRLF normalization, blank-line relaxation, and nearest-match diagnostics.
+  - Added comprehensive integration test suite `tests/integration_resilient_patch.rs` (6 test scenarios covering all 5 tiers and diagnostic reporting).
+
 ## [0.1.5] — 2026-09-04
 
 ### Cache-Friendly Tri-Zone Prompts & Tail Recency Context Injection
