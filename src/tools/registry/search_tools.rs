@@ -163,6 +163,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["file_path"]
             }),
         },
+        ToolSchema {
+            name: "locate_fault".to_string(),
+            description: "3-Tier Hierarchical Fault Localization: Fuses lexical BM25, semantic vectors, and CodeGraph PageRank to pinpoint suspicious files, AST symbol definitions, caller blast radius, and 1-indexed editable code envelopes in 1 turn.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Bug description, error trace, panic message, or feature requirements to localize"
+                    },
+                    "max_files": {
+                        "type": "integer",
+                        "description": "Maximum candidate files to inspect (default: 3, max: 5)"
+                    },
+                    "include_callers": {
+                        "type": "boolean",
+                        "description": "Whether to query CodeGraph for caller symbols and related regression tests (default: true)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -404,6 +426,21 @@ pub fn dispatch(
                 file_path,
                 new_content,
             )?;
+
+            Ok(report.format_markdown())
+        })()),
+        "locate_fault" => Some((|| {
+            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "locate_fault".to_string(),
+                    reason: "Missing required argument 'query'".to_string(),
+                }
+            })?;
+            let max_files = parse_u64_param(args.get("max_files")).map(|v| v as usize);
+            let include_callers = args.get("include_callers").and_then(|v| v.as_bool());
+
+            let localizer = crate::context::fault_localizer::FaultLocalizer::new(workspace_root);
+            let report = localizer.localize(query, max_files, include_callers)?;
 
             Ok(report.format_markdown())
         })()),

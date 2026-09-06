@@ -14,6 +14,7 @@ pub mod doc_synthesizer;
 pub mod donut;
 pub mod episodic;
 pub mod explorer;
+pub mod fault_localizer;
 pub mod governance;
 pub mod graph;
 pub mod graph_store;
@@ -40,3 +41,8 @@ pub mod test_gap;
 pub mod walker;
 pub mod wiki;
 pub mod working_memory;
+
+#[allow(unused_imports)]
+pub use fault_localizer::{
+    FaultLocalizationReport, FaultLocalizer, LocalizedFileHit, LocalizedSymbol,
+};

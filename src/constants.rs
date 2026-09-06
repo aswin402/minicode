@@ -634,7 +634,19 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 115;
+pub const TOTAL_TOOL_COUNT: usize = 116;
+
+// === Hierarchical Fault Localization (Phase 92) ===
+/// Default candidate files to evaluate in hierarchical fault localization
+pub const DEFAULT_FAULT_LOCALIZE_MAX_FILES: usize = 3;
+/// Maximum candidate files to evaluate in hierarchical fault localization
+pub const MAX_FAULT_LOCALIZE_FILES: usize = 5;
+/// Maximum suspicious symbols localized per candidate file
+pub const FAULT_LOCALIZE_MAX_SYMBOLS_PER_FILE: usize = 3;
+/// Maximum lines to extract for code envelope slices
+pub const FAULT_LOCALIZE_MAX_SLICE_LINES: usize = 30;
+/// Line margin above and below symbol definition for envelope context
+pub const FAULT_LOCALIZE_ENVELOPE_MARGIN: usize = 2;
 
 /// Milliseconds per animation frame for TUI thinking spinner
 pub const SPINNER_FRAME_MS: u64 = 80;
