@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** v0.0.9 Release & Reliability Engine Hardening | **Status:** ✅ Completed (56 Tests Passing, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 93 (v0.2.4) Extended Thinking Support | **Status:** ✅ Completed (116 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1520,5 +1520,35 @@
 - [x] 89.1: Intercept completion claims and verify 4 gates (modified files exist, tests pass, git diff clean/expected, compiler checks pass)
 - [x] 89.2: Provide self-correction prompt if any verification gate fails
 - [x] 89.3: Version bump → `v0.2.0`, changelog with ideas/sources, localupdate.sh (-j 3), commit, tag, push
+
+### Phase 90: Automated TDD Bug Reproducer Synthesizer & Red-Green Regression Guard (v0.2.1)
+- [x] 90.1: Implement ReproducerGuard engine (`src/agent/reproducer_guard.rs`) with synthesis, execution, and state persistence
+- [x] 90.2: Enforce Red Phase proof: standalone reproducer tests must fail on unpatched code to prevent vacuous fixes
+- [x] 90.3: Register agent tools: `synthesize_reproducer`, `verify_reproducer`, `list_reproducers`
+- [x] 90.4: Integrate with Gate 2 of Verification Barrier to prevent premature completion when red reproducers remain unverified
+- [x] 90.5: Integration tests (`tests/integration_reproducer_guard.rs`) and release bump → `v0.2.1`
+
+### Phase 91: Subagent Swarm Worktree Isolation & Async Fan-Out (v0.2.2)
+- [x] 91.1: Implement SubagentTaskSpec and async swarm fan-out orchestrator (`fanout_tasks`) using Tokio green threads
+- [x] 91.2: Add Git worktree filesystem isolation (`.minicode/worktrees/<id>`) on dedicated tracking branches (`subagent/<id>`)
+- [x] 91.3: Synchronize condensed subagent findings into `SharedScratchpad` and format markdown comparison matrix
+- [x] 91.4: Add tools `fanout_subagents` and `merge_subagent_worktree`, and enhance `invoke_subagent` with `isolate_worktree`
+- [x] 91.5: Integration tests (`tests/integration_subagent_swarm.rs`) and release bump → `v0.2.2`
+
+### Phase 92: 3-Tier Hierarchical Fault Localization Engine (v0.2.3)
+- [x] 92.1: Implement Tier 1 multi-modal file ranking fusing BM25, semantic 3-gram embeddings, and PageRank hub score
+- [x] 92.2: Implement Tier 2 AST symbol relevance scoring with query overlap and caller/test blast radius via `CodeGraph`
+- [x] 92.3: Implement Tier 3 surgical 1-indexed code envelope slicing with configurable context margins
+- [x] 92.4: Register `locate_fault` tool and integrate into Search & Inspection registry
+- [x] 92.5: Integration tests (`tests/integration_fault_localizer.rs`) and release bump → `v0.2.3`
+
+### Phase 93: Extended Thinking Support for Anthropic Claude 3.7 Sonnet & Reasoning Models (v0.2.4)
+- [x] 93.1: Implement first-class pure-Rust async `AnthropicProvider` with streaming SSE message parsing and budget clamping
+- [x] 93.2: Add `thinking_budget` and `reasoning_effort` options to `CompletionOptions`, `ProviderConfig`, and provider factories
+- [x] 93.3: Support OpenAI reasoning models (`o1`, `o3-mini`, `o3`), OpenRouter thinking blocks, DeepSeek R1, and Gemini thinkingConfig
+- [x] 93.4: Add `/thinking` palette command, slash command, and TUI modal selector with presets (off, 4k, 8k, 16k, 32k, 64k)
+- [x] 93.5: Dynamic model fetching for Anthropic models (`fetch_anthropic_models`)
+- [x] 93.6: Integration tests (`tests/integration_thinking_provider.rs`) and release bump → `v0.2.4`
+
 
 
