@@ -22,7 +22,7 @@ pub mod verification_barrier;
 #[allow(unused_imports)]
 pub use models::{ModelFetcher, ModelInfo};
 #[allow(unused_imports)]
-pub use orchestrator::MultiAgentOrchestrator;
+pub use orchestrator::{FanoutWorkerOutcome, MultiAgentOrchestrator};
 #[allow(unused_imports)]
 pub use provider::*;
 pub use r#loop::AgentLoop;

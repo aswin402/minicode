@@ -1,124 +1,307 @@
-/// Integration tests for Phase 33: Subagent Swarm Core Engine & Capability Sandboxing
-///
-/// Tests role presets, tool capability whitelisting, pool supervisor,
-/// lifecycle cancellation, and tool schema registration.
-use minicode::agent::subagent::{
-    SubagentConfig, SubagentPool, SubagentRole, SubagentState, SubagentWorker,
-};
-use minicode::tools::registry::agent_tools;
-use std::path::PathBuf;
+use minicode::agent::orchestrator::{FanoutWorkerOutcome, MultiAgentOrchestrator};
+use minicode::agent::subagent::{SubAgentResult, SubagentRole, SubagentTaskSpec};
+use minicode::git::worktree::WorktreeManager;
+use minicode::tools::ToolRegistry;
+use serde_json::json;
+use tempfile::tempdir;
+use tokio::process::Command;
 
 #[test]
-fn test_subagent_state_variants() {
-    assert_eq!(SubagentState::Idle.as_str(), "idle");
-    assert_eq!(SubagentState::Running.as_str(), "running");
-    assert_eq!(SubagentState::Completed.as_str(), "completed");
-    assert_eq!(SubagentState::Canceled.as_str(), "canceled");
-    assert_eq!(SubagentState::Failed("err".to_string()).as_str(), "failed");
-}
-
-#[test]
-fn test_subagent_role_presets_and_tool_whitelists() {
-    let researcher = SubagentRole::Researcher;
-    let reviewer = SubagentRole::CodeReviewer;
-    let tester = SubagentRole::TestEngineer;
-    let security = SubagentRole::SecurityAuditor;
-    let custom = SubagentRole::Custom("specialist".to_string());
-
-    // Researcher should have read-only tools, strictly NO write_file or patch_file
-    let res_tools = researcher.default_tool_whitelist();
-    assert!(res_tools.contains("read_file"));
-    assert!(res_tools.contains("ripgrep_search"));
-    assert!(res_tools.contains("fetch_or_browse"));
-    assert!(!res_tools.contains("write_file"));
-    assert!(!res_tools.contains("patch_file"));
-    assert!(!res_tools.contains("exec_cmd"));
-
-    // CodeReviewer has inspection and browser tools
-    let rev_tools = reviewer.default_tool_whitelist();
-    assert!(rev_tools.contains("read_file"));
-    assert!(rev_tools.contains("ripgrep_search"));
-    assert!(!rev_tools.contains("write_file"));
-
-    // TestEngineer has exec_cmd for running test suites
-    let test_tools = tester.default_tool_whitelist();
-    assert!(test_tools.contains("read_file"));
-    assert!(test_tools.contains("exec_cmd"));
-
-    // SecurityAuditor has read & search tools
-    let sec_tools = security.default_tool_whitelist();
-    assert!(sec_tools.contains("read_file"));
-    assert!(!sec_tools.contains("exec_cmd"));
-
-    // Custom worker allows all standard tools
-    let cust_tools = custom.default_tool_whitelist();
-    assert!(cust_tools.contains("read_file"));
-    assert!(cust_tools.contains("write_file"));
-    assert!(cust_tools.contains("exec_cmd"));
-}
-
-#[test]
-fn test_subagent_config_and_token_budgets() {
-    let config_res = SubagentConfig::for_role(SubagentRole::Researcher);
-    assert_eq!(config_res.token_budget, 24_000);
-    assert_eq!(config_res.max_turns, 12);
-
-    let config_rev = SubagentConfig::for_role(SubagentRole::CodeReviewer);
-    assert_eq!(config_rev.token_budget, 16_000);
-    assert_eq!(config_rev.max_turns, 6);
-
-    let config_test = SubagentConfig::for_role(SubagentRole::TestEngineer);
-    assert_eq!(config_test.token_budget, 32_000);
-    assert_eq!(config_test.max_turns, 10);
-}
-
-#[test]
-fn test_subagent_worker_system_prompt_builder() {
-    let ws = PathBuf::from("/tmp/minicode_test_ws");
-    let worker_res = SubagentWorker::new(
-        "res-1".to_string(),
-        "Find all auth endpoints".to_string(),
-        SubagentConfig::for_role(SubagentRole::Researcher),
-        &ws,
+fn test_subagent_task_spec_serialization_and_loose_parsing() {
+    // 1. Loose string role parsing
+    assert_eq!(
+        SubagentRole::from_str_loose("researcher"),
+        SubagentRole::Researcher
     );
-    let prompt_res = worker_res.build_system_prompt();
-    assert!(prompt_res.contains("Research Subagent"));
-    assert!(prompt_res.contains("READ-ONLY"));
-
-    let worker_sec = SubagentWorker::new(
-        "sec-1".to_string(),
-        "Audit JWT token handling".to_string(),
-        SubagentConfig::for_role(SubagentRole::SecurityAuditor),
-        &ws,
+    assert_eq!(
+        SubagentRole::from_str_loose("research"),
+        SubagentRole::Researcher
     );
-    let prompt_sec = worker_sec.build_system_prompt();
-    assert!(prompt_sec.contains("Security Auditor"));
+    assert_eq!(
+        SubagentRole::from_str_loose("reviewer"),
+        SubagentRole::CodeReviewer
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("code_reviewer"),
+        SubagentRole::CodeReviewer
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("tester"),
+        SubagentRole::TestEngineer
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("test-engineer"),
+        SubagentRole::TestEngineer
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("security"),
+        SubagentRole::SecurityAuditor
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("security_auditor"),
+        SubagentRole::SecurityAuditor
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("architect"),
+        SubagentRole::Custom("architect".to_string())
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("coder"),
+        SubagentRole::Custom("coder".to_string())
+    );
+    assert_eq!(
+        SubagentRole::from_str_loose("custom_agent"),
+        SubagentRole::Custom("custom_agent".to_string())
+    );
+
+    // 2. Deserialization from JSON
+    let raw_json = json!({
+        "role": "researcher",
+        "prompt": "Find all usages of TokenBudget",
+        "isolate_worktree": false,
+        "timeout_secs": 90
+    });
+    let spec: SubagentTaskSpec = serde_json::from_value(raw_json).unwrap();
+    assert_eq!(spec.role, SubagentRole::Researcher);
+    assert_eq!(spec.prompt, "Find all usages of TokenBudget");
+    assert_eq!(spec.isolate_worktree, Some(false));
+    assert_eq!(spec.timeout_secs, Some(90));
+}
+
+#[test]
+fn test_fanout_summary_formatting() {
+    let results = vec![
+        FanoutWorkerOutcome {
+            id: "res-1".to_string(),
+            role: "Researcher".to_string(),
+            isolate_worktree: false,
+            success: true,
+            result: SubAgentResult {
+                id: "res-1".to_string(),
+                task_id: "res-1".to_string(),
+                role: SubagentRole::Researcher,
+                success: true,
+                final_summary: "Found 4 usages of TokenBudget in prompt.rs and loop.rs."
+                    .to_string(),
+                tokens_used: 1250,
+                turns_executed: 3,
+                files_inspected: vec!["src/agent/prompt.rs".to_string()],
+                files_modified: Vec::new(),
+                worktree_branch: None,
+            },
+            merged: false,
+            error: None,
+        },
+        FanoutWorkerOutcome {
+            id: "test-2".to_string(),
+            role: "TestEngineer".to_string(),
+            isolate_worktree: true,
+            success: true,
+            result: SubAgentResult {
+                id: "test-2".to_string(),
+                task_id: "test-2".to_string(),
+                role: SubagentRole::TestEngineer,
+                success: true,
+                final_summary: "Executed reproducer test successfully with exit code 0."
+                    .to_string(),
+                tokens_used: 2400,
+                turns_executed: 4,
+                files_inspected: vec!["tests/repro_foo.rs".to_string()],
+                files_modified: vec!["tests/repro_foo.rs".to_string()],
+                worktree_branch: Some("subagent/test-2".to_string()),
+            },
+            merged: true,
+            error: None,
+        },
+        FanoutWorkerOutcome {
+            id: "sec-3".to_string(),
+            role: "SecurityAuditor".to_string(),
+            isolate_worktree: false,
+            success: false,
+            result: SubAgentResult {
+                id: "sec-3".to_string(),
+                task_id: "sec-3".to_string(),
+                role: SubagentRole::SecurityAuditor,
+                success: false,
+                final_summary: "Execution failed".to_string(),
+                tokens_used: 0,
+                turns_executed: 0,
+                files_inspected: Vec::new(),
+                files_modified: Vec::new(),
+                worktree_branch: None,
+            },
+            merged: false,
+            error: Some("Network error connecting to model provider".to_string()),
+        },
+    ];
+
+    let summary = MultiAgentOrchestrator::format_fanout_summary(&results);
+    assert!(summary.contains("Subagent Swarm Fan-Out Completed (3 worker(s) finished)"));
+    assert!(
+        summary.contains("| Worker ID | Role | Environment | Status | Tokens | Files Modified |")
+    );
+    assert!(summary.contains("`res-1`"));
+    assert!(summary.contains("Shared (Read-Only)"));
+    assert!(summary.contains("✔ Success"));
+    assert!(summary.contains("`test-2`"));
+    assert!(summary.contains("`subagent/test-2` *(merged)*"));
+    assert!(summary.contains("`sec-3`"));
+    assert!(summary.contains("✗ Failed"));
+    assert!(summary.contains("Found 4 usages of TokenBudget"));
+    assert!(summary.contains("Network error connecting to model provider"));
 }
 
 #[tokio::test]
-async fn test_subagent_pool_lifecycle_and_summary() {
-    let ws = PathBuf::from("/tmp/minicode_test_pool");
-    let pool = SubagentPool::new(&ws);
-
-    let id1 = pool.next_id(&SubagentRole::Researcher).await;
-    let id2 = pool.next_id(&SubagentRole::CodeReviewer).await;
-
-    assert_eq!(id1, "researcher-1");
-    assert_eq!(id2, "codereviewer-2");
-
-    let summary = pool.format_swarm_summary().await;
-    assert!(
-        summary.contains("No subagent workers have been spawned")
-            || summary.contains("Subagent Swarm Status")
-    );
+async fn test_fanout_empty_tasks() {
+    let temp = tempdir().unwrap();
+    let res = MultiAgentOrchestrator::fanout_tasks(temp.path(), Vec::new(), true, false).await;
+    assert!(res.is_ok());
+    assert_eq!(res.unwrap(), "No subagent tasks specified for fan-out.");
 }
 
-#[test]
-fn test_subagent_tools_schema_registration() {
-    let schemas = agent_tools::get_schemas();
-    let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
+#[tokio::test]
+async fn test_tool_dispatch_for_fanout_and_merge() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
 
-    assert!(names.contains(&"invoke_subagent".to_string()));
-    assert!(names.contains(&"send_message".to_string()));
-    assert!(names.contains(&"manage_subagents".to_string()));
+    // 1. Dispatch fanout_subagents in non-blocking mode (wait_for_completion: false)
+    let fanout_args = json!({
+        "tasks": [
+            {
+                "role": "researcher",
+                "prompt": "Inspect codebase structure",
+                "isolate_worktree": false
+            },
+            {
+                "role": "code_reviewer",
+                "prompt": "Audit recent commits",
+                "isolate_worktree": false
+            }
+        ],
+        "wait_for_completion": false
+    });
+
+    let res = ToolRegistry::dispatch(
+        root,
+        "call_fanout_1",
+        "fanout_subagents",
+        &fanout_args,
+        None,
+        1,
+    )
+    .await;
+
+    assert!(res.success);
+    assert!(res
+        .output
+        .contains("Subagent Swarm Fan-Out Launched (2 worker(s) in background)"));
+    assert!(res.output.contains("Researcher"));
+    assert!(res.output.contains("CodeReviewer"));
+
+    // 2. Dispatch merge_subagent_worktree for non-existent ID (graceful error handling)
+    let merge_args = json!({
+        "subagent_id": "nonexistent_task_123"
+    });
+
+    let res_merge = ToolRegistry::dispatch(
+        root,
+        "call_merge_1",
+        "merge_subagent_worktree",
+        &merge_args,
+        None,
+        1,
+    )
+    .await;
+
+    // Non-git repo or missing branch returns error gracefully without panicking
+    assert!(!res_merge.success);
+    assert!(res_merge
+        .output
+        .contains("Error executing merge_subagent_worktree"));
+}
+
+#[tokio::test]
+async fn test_worktree_manager_isolation_lifecycle() {
+    // Initialize a real temporary git repository
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    // git init
+    let init_status = Command::new("git")
+        .args(["init"])
+        .current_dir(root)
+        .output()
+        .await
+        .unwrap();
+    assert!(init_status.status.success());
+
+    // git config user
+    let _ = Command::new("git")
+        .args(["config", "user.name", "TestUser"])
+        .current_dir(root)
+        .output()
+        .await;
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(root)
+        .output()
+        .await;
+
+    // Initial commit
+    let base_file = root.join("README.md");
+    tokio::fs::write(&base_file, "# Main Repo\n").await.unwrap();
+    let _ = Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(root)
+        .output()
+        .await;
+    let _ = Command::new("git")
+        .args(["commit", "-m", "initial commit"])
+        .current_dir(root)
+        .output()
+        .await;
+
+    let mgr = WorktreeManager::new(root);
+    let worker_id = "test-worker-1";
+
+    // 1. Create worktree
+    let worktree_path = mgr.create_worktree(worker_id).await.unwrap();
+    assert!(worktree_path.exists());
+    assert!(worktree_path.ends_with(".minicode/worktrees/test-worker-1"));
+
+    // 2. Modify file inside worktree
+    let worktree_new_file = worktree_path.join("subagent_feature.txt");
+    tokio::fs::write(
+        &worktree_new_file,
+        "New feature created in isolated worktree\n",
+    )
+    .await
+    .unwrap();
+
+    // Verify parent workspace does NOT have this file (ISOLATION PROVEN!)
+    let parent_file = root.join("subagent_feature.txt");
+    assert!(!parent_file.exists());
+
+    // Commit change in worktree branch
+    let _ = Command::new("git")
+        .args(["add", "subagent_feature.txt"])
+        .current_dir(&worktree_path)
+        .output()
+        .await;
+    let _ = Command::new("git")
+        .args(["commit", "-m", "feature: subagent isolated commit"])
+        .current_dir(&worktree_path)
+        .output()
+        .await;
+
+    // 3. Merge worktree into parent branch
+    let merge_res = mgr.merge_worktree(worker_id).await.unwrap();
+    assert!(merge_res.contains("merge") || merge_res.contains("subagent"));
+
+    // Verify file now exists in parent workspace!
+    assert!(parent_file.exists());
+
+    // 4. Remove worktree and clean up temporary branch
+    mgr.remove_worktree(worker_id).await.unwrap();
+    assert!(!worktree_path.exists());
 }

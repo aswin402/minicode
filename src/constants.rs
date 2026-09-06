@@ -634,7 +634,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 113;
+pub const TOTAL_TOOL_COUNT: usize = 115;
 
 /// Milliseconds per animation frame for TUI thinking spinner
 pub const SPINNER_FRAME_MS: u64 = 80;

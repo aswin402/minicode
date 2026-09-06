@@ -119,6 +119,18 @@ impl SubagentRole {
             SubagentRole::Custom(_) => "CustomWorker",
         }
     }
+
+    /// Flexible case-insensitive role parser
+    pub fn from_str_loose(s: &str) -> Self {
+        let normalized = s.trim().to_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "researcher" | "research" => Self::Researcher,
+            "code_reviewer" | "reviewer" | "code_review" => Self::CodeReviewer,
+            "test_engineer" | "tester" | "test" => Self::TestEngineer,
+            "security_auditor" | "security" | "auditor" => Self::SecurityAuditor,
+            other => Self::Custom(other.to_string()),
+        }
+    }
 }
 
 /// Lifecycle state of an active or finished subagent worker
@@ -219,4 +231,17 @@ pub struct SubagentResult {
     pub files_inspected: Vec<String>,
     pub files_modified: Vec<String>,
     pub worktree_branch: Option<String>,
+}
+
+/// Specification for dispatching a subagent in a concurrent swarm fan-out
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentTaskSpec {
+    pub role: SubagentRole,
+    pub prompt: String,
+    #[serde(default)]
+    pub isolate_worktree: Option<bool>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }

@@ -5,6 +5,44 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-09-06
+
+### Subagent Swarm Worktree Isolation & Async Fan-Out
+
+#### 💡 Ideas & Inspirations
+- **Preventing Multi-Agent State Collisions via Worktree Isolation**: When multiple subagents or parallel exploration tasks execute in a shared workspace, file modifications often collide, dirty the parent working tree, and cause Git index lock contention (`.git/index.lock`).
+- **Targeted Git Worktree Sandboxing**:
+  - Modifying subagents (e.g. `TestEngineer`, `SoftwareEngineer`) are isolated in dedicated git worktrees located at `.minicode/worktrees/<id>` operating on dedicated tracking branches (`subagent/<id>`). The parent workspace remains completely untouched and clean while workers run in parallel.
+  - Read-only subagents (`Researcher`, `CodeReviewer`, `SecurityAuditor`) default to shared read-only execution to minimize filesystem overhead when no file modifications are needed.
+- **Concurrent Subagent Swarm Fan-Out (`fanout_subagents`)**: Enables the primary agent to dispatch a batch of subagent tasks concurrently using Tokio async green threads (`tokio::spawn` + `futures::future::join_all`), supporting parallel exploration, multi-axis review, and concurrent reproducer verification.
+- **Context-Preserving Scratchpad Synchronization**: Instead of returning thousands of tokens of raw agent stream transcripts that flood the primary LLM context window, each worker's condensed findings and executive summaries are committed to `SharedScratchpad` under `subagent/<id>`. The orchestrator returns a concise markdown comparison matrix to the parent agent.
+- **Atomic Worktree Integration & Pruning (`merge_subagent_worktree`)**: Once an isolated subagent's changes are verified, the orchestrator merges `subagent/<id>` into the active branch and automatically prunes the worktree directory.
+
+#### 📚 References & Sources
+- **Git Worktree Architecture (`git-worktree(1)`)**: Multiple working trees attached to the same repository for concurrent checkout without index conflicts.
+- **OpenHands & SWE-bench Swarm Architectures (2024–2026)**: Multi-agent execution sandboxes with container / worktree filesystem isolation.
+- **Claude Code & Devin 2.0 Subagent Delegation**: Subagent fan-out for parallel exploration, testing, and independent branch verification.
+- **Cursor Agent Parallel Composer & Scratchpad Model**: Concurrent workers communicating through shared scratchpad state rather than bloated conversation transcripts.
+
+#### 🚀 Features & Changes
+- **Subagent Task Specification** (`src/agent/subagent/types.rs`):
+  - Added `SubagentTaskSpec` struct with `role`, `prompt`, `isolate_worktree`, `model`, and `timeout_secs`.
+  - Added flexible case-insensitive and hyphen-normalized `SubagentRole::from_str_loose` parsing.
+- **Multi-Agent Swarm Orchestrator** (`src/agent/orchestrator.rs`):
+  - Implemented `MultiAgentOrchestrator::fanout_tasks` with concurrent `tokio::spawn` and `futures::future::join_all`.
+  - Implemented `FanoutWorkerOutcome` and `MultiAgentOrchestrator::format_fanout_summary` rendering rich markdown tables with Worker ID, Role, Environment, Status, Tokens, and Files Modified.
+  - Implemented `MultiAgentOrchestrator::merge_worktree` leveraging `WorktreeManager` to merge `subagent/<id>` branches and prune worktree directories cleanly.
+  - Automated sync of subagent findings to `SharedScratchpad` at `subagent/<id>`.
+- **Agent Tool Registry Enhancements** (`src/tools/registry/agent_tools.rs`):
+  - Added `fanout_subagents`: Concurrent subagent swarm dispatch accepting a list of task specs, `wait_for_completion`, and `auto_merge`.
+  - Added `merge_subagent_worktree`: On-demand integration of subagent worktree branches with detailed git merge summaries.
+  - Enhanced `invoke_subagent`: Added `isolate_worktree` boolean parameter with role-based intelligent default (worktree isolation enabled for modifying tasks, disabled for read-only roles).
+- **Constants & Tool Registry** (`src/constants.rs`):
+  - Bumped `TOTAL_TOOL_COUNT` from 113 to 115.
+  - Validated with `constants::tool_count_validation::total_tool_count_matches_registry`.
+- **Integration Test Suite** (`tests/integration_subagent_swarm.rs`):
+  - 5 comprehensive tests verifying task spec serialization, loose role parsing, markdown matrix summary formatting, empty task validation, tool registry dispatch, and real Git worktree filesystem isolation and merge lifecycle.
+
 ## [0.2.1] — 2026-09-04
 
 ### Automated TDD Bug Reproducer Synthesizer & Red-Green Regression Guard

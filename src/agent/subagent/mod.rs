@@ -9,7 +9,9 @@ pub use pool::SubagentPool;
 pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
 pub use types::SubagentResult as SubAgentResult;
 #[allow(unused_imports)]
-pub use types::{SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState};
+pub use types::{
+    SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState, SubagentTaskSpec,
+};
 #[allow(unused_imports)]
 pub use worker::SubagentWorker;
 

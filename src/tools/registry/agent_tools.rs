@@ -330,6 +330,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "system_prompt": {
                         "type": "string",
                         "description": "Optional custom system prompt override"
+                    },
+                    "isolate_worktree": {
+                        "type": "boolean",
+                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for modifying roles (test_engineer, custom)."
                     }
                 },
                 "required": ["role", "prompt"]
@@ -506,6 +510,69 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             parameters: json!({
                 "type": "object",
                 "properties": {}
+            }),
+        },
+        ToolSchema {
+            name: "fanout_subagents".to_string(),
+            description: "Concurrently dispatch a batch of specialized subagent workers across isolated Git Worktrees or read-only threads. Returns a condensed matrix summary of findings and automatically updates SharedScratchpad.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "List of subagent task specifications to execute concurrently",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "role": {
+                                    "type": "string",
+                                    "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+                                    "description": "Worker role capability whitelist preset"
+                                },
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Detailed instructions for this worker"
+                                },
+                                "isolate_worktree": {
+                                    "type": "boolean",
+                                    "description": "Whether to run inside an isolated Git Worktree branch"
+                                },
+                                "model": {
+                                    "type": "string",
+                                    "description": "Optional model override"
+                                },
+                                "timeout_secs": {
+                                    "type": "integer",
+                                    "description": "Timeout in seconds (default: 120)"
+                                }
+                            },
+                            "required": ["role", "prompt"]
+                        }
+                    },
+                    "wait_for_completion": {
+                        "type": "boolean",
+                        "description": "If true (default), awaits all workers and returns executive summary. If false, launches workers in background and returns IDs immediately."
+                    },
+                    "auto_merge": {
+                        "type": "boolean",
+                        "description": "If true, automatically merges successful worktree modifications into current branch (default: false)"
+                    }
+                },
+                "required": ["tasks"]
+            }),
+        },
+        ToolSchema {
+            name: "merge_subagent_worktree".to_string(),
+            description: "Integrate a verified subagent worktree branch (subagent/<id>) into the current branch and clean up its temporary worktree directory.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "subagent_id": {
+                        "type": "string",
+                        "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'task-a1b2c3d4' or 'testengineer-2')"
+                    }
+                },
+                "required": ["subagent_id"]
             }),
         },
     ]
@@ -929,11 +996,21 @@ pub async fn dispatch(
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
             let id = pool.next_id(&role).await;
 
+            let isolate_worktree = args
+                .get("isolate_worktree")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(!matches!(
+                    role,
+                    crate::agent::subagent::SubagentRole::Researcher
+                        | crate::agent::subagent::SubagentRole::CodeReviewer
+                        | crate::agent::subagent::SubagentRole::SecurityAuditor
+                ));
+
             let res =
                 crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                     workspace_root,
                     prompt,
-                    false,
+                    isolate_worktree,
                     Some(120),
                     Some(config),
                 )
@@ -1190,6 +1267,65 @@ pub async fn dispatch(
                 workspace_root,
             );
             Ok(crate::agent::reproducer_guard::ReproducerGuard::format_reproducer_list(&records))
+        }.await),
+        "fanout_subagents" => Some(async {
+            let tasks_arr = args.get("tasks").and_then(|v| v.as_array()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "fanout_subagents".to_string(),
+                    reason: "Missing required array 'tasks'".to_string(),
+                }
+            })?;
+
+            let mut task_specs = Vec::new();
+            for (i, t) in tasks_arr.iter().enumerate() {
+                let role_str = t.get("role").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "fanout_subagents".to_string(),
+                        reason: format!("Task #{} missing required field 'role'", i + 1),
+                    }
+                })?;
+                let prompt = t.get("prompt").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "fanout_subagents".to_string(),
+                        reason: format!("Task #{} missing required field 'prompt'", i + 1),
+                    }
+                })?;
+                let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+                let isolate_worktree = t.get("isolate_worktree").and_then(|v| v.as_bool());
+                let model = t.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let timeout_secs = parse_u64_param(t.get("timeout_secs"));
+
+                task_specs.push(crate::agent::subagent::SubagentTaskSpec {
+                    role,
+                    prompt: prompt.to_string(),
+                    isolate_worktree,
+                    model,
+                    timeout_secs,
+                });
+            }
+
+            let wait_for_completion = args.get("wait_for_completion").and_then(|v| v.as_bool()).unwrap_or(true);
+            let auto_merge = args.get("auto_merge").and_then(|v| v.as_bool()).unwrap_or(false);
+
+            crate::agent::orchestrator::MultiAgentOrchestrator::fanout_tasks(
+                workspace_root,
+                task_specs,
+                wait_for_completion,
+                auto_merge,
+            ).await
+        }.await),
+        "merge_subagent_worktree" => Some(async {
+            let subagent_id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "merge_subagent_worktree".to_string(),
+                    reason: "Missing required argument 'subagent_id'".to_string(),
+                }
+            })?;
+
+            crate::agent::orchestrator::MultiAgentOrchestrator::merge_worktree(
+                workspace_root,
+                subagent_id,
+            ).await
         }.await),
         _ => None,
     }
