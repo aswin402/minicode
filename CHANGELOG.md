@@ -5,6 +5,47 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-09-07
+
+### Speculative Parallel Read-Only Tool Execution Pipeline (`/parallel`)
+
+#### 💡 Ideas & Inspirations
+- **Overcoming the Tool Execution Latency Bottleneck**: Modern frontier models (Claude 3.7 Sonnet, GPT-4o, Gemini 2.5 Flash) frequently emit multiple independent read-only tool calls in a single turn—for example, reading 4 different files, running regex search across several patterns, or querying symbol outlines. In traditional agent architectures, these tool calls are processed strictly sequentially. For a turn issuing 5 tool calls taking 200ms each, the agent wastes 1,000ms wall-clock time waiting on I/O.
+- **Speculative Streaming Overlap & Pre-Execution**: In streaming responses (SSE), the LLM emits tool calls incrementally as JSON chunks. Rather than idling until the model finishes generating its entire completion, minicode's speculative pipeline inspects each `ToolCallChunk` as soon as it arrives. If the tool is verified read-only and no preceding mutating tool has been encountered, the engine speculatively dispatches the tool call on a Tokio background task *concurrently with the LLM's remaining token generation*. When the LLM turn finishes, the tool results are already available or well underway, eliminating hundreds of milliseconds of turnaround latency.
+- **Strict Concurrency Safety & Mutating Barrier Invariants**: Concurrency in coding agents is only viable if mutations remain 100% safe and deterministic:
+  - **Read-Only Class (`ToolSafetyLevel::ReadOnly`)**: Pure inspection tools (`read_file`, `list_dir`, `grep_search`, `locate_symbol`, `diff_impact`, `blast_radius`, `git_diff`, `git_log`, `web_search`, `fetch_web_page`, etc.) are completely side-effect free and execute in parallel up to a bounded concurrency limit (`DEFAULT_MAX_PARALLEL_TOOLS = 4`, configurable up to 16).
+  - **Mutating Barrier Class (`ToolSafetyLevel::Mutating`)**: Filesystem writes, shell commands, and git commits (`write_file`, `patch_file`, `exec_cmd`, `git_commit`, etc.) act as strict sequential barriers. Any pending parallel reads must complete before a mutating tool begins, and subsequent reads cannot start until the mutation completes.
+  - **Control Barrier Class (`ToolSafetyLevel::ControlBarrier`)**: Meta-tools like `activate_tools` modify the agent's active schema set mid-turn. They halt speculative dispatch immediately, execute synchronously, and immediately reload available tools.
+  - **Deterministic Result Ordering**: While tools execute in parallel, results are assembled and returned to the model context in the exact index order emitted by the LLM, preserving reproducible conversation trajectories.
+  - **Cancellation Safety**: If the user cancels generation or a turn is interrupted, all in-flight speculative and parallel tasks are aborted cleanly via Tokio `JoinHandle::abort()`.
+
+#### 📚 References & Sources
+- **Anthropic Parallel Tool Use Architecture (Anthropic, 2024–2025)**: Multiple tool call generation in single assistant messages and client-side parallel resolution.
+- **Speculative Execution & Early I/O Dispatch in Streaming Agents (2025)**: Overlapping LLM generation latency with tool execution latency to drastically reduce Time-to-First-Feedback.
+- **Tokio Concurrency Patterns & Bounded Worker Semaphores**: Utilizing `tokio::sync::Semaphore` and structured concurrency to prevent filesystem descriptor exhaustion while guaranteeing deterministic ordering.
+- **Agent Safety Invariants & Memory Barriers in Multi-Step Workflows (SWE-bench Verified)**: Isolating mutating operations behind full memory barriers to eliminate TOCTOU and dirty-read race conditions.
+
+#### 🚀 Features & Changes
+- **Tool Safety Classifier** (`src/tools/concurrency.rs`):
+  - Created `ToolSafetyLevel` enum with `ReadOnly`, `Mutating`, and `ControlBarrier` classifications.
+  - Implemented exhaustive classification mapping for all 116 built-in minicode tools.
+  - Fail-safe default: unrecognized tools and external MCP tools default to `Mutating` barriers.
+- **Speculative Execution Engine & Stage Planner** (`src/agent/speculative.rs`):
+  - Created `ExecutionPlanner::plan` to partition arbitrary tool call batches into interleaved `Parallel` and `Sequential` stages bounded by barrier invariants.
+  - Created `SpeculativeExecutor` managing background Tokio worker tasks, in-flight handles, telemetry metrics, and cancellation.
+  - Overlapped streaming chunks via `on_tool_call_streamed` to run background execution during token streaming.
+- **Agent Loop Integration** (`src/agent/loop.rs`):
+  - Wired `SpeculativeExecutor` into the main agent cycle, dispatching parallel read stages concurrently via `execute_parallel_stage`.
+  - Preserved full middleware pipeline (error formatting, stuck detection, observation deduplication, AST diff capture).
+- **Configuration & Constants** (`src/config.rs`, `src/constants.rs`):
+  - Added `parallel_tools: bool`, `speculative_execution: bool`, and `max_parallel_tools: usize`.
+  - Added environment variable overrides: `MINICODE_PARALLEL_TOOLS`, `MINICODE_SPECULATIVE_EXECUTION`, `MINICODE_MAX_PARALLEL_TOOLS`.
+- **Interactive TUI & CLI Controls** (`src/ui/input.rs`, `src/ui/modal.rs`, `src/app.rs`):
+  - Added `/parallel` palette command and command catalog item.
+  - Added `/parallel [on|off|speculative on|speculative off|<1-16>]` prompt handler with formatted status cards.
+- **Comprehensive Integration Test Suite** (`tests/integration_speculative_tools.rs`):
+  - Exhaustive test covering classification across all schemas, mixed barrier stage planning, concurrent execution speedup, deterministic order preservation, speculative streaming cache hits, and cancellation safety.
+
 ## [0.2.4] — 2026-09-06
 
 ### Extended Thinking & Test-Time Reasoning Support for Anthropic Claude 3.7 Sonnet, OpenAI o1/o3, OpenRouter, and DeepSeek R1

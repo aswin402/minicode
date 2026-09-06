@@ -413,6 +413,14 @@ pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 /// List of built-in tool names that modify workspace files
 pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file"];
 
+// === Speculative & Parallel Tool Execution ===
+/// Default maximum number of concurrent read-only tools executed in parallel
+pub const DEFAULT_MAX_PARALLEL_TOOLS: usize = 4;
+/// Minimum bound for parallel tool execution concurrency
+pub const MIN_PARALLEL_TOOLS: usize = 1;
+/// Maximum ceiling for parallel tool execution concurrency
+pub const MAX_PARALLEL_TOOLS_CAP: usize = 16;
+
 // === Approval Enforcement ===
 /// Tools that require user approval before dispatch when running in strict mode
 pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &["write_file", "patch_file", "exec_cmd"];

@@ -232,6 +232,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/streaming",
     },
     CommandCatalogItem {
+        name: "/parallel",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Configure speculative parallel read-only tool execution pipeline",
+        example: "/parallel | /parallel on | /parallel 8",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

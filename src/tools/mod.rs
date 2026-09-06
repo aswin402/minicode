@@ -2,6 +2,7 @@ pub mod browser;
 pub mod category;
 pub mod compactor;
 pub mod compiler;
+pub mod concurrency;
 pub mod crawler;
 pub mod diff;
 pub mod exec;
@@ -14,6 +15,9 @@ pub mod rtk_filter;
 pub mod search;
 pub mod web;
 pub mod web_search;
+
+#[allow(unused_imports)]
+pub use concurrency::{classify_tool, is_barrier, is_read_only, ToolSafetyLevel};
 
 use crate::agent::provider::ToolSchema;
 use crate::agent::types::ToolResult;

@@ -867,6 +867,67 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/parallel" || prompt.starts_with("/parallel ") {
+                                    let args = prompt.strip_prefix("/parallel").unwrap_or("").trim();
+                                    if args.is_empty() {
+                                        let status_msg = format!(
+                                            "⚡ **Speculative Parallel Tool Execution Pipeline**\n\
+                                             • **Parallel Tools**: {}\n\
+                                             • **Speculative Pre-Execution**: {}\n\
+                                             • **Max Concurrency**: {} threads\n\
+                                             • **Safety Engine**: Barrier isolation (Mutating & Barrier tools serialized)\n\n\
+                                             *Available commands:*\n\
+                                             • `/parallel on` — Enable parallel read-only tool execution\n\
+                                             • `/parallel off` — Disable parallel execution (strictly sequential)\n\
+                                             • `/parallel speculative on` — Enable streaming speculative pre-execution\n\
+                                             • `/parallel speculative off` — Disable streaming speculative pre-execution\n\
+                                             • `/parallel <1-16>` — Set maximum parallel worker limit",
+                                            if self.config.agent.parallel_tools { "ENABLED" } else { "DISABLED" },
+                                            if self.config.agent.speculative_execution { "ENABLED (Streaming Overlap)" } else { "DISABLED" },
+                                            self.config.agent.max_parallel_tools,
+                                        );
+                                        self.timeline.add_status(status_msg);
+                                    } else {
+                                        match args.to_lowercase().as_str() {
+                                            "on" | "enable" | "true" | "1" => {
+                                                self.config.agent.parallel_tools = true;
+                                                self.timeline.add_status("⚡ Parallel tool execution enabled.".to_string());
+                                            }
+                                            "off" | "disable" | "false" | "0" => {
+                                                self.config.agent.parallel_tools = false;
+                                                self.timeline.add_status("⚡ Parallel tool execution disabled (strictly sequential).".to_string());
+                                            }
+                                            "speculative on" | "speculative true" => {
+                                                self.config.agent.speculative_execution = true;
+                                                self.timeline.add_status("⚡ Speculative streaming pre-execution enabled.".to_string());
+                                            }
+                                            "speculative off" | "speculative false" => {
+                                                self.config.agent.speculative_execution = false;
+                                                self.timeline.add_status("⚡ Speculative streaming pre-execution disabled.".to_string());
+                                            }
+                                            other => {
+                                                if let Ok(num) = other.parse::<usize>() {
+                                                    let clamped = num.clamp(
+                                                        crate::constants::MIN_PARALLEL_TOOLS,
+                                                        crate::constants::MAX_PARALLEL_TOOLS_CAP,
+                                                    );
+                                                    self.config.agent.max_parallel_tools = clamped;
+                                                    self.timeline.add_status(format!(
+                                                        "⚡ Maximum parallel tools limit set to {} concurrent workers.",
+                                                        clamped
+                                                    ));
+                                                } else {
+                                                    self.timeline.add_status(format!(
+                                                        "⚠️ Invalid argument '{}'. Use `on`, `off`, `speculative on`, `speculative off`, or a number (1-16).",
+                                                        other
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -1947,6 +2008,25 @@ impl<'a> App<'a> {
                             "/streaming" => {
                                 self.modal =
                                     ModalState::new_streaming_select(self.config.agent.streaming);
+                            }
+                            "/parallel" => {
+                                let status_msg = format!(
+                                    "⚡ **Speculative Parallel Tool Execution Pipeline**\n\
+                                     • **Parallel Tools**: {}\n\
+                                     • **Speculative Pre-Execution**: {}\n\
+                                     • **Max Concurrency**: {} threads\n\
+                                     • **Safety Engine**: Barrier isolation (Mutating & Barrier tools serialized)\n\n\
+                                     *Usage:*\n\
+                                     • `/parallel on` — Enable parallel tool execution\n\
+                                     • `/parallel off` — Disable parallel tool execution\n\
+                                     • `/parallel speculative on|off` — Toggle streaming pre-execution\n\
+                                     • `/parallel <1-16>` — Set max parallel workers",
+                                    if self.config.agent.parallel_tools { "ENABLED" } else { "DISABLED" },
+                                    if self.config.agent.speculative_execution { "ENABLED" } else { "DISABLED" },
+                                    self.config.agent.max_parallel_tools,
+                                );
+                                self.timeline.add_status(status_msg);
+                                self.modal = ModalState::None;
                             }
                             other => {
                                 self.input_dock.textarea = tui_textarea::TextArea::default();

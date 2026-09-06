@@ -150,6 +150,15 @@ pub struct AgentConfig {
 
     #[serde(default = "default_true")]
     pub auto_lint: bool,
+
+    #[serde(default = "default_true")]
+    pub parallel_tools: bool,
+
+    #[serde(default = "default_true")]
+    pub speculative_execution: bool,
+
+    #[serde(default = "default_max_parallel_tools")]
+    pub max_parallel_tools: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -190,6 +199,10 @@ fn default_tool_mode() -> ToolFilterMode {
     ToolFilterMode::Dynamic
 }
 
+fn default_max_parallel_tools() -> usize {
+    crate::constants::DEFAULT_MAX_PARALLEL_TOOLS
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -203,6 +216,9 @@ impl Default for AgentConfig {
             tool_mode: default_tool_mode(),
             syntax_barrier: true,
             auto_lint: true,
+            parallel_tools: true,
+            speculative_execution: true,
+            max_parallel_tools: crate::constants::DEFAULT_MAX_PARALLEL_TOOLS,
         }
     }
 }
@@ -423,6 +439,9 @@ pub struct RawAgentConfig {
     pub warning_threshold: Option<f32>,
     pub auto_heal: Option<bool>,
     pub streaming: Option<bool>,
+    pub parallel_tools: Option<bool>,
+    pub speculative_execution: Option<bool>,
+    pub max_parallel_tools: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -663,6 +682,18 @@ impl Config {
         if let Some(streaming) = other.agent.streaming {
             self.agent.streaming = streaming;
         }
+        if let Some(parallel_tools) = other.agent.parallel_tools {
+            self.agent.parallel_tools = parallel_tools;
+        }
+        if let Some(speculative_execution) = other.agent.speculative_execution {
+            self.agent.speculative_execution = speculative_execution;
+        }
+        if let Some(max_parallel_tools) = other.agent.max_parallel_tools {
+            self.agent.max_parallel_tools = max_parallel_tools.clamp(
+                crate::constants::MIN_PARALLEL_TOOLS,
+                crate::constants::MAX_PARALLEL_TOOLS_CAP,
+            );
+        }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
         }
@@ -746,6 +777,20 @@ impl Config {
         }
         if let Ok(level) = std::env::var("MINICODE_LOG_LEVEL") {
             self.logging.level = level;
+        }
+        if let Ok(parallel) = std::env::var("MINICODE_PARALLEL_TOOLS") {
+            self.agent.parallel_tools = parallel == "1" || parallel.eq_ignore_ascii_case("true");
+        }
+        if let Ok(spec) = std::env::var("MINICODE_SPECULATIVE_EXECUTION") {
+            self.agent.speculative_execution = spec == "1" || spec.eq_ignore_ascii_case("true");
+        }
+        if let Ok(max_p_str) = std::env::var("MINICODE_MAX_PARALLEL_TOOLS") {
+            if let Ok(val) = max_p_str.parse::<usize>() {
+                self.agent.max_parallel_tools = val.clamp(
+                    crate::constants::MIN_PARALLEL_TOOLS,
+                    crate::constants::MAX_PARALLEL_TOOLS_CAP,
+                );
+            }
         }
     }
 

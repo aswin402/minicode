@@ -37,6 +37,8 @@ pub struct AgentLoop {
     active_working_set: std::collections::VecDeque<String>,
     /// Algorithmic stuck detector halting repetitive tool loops.
     pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
+    /// Speculative early dispatch and parallel execution engine for read-only tools.
+    pub speculative_executor: crate::agent::speculative::SpeculativeExecutor,
     /// Cumulative tokens expended across all turns in this session.
     pub cumulative_tokens_used: usize,
 }
@@ -57,6 +59,13 @@ impl AgentLoop {
         let compactor = crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
             .unwrap_or_else(|_| crate::context::auto_compact::AutoCompactor::default_safe());
 
+        let speculative_executor = crate::agent::speculative::SpeculativeExecutor::new(
+            workspace_root.to_path_buf(),
+            config.agent.max_parallel_tools,
+            config.agent.speculative_execution,
+            config.agent.parallel_tools,
+        );
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -73,6 +82,7 @@ impl AgentLoop {
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
+            speculative_executor,
             cumulative_tokens_used: 0,
         }
     }
@@ -399,6 +409,7 @@ impl AgentLoop {
             let turn_response_len_before = turn_response.len();
 
             let mut success = false;
+            self.speculative_executor.reset_turn().await;
             while !success && retry_count <= max_retries {
                 let completions_before = cumulative_completion_tokens;
 
@@ -411,6 +422,7 @@ impl AgentLoop {
                     {
                         Ok(s) => s,
                         Err(e) => {
+                            self.speculative_executor.cancel_all().await;
                             if retry_count < max_retries {
                                 retry_count += 1;
                                 let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
@@ -501,6 +513,12 @@ impl AgentLoop {
                                 if let Err(e) = event_sender.send(call_event) {
                                     tracing::debug!(error = %e, "Failed to send tool call event");
                                 }
+
+                                // Speculatively pre-execute read-only tools in background
+                                self.speculative_executor
+                                    .on_tool_call_streamed(turn_id, &tool_call)
+                                    .await;
+
                                 pending_tool_calls.push(tool_call);
                             }
                             Some(Ok(StreamChunk::Usage {
@@ -524,6 +542,7 @@ impl AgentLoop {
                     }
 
                     if cancelled {
+                        self.speculative_executor.cancel_all().await;
                         tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
                         was_cancelled = true;
                         break;
@@ -654,231 +673,328 @@ impl AgentLoop {
                     pending_tool_calls.clone(),
                 ));
 
-                for tool_call in pending_tool_calls {
-                    // Check cancellation before each tool execution
+                let stages = crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls);
+
+                for stage in stages {
+                    // Check cancellation before each stage execution
                     if let Some(cancel) = &cancel_token {
                         if cancel.is_cancelled() {
                             was_cancelled = true;
-                            tracing::info!(
-                                "Turn #{} cancelled before tool dispatch: {}",
-                                turn_id,
-                                tool_call.name
-                            );
-                            Self::emit_rejected_tool_result(
-                                self,
-                                &event_sender,
-                                turn_id,
-                                &tool_call,
-                                "cancelled before dispatch",
-                                &mut turn_tool_results,
-                            );
-                            continue;
+                            self.speculative_executor.cancel_all().await;
+                            tracing::info!("Turn #{} cancelled before stage execution", turn_id);
+                            break;
                         }
                     }
 
-                    turn_tool_calls.push(tool_call.clone());
-
-                    // Record file access into active working set (Zone 3 Recency)
-                    if let Some(path) = tool_call.arguments.get("path").and_then(|p| p.as_str()) {
-                        self.record_file_access(path);
-                        if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                            turn_files_modified.push(path.to_string());
-                        }
-                    }
-
-                    // === Approval gate: pause for user decision on dangerous tools ===
-                    if self.requires_approval(&tool_call.name) {
-                        let (resp_tx, resp_rx) =
-                            tokio::sync::oneshot::channel::<ApprovalDecision>();
-                        self.pending_approvals
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .insert(tool_call.id.clone(), resp_tx);
-
-                        let req_event = AgentEvent::ApprovalRequest {
-                            turn_id,
-                            tool_id: tool_call.id.clone(),
-                            tool: tool_call.name.clone(),
-                            args: tool_call.arguments.clone(),
-                            reason: "requires user approval in strict mode".to_string(),
-                        };
-                        if let Err(e) = self
-                            .session_store
-                            .append_event(&self.session_id, &req_event)
-                        {
-                            tracing::warn!("Failed to persist ApprovalRequest event: {}", e);
-                        }
-                        if event_sender.send(req_event).is_err() {
-                            tracing::debug!("Failed to send ApprovalRequest event");
-                        }
-
-                        let decision = if let Some(cancel) = &cancel_token {
-                            tokio::select! {
-                                _ = cancel.cancelled() => None,
-                                r = resp_rx => r.ok(),
-                            }
-                        } else {
-                            resp_rx.await.ok()
-                        };
-                        self.pending_approvals
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .remove(&tool_call.id);
-
-                        if decision != Some(ApprovalDecision::Approve) {
-                            let reason = if decision.is_none() {
-                                "cancelled while awaiting approval"
-                            } else {
-                                "rejected by user"
-                            };
-                            Self::emit_rejected_tool_result(
-                                self,
-                                &event_sender,
-                                turn_id,
-                                &tool_call,
-                                reason,
-                                &mut turn_tool_results,
-                            );
-                            continue;
-                        }
-                    }
-
-                    // Snapshot file content before dispatch for inline diff preview
-                    let file_before: Option<String> = if FILE_MODIFYING_TOOLS
-                        .contains(&tool_call.name.as_str())
-                    {
-                        match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
-                            Some(rel) => {
-                                let full_path = self.workspace_root.join(rel);
-                                match tokio::fs::metadata(&full_path).await {
-                                    Ok(meta)
-                                        if meta.len()
-                                            <= crate::constants::MAX_DIFF_SNAPSHOT_BYTES as u64 =>
-                                    {
-                                        tokio::fs::read_to_string(&full_path).await.ok()
-                                    }
-                                    _ => None,
+                    match stage {
+                        crate::agent::speculative::ExecutionStage::Parallel(parallel_calls) => {
+                            for call in &parallel_calls {
+                                turn_tool_calls.push(call.clone());
+                                if let Some(path) =
+                                    call.arguments.get("path").and_then(|p| p.as_str())
+                                {
+                                    self.record_file_access(path);
                                 }
                             }
-                            None => None,
-                        }
-                    } else {
-                        None
-                    };
 
-                    // Execute tool (MCP vs Built-in)
-                    let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {
-                        let start = std::time::Instant::now();
-                        let res = self
-                            .mcp_client
-                            .call_tool(&tool_call.name, &tool_call.arguments)
-                            .await;
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        match res {
-                            Ok(output) => crate::agent::types::ToolResult {
-                                tool_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                success: true,
-                                output,
-                                duration_ms,
-                            },
-                            Err(e) => crate::agent::types::ToolResult {
-                                tool_id: tool_call.id.clone(),
-                                tool_name: tool_call.name.clone(),
-                                success: false,
-                                output: format!("MCP tool error: {}", e),
-                                duration_ms,
-                            },
-                        }
-                    } else {
-                        crate::tools::ToolRegistry::dispatch(
-                            &self.workspace_root,
-                            &tool_call.id,
-                            &tool_call.name,
-                            &tool_call.arguments,
-                            Some(&self.backup_manager),
-                            turn_id,
-                        )
-                        .await
-                    };
+                            let parallel_results = self
+                                .speculative_executor
+                                .execute_parallel_stage(&parallel_calls, turn_id)
+                                .await;
 
-                    // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
-                    let mut tool_result = self.tool_pipeline.run(
-                        tool_result,
-                        &tool_call.name,
-                        &self.workspace_root,
-                        &tool_call.arguments,
-                        file_before.as_deref(),
-                    );
-
-                    // === Smart Donut Truncator (Phase 88) ===
-                    tool_result.output =
-                        crate::context::donut::SmartDonutTruncator::truncate(&tool_result.output);
-
-                    // === Algorithmic Stuck Detector & Loop Breaker ===
-                    if let Some(intervention) = self.stuck_detector.record_and_check(
-                        &tool_call.name,
-                        &tool_call.arguments,
-                        tool_result.success,
-                    ) {
-                        tracing::warn!(
-                            tool = %tool_call.name,
-                            "Stuck detector triggered circuit breaker intervention"
-                        );
-                        tool_result.output.push_str("\n\n");
-                        tool_result.output.push_str(&intervention);
-                    }
-
-                    // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
-                    if tool_call.name == "activate_tools" && tool_result.success {
-                        if let Some(cat_str) =
-                            tool_call.arguments.get("category").and_then(|v| v.as_str())
-                        {
-                            if cat_str == "all" {
-                                active_categories.extend(crate::tools::category::ToolCategory::ALL);
-                            } else if let Ok(cat) =
-                                cat_str.parse::<crate::tools::category::ToolCategory>()
+                            for (tool_call, mut tool_result) in
+                                parallel_calls.into_iter().zip(parallel_results)
                             {
-                                active_categories.insert(cat);
+                                // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
+                                tool_result = self.tool_pipeline.run(
+                                    tool_result,
+                                    &tool_call.name,
+                                    &self.workspace_root,
+                                    &tool_call.arguments,
+                                    None,
+                                );
+
+                                // === Smart Donut Truncator (Phase 88) ===
+                                tool_result.output =
+                                    crate::context::donut::SmartDonutTruncator::truncate(
+                                        &tool_result.output,
+                                    );
+
+                                // === Algorithmic Stuck Detector & Loop Breaker ===
+                                if let Some(intervention) = self.stuck_detector.record_and_check(
+                                    &tool_call.name,
+                                    &tool_call.arguments,
+                                    tool_result.success,
+                                ) {
+                                    tracing::warn!(
+                                        tool = %tool_call.name,
+                                        "Stuck detector triggered circuit breaker intervention"
+                                    );
+                                    tool_result.output.push_str("\n\n");
+                                    tool_result.output.push_str(&intervention);
+                                }
+
+                                let res_event = AgentEvent::ToolResult {
+                                    turn_id,
+                                    tool_id: tool_result.tool_id.clone(),
+                                    tool: tool_result.tool_name.clone(),
+                                    success: tool_result.success,
+                                    output: tool_result.output.clone(),
+                                    duration_ms: tool_result.duration_ms,
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &res_event)
+                                {
+                                    tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                }
+                                event_sender.send(res_event)?;
+
+                                // Append tool result message for LLM context
+                                self.messages.push(Message::tool_result(
+                                    tool_call.id,
+                                    tool_call.name,
+                                    tool_result.output.clone(),
+                                ));
+
+                                turn_tool_results.push(tool_result);
                             }
-                            tools = crate::tools::category::assemble_active_tools(
-                                self.config.agent.tool_mode,
-                                user_prompt,
-                                &active_categories,
+                        }
+                        crate::agent::speculative::ExecutionStage::Sequential(tool_call) => {
+                            // Check cancellation before tool execution
+                            if let Some(cancel) = &cancel_token {
+                                if cancel.is_cancelled() {
+                                    was_cancelled = true;
+                                    tracing::info!(
+                                        "Turn #{} cancelled before tool dispatch: {}",
+                                        turn_id,
+                                        tool_call.name
+                                    );
+                                    Self::emit_rejected_tool_result(
+                                        self,
+                                        &event_sender,
+                                        turn_id,
+                                        &tool_call,
+                                        "cancelled before dispatch",
+                                        &mut turn_tool_results,
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            turn_tool_calls.push(tool_call.clone());
+
+                            // Record file access into active working set (Zone 3 Recency)
+                            if let Some(path) =
+                                tool_call.arguments.get("path").and_then(|p| p.as_str())
+                            {
+                                self.record_file_access(path);
+                                if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                                    turn_files_modified.push(path.to_string());
+                                }
+                            }
+
+                            // === Approval gate: pause for user decision on dangerous tools ===
+                            if self.requires_approval(&tool_call.name) {
+                                let (resp_tx, resp_rx) =
+                                    tokio::sync::oneshot::channel::<ApprovalDecision>();
+                                self.pending_approvals
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .insert(tool_call.id.clone(), resp_tx);
+
+                                let req_event = AgentEvent::ApprovalRequest {
+                                    turn_id,
+                                    tool_id: tool_call.id.clone(),
+                                    tool: tool_call.name.clone(),
+                                    args: tool_call.arguments.clone(),
+                                    reason: "requires user approval in strict mode".to_string(),
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &req_event)
+                                {
+                                    tracing::warn!(
+                                        "Failed to persist ApprovalRequest event: {}",
+                                        e
+                                    );
+                                }
+                                if event_sender.send(req_event).is_err() {
+                                    tracing::debug!("Failed to send ApprovalRequest event");
+                                }
+
+                                let decision = if let Some(cancel) = &cancel_token {
+                                    tokio::select! {
+                                        _ = cancel.cancelled() => None,
+                                        r = resp_rx => r.ok(),
+                                    }
+                                } else {
+                                    resp_rx.await.ok()
+                                };
+                                self.pending_approvals
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .remove(&tool_call.id);
+
+                                if decision != Some(ApprovalDecision::Approve) {
+                                    let reason = if decision.is_none() {
+                                        "cancelled while awaiting approval"
+                                    } else {
+                                        "rejected by user"
+                                    };
+                                    Self::emit_rejected_tool_result(
+                                        self,
+                                        &event_sender,
+                                        turn_id,
+                                        &tool_call,
+                                        reason,
+                                        &mut turn_tool_results,
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Snapshot file content before dispatch for inline diff preview
+                            let file_before: Option<String> =
+                                if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                                    match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                                        Some(rel) => {
+                                            let full_path = self.workspace_root.join(rel);
+                                            match tokio::fs::metadata(&full_path).await {
+                                                Ok(meta)
+                                                    if meta.len()
+                                                        <= crate::constants::MAX_DIFF_SNAPSHOT_BYTES
+                                                            as u64 =>
+                                                {
+                                                    tokio::fs::read_to_string(&full_path).await.ok()
+                                                }
+                                                _ => None,
+                                            }
+                                        }
+                                        None => None,
+                                    }
+                                } else {
+                                    None
+                                };
+
+                            // Execute tool (MCP vs Built-in)
+                            let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {
+                                let start = std::time::Instant::now();
+                                let res = self
+                                    .mcp_client
+                                    .call_tool(&tool_call.name, &tool_call.arguments)
+                                    .await;
+                                let duration_ms = start.elapsed().as_millis() as u64;
+                                match res {
+                                    Ok(output) => crate::agent::types::ToolResult {
+                                        tool_id: tool_call.id.clone(),
+                                        tool_name: tool_call.name.clone(),
+                                        success: true,
+                                        output,
+                                        duration_ms,
+                                    },
+                                    Err(e) => crate::agent::types::ToolResult {
+                                        tool_id: tool_call.id.clone(),
+                                        tool_name: tool_call.name.clone(),
+                                        success: false,
+                                        output: format!("MCP tool error: {}", e),
+                                        duration_ms,
+                                    },
+                                }
+                            } else {
+                                crate::tools::ToolRegistry::dispatch(
+                                    &self.workspace_root,
+                                    &tool_call.id,
+                                    &tool_call.name,
+                                    &tool_call.arguments,
+                                    Some(&self.backup_manager),
+                                    turn_id,
+                                )
+                                .await
+                            };
+
+                            // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
+                            let mut tool_result = self.tool_pipeline.run(
+                                tool_result,
+                                &tool_call.name,
+                                &self.workspace_root,
+                                &tool_call.arguments,
+                                file_before.as_deref(),
                             );
-                            tools.extend(mcp_tools.clone());
-                            tracing::info!(
-                                "Dynamically activated '{}' tool category; active schemas count now {}",
-                                cat_str,
-                                tools.len()
-                            );
+
+                            // === Smart Donut Truncator (Phase 88) ===
+                            tool_result.output =
+                                crate::context::donut::SmartDonutTruncator::truncate(
+                                    &tool_result.output,
+                                );
+
+                            // === Algorithmic Stuck Detector & Loop Breaker ===
+                            if let Some(intervention) = self.stuck_detector.record_and_check(
+                                &tool_call.name,
+                                &tool_call.arguments,
+                                tool_result.success,
+                            ) {
+                                tracing::warn!(
+                                    tool = %tool_call.name,
+                                    "Stuck detector triggered circuit breaker intervention"
+                                );
+                                tool_result.output.push_str("\n\n");
+                                tool_result.output.push_str(&intervention);
+                            }
+
+                            // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
+                            if tool_call.name == "activate_tools" && tool_result.success {
+                                if let Some(cat_str) =
+                                    tool_call.arguments.get("category").and_then(|v| v.as_str())
+                                {
+                                    if cat_str == "all" {
+                                        active_categories
+                                            .extend(crate::tools::category::ToolCategory::ALL);
+                                    } else if let Ok(cat) =
+                                        cat_str.parse::<crate::tools::category::ToolCategory>()
+                                    {
+                                        active_categories.insert(cat);
+                                    }
+                                    tools = crate::tools::category::assemble_active_tools(
+                                        self.config.agent.tool_mode,
+                                        user_prompt,
+                                        &active_categories,
+                                    );
+                                    tools.extend(mcp_tools.clone());
+                                    tracing::info!(
+                                        "Dynamically activated '{}' tool category; active schemas count now {}",
+                                        cat_str,
+                                        tools.len()
+                                    );
+                                }
+                            }
+
+                            let res_event = AgentEvent::ToolResult {
+                                turn_id,
+                                tool_id: tool_result.tool_id.clone(),
+                                tool: tool_result.tool_name.clone(),
+                                success: tool_result.success,
+                                output: tool_result.output.clone(),
+                                duration_ms: tool_result.duration_ms,
+                            };
+                            if let Err(e) = self
+                                .session_store
+                                .append_event(&self.session_id, &res_event)
+                            {
+                                tracing::warn!("Failed to persist ToolResult event: {}", e);
+                            }
+                            event_sender.send(res_event)?;
+
+                            // Append tool result message for LLM context
+                            self.messages.push(Message::tool_result(
+                                tool_call.id,
+                                tool_call.name,
+                                tool_result.output.clone(),
+                            ));
+
+                            turn_tool_results.push(tool_result);
                         }
                     }
-
-                    let res_event = AgentEvent::ToolResult {
-                        turn_id,
-                        tool_id: tool_result.tool_id.clone(),
-                        tool: tool_result.tool_name.clone(),
-                        success: tool_result.success,
-                        output: tool_result.output.clone(),
-                        duration_ms: tool_result.duration_ms,
-                    };
-                    if let Err(e) = self
-                        .session_store
-                        .append_event(&self.session_id, &res_event)
-                    {
-                        tracing::warn!("Failed to persist ToolResult event: {}", e);
-                    }
-                    event_sender.send(res_event)?;
-
-                    // Append tool result message for LLM context
-                    self.messages.push(Message::tool_result(
-                        tool_call.id,
-                        tool_call.name,
-                        tool_result.output.clone(),
-                    ));
-
-                    turn_tool_results.push(tool_result);
                 }
             } else {
                 // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===

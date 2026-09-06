@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 93 (v0.2.4) Extended Thinking Support | **Status:** ✅ Completed (116 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 94 (v0.2.5) Speculative Parallel Tool Execution | **Status:** ✅ Completed (116 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1549,6 +1549,14 @@
 - [x] 93.4: Add `/thinking` palette command, slash command, and TUI modal selector with presets (off, 4k, 8k, 16k, 32k, 64k)
 - [x] 93.5: Dynamic model fetching for Anthropic models (`fetch_anthropic_models`)
 - [x] 93.6: Integration tests (`tests/integration_thinking_provider.rs`) and release bump → `v0.2.4`
+ 
+### Phase 94: Speculative Parallel Read-Only Tool Execution Pipeline (v0.2.5)
+- [x] 94.1: Implement exhaustive ToolSafetyLevel classification engine (`src/tools/concurrency.rs`) classifying all 116 tools with fail-safe Mutating defaults
+- [x] 94.2: Build ExecutionPlanner and SpeculativeExecutor (`src/agent/speculative.rs`) with barrier isolation, bounded worker concurrency, and cancellation safety
+- [x] 94.3: Wire speculative streaming chunk early dispatch into AgentLoop SSE receiver (`src/agent/loop.rs`) to overlap LLM generation with tool I/O
+- [x] 94.4: Add parallel configuration and environment overrides (`MINICODE_PARALLEL_TOOLS`, `MINICODE_SPECULATIVE_EXECUTION`, `MINICODE_MAX_PARALLEL_TOOLS`)
+- [x] 94.5: Add `/parallel` palette command, slash command, catalog item, and runtime telemetry status card in TUI
+- [x] 94.6: Comprehensive integration test suite (`tests/integration_speculative_tools.rs`) and release bump → `v0.2.5`
 
 
 
