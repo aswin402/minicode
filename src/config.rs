@@ -45,6 +45,12 @@ pub struct ProviderConfig {
 
     #[serde(default)]
     pub custom_endpoints: std::collections::HashMap<String, String>,
+
+    #[serde(default)]
+    pub thinking_budget: Option<usize>,
+
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for ProviderConfig {
@@ -57,7 +63,25 @@ impl Default for ProviderConfig {
             max_tokens: default_max_tokens(),
             api_keys: std::collections::HashMap::new(),
             custom_endpoints: std::collections::HashMap::new(),
+            thinking_budget: None,
+            reasoning_effort: None,
         }
+    }
+}
+
+#[allow(dead_code)]
+impl ProviderConfig {
+    /// Returns whether extended thinking / reasoning is currently enabled
+    pub fn is_thinking_enabled(&self) -> bool {
+        self.thinking_budget
+            .map(|b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS)
+            .unwrap_or(false)
+    }
+
+    /// Returns the effective thinking budget in tokens
+    pub fn effective_thinking_budget(&self) -> Option<usize> {
+        self.thinking_budget
+            .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS)
     }
 }
 

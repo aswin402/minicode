@@ -152,6 +152,8 @@ mod tests {
             temperature: 0.2,
             max_tokens: 1000,
             system_instruction: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let mut stream = provider
@@ -183,6 +185,8 @@ mod tests {
             temperature: 0.2,
             max_tokens: 1000,
             system_instruction: None,
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let res = provider.stream_completion(&messages, &[], &options).await;

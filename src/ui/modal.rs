@@ -190,6 +190,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/model",
     },
     CommandCatalogItem {
+        name: "/thinking",
+        category: "Config & Runtime",
+        shortcut: "",
+        description: "Configure test-time reasoning budget (Claude 3.7 / o1 / o3 / DeepSeek R1)",
+        example: "/thinking [off|4k|8k|16k|32k|64k]",
+    },
+    CommandCatalogItem {
         name: "/theme",
         category: "Config & Runtime",
         shortcut: "",
@@ -368,6 +375,7 @@ impl ModalState {
 
     pub fn new_provider_select() -> Self {
         let providers = vec![
+            "anthropic".to_string(),
             "openrouter".to_string(),
             "gemini".to_string(),
             "openai".to_string(),

@@ -92,6 +92,8 @@ impl SubagentWorker {
             temperature: 0.2,
             max_tokens: 4096,
             system_instruction: Some(system_prompt),
+            thinking_budget: None,
+            reasoning_effort: None,
         };
 
         let mut files_inspected = Vec::new();

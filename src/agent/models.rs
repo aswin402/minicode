@@ -163,6 +163,7 @@ impl ModelFetcher {
 
         // 1. Fetch live models
         let models_res = match provider_lower.as_str() {
+            "anthropic" | "claude" => self.fetch_anthropic_models(api_key).await,
             "openrouter" => self.fetch_openrouter_models(api_key).await,
             "gemini" | "google" => self.fetch_gemini_models(api_key).await,
             "openai" => {
@@ -252,6 +253,33 @@ impl ModelFetcher {
 
                 // Fallback to static defaults for local providers if offline
                 let defaults = match provider_lower.as_str() {
+                    "anthropic" | "claude" => vec![
+                        ModelInfo {
+                            id: "claude-3-7-sonnet-20250219".to_string(),
+                            name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
+                            description: Some(
+                                "Anthropic flagship hybrid reasoning & coding model".to_string(),
+                            ),
+                            context_length: Some(200_000),
+                            is_free: false,
+                        },
+                        ModelInfo {
+                            id: "claude-3-5-sonnet-20241022".to_string(),
+                            name: "Claude 3.5 Sonnet v2".to_string(),
+                            description: Some(
+                                "High-speed intelligence and coding benchmark leader".to_string(),
+                            ),
+                            context_length: Some(200_000),
+                            is_free: false,
+                        },
+                        ModelInfo {
+                            id: "claude-3-5-haiku-20241022".to_string(),
+                            name: "Claude 3.5 Haiku".to_string(),
+                            description: Some("Ultra-fast compact reasoning model".to_string()),
+                            context_length: Some(200_000),
+                            is_free: false,
+                        },
+                    ],
                     "ollama" => vec![
                         ModelInfo {
                             id: "qwen2.5-coder".to_string(),
@@ -301,6 +329,86 @@ impl ModelFetcher {
                 Err(e)
             }
         }
+    }
+
+    /// Fetches live models from Anthropic API
+    async fn fetch_anthropic_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let mut req = self
+            .client
+            .get(crate::constants::ANTHROPIC_MODELS_URL)
+            .header(
+                "anthropic-version",
+                crate::constants::ANTHROPIC_VERSION_HEADER,
+            );
+
+        if !api_key.is_empty() {
+            req = req.header("x-api-key", api_key);
+        }
+
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status,
+                message: format!("Anthropic models error: {}", text),
+            }
+            .into());
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+        let mut models = Vec::new();
+        if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+            for item in data {
+                if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                    let name = item
+                        .get("display_name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(id)
+                        .to_string();
+                    let context_length = Some(get_model_context_limit(id));
+                    models.push(ModelInfo {
+                        id: id.to_string(),
+                        name,
+                        description: Some("Anthropic Claude model".to_string()),
+                        context_length,
+                        is_free: false,
+                    });
+                }
+            }
+        }
+
+        if models.is_empty() {
+            models = vec![
+                ModelInfo {
+                    id: "claude-3-7-sonnet-20250219".to_string(),
+                    name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
+                    description: Some(
+                        "Anthropic flagship hybrid reasoning & coding model".to_string(),
+                    ),
+                    context_length: Some(200_000),
+                    is_free: false,
+                },
+                ModelInfo {
+                    id: "claude-3-5-sonnet-20241022".to_string(),
+                    name: "Claude 3.5 Sonnet v2".to_string(),
+                    description: Some(
+                        "High-speed intelligence and coding benchmark leader".to_string(),
+                    ),
+                    context_length: Some(200_000),
+                    is_free: false,
+                },
+                ModelInfo {
+                    id: "claude-3-5-haiku-20241022".to_string(),
+                    name: "Claude 3.5 Haiku".to_string(),
+                    description: Some("Ultra-fast compact reasoning model".to_string()),
+                    context_length: Some(200_000),
+                    is_free: false,
+                },
+            ];
+        }
+
+        Ok(models)
     }
 
     /// Fetches live models from OpenRouter API

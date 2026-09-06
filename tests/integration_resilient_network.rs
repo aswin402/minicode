@@ -80,6 +80,8 @@ async fn test_resilient_provider_success_flow() {
         temperature: 0.7,
         max_tokens: 1000,
         system_instruction: None,
+        thinking_budget: None,
+        reasoning_effort: None,
     };
 
     let result = resilient.stream_completion(&messages, &[], &options).await;

@@ -5,6 +5,53 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-09-06
+
+### Extended Thinking & Test-Time Reasoning Support for Anthropic Claude 3.7 Sonnet, OpenAI o1/o3, OpenRouter, and DeepSeek R1
+
+#### 💡 Ideas & Inspirations
+- **Test-Time Compute Scaling for Autonomous Coding**: Frontier AI coding research (Anthropic Claude 3.7 Sonnet, OpenAI o1/o3, DeepSeek R1, SWE-bench Verified SOTA) demonstrates that dedicating test-time reasoning compute before issuing tool calls drastically improves autonomous agent reliability. Extended thinking allows models to evaluate combinatorial edge cases, simulate execution branches, diagnose subtle race conditions, and plan multi-file refactors without polluting the action history or getting stuck in failing tool loops.
+- **Native Anthropic Messages API Implementation (`AnthropicProvider`)**:
+  - Implemented a first-class, pure-Rust, async `AnthropicProvider` interfacing directly with `https://api.anthropic.com/v1/messages`.
+  - Full compliance with Anthropic extended thinking protocol: `thinking: { "type": "enabled", "budget_tokens": N }`.
+  - Automatic constraint enforcement: guarantees `budget_tokens >= 1024`, dynamically scales `max_tokens` when budget exceeds requested tokens (`max_tokens = budget + 4096`), and clamps/omits temperature to `1.0` as strictly enforced by the Anthropic API.
+  - Alternating role normalization: combines consecutive `user` turns, extracts `system` prompts into the top-level parameter, translates `ToolSchema` to Anthropic `input_schema`, and merges multi-tool results into unified `user` turns containing multiple `tool_result` content blocks.
+- **Unified Test-Time Reasoning across Providers**:
+  - **OpenAI Reasoning Models (`o1`, `o3-mini`, `o3`)**: Automatically maps thinking budgets to `reasoning_effort` (`"low"`, `"medium"`, `"high"`), replaces deprecated `max_tokens` with `max_completion_tokens`, and omits custom temperatures.
+  - **OpenRouter Gateway**: Passes native `thinking: { type: "enabled", budget_tokens: N }` for Claude 3.7 Sonnet and `reasoning: { effort: "high" }` or `reasoning: { max_tokens: N }` for reasoning models.
+  - **DeepSeek R1**: Seamlessly streams thinking traces from `reasoning_content` in SSE streams.
+  - **Google Gemini 2.0 / 2.5 Flash Thinking**: Injects `thinkingConfig: { "thinkingBudget": N }` into `generationConfig`.
+- **Interactive TUI & CLI Thinking Controls (`/thinking`)**:
+  - Added `/thinking` palette command and slash command with presets (`off`, `4k`, `8k`, `16k`, `32k`, `64k`) and custom token budgets.
+  - Live reasoning tokens are parsed into `<thought>...</thought>` blocks and rendered in `TimelineView`'s collapsible `ThoughtBlock` widget with duration timers, keeping the timeline clean while preserving full transparency into the model's inner cognitive chain-of-thought.
+
+#### 📚 References & Sources
+- **Anthropic Claude 3.7 Sonnet & Extended Thinking Architecture (Anthropic, Feb 2025)**: Hybrid reasoning model allowing dynamic allocation of reasoning tokens up to 64k tokens for complex coding tasks.
+- **OpenAI o1 & o3 System Card / Test-Time Reasoning Scaling (OpenAI, 2024–2025)**: Scaling test-time compute via reinforcement learning to solve hard engineering, competition math, and coding benchmarks.
+- **DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (DeepSeek-AI, 2025)**: Large-scale RL cold-start and reasoning traces embedded in streaming SSE deltas.
+- **SWE-bench Verified SOTA Reports (2025)**: Evidence that high thinking token budgets combined with structured tool calling yield +15–25% accuracy improvements on real-world GitHub issue resolution.
+
+#### 🚀 Features & Changes
+- **Anthropic Provider Engine** (`src/agent/provider.rs`):
+  - Created `AnthropicProvider` implementing `Provider` trait.
+  - Added `AnthropicProvider::build_request_body`, `format_messages`, `format_tools`, `extract_system_prompt`, and `parse_anthropic_event`.
+  - Parsed all Anthropic SSE event blocks (`message_start`, `content_block_start`, `content_block_delta` with `thinking_delta`, `content_block_stop`, `message_delta`, `message_stop`).
+  - Added `thinking_budget: Option<usize>` and `reasoning_effort: Option<String>` to `CompletionOptions`.
+  - Updated `OpenAiCompatibleProvider` to support `o1`/`o3` reasoning effort, `max_completion_tokens`, and OpenRouter thinking schemas.
+  - Updated `GeminiProvider` to inject `thinkingConfig`.
+  - Registered `"anthropic" | "claude"` in `create_provider_with_base_url`.
+- **Configuration & Constants** (`src/config.rs`, `src/constants.rs`):
+  - Added `ANTHROPIC_BASE_URL`, `ANTHROPIC_VERSION_HEADER`, `ANTHROPIC_DEFAULT_MODEL`, `ANTHROPIC_MODELS_URL`, `DEFAULT_THINKING_BUDGET_TOKENS`, `MIN_THINKING_BUDGET_TOKENS`, and `MAX_THINKING_BUDGET_TOKENS`.
+  - Added `thinking_budget` and `reasoning_effort` fields to `ProviderConfig` with helper methods `is_thinking_enabled()` and `effective_thinking_budget()`.
+- **Dynamic Model Fetching** (`src/agent/models.rs`):
+  - Added `fetch_anthropic_models` with live endpoint query and robust fallback models (`claude-3-7-sonnet-20250219`, `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`).
+- **User Interface & Palette Integration** (`src/ui/input.rs`, `src/ui/modal.rs`, `src/app.rs`):
+  - Added `/thinking` to `PALETTE_COMMANDS` and `COMMAND_CATALOG_ITEMS`.
+  - Added `"anthropic"` to `new_provider_select()` modal.
+  - Implemented `/thinking [off|4k|8k|16k|32k|64k|<tokens>]` prompt handler with rich status feedback cards in `src/app.rs`.
+- **Comprehensive Integration Test Suite** (`tests/integration_thinking_provider.rs`):
+  - 7 automated tests covering request serialization, budget clamping, message alternation, tool call/result merging, SSE event parsing, OpenAI reasoning payload generation, OpenRouter thinking options, and provider factory routing.
+
 ## [0.2.3] — 2026-09-06
 
 ### 3-Tier Hierarchical Fault Localization Engine (`locate_fault`)

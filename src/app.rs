@@ -867,6 +867,97 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/thinking" || prompt.starts_with("/thinking ") {
+                                    let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
+                                    if args.is_empty() {
+                                        let current_budget = match self.config.provider.thinking_budget {
+                                            Some(b) if b >= crate::constants::MIN_THINKING_BUDGET_TOKENS => format!("{} tokens (ENABLED)", b),
+                                            Some(b) => format!("{} tokens (below min threshold)", b),
+                                            None => "Disabled".to_string(),
+                                        };
+                                        let effort = self.config.provider.reasoning_effort.as_deref().unwrap_or("auto");
+                                        let status_msg = format!(
+                                            "🧠 **Extended Thinking / Reasoning Configuration**\n\
+                                             • **Provider**: {}\n\
+                                             • **Model**: {}\n\
+                                             • **Thinking Budget**: {}\n\
+                                             • **Reasoning Effort**: {}\n\n\
+                                             *Available commands:*\n\
+                                             • `/thinking off` — Disable extended thinking\n\
+                                             • `/thinking 4k` — 4,096 tokens (fast reasoning)\n\
+                                             • `/thinking 8k` — 8,192 tokens (balanced reasoning)\n\
+                                             • `/thinking 16k` — 16,000 tokens (standard extended thinking)\n\
+                                             • `/thinking 32k` — 32,000 tokens (deep architectural refactors)\n\
+                                             • `/thinking 64k` — 64,000 tokens (maximum frontier budget)",
+                                            self.config.provider.default,
+                                            self.config.provider.model,
+                                            current_budget,
+                                            effort,
+                                        );
+                                        self.timeline.add_status(status_msg);
+                                    } else {
+                                        match args.to_lowercase().as_str() {
+                                            "off" | "disable" | "none" | "0" => {
+                                                self.config.provider.thinking_budget = None;
+                                                self.config.provider.reasoning_effort = None;
+                                                self.timeline.add_status("🧠 Extended thinking / test-time reasoning disabled.".to_string());
+                                            }
+                                            "4k" => {
+                                                self.config.provider.thinking_budget = Some(4096);
+                                                self.config.provider.reasoning_effort = Some("low".to_string());
+                                                self.timeline.add_status("🧠 Extended thinking budget set to 4,096 tokens (effort: low).".to_string());
+                                            }
+                                            "8k" => {
+                                                self.config.provider.thinking_budget = Some(8192);
+                                                self.config.provider.reasoning_effort = Some("medium".to_string());
+                                                self.timeline.add_status("🧠 Extended thinking budget set to 8,192 tokens (effort: medium).".to_string());
+                                            }
+                                            "16k" | "default" => {
+                                                self.config.provider.thinking_budget = Some(16000);
+                                                self.config.provider.reasoning_effort = Some("medium".to_string());
+                                                self.timeline.add_status("🧠 Extended thinking budget set to 16,000 tokens (effort: medium).".to_string());
+                                            }
+                                            "32k" => {
+                                                self.config.provider.thinking_budget = Some(32000);
+                                                self.config.provider.reasoning_effort = Some("high".to_string());
+                                                self.timeline.add_status("🧠 Extended thinking budget set to 32,000 tokens (effort: high).".to_string());
+                                            }
+                                            "64k" | "max" => {
+                                                self.config.provider.thinking_budget = Some(64000);
+                                                self.config.provider.reasoning_effort = Some("high".to_string());
+                                                self.timeline.add_status("🧠 Extended thinking budget set to 64,000 tokens (effort: high).".to_string());
+                                            }
+                                            other => {
+                                                if let Ok(num) = other.parse::<usize>() {
+                                                    let clamped = num.clamp(
+                                                        crate::constants::MIN_THINKING_BUDGET_TOKENS,
+                                                        crate::constants::MAX_THINKING_BUDGET_TOKENS,
+                                                    );
+                                                    let effort = if clamped <= 4096 {
+                                                        "low"
+                                                    } else if clamped <= 16000 {
+                                                        "medium"
+                                                    } else {
+                                                        "high"
+                                                    };
+                                                    self.config.provider.thinking_budget = Some(clamped);
+                                                    self.config.provider.reasoning_effort = Some(effort.to_string());
+                                                    self.timeline.add_status(format!(
+                                                        "🧠 Extended thinking budget set to {} tokens (effort: {}).",
+                                                        clamped, effort
+                                                    ));
+                                                } else {
+                                                    self.timeline.add_status(format!(
+                                                        "⚠️ Invalid thinking budget '{}'. Use off, 4k, 8k, 16k, 32k, 64k, or a number between 1024 and 64000.",
+                                                        other
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 let is_analysis_keyword = prompt.eq_ignore_ascii_case("analyze the project")
                                     || prompt.eq_ignore_ascii_case("analyze project")
                                     || prompt.eq_ignore_ascii_case("index codebase")
@@ -1761,6 +1852,36 @@ impl<'a> App<'a> {
                             }
                             "/model" | "/provider" => {
                                 self.modal = ModalState::new_provider_select();
+                            }
+                            "/thinking" => {
+                                let current_budget = match self.config.provider.thinking_budget {
+                                    Some(b)
+                                        if b >= crate::constants::MIN_THINKING_BUDGET_TOKENS =>
+                                    {
+                                        format!("{} tokens (ENABLED)", b)
+                                    }
+                                    Some(b) => format!("{} tokens (below min threshold)", b),
+                                    None => "Disabled".to_string(),
+                                };
+                                let effort = self
+                                    .config
+                                    .provider
+                                    .reasoning_effort
+                                    .as_deref()
+                                    .unwrap_or("auto");
+                                let status_msg = format!(
+                                    "🧠 **Extended Thinking / Reasoning Configuration**\n\
+                                     • **Provider**: {}\n\
+                                     • **Model**: {}\n\
+                                     • **Thinking Budget**: {}\n\
+                                     • **Reasoning Effort**: {}\n\n\
+                                     *Run `/thinking [off | 4k | 8k | 16k | 32k | 64k]` in input dock to adjust.*",
+                                    self.config.provider.default,
+                                    self.config.provider.model,
+                                    current_budget,
+                                    effort,
+                                );
+                                self.timeline.add_status(status_msg);
                             }
                             "/theme" => {
                                 self.modal = ModalState::new_theme_select(&self.config.ui.theme);

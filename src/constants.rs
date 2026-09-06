@@ -468,6 +468,21 @@ pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
 pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-coder";
 /// MiniMax default model used when config omits one
 pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-Text-01";
+/// Anthropic API base URL
+pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+/// Anthropic API version header value
+pub const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+/// Anthropic default model (Claude 3.7 Sonnet hybrid reasoning)
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-3-7-sonnet-20250219";
+/// Anthropic live models API endpoint
+pub const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
+/// Default thinking token budget when reasoning is enabled
+#[allow(dead_code)]
+pub const DEFAULT_THINKING_BUDGET_TOKENS: usize = 16_000;
+/// Minimum token budget required by Anthropic extended thinking
+pub const MIN_THINKING_BUDGET_TOKENS: usize = 1024;
+/// Maximum thinking token budget allowed
+pub const MAX_THINKING_BUDGET_TOKENS: usize = 64_000;
 /// Z.ai / Zhipu GLM default model (Free tier available)
 pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
 /// Mistral default model used when config omits one

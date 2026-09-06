@@ -69,9 +69,16 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/model",
         title: "Switch Model",
-        description: "Choose AI model or reasoning effort",
+        description: "Choose AI model or provider",
         category: CommandCategory::System,
         shortcut: Some("ctrl+l"),
+    },
+    PaletteCommand {
+        slash_name: "/thinking",
+        title: "Extended Thinking",
+        description: "Configure reasoning budget for Claude 3.7 / o1 / o3 / DeepSeek R1",
+        category: CommandCategory::System,
+        shortcut: None,
     },
     PaletteCommand {
         slash_name: "/configure",

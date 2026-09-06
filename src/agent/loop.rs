@@ -375,6 +375,8 @@ impl AgentLoop {
             temperature: self.config.provider.temperature,
             max_tokens: self.config.provider.max_tokens,
             system_instruction: Some(system_prompt),
+            thinking_budget: self.config.provider.thinking_budget,
+            reasoning_effort: self.config.provider.reasoning_effort.clone(),
         };
 
         let max_retries = DEFAULT_MAX_RETRIES;
