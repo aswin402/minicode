@@ -253,6 +253,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/dag",
     },
     CommandCatalogItem {
+        name: "/heal",
+        category: "Code & LSP",
+        shortcut: "",
+        description: "Triage compiler diagnostics and run autonomous error repair pass",
+        example: "/heal | /heal dry",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

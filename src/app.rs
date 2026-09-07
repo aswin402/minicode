@@ -1013,6 +1013,26 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/heal" || prompt.starts_with("/heal ") {
+                                    let args = prompt.strip_prefix("/heal").unwrap_or("").trim();
+                                    let dry_run = args == "dry" || args == "--dry-run";
+                                    self.timeline.add_status("⏳ Running workspace diagnostic triage & self-healing pass...".to_string());
+                                    match crate::agent::self_healing::SelfHealingEngine::heal(
+                                        &self.workspace_root,
+                                        3,
+                                        true,
+                                        dry_run,
+                                    ).await {
+                                        Ok(report) => {
+                                            self.timeline.add_status(report.format_summary(&self.workspace_root));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Self-healing diagnostic error: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2139,6 +2159,33 @@ impl<'a> App<'a> {
                                      • Reference upstream outputs with `$node_id.field` or `${node_id.field}`.\n\
                                      • Dependent tasks are automatically skipped if upstream tasks fail.".to_string()
                                 );
+                                self.modal = ModalState::None;
+                            }
+                            "/heal" => {
+                                self.timeline.add_status(
+                                    "⏳ Running workspace diagnostic triage & self-healing pass..."
+                                        .to_string(),
+                                );
+                                match crate::agent::self_healing::SelfHealingEngine::heal(
+                                    &self.workspace_root,
+                                    3,
+                                    true,
+                                    false,
+                                )
+                                .await
+                                {
+                                    Ok(report) => {
+                                        self.timeline.add_status(
+                                            report.format_summary(&self.workspace_root),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!(
+                                            "✗ Self-healing diagnostic error: {}",
+                                            e
+                                        ));
+                                    }
+                                }
                                 self.modal = ModalState::None;
                             }
                             other => {

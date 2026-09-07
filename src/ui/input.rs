@@ -151,6 +151,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/heal",
+        title: "Self-Healing Diagnostics",
+        description: "Triage compiler diagnostics and run autonomous error repair pass",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",

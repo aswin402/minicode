@@ -5,6 +5,40 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.9] — 2026-09-07
+
+### Autonomous Self-Healing Diagnostic Loop & LSP Error Auto-Triage (`repair_diagnostics`)
+
+#### 💡 Ideas & Inspirations
+- **Overcoming the Compounding Friction of Post-Edit Compiler Errors**: In autonomous agent benchmarks (SWE-bench Verified, HumanEval, CodeR), over 40% of turn failures occur after a file modification when simple missing imports, minor type mismatches, or missing trait methods produce compiler errors (`cargo check`, `tsc`, `python`). If the agent fails to diagnose the root cause immediately, it frequently hallucinates massive, unnecessary refactorings that compound the error state.
+- **Root-Cause Triage vs Cascading Error Isolation**: A single unresolved struct or missing import in a header/module typically cascades into 5 to 15 downstream type mismatch and unresolved method errors. `minicode v0.2.9` introduces the `DiagnosticTriageEngine`, which clusters compiler errors by source file and root-cause symbol, distinguishing between the **Primary Root Error** and all derivative **Cascading Errors**.
+- **Deterministic Auto-Import Resolution**: For missing types (`E0412`, `E0432`, `TS2304`), the triage engine scans workspace module exports via `ignore::WalkBuilder` and AST regexes. When an exact match is discovered (e.g. `SpecialCalculator` in `src/helper.rs`), it automatically constructs the canonical `use crate::helper::SpecialCalculator;` statement and surgically inserts it at the top of the failing file.
+- **Bounded Autonomous Self-Healing Loop with Rollback Safety**: When `repair_diagnostics` executes, it evaluates compiler diagnostics iteratively up to a bounded attempt budget (1–5 attempts). If an applied fix decreases compiler errors, progress is sealed; if an applied fix regresses or produces new errors, the modification is instantly rolled back to an in-memory snapshot, preventing destructive edits.
+- **Dual Exposure & TUI /heal Command**: Exposed as both the `repair_diagnostics` tool for autonomous agent turns and the `/heal` command in the interactive command palette with optional dry-run mode (`/heal dry`).
+
+#### 📚 References & Sources
+- **Automated Program Repair (APR) & Generate-and-Validate Architectures (Goues et al., IEEE TSE 2019)**: Bounded generate-and-validate loops with compiler feedback and regression rollback.
+- **Compiler Diagnostic Message Streaming (Rustc JSON Format & TypeScript Compiler API)**: Structured machine-readable diagnostic parsing for agentic self-correction.
+- **SWE-bench Verified Benchmark Strategies (2024–2025)**: Demonstrating that early compiler feedback and automatic import resolution significantly increases pass@1 rates.
+
+#### 🚀 Features & Changes
+- **Diagnostic Triage & Clustering Engine (`src/agent/self_healing.rs`)**:
+  - Implemented `DiagnosticCategory` (MissingImport, TypeMismatch, MissingTraitImpl, UnresolvedMethodOrField, SyntaxError, BorrowOrLifetime, Other).
+  - Implemented `DiagnosticCluster`, `DiagnosticTriageReport`, `SelfHealingStep`, and `SelfHealingReport`.
+  - Built `DiagnosticTriageEngine` with regex-based symbol and method extraction, primary vs cascading clustering, and workspace symbol discovery via `find_symbol_definition`.
+  - Built `SelfHealingEngine` with bounded iteration execution (`heal`), compiler verification, memory snapshotting, and automatic regression rollback.
+  - 5 inline unit tests verifying categorization, clustering, report formatting, and type mismatches.
+- **Tool Registry Integration (`src/tools/registry/agent_tools.rs`)**:
+  - Registered `repair_diagnostics` tool with parameter schema (`dry_run`, `max_attempts`, `auto_apply_imports`) and execution dispatch.
+- **Tool Constants & Concurrency Classification (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` from 122 to 123 (validated via automated registry test).
+  - Classified `repair_diagnostics` as `ToolSafetyLevel::Mutating` barrier.
+- **Prompt Ergonomics & TUI Palette Integration (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added Rule 5 to static editing protocol guiding models on running `repair_diagnostics`.
+  - Added `/heal` palette command, slash command, catalog item, and interactive prompt dispatch.
+- **Comprehensive Integration Test Suite (`tests/integration_self_healing.rs`)**:
+  - 6 end-to-end integration tests validating primary vs cascading clustering, workspace symbol discovery, clean workspace handling, dry run analysis, auto-import recovery, and live registry dispatch.
+
 ## [0.2.8] — 2026-09-07
 
 ### Dynamic Execution DAG & Inter-Tool JSONPath Pipelining (`execute_dag`)

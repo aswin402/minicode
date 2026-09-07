@@ -291,6 +291,27 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "repair_diagnostics".to_string(),
+            description: "Autonomously run fast compiler/LSP diagnostics, triage and cluster errors by root cause, and execute a bounded self-healing loop to synthesize and apply surgical fixes.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, analyzes and triages compiler errors into primary root causes without modifying files (default: false)"
+                    },
+                    "max_attempts": {
+                        "type": "integer",
+                        "description": "Maximum number of self-healing repair attempts (default: 3, max: 5)"
+                    },
+                    "auto_apply_imports": {
+                        "type": "boolean",
+                        "description": "If true, automatically detects missing symbols in the workspace and inserts imports (default: true)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "evaluate_branch".to_string(),
             description: "Run automated compiler diagnostics and calculate fitness score for a speculative hypothesis branch.".to_string(),
             parameters: json!({
@@ -1378,6 +1399,20 @@ pub async fn dispatch(
 
             let report = crate::agent::dag::DagExecutor::execute(workspace_root, &dag_spec).await?;
             Ok(report.format_summary())
+        }.await),
+        "repair_diagnostics" => Some(async {
+            let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let max_attempts = parse_u64_param(args.get("max_attempts")).unwrap_or(3) as usize;
+            let auto_apply_imports = args.get("auto_apply_imports").and_then(|v| v.as_bool()).unwrap_or(true);
+
+            let report = crate::agent::self_healing::SelfHealingEngine::heal(
+                workspace_root,
+                max_attempts,
+                auto_apply_imports,
+                dry_run,
+            ).await?;
+
+            Ok(report.format_summary(workspace_root))
         }.await),
         _ => None,
     }

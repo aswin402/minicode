@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 97 (v0.2.8) Dynamic Execution DAG & Inter-Tool JSONPath Pipelining (`execute_dag`) | **Status:** ✅ Completed (122 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 98 (v0.2.9) Autonomous Self-Healing Diagnostic Loop & LSP Error Auto-Triage (`repair_diagnostics`) | **Status:** ✅ Completed (123 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1581,4 +1581,11 @@
 - [x] 97.4: Update constants (`TOTAL_TOOL_COUNT = 122`), classify `execute_dag` safety level as `Mutating` barrier in `src/tools/concurrency.rs`
 - [x] 97.5: Add `/dag` palette command and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
 - [x] 97.6: Comprehensive integration test suite (`tests/integration_tool_dag.rs`) and release bump → `v0.2.8`
-
+ 
+### Phase 98: Autonomous Self-Healing Diagnostic Loop & LSP Error Auto-Triage (v0.2.9)
+- [x] 98.1: Implement DiagnosticTriageEngine, error categorization, root symbol extraction, and primary vs cascading clustering (`src/agent/self_healing.rs`)
+- [x] 98.2: Build deterministic heuristic patch generator (missing imports, type conversions, missing trait method scaffolding)
+- [x] 98.3: Implement bounded autonomous self-healing loop with rollback on regression (`SelfHealingEngine::heal`)
+- [x] 98.4: Register `repair_diagnostics` tool in `src/tools/registry/agent_tools.rs`, update `TOTAL_TOOL_COUNT` (122 → 123), and classify in `src/tools/concurrency.rs`
+- [x] 98.5: Add `/heal` palette command and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
+- [x] 98.6: Comprehensive integration test suite (`tests/integration_self_healing.rs`) and release bump → `v0.2.9`
