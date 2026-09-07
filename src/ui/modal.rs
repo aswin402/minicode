@@ -246,6 +246,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/tx | /tx commit | /tx rollback",
     },
     CommandCatalogItem {
+        name: "/dag",
+        category: "Multi-Agent & Tools",
+        shortcut: "",
+        description: "View DAG pipeline execution syntax and active workflow templates",
+        example: "/dag",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

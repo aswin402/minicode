@@ -144,6 +144,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/dag",
+        title: "Execution DAG",
+        description: "View DAG pipeline execution syntax and active workflow templates",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",

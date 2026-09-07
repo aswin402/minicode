@@ -996,6 +996,23 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/dag" || prompt.starts_with("/dag ") {
+                                    self.timeline.add_status(
+                                        "⚡ **Dynamic Execution DAG & JSONPath Pipelining (`execute_dag`)**\n\
+                                         Compose multiple dependent tool calls into an atomic, wave-scheduled DAG.\n\n\
+                                         **Key Features:**\n\
+                                         • **Topological Waves**: Independent nodes execute concurrently in parallel waves\n\
+                                         • **JSONPath Pipelining**: Reference upstream outputs via `$node_id.path` or `${node_id.path}`\n\
+                                         • **Failure Isolation**: Upstream node failures automatically skip downstream dependents (`SkippedDependencyFailed`)\n\
+                                         • **Cycle Protection**: Strict Kahn's algorithm cycle detection\n\n\
+                                         **Example Tool Call Schema:**\n\
+                                         ```json\n\
+                                         {\n  \"name\": \"locate_and_read\",\n  \"nodes\": [\n    {\n      \"id\": \"locate\",\n      \"tool\": \"locate_fault\",\n      \"args\": { \"query\": \"auth_handler\" }\n    },\n    {\n      \"id\": \"read\",\n      \"tool\": \"read_file\",\n      \"args\": { \"path\": \"$locate.matches[0].path\", \"start_line\": \"$locate.matches[0].line\" },\n      \"depends_on\": [\"locate\"]\n    }\n  ]\n}\n\
+                                         ```".to_string()
+                                    );
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2112,6 +2129,16 @@ impl<'a> App<'a> {
                                             .add_status(format!("✗ Transaction error: {}", e));
                                     }
                                 }
+                                self.modal = ModalState::None;
+                            }
+                            "/dag" => {
+                                self.timeline.add_status(
+                                    "⚡ **Dynamic Execution DAG & JSONPath Pipelining (`execute_dag`)**\n\
+                                     Compose multiple dependent tool calls into an atomic, wave-scheduled DAG.\n\n\
+                                     • Use agent tool `execute_dag` to execute compound tool graphs in a single turn.\n\
+                                     • Reference upstream outputs with `$node_id.field` or `${node_id.field}`.\n\
+                                     • Dependent tasks are automatically skipped if upstream tasks fail.".to_string()
+                                );
                                 self.modal = ModalState::None;
                             }
                             other => {

@@ -130,7 +130,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "fanout_subagents"
         | "merge_subagent_worktree"
         | "synthesize_reproducer"
-        | "verify_reproducer" => ToolSafetyLevel::Mutating,
+        | "verify_reproducer"
+        | "execute_dag" => ToolSafetyLevel::Mutating,
 
         // Memory & Context Inspection (Read-Only)
         "read_plan"

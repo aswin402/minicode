@@ -1,6 +1,7 @@
 pub mod circuit_breaker;
 pub mod complexity;
 pub mod critic;
+pub mod dag;
 pub mod hypothesis;
 pub mod intent;
 pub mod r#loop;
@@ -20,6 +21,11 @@ pub mod task_dag;
 pub mod types;
 pub mod verification_barrier;
 
+#[allow(unused_imports)]
+pub use dag::{
+    DagCompiler, DagExecutionReport, DagExecutor, DagNodeResult, DagNodeSpec, DagSpec,
+    JsonPathResolver, NodeExecutionStatus,
+};
 #[allow(unused_imports)]
 pub use models::{ModelFetcher, ModelInfo};
 #[allow(unused_imports)]

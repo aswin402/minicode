@@ -5,6 +5,41 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] — 2026-09-07
+
+### Dynamic Execution DAG & Inter-Tool JSONPath Pipelining (`execute_dag`)
+
+#### 💡 Ideas & Inspirations
+- **Eliminating Round-Trip Token and Latency Waste in Chained Tool Workflows**: In conventional coding agent paradigms, multi-step operations require serial round-trips to the LLM (e.g., Turn $T$: `locate_fault` $\to$ Turn $T+1$: `read_file` $\to$ Turn $T+2$: `ast_replace_node`). Each transition burns 3–6 seconds in network round-trips, queueing, and prompt token re-computation for deterministic data flows.
+- **Topological Wave Scheduling (Kahn's Algorithm)**: `execute_dag` enables models or developers to submit a Directed Acyclic Graph (DAG) of heterogeneous tool calls in a single turn. Kahn's algorithm dynamically partitions the DAG into topologically ordered execution waves (`Vec<Vec<DagNodeSpec>>`). Independent read-only tools within a wave execute concurrently across Tokio green threads, while mutating tools execute sequentially with strict barrier isolation.
+- **Inter-Tool JSONPath Pipelining**: Downstream tool arguments can reference upstream tool outputs using `$node_id.path.to.field` or `${node_id.path}` syntax. The `JsonPathResolver` engine dynamically inspects upstream JSON receipts, resolving exact typed parameters (integers, strings, booleans, objects, arrays) or performing embedded template string interpolation.
+- **Cascading Failure Isolation (`SkippedDependencyFailed`)**: If an upstream node fails or returns an error, downstream dependent nodes are automatically marked `SkippedDependencyFailed` and omitted from execution, preventing cascading errors, corrupt writes, or broken transactions.
+- **Strict Cycle & Nested DAG Guarding**: The DAG compiler validates node IDs, references, and detects cyclic graphs via Kahn's algorithm before running any tools. In addition, recursive invocation of `execute_dag` within DAG nodes is strictly prevented.
+- **Unified Markdown Execution Reports**: Every DAG execution emits a concise, structured markdown report with wave execution counts, node timelines, execution durations, and individual tool output previews.
+
+#### 📚 References & Sources
+- **Topological Sorting & Wave Scheduling in Directed Graphs (Kahn, 1962)**: Partitioning acyclic dependency graphs into concurrent execution waves.
+- **JSONPath Query & Expression Pipelining (RFC 9535, IETF 2024)**: Declarative extraction of structured payloads from tool invocation outputs.
+- **Workflow Orchestration & Directed Acyclic Graph Engines (Airflow, Temporal, Argo Workflows)**: Applying data-pipelining DAG concepts to autonomous multi-tool LLM workflows.
+
+#### 🚀 Features & Changes
+- **Core DAG Engine (`src/agent/dag.rs`)**:
+  - Implemented `DagNodeSpec`, `DagSpec`, `NodeExecutionStatus`, `DagNodeResult`, and `DagExecutionReport`.
+  - Built `DagCompiler` with Kahn's algorithm topological wave sorting and cycle detection.
+  - Built `JsonPathResolver` supporting exact typed lookups, bracket indexing (`[0]`), dot navigation, and embedded template string interpolation (`${node.field}` / `$node.field`).
+  - Built `DagExecutor` with bounded async execution, concurrent read-only joins, sequential mutating writes, and recursive async sizing protection via `Box::pin`.
+  - 11 inline unit tests covering linear execution, diamond graphs, cycles, duplicate IDs, missing dependencies, and raw text wrapping.
+- **Tool Registry Integration (`src/tools/registry/agent_tools.rs`)**:
+  - Registered `execute_dag` tool with complete parameter schemas and JSON deserialization dispatch.
+- **Tool Constants & Concurrency Classification (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` from 121 to 122 (validated via automated registry test).
+  - Classified `execute_dag` as `ToolSafetyLevel::Mutating` barrier.
+- **Prompt Ergonomics & TUI Palette Integration (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added Rule 4 to static editing protocol guiding models on compound DAG pipelining.
+  - Added `/dag` palette command, slash command, catalog item, and interactive prompt dispatch.
+- **Comprehensive Integration Test Suite (`tests/integration_tool_dag.rs`)**:
+  - 7 end-to-end integration tests validating linear pipelining, fork-join diamond waves, failure cascading, cycle rejection, nested recursion guard, live registry dispatch, and template interpolation.
+
 ## [0.2.7] — 2026-09-07
 
 ### Multi-File Atomic Workspace Transactions & Semantic Rollback Journal (`begin_transaction`, `commit_transaction`, `rollback_transaction`)

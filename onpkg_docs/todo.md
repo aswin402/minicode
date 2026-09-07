@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 96 (v0.2.7) Multi-File Atomic Workspace Transactions & Semantic Rollback Journal | **Status:** ✅ Completed (121 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 97 (v0.2.8) Dynamic Execution DAG & Inter-Tool JSONPath Pipelining (`execute_dag`) | **Status:** ✅ Completed (122 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1573,8 +1573,12 @@
 - [x] 96.4: Update constants (`TOTAL_TOOL_COUNT = 121`, transaction paths) and classify tool safety in `src/tools/concurrency.rs`
 - [x] 96.5: Add `/tx` command palette and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
 - [x] 96.6: Comprehensive integration test suite (`tests/integration_workspace_transaction.rs`) and release bump → `v0.2.7`
-
-
-
-
+ 
+### Phase 97: Dynamic Execution DAG & Inter-Tool JSONPath Pipelining (v0.2.8)
+- [x] 97.1: Implement core DAG data structures, Kahn's algorithm topological wave sorting, cycle detection, and JSONPath parameter interpolation engine (`src/agent/dag.rs`)
+- [x] 97.2: Implement wave-based concurrent async executor (`DagExecutor::execute`) dispatching tool calls, handling error cascades, and skipping downstream dependents on failure
+- [x] 97.3: Register `execute_dag` tool in `src/tools/registry/agent_tools.rs` with JSON schema and tool execution handler
+- [x] 97.4: Update constants (`TOTAL_TOOL_COUNT = 122`), classify `execute_dag` safety level as `Mutating` barrier in `src/tools/concurrency.rs`
+- [x] 97.5: Add `/dag` palette command and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
+- [x] 97.6: Comprehensive integration test suite (`tests/integration_tool_dag.rs`) and release bump → `v0.2.8`
 

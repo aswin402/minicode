@@ -250,6 +250,47 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "execute_dag".to_string(),
+            description: "Execute a Directed Acyclic Graph (DAG) of interdependent tools with topological wave scheduling and inter-tool JSONPath parameter pipelining. Upstream outputs can be referenced in downstream arguments using '$node_id.path.to.field' or '${node_id.path}'.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name for this workflow DAG (default: 'workflow')"
+                    },
+                    "nodes": {
+                        "type": "array",
+                        "description": "List of tool nodes to execute in topological wave order",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique identifier for this node (e.g. 'fault_loc', 'read_code')"
+                                },
+                                "tool": {
+                                    "type": "string",
+                                    "description": "Registered tool name to execute (e.g. 'locate_fault', 'read_file', 'ast_replace_node')"
+                                },
+                                "args": {
+                                    "type": "object",
+                                    "description": "Arguments for the tool. Values can reference upstream node outputs using '$node_id.path.to.field' or '${node_id.path}'"
+                                },
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "Array of parent node IDs that must succeed before this node runs"
+                                }
+                            },
+                            "required": ["id", "tool"]
+                        }
+                    }
+                },
+                "required": ["nodes"]
+            }),
+        },
+        ToolSchema {
             name: "evaluate_branch".to_string(),
             description: "Run automated compiler diagnostics and calculate fitness score for a speculative hypothesis branch.".to_string(),
             parameters: json!({
@@ -1326,6 +1367,17 @@ pub async fn dispatch(
                 workspace_root,
                 subagent_id,
             ).await
+        }.await),
+        "execute_dag" => Some(async {
+            let dag_spec: crate::agent::dag::DagSpec = serde_json::from_value(args.clone()).map_err(|e| {
+                ToolError::InvalidArguments {
+                    name: "execute_dag".to_string(),
+                    reason: format!("Failed to parse DAG specification: {}", e),
+                }
+            })?;
+
+            let report = crate::agent::dag::DagExecutor::execute(workspace_root, &dag_spec).await?;
+            Ok(report.format_summary())
         }.await),
         _ => None,
     }
