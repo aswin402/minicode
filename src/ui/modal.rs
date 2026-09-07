@@ -267,6 +267,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/sandbox <cmd> | /sandbox --net <cmd> | /sandbox --ephemeral <cmd>",
     },
     CommandCatalogItem {
+        name: "/retrieve",
+        category: "Code & Knowledge",
+        shortcut: "",
+        description: "Multi-modal knowledge retrieval (CodeGraph, vectors, wiki, memory)",
+        example: "/retrieve <query> | /retrieve transaction rollback",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

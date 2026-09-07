@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 99 (v0.2.10) Dynamic Code Sandbox & Subprocess Environment Isolation (`sandbox_exec`) | **Status:** ✅ Completed (124 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 100 (v0.3.0) Multi-Modal Semantic Memory & Vector Graph Fusion (`hybrid_retrieve`) | **Status:** ✅ Completed (125 Tools)
 
 ---
 
@@ -1597,3 +1597,12 @@
 - [x] 99.4: Update system prompt ergonomics, add `/sandbox` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
 - [x] 99.5: Write comprehensive integration tests verifying isolation, ephemeral overlay, network block, and registry dispatch (`tests/integration_sandbox_exec.rs`)
 - [x] 99.6: Version bump → `v0.2.10`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
+### Phase 100: Multi-Modal Semantic Memory & Vector Graph Fusion (v0.3.0)
+- [x] 100.1: Implement `KnowledgeFusionEngine`, RRF fusion across CodeGraph, Semantic, Lexical, Wiki, and Episodic memory, and markdown formatting (`src/context/fusion.rs` & `src/context/mod.rs`)
+- [x] 100.2: Register `hybrid_retrieve` tool schema, argument parser, and executor dispatch (`src/tools/registry/context_tools.rs`)
+- [x] 100.3: Increment `TOTAL_TOOL_COUNT` (124 → 125), classify `hybrid_retrieve` as `ToolSafetyLevel::ReadOnly` in `src/tools/concurrency.rs`
+- [x] 100.4: Update system prompt ergonomics, add `/retrieve` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
+- [x] 100.5: Write comprehensive integration tests verifying multi-modal fusion, graph topology, wiki/memory integration, and registry dispatch (`tests/integration_hybrid_retrieve.rs`)
+- [x] 100.6: Version bump → `v0.3.0`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+

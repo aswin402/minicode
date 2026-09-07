@@ -36,6 +36,7 @@ You pair-program with the user to inspect repositories, debug code, design archi
 - **Code Review & Quality (`/review` or natural language)**: When asked to review changes or diffs, evaluate multi-dimensional quality across correctness, security, architecture, performance, and test coverage.
 - **Code Search & Navigation (`/map` or natural language)**: Autonomously leverage `locate_symbol` for instant AST declarations, `grep_search` for exact regex patterns, and `code_explore` for caller/callee graphs.
 - **CodeGraph Surgical Exploration (`/explore` or natural language)**: When asked to explore codebase architecture, understand how a feature works, find callers/callees, or assess change impact, prefer using `code_explore` and `diff_impact`. A single `code_explore` call gives you the exact symbol definition, line numbers, incoming callers, outgoing calls, and blast radius without exploratory file reads.
+- **Multi-Modal Knowledge Retrieval (`/retrieve` or natural language)**: When asked high-level architectural questions, exploring cross-cutting features, or investigating past decisions and bug fixes, autonomously use `hybrid_retrieve(query="...")`. It unifies AST CodeGraph PageRank, lexical BM25, dense semantic vectors, workspace wiki articles, and episodic memory into a single-turn synthesized briefing.
 - **Dynamic Tool Activation (`activate_tools`)**: If a specialized capability (e.g. `web`, `git`, `codegraph`, `onpkg`, `agent`, `memory`) is needed mid-turn, dynamically call `activate_tools(category="...")` to unlock that category's schemas.
 "#;
 

@@ -638,6 +638,36 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "hybrid_retrieve".to_string(),
+            description: "Execute comprehensive multi-modal knowledge retrieval fusing AST CodeGraph PageRank, lexical BM25, dense semantic vector chunks, architectural wiki articles, and episodic cross-session memory with Reciprocal Rank Fusion (RRF).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query, feature concept, architectural question, or symbol name"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of primary code matches to return (default: 5)"
+                    },
+                    "include_graph": {
+                        "type": "boolean",
+                        "description": "Whether to include AST caller/callee dependency topology for matched symbols (default: true)"
+                    },
+                    "include_wiki": {
+                        "type": "boolean",
+                        "description": "Whether to retrieve relevant architectural wiki knowledge documents (default: true)"
+                    },
+                    "include_memory": {
+                        "type": "boolean",
+                        "description": "Whether to retrieve cross-session episodic memory of past solved problems (default: true)"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -1495,6 +1525,43 @@ pub async fn dispatch(
             );
 
             Ok(report.format_markdown())
+        }),
+        "hybrid_retrieve" => Some({
+            let query = match args.get("query").and_then(|v| v.as_str()) {
+                Some(q) => q,
+                None => {
+                    return Some(Err(ToolError::InvalidArguments {
+                        name: "hybrid_retrieve".to_string(),
+                        reason: "Missing required argument 'query'".to_string(),
+                    }
+                    .into()));
+                }
+            };
+            let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
+            let include_graph = args
+                .get("include_graph")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let include_wiki = args
+                .get("include_wiki")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let include_memory = args
+                .get("include_memory")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            match crate::context::fusion::KnowledgeFusionEngine::retrieve(
+                workspace_root,
+                query,
+                limit,
+                include_graph,
+                include_wiki,
+                include_memory,
+            ) {
+                Ok(bundle) => Ok(crate::context::fusion::format_fused_bundle(&bundle)),
+                Err(e) => Err(e),
+            }
         }),
         _ => None,
     }

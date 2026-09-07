@@ -165,6 +165,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/retrieve",
+        title: "Multi-Modal Knowledge Retrieval",
+        description: "Search across CodeGraph, semantic vectors, wiki, and memory",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",

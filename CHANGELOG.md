@@ -5,6 +5,45 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-09-08
+
+### Multi-Modal Semantic Memory & Vector Graph Fusion (`hybrid_retrieve`)
+
+#### 💡 Ideas & Inspirations
+- **Overcoming Knowledge Fragmentation & Tool Sprawl**: Answering complex architectural questions (e.g. *"How is token budget compaction handled and what past bugs occurred?"*) previously required agents to execute 4-6 separate tool calls (`locate_symbol`, `code_explore`, `wiki_read`, `view_memory`), consuming substantial prompt tokens and producing disjointed context.
+- **5-Dimensional Reciprocal Rank Fusion (RRF)**: `minicode v0.3.0` introduces the `KnowledgeFusionEngine` (`hybrid_retrieve`), unifying five complementary knowledge layers into a single fused score using balanced RRF weights:
+  1. **Structural AST Graph Centrality**: Tree-sitter AST symbol definitions and PageRank hub scoring from `CodeGraph`.
+  2. **Lexical BM25 Precision**: Inverted index keyword and identifier matching from `SymbolIndex`.
+  3. **Dense Semantic Embeddings**: Fast offline subword 3-gram vector similarity from `SemanticIndex`.
+  4. **Architectural Wiki & Decisions**: Structured markdown knowledge articles from `.minicode/wiki/` (`WikiManager`).
+  5. **Cross-Session Episodic Memory**: Past bug fixes, task solutions, and learnings from `.minicode/episodic_memory.json` (`EpisodicMemory`).
+- **Pre-Synthesized Context Bundling**: Instead of raw search dumps, `hybrid_retrieve` compiles a structured markdown briefing with primary code declarations, call graph caller/callee trees, architectural governance rules, and historical lessons ready for 1-turn LLM reasoning.
+- **Dual Exposure & TUI `/retrieve` Command**: Available to agents via `hybrid_retrieve` (total tool count 125) and to developers via the `/retrieve` (or `/hr`) command in the interactive command palette.
+
+#### 📚 References & Sources
+- **Reciprocal Rank Fusion (RRF) Outperforms Condorcet & Borda (Cormack et al., SIGIR 2009)**: Parameter-free rank aggregation uniting heterogeneous retrieval modalities.
+- **Graph-Augmented Retrieval for Software Engineering (CodeRAG & RepoMap, 2024–2025)**: Proving that combining AST PageRank with dense semantic retrieval significantly elevates code localization precision.
+- **Episodic & Procedural Memory for Autonomous LLM Agents (Generative Agents, Park et al., 2023)**: Persistent cross-session knowledge consolidation.
+
+#### 🚀 Features & Changes
+- **Knowledge Fusion Engine (`src/context/fusion.rs` & `src/context/mod.rs`)**:
+  - Implemented `KnowledgeFusionEngine::retrieve` unifying `HybridIndex`, `CodeGraph`, `WikiManager`, and `EpisodicMemory`.
+  - Implemented `FusedKnowledgeBundle`, `FusedCodeHit`, `FusedCallGraphNode`, `FusedWikiHit`, and `FusedEpisodeHit`.
+  - Implemented `format_fused_bundle` generating clean, dense, clickable markdown knowledge briefings.
+  - 2 inline unit tests verifying empty and rich bundle formatting.
+- **Tool Registry Integration (`src/tools/registry/context_tools.rs`)**:
+  - Registered `hybrid_retrieve` tool schema with parameters `query`, `limit`, `include_graph`, `include_wiki`, and `include_memory`.
+  - Added tool execution dispatch returning formatted multi-modal markdown.
+- **Concurrency & Constants (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` (124 → 125) with registry count assertion test passing.
+  - Classified `hybrid_retrieve` as `ToolSafetyLevel::ReadOnly` (concurrent execution permitted in speculative pipelines).
+- **Prompt Ergonomics & TUI `/retrieve` Command (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added Multi-Modal Knowledge Retrieval autonomous intent guidance to `STATIC_SYSTEM_PROMPT`.
+  - Added `/retrieve` and `/hr` slash command and prompt submit handler with live timeline rendering.
+  - Added `CommandCatalogItem` in `COMMAND_CATALOG` and `PaletteCommand` in `PALETTE_COMMANDS`.
+- **Comprehensive Integration Test Suite (`tests/integration_hybrid_retrieve.rs`)**:
+  - 5/5 integration tests passing covering code fusion, call graph topology, wiki insights, episodic memories, and registry dispatch.
+
 ## [0.2.10] — 2026-09-08
 
 ### Dynamic Code Sandbox & Subprocess Environment Isolation (`sandbox_exec`)

@@ -144,7 +144,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "lsp_find_references"
         | "wiki_read"
         | "wiki_search"
-        | "get_next_task" => ToolSafetyLevel::ReadOnly,
+        | "get_next_task"
+        | "hybrid_retrieve" => ToolSafetyLevel::ReadOnly,
 
         // Memory & Context Mutations
         "remember_fact" | "update_fact" | "forget_fact" | "create_plan" | "log_finding"

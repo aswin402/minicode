@@ -1093,6 +1093,40 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/retrieve" || prompt.starts_with("/retrieve ") || prompt == "/hr" || prompt.starts_with("/hr ") {
+                                    let query = if let Some(stripped) = prompt.strip_prefix("/retrieve") {
+                                        stripped.trim()
+                                    } else {
+                                        prompt.strip_prefix("/hr").unwrap_or("").trim()
+                                    };
+
+                                    if query.is_empty() {
+                                        self.timeline.add_status(
+                                            "ℹ **Usage**: `/retrieve <query>` (e.g. `/retrieve transaction rollback` or `/retrieve authentication`).\n\
+                                             Executes multi-modal fusion across AST CodeGraph, BM25, semantic vectors, wiki, and episodic memory.".to_string()
+                                        );
+                                        continue;
+                                    }
+
+                                    self.timeline.add_status(format!("🔍 Retrieving multi-modal knowledge for: `{}`...", query));
+                                    match crate::context::fusion::KnowledgeFusionEngine::retrieve(
+                                        &self.workspace_root,
+                                        query,
+                                        5,
+                                        true,
+                                        true,
+                                        true,
+                                    ) {
+                                        Ok(bundle) => {
+                                            self.timeline.add_status(crate::context::fusion::format_fused_bundle(&bundle));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Knowledge retrieval error: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2260,6 +2294,12 @@ impl<'a> App<'a> {
                                      • **Usage**: Type `/sandbox <command>` or `/sandbox --ephemeral <command>` in prompt.",
                                     bwrap_status
                                 ));
+                                self.modal = ModalState::None;
+                            }
+                            "/retrieve" => {
+                                self.timeline.add_status(
+                                    "ℹ **Usage**: Type `/retrieve <query>` in prompt to execute multi-modal knowledge fusion across CodeGraph, vectors, wiki, and memory.".to_string(),
+                                );
                                 self.modal = ModalState::None;
                             }
                             other => {

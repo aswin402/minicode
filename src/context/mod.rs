@@ -15,6 +15,7 @@ pub mod donut;
 pub mod episodic;
 pub mod explorer;
 pub mod fault_localizer;
+pub mod fusion;
 pub mod governance;
 pub mod graph;
 pub mod graph_store;
@@ -45,4 +46,10 @@ pub mod working_memory;
 #[allow(unused_imports)]
 pub use fault_localizer::{
     FaultLocalizationReport, FaultLocalizer, LocalizedFileHit, LocalizedSymbol,
+};
+
+#[allow(unused_imports)]
+pub use fusion::{
+    format_fused_bundle, FusedCallGraphNode, FusedCodeHit, FusedEpisodeHit, FusedKnowledgeBundle,
+    FusedWikiHit, KnowledgeFusionEngine,
 };
