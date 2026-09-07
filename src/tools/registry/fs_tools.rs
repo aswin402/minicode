@@ -70,6 +70,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["path", "content"]
             }),
         },
+        ToolSchema {
+            name: "ast_replace_node".to_string(),
+            description: "Surgically replace an entire function, method, struct, class, enum, or interface AST node with pre-disk Tree-sitter syntax validation, scope-aligned indentation, and semantic AST diff generation.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the source file (.rs, .py, .ts, .tsx, .js, .jsx)"
+                    },
+                    "symbol": {
+                        "type": "string",
+                        "description": "Exact symbol or node name to replace (e.g. 'my_func', 'UserConfig')"
+                    },
+                    "replacement_code": {
+                        "type": "string",
+                        "description": "The complete replacement code for this AST node"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional node kind filter (e.g. 'function_item', 'struct_item', 'impl_item', 'class_definition')"
+                    }
+                },
+                "required": ["path", "symbol", "replacement_code"]
+            }),
+        },
     ]
 }
 
@@ -154,6 +180,51 @@ pub fn dispatch(
             }
 
             fs::patch_file(workspace_root, path, search, replace)
+        })()),
+        "ast_replace_node" => Some((|| {
+            let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "ast_replace_node".to_string(),
+                    reason: "Missing required argument 'path'".to_string(),
+                }
+            })?;
+            let symbol = args.get("symbol").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "ast_replace_node".to_string(),
+                    reason: "Missing required argument 'symbol'".to_string(),
+                }
+            })?;
+            let replacement = args
+                .get("replacement_code")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "ast_replace_node".to_string(),
+                    reason: "Missing required argument 'replacement_code'".to_string(),
+                })?;
+            let kind = args.get("kind").and_then(|v| v.as_str());
+
+            let validated_path =
+                crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
+
+            // Safety checkpoint before AST replacement
+            if let Some(mgr) = backup_manager {
+                if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id) {
+                    tracing::warn!(
+                        path = %validated_path.display(),
+                        error = %e,
+                        "Failed to create safety checkpoint before ast_replace_node"
+                    );
+                }
+            }
+
+            let result = crate::context::ast_transform::AstTransformer::replace_node(
+                workspace_root,
+                path,
+                symbol,
+                replacement,
+                kind,
+            )?;
+            Ok(result.format_receipt())
         })()),
         _ => None,
     }

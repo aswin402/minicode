@@ -54,9 +54,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         "read_file" | "list_dir" | "file_info" => ToolSafetyLevel::ReadOnly,
 
         // Filesystem Mutations
-        "write_file" | "patch_file" | "delete_file" | "create_dir" | "copy_file" | "move_file" => {
-            ToolSafetyLevel::Mutating
-        }
+        "write_file" | "patch_file" | "ast_replace_node" | "delete_file" | "create_dir"
+        | "copy_file" | "move_file" => ToolSafetyLevel::Mutating,
 
         // Search & AST Tools (Read-Only)
         "grep_search"
@@ -181,6 +180,7 @@ mod tests {
     fn test_mutating_tools_classified() {
         assert_eq!(classify_tool("write_file"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("patch_file"), ToolSafetyLevel::Mutating);
+        assert_eq!(classify_tool("ast_replace_node"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("exec_cmd"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("git_commit"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("fanout_subagents"), ToolSafetyLevel::Mutating);

@@ -5,6 +5,39 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] — 2026-09-07
+
+### AST-Guided Structural Infill & Semantic Code Replace (`ast_replace_node`)
+
+#### 💡 Ideas & Inspirations
+- **Overcoming the Brittle String Replacement Failure Mode**: In autonomous coding benchmarks (SWE-bench Verified, HumanEval, CodeR, Moatless Tools), over 35% of agent edit failures stem from text-based search-and-replace (`patch_file`). Slight whitespace variations, missing surrounding context lines, or comment changes cause search blocks to miss, prompting models into desperate whole-file rewrites or repetitive retry doom loops.
+- **Symbol-Level AST Replacement**: Instead of relying on line numbers or string pattern matching, `ast_replace_node` locates the exact Tree-sitter AST syntax node (function, method, struct, class, enum, trait, interface) by identifier name across Rust, Python, TypeScript, and JavaScript. The replacement operates directly on the node's byte boundaries `[start_byte..end_byte]`, leaving surrounding comments, imports, and unrelated functions untouched.
+- **In-Memory Pre-Disk Syntax Validation**: Broken code or unclosed delimiters must never reach disk. Before modifying the filesystem, `ast_replace_node` parses `replacement_code` with the language's Tree-sitter parser in memory. If syntax errors (`ERROR` or `MISSING` nodes) are detected, the write is rejected immediately and actionable syntax diagnostics (line, column, and problematic token) are returned to the LLM, enabling instantaneous self-correction.
+- **Automatic Indentation Harmonization**: When an LLM generates a function replacement, it frequently outputs code with 0 leading indentation even if the target method is nested 4 or 8 spaces deep within a class or impl block. `AstTransformer` automatically detects the base indentation of the enclosing scope and aligns the replacement code to match the surrounding file geometry seamlessly.
+- **Integrated Semantic Diff & Breaking Change Detection**: Upon successful replacement, `ast_replace_node` invokes `AstDiffEngine` to generate a structured `AstDeltaReport`, detailing signature changes, added/removed parameters, and severity-scored breaking changes.
+
+#### 📚 References & Sources
+- **Tree-sitter AST-Guided Refactoring Engines (Tree-sitter, 2024–2025)**: Fast, incremental concrete syntax tree parsing and precise byte-level node rewriting.
+- **Moatless Tools & Agentless Architectures (SWE-bench Verified Leaderboard, 2024–2025)**: Demonstrating that symbol-targeted structural replacements drastically outperform free-form text diffs.
+- **Aider & Cursor Resilient Edit Research**: Combining AST parsing with indentation harmonization to eliminate indentation drift across Python and curly-brace languages.
+
+#### 🚀 Features & Changes
+- **Core AST Replacement Engine** (`src/context/ast_transform.rs`):
+  - Added `AstReplaceResult` struct with byte counts, line mappings, and formatted receipts.
+  - Implemented `AstTransformer::replace_node` supporting Rust, Python, TypeScript, and JavaScript.
+  - Implemented `validate_syntax_in_memory` and `check_syntax_errors` for pre-disk syntax validation.
+  - Implemented `get_target_indentation` and `align_indentation` for automatic scope alignment.
+- **Tool Schema & Dispatch** (`src/tools/registry/fs_tools.rs`):
+  - Registered `ast_replace_node` schema with `path`, `symbol`, `replacement_code`, and optional `kind`.
+  - Added dispatch handler with safety checkpointing via `BackupManager`.
+- **Concurrency & Constants** (`src/constants.rs`, `src/tools/concurrency.rs`):
+  - Incremented `TOTAL_TOOL_COUNT` to 117.
+  - Classified `ast_replace_node` as `ToolSafetyLevel::Mutating`.
+- **Prompting & LLM Protocol** (`src/agent/prompt.rs`):
+  - Updated rule 2 in surgical editing protocol to guide LLMs on `ast_replace_node`.
+- **Comprehensive Integration Test Suite** (`tests/integration_ast_replace_node.rs`):
+  - 6 end-to-end integration tests covering Rust functions, Python class methods, TypeScript functions, syntax error prevention, checkpoint integration, and candidate suggestions for missing symbols.
+
 ## [0.2.5] — 2026-09-07
 
 ### Speculative Parallel Read-Only Tool Execution Pipeline (`/parallel`)

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 94 (v0.2.5) Speculative Parallel Tool Execution | **Status:** ✅ Completed (116 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 95 (v0.2.6) AST-Guided Structural Infill & Semantic Code Replace | **Status:** ✅ Completed (117 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1557,6 +1557,15 @@
 - [x] 94.4: Add parallel configuration and environment overrides (`MINICODE_PARALLEL_TOOLS`, `MINICODE_SPECULATIVE_EXECUTION`, `MINICODE_MAX_PARALLEL_TOOLS`)
 - [x] 94.5: Add `/parallel` palette command, slash command, catalog item, and runtime telemetry status card in TUI
 - [x] 94.6: Comprehensive integration test suite (`tests/integration_speculative_tools.rs`) and release bump → `v0.2.5`
+
+### Phase 95: AST-Guided Structural Infill & Semantic Code Replace (v0.2.6)
+- [x] 95.1: Implement core AST replacement engine (`src/context/ast_transform.rs`) with Tree-sitter language parsing, symbol discovery, byte-range replacement, and automated indentation alignment
+- [x] 95.2: In-memory pre-disk syntax validation with synthetic container wrapping (`impl Dummy`, `class Dummy`) ensuring corrupt edits never touch the filesystem
+- [x] 95.3: Register `ast_replace_node` tool in filesystem registry with checkpoint snapshot rollback safety (`src/tools/registry/fs_tools.rs`)
+- [x] 95.4: Classify `ast_replace_node` as `ToolSafetyLevel::Mutating` in concurrency classifier and bump `TOTAL_TOOL_COUNT` to 117
+- [x] 95.5: Update surgical editing prompt protocols in `src/agent/prompt.rs` advising LLM on node-level AST editing
+- [x] 95.6: Comprehensive integration test suite (`tests/integration_ast_replace_node.rs`) and release bump → `v0.2.6`
+
 
 
 
