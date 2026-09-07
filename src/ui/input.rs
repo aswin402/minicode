@@ -137,6 +137,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/tx",
+        title: "Workspace Transaction",
+        description: "Inspect, commit, or rollback active multi-file transaction",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 95 (v0.2.6) AST-Guided Structural Infill & Semantic Code Replace | **Status:** ✅ Completed (117 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 96 (v0.2.7) Multi-File Atomic Workspace Transactions & Semantic Rollback Journal | **Status:** ✅ Completed (121 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1565,6 +1565,15 @@
 - [x] 95.4: Classify `ast_replace_node` as `ToolSafetyLevel::Mutating` in concurrency classifier and bump `TOTAL_TOOL_COUNT` to 117
 - [x] 95.5: Update surgical editing prompt protocols in `src/agent/prompt.rs` advising LLM on node-level AST editing
 - [x] 95.6: Comprehensive integration test suite (`tests/integration_ast_replace_node.rs`) and release bump → `v0.2.6`
+
+### Phase 96: Multi-File Atomic Workspace Transactions & Semantic Rollback Journal (v0.2.7)
+- [x] 96.1: Implement core transaction engine (`src/session/transaction.rs`) with BLAKE3 hashing, pre-mutation WAL logging, atomic rollback, and commit lifecycle
+- [x] 96.2: Integrate transaction tracking into filesystem mutation tools (`write_file`, `patch_file`, `ast_replace_node`) in `src/tools/registry/fs_tools.rs`
+- [x] 96.3: Register transaction tools: `begin_transaction`, `commit_transaction`, `rollback_transaction`, `get_transaction_status`
+- [x] 96.4: Update constants (`TOTAL_TOOL_COUNT = 121`, transaction paths) and classify tool safety in `src/tools/concurrency.rs`
+- [x] 96.5: Add `/tx` command palette and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
+- [x] 96.6: Comprehensive integration test suite (`tests/integration_workspace_transaction.rs`) and release bump → `v0.2.7`
+
 
 
 

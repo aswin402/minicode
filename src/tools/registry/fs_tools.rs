@@ -96,6 +96,63 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["path", "symbol", "replacement_code"]
             }),
         },
+        ToolSchema {
+            name: "begin_transaction".to_string(),
+            description: "Begin an atomic workspace transaction with pre-mutation Write-Ahead Logging (WAL). All subsequent file mutations across the workspace are journaled for atomic commit or rollback.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Descriptive goal or reason for the transaction (e.g. 'Refactor error types and update call sites')"
+                    }
+                },
+                "required": ["description"]
+            }),
+        },
+        ToolSchema {
+            name: "commit_transaction".to_string(),
+            description: "Commit an active workspace transaction, sealing the Write-Ahead Log journal and finalizing all file modifications across the workspace.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tx_id": {
+                        "type": "string",
+                        "description": "Optional transaction ID to commit (defaults to current active transaction)"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "rollback_transaction".to_string(),
+            description: "Atomically roll back all file modifications, creations, and deletions performed in an active workspace transaction, restoring the workspace to its pre-transaction baseline.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tx_id": {
+                        "type": "string",
+                        "description": "Optional transaction ID to rollback (defaults to current active transaction)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional explanation of why the transaction was rolled back (e.g. 'Compiler verification failed on Gate 1')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "get_transaction_status".to_string(),
+            description: "Inspect the status of the current active workspace transaction or a historical transaction, detailing all affected files, hashes, and durations.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tx_id": {
+                        "type": "string",
+                        "description": "Optional transaction ID to query (defaults to current active transaction)"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -145,7 +202,22 @@ pub fn dispatch(
                 }
             }
 
-            fs::write_file(workspace_root, path, content)
+            // Transaction WAL pre-mutation hook
+            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
+                workspace_root,
+                &validated_path,
+            ) {
+                tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for write_file");
+            }
+
+            let res = fs::write_file(workspace_root, path, content);
+            if res.is_ok() {
+                let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                    workspace_root,
+                    &validated_path,
+                );
+            }
+            res
         })()),
         "patch_file" => Some((|| {
             let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -179,7 +251,22 @@ pub fn dispatch(
                 }
             }
 
-            fs::patch_file(workspace_root, path, search, replace)
+            // Transaction WAL pre-mutation hook
+            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
+                workspace_root,
+                &validated_path,
+            ) {
+                tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for patch_file");
+            }
+
+            let res = fs::patch_file(workspace_root, path, search, replace);
+            if res.is_ok() {
+                let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                    workspace_root,
+                    &validated_path,
+                );
+            }
+            res
         })()),
         "ast_replace_node" => Some((|| {
             let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
@@ -217,6 +304,18 @@ pub fn dispatch(
                 }
             }
 
+            // Transaction WAL pre-mutation hook
+            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
+                workspace_root,
+                &validated_path,
+            ) {
+                tracing::warn!(
+                    path = %validated_path.display(),
+                    error = %e,
+                    "Failed to record transaction pre-mutation hook for ast_replace_node"
+                );
+            }
+
             let result = crate::context::ast_transform::AstTransformer::replace_node(
                 workspace_root,
                 path,
@@ -224,8 +323,52 @@ pub fn dispatch(
                 replacement,
                 kind,
             )?;
+            let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                workspace_root,
+                &validated_path,
+            );
             Ok(result.format_receipt())
         })()),
+        "begin_transaction" => Some((|| {
+            let desc = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "begin_transaction".to_string(),
+                    reason: "Missing required argument 'description'".to_string(),
+                })?;
+            let manifest =
+                crate::session::transaction::TransactionManager::begin(workspace_root, desc)?;
+            Ok(format!(
+                "✔ Began atomic workspace transaction '{}' for: {}\nAll subsequent file modifications will be journaled in the WAL and can be atomically rolled back.",
+                manifest.tx_id, manifest.description
+            ))
+        })()),
+        "commit_transaction" => Some((|| {
+            let tx_id = args.get("tx_id").and_then(|v| v.as_str());
+            let receipt =
+                crate::session::transaction::TransactionManager::commit(workspace_root, tx_id)?;
+            Ok(receipt.format_receipt())
+        })()),
+        "rollback_transaction" => Some((|| {
+            let tx_id = args.get("tx_id").and_then(|v| v.as_str());
+            let reason = args.get("reason").and_then(|v| v.as_str());
+            let receipt = crate::session::transaction::TransactionManager::rollback(
+                workspace_root,
+                tx_id,
+                reason,
+            )?;
+            Ok(receipt.format_receipt())
+        })()),
+        "get_transaction_status" => {
+            Some((|| {
+                let tx_id = args.get("tx_id").and_then(|v| v.as_str());
+                match crate::session::transaction::TransactionManager::status(workspace_root, tx_id)? {
+                Some(receipt) => Ok(receipt.format_receipt()),
+                None => Ok("No active workspace transaction. Workspace is in direct modification mode.".to_string()),
+            }
+            })())
+        }
         _ => None,
     }
 }

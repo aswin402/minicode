@@ -5,6 +5,42 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] — 2026-09-07
+
+### Multi-File Atomic Workspace Transactions & Semantic Rollback Journal (`begin_transaction`, `commit_transaction`, `rollback_transaction`)
+
+#### 💡 Ideas & Inspirations
+- **Preventing Dirty Workspace States in Multi-File Refactorings**: In real-world software engineering, architectural modifications (updating a trait definition, refactoring an enum, modifying API parameters) routinely touch 3 to 10+ files. If an agent applies edits to files 1 and 2, but fails syntax validation or compiler verification on file 3, conventional agents leave the working tree in a broken, half-modified state. The developer or agent must then tediously trace and revert individual changes manually.
+- **ACID-Like Workspace Transactions with Write-Ahead Logging (WAL)**: `minicode v0.2.7` introduces first-class multi-file atomic transactions. When `begin_transaction` is called, a persistent transaction session is initialized under `.minicode/transactions/<tx_id>/`. Any subsequent filesystem mutation tools (`write_file`, `patch_file`, `ast_replace_node`) automatically trigger pre-mutation WAL hooks that snapshot the exact initial baseline state before the first write. Even if a file is edited multiple consecutive times within the same transaction, its pre-transaction baseline is preserved immutable.
+- **One-Step Atomic Rollback & State Restoration**: If compiler verification, test suites, or verification barrier gates fail, calling `rollback_transaction` instantly reverses all operations in reverse chronological order: modified files are restored from byte-for-byte snapshots, newly created files are purged, and deleted files are recovered. The workspace returns to a 100% clean baseline without git stash gymnastics.
+- **Dual-Mode Ergonomics (Agent Tools + Interactive TUI Command `/tx`)**: Transactions are exposed as both 4 LLM tool schemas (`begin_transaction`, `commit_transaction`, `rollback_transaction`, `get_transaction_status`) for autonomous agent reasoning, and interactive palette slash commands (`/tx`, `/tx begin <desc>`, `/tx commit`, `/tx rollback`) for human pairing in the TUI.
+- **Verification Barrier & Recency Context Integration**: The recency context dynamically injects `<active_transaction>` tags when an atomic transaction is open, keeping the model continuously conscious of tracked files and allowing the 4-Gate Verification Barrier to guide atomic rollbacks when validation gates fail.
+
+#### 📚 References & Sources
+- **Database Write-Ahead Logging (WAL) & Shadow Paging (Gray & Reuter, Transaction Processing, 1992)**: Pre-mutation baseline snapshotting and write-ahead journaling for atomic multi-resource rollbacks.
+- **Software Transactional Memory (STM) & Workspace Isolation**: Applying transactional boundary semantics to local repository workspaces to eliminate half-broken refactoring states.
+- **SWE-bench Verified Failure Analysis (2024–2025)**: Demonstrating that multi-file refactoring rollbacks prevent error compounding across autonomous agent trajectories.
+
+#### 🚀 Features & Changes
+- **Core Transaction Engine** (`src/session/transaction.rs`):
+  - Created `TransactionManifest`, `FileOperationRecord`, `TransactionReceipt`, and `RollbackReceipt`.
+  - Implemented `TransactionManager` with `begin`, `commit`, `rollback`, `status`, `record_mutation_pre`, `record_mutation_post`, and `compute_file_hash`.
+  - Added unit test suite verifying single-transaction exclusivity, multi-file commits, and pristine baseline rollback.
+- **Filesystem Tool Registry Integration** (`src/tools/registry/fs_tools.rs`):
+  - Registered 4 new tools: `begin_transaction`, `commit_transaction`, `rollback_transaction`, `get_transaction_status`.
+  - Wired WAL pre-mutation hooks into `write_file`, `patch_file`, and `ast_replace_node`.
+- **Constants & Tool Registry Synchronization** (`src/constants.rs`, `src/tools/concurrency.rs`):
+  - Incremented `TOTAL_TOOL_COUNT` from 117 to 121 (verified via automated registry test).
+  - Classified transaction tools in concurrency engine (`get_transaction_status` as ReadOnly, mutations as Mutating).
+  - Added transaction directory constants (`TRANSACTIONS_DIR_NAME`, `TRANSACTION_ACTIVE_FILE`, `TRANSACTION_MANIFEST_FILE`, `TRANSACTION_BACKUP_DIR_NAME`).
+- **Prompt Ergonomics & Recency Context** (`src/agent/prompt.rs`):
+  - Added Rule 3 to static editing guidelines advising models to use transactions for multi-file refactoring.
+  - Dynamically injected `<active_transaction>` context into Zone 3 recency tail.
+- **TUI & Command Palette Integration** (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`):
+  - Added `/tx` and `/transaction` palette command, slash command, catalog item, and interactive prompt dispatch.
+- **Comprehensive Integration Test Suite** (`tests/integration_workspace_transaction.rs`):
+  - 6 end-to-end integration tests validating transaction begin, multi-file mutations, AST replaces, atomic rollback, duplicate prevention, and consecutive edits.
+
 ## [0.2.6] — 2026-09-07
 
 ### AST-Guided Structural Infill & Semantic Code Replace (`ast_replace_node`)

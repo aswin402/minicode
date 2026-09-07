@@ -928,6 +928,74 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/tx" || prompt.starts_with("/tx ") || prompt == "/transaction" || prompt.starts_with("/transaction ") {
+                                    let remainder = if let Some(r) = prompt.strip_prefix("/transaction") {
+                                        r.trim()
+                                    } else {
+                                        prompt.strip_prefix("/tx").unwrap_or("").trim()
+                                    };
+
+                                    match remainder.to_lowercase().as_str() {
+                                        "" | "status" => {
+                                            match crate::session::transaction::TransactionManager::status(&self.workspace_root, None) {
+                                                Ok(Some(receipt)) => {
+                                                    self.timeline.add_status(receipt.format_receipt());
+                                                }
+                                                Ok(None) => {
+                                                    self.timeline.add_status("ℹ No active workspace transaction. Workspace is in direct modification mode.\n\nUse `/tx begin <description>` to start an atomic transaction.".to_string());
+                                                }
+                                                Err(e) => {
+                                                    self.timeline.add_status(format!("✗ Error retrieving transaction status: {}", e));
+                                                }
+                                            }
+                                        }
+                                        "commit" => {
+                                            match crate::session::transaction::TransactionManager::commit(&self.workspace_root, None) {
+                                                Ok(receipt) => {
+                                                    self.timeline.add_status(receipt.format_receipt());
+                                                }
+                                                Err(e) => {
+                                                    self.timeline.add_status(format!("✗ Transaction commit failed: {}", e));
+                                                }
+                                            }
+                                        }
+                                        "rollback" => {
+                                            match crate::session::transaction::TransactionManager::rollback(&self.workspace_root, None, Some("Manual user rollback from /tx")) {
+                                                Ok(receipt) => {
+                                                    self.timeline.add_status(receipt.format_receipt());
+                                                }
+                                                Err(e) => {
+                                                    self.timeline.add_status(format!("✗ Transaction rollback failed: {}", e));
+                                                }
+                                            }
+                                        }
+                                        other if other.starts_with("begin ") => {
+                                            let desc = other.strip_prefix("begin ").unwrap_or("").trim();
+                                            match crate::session::transaction::TransactionManager::begin(&self.workspace_root, desc) {
+                                                Ok(manifest) => {
+                                                    self.timeline.add_status(format!(
+                                                        "✔ Began atomic workspace transaction '{}' for: {}\nAll subsequent file modifications will be journaled in the WAL and can be atomically rolled back.",
+                                                        manifest.tx_id, manifest.description
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    self.timeline.add_status(format!("✗ Failed to begin transaction: {}", e));
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            self.timeline.add_status(
+                                                "📦 **Workspace Transaction Commands:**\n\
+                                                 • `/tx` — Show active transaction status and affected files\n\
+                                                 • `/tx begin <desc>` — Start a new atomic workspace transaction\n\
+                                                 • `/tx commit` — Commit active transaction and seal WAL journal\n\
+                                                 • `/tx rollback` — Revert all modified/created/deleted files in transaction".to_string()
+                                            );
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2026,6 +2094,24 @@ impl<'a> App<'a> {
                                     self.config.agent.max_parallel_tools,
                                 );
                                 self.timeline.add_status(status_msg);
+                                self.modal = ModalState::None;
+                            }
+                            "/tx" | "/transaction" => {
+                                match crate::session::transaction::TransactionManager::status(
+                                    &self.workspace_root,
+                                    None,
+                                ) {
+                                    Ok(Some(receipt)) => {
+                                        self.timeline.add_status(receipt.format_receipt());
+                                    }
+                                    Ok(None) => {
+                                        self.timeline.add_status("ℹ No active workspace transaction. Use `/tx begin <desc>` or agent tool `begin_transaction` to start one.".to_string());
+                                    }
+                                    Err(e) => {
+                                        self.timeline
+                                            .add_status(format!("✗ Transaction error: {}", e));
+                                    }
+                                }
                                 self.modal = ModalState::None;
                             }
                             other => {

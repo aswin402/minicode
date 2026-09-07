@@ -35,6 +35,14 @@ pub const MCP_CONFIG_FILE: &str = "mcp.json";
 pub const SESSIONS_DIR_NAME: &str = "sessions";
 /// Workspace backup subdirectory name (.minicode/backups)
 pub const BACKUPS_DIR_NAME: &str = "backups";
+/// Workspace transactions subdirectory name (.minicode/transactions)
+pub const TRANSACTIONS_DIR_NAME: &str = "transactions";
+/// Workspace active transaction pointer filename (active_tx.json)
+pub const TRANSACTION_ACTIVE_FILE: &str = "active_tx.json";
+/// Transaction manifest filename (manifest.json)
+pub const TRANSACTION_MANIFEST_FILE: &str = "manifest.json";
+/// Transaction backup subdirectory name (backup)
+pub const TRANSACTION_BACKUP_DIR_NAME: &str = "backup";
 /// Standard skill definition markdown filename
 #[allow(dead_code)]
 pub const SKILL_MD_FILE: &str = "SKILL.md";
@@ -657,7 +665,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 117;
+pub const TOTAL_TOOL_COUNT: usize = 121;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

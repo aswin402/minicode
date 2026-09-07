@@ -51,11 +51,21 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
     match name {
         // Filesystem Inspection (Read-Only)
-        "read_file" | "list_dir" | "file_info" => ToolSafetyLevel::ReadOnly,
+        "read_file" | "list_dir" | "file_info" | "get_transaction_status" => {
+            ToolSafetyLevel::ReadOnly
+        }
 
-        // Filesystem Mutations
-        "write_file" | "patch_file" | "ast_replace_node" | "delete_file" | "create_dir"
-        | "copy_file" | "move_file" => ToolSafetyLevel::Mutating,
+        // Filesystem Mutations & Transactions
+        "write_file"
+        | "patch_file"
+        | "ast_replace_node"
+        | "delete_file"
+        | "create_dir"
+        | "copy_file"
+        | "move_file"
+        | "begin_transaction"
+        | "commit_transaction"
+        | "rollback_transaction" => ToolSafetyLevel::Mutating,
 
         // Search & AST Tools (Read-Only)
         "grep_search"

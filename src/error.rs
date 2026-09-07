@@ -178,6 +178,15 @@ pub enum SessionError {
     #[allow(dead_code)]
     #[error("Corrupted session file at {path}: line {line_number}")]
     CorruptedFile { path: String, line_number: usize },
+
+    #[error("Transaction error: {0}")]
+    Transaction(String),
+
+    #[error("Active transaction already exists: '{0}'")]
+    TransactionActive(String),
+
+    #[error("No active transaction found")]
+    NoActiveTransaction,
 }
 
 #[derive(Error, Debug)]

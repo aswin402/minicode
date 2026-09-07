@@ -239,6 +239,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/parallel | /parallel on | /parallel 8",
     },
     CommandCatalogItem {
+        name: "/tx",
+        category: "Session & Undo",
+        shortcut: "",
+        description: "Inspect, commit, or rollback active multi-file transaction",
+        example: "/tx | /tx commit | /tx rollback",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",
