@@ -1033,6 +1033,66 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/sandbox" || prompt.starts_with("/sandbox ") || prompt == "/sb" || prompt.starts_with("/sb ") {
+                                    let raw_args = if let Some(stripped) = prompt.strip_prefix("/sandbox") {
+                                        stripped.trim()
+                                    } else {
+                                        prompt.strip_prefix("/sb").unwrap_or("").trim()
+                                    };
+
+                                    if raw_args.is_empty() {
+                                        let bwrap_status = if crate::sandbox::is_bwrap_available() {
+                                            "Bubblewrap (unprivileged namespaces) AVAILABLE"
+                                        } else {
+                                            "Bubblewrap not installed (using Landlock / process isolation)"
+                                        };
+                                        self.timeline.add_status(format!(
+                                            "🛡️ **Dynamic Code Sandbox (`/sandbox`)**\n\
+                                             • **Active Backend**: {}\n\
+                                             • **Default Isolation**: Network BLOCKED, Workspace Read-Write, Ephemeral Off\n\
+                                             • **Usage Options**:\n\
+                                               - `/sandbox <cmd>`: Run command with network isolated\n\
+                                               - `/sandbox --net <cmd>`: Allow network access\n\
+                                               - `/sandbox --ro <cmd>`: Read-only workspace protection\n\
+                                               - `/sandbox --ephemeral <cmd>`: Discard all disk writes upon exit",
+                                            bwrap_status
+                                        ));
+                                        continue;
+                                    }
+
+                                    let mut policy = crate::sandbox::SandboxPolicy::default();
+                                    let mut cmd_to_run = raw_args;
+                                    loop {
+                                        if let Some(rest) = cmd_to_run.strip_prefix("--net ") {
+                                            policy.allow_network = true;
+                                            cmd_to_run = rest.trim();
+                                        } else if let Some(rest) = cmd_to_run.strip_prefix("--ro ") {
+                                            policy.read_only_workspace = true;
+                                            cmd_to_run = rest.trim();
+                                        } else if let Some(rest) = cmd_to_run.strip_prefix("--ephemeral ") {
+                                            policy.ephemeral_overlay = true;
+                                            cmd_to_run = rest.trim();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+
+                                    self.timeline.add_status(format!(
+                                        "⏳ Running sandboxed command: `{}` (net: {}, ro: {}, ephemeral: {})...",
+                                        cmd_to_run, policy.allow_network, policy.read_only_workspace, policy.ephemeral_overlay
+                                    ));
+
+                                    match crate::sandbox::run_sandboxed(&self.workspace_root, cmd_to_run, &policy).await {
+                                        Ok(res) => {
+                                            self.timeline.add_status(crate::sandbox::format_sandbox_result(&res));
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("✗ Sandbox execution error: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2186,6 +2246,20 @@ impl<'a> App<'a> {
                                         ));
                                     }
                                 }
+                                self.modal = ModalState::None;
+                            }
+                            "/sandbox" => {
+                                let bwrap_status = if crate::sandbox::is_bwrap_available() {
+                                    "Bubblewrap (unprivileged namespaces) AVAILABLE"
+                                } else {
+                                    "Bubblewrap not installed (using Landlock / process isolation)"
+                                };
+                                self.timeline.add_status(format!(
+                                    "🛡️ **Dynamic Code Sandbox (`/sandbox`)**\n\
+                                     • **Active Backend**: {}\n\
+                                     • **Usage**: Type `/sandbox <command>` or `/sandbox --ephemeral <command>` in prompt.",
+                                    bwrap_status
+                                ));
                                 self.modal = ModalState::None;
                             }
                             other => {

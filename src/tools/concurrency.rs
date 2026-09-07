@@ -106,7 +106,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "resolve_git_conflicts" => ToolSafetyLevel::Mutating,
 
         // Terminal / Command Execution (Mutating Barrier)
-        "exec_cmd" => ToolSafetyLevel::Mutating,
+        "exec_cmd" | "sandbox_exec" => ToolSafetyLevel::Mutating,
 
         // Web & Browser Tools
         "search_web" | "fetch_or_browse" | "browser_snapshot" => ToolSafetyLevel::ReadOnly,

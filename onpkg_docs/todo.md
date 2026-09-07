@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 98 (v0.2.9) Autonomous Self-Healing Diagnostic Loop & LSP Error Auto-Triage (`repair_diagnostics`) | **Status:** ✅ Completed (123 Tools, 0 Warnings, Clean Clippy)
+> **Current Phase:** Phase 99 (v0.2.10) Dynamic Code Sandbox & Subprocess Environment Isolation (`sandbox_exec`) | **Status:** ✅ Completed (124 Tools, 0 Warnings, Clean Clippy)
 
 ---
 
@@ -1589,3 +1589,11 @@
 - [x] 98.4: Register `repair_diagnostics` tool in `src/tools/registry/agent_tools.rs`, update `TOTAL_TOOL_COUNT` (122 → 123), and classify in `src/tools/concurrency.rs`
 - [x] 98.5: Add `/heal` palette command and slash command in TUI (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`) and update prompt ergonomics in `src/agent/prompt.rs`
 - [x] 98.6: Comprehensive integration test suite (`tests/integration_self_healing.rs`) and release bump → `v0.2.9`
+
+### Phase 99: Dynamic Code Sandbox & Subprocess Environment Isolation (v0.2.10)
+- [x] 99.1: Implement `SandboxPolicy`, `SandboxExecutor`, Bubblewrap/Landlock/Process isolation backends, ephemeral scratchpad overlay, and resource limiting (`src/sandbox/dynamic.rs` & `src/sandbox/mod.rs`)
+- [x] 99.2: Register `sandbox_exec` tool schema, argument parser, and executor dispatch (`src/tools/registry/exec_tools.rs`)
+- [x] 99.3: Increment `TOTAL_TOOL_COUNT` (123 → 124), classify `"sandbox_exec"` as `ToolSafetyLevel::Mutating` barrier, update constants (`src/constants.rs`, `src/tools/concurrency.rs`)
+- [x] 99.4: Update system prompt ergonomics, add `/sandbox` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
+- [x] 99.5: Write comprehensive integration tests verifying isolation, ephemeral overlay, network block, and registry dispatch (`tests/integration_sandbox_exec.rs`)
+- [x] 99.6: Version bump → `v0.2.10`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push

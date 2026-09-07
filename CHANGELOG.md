@@ -5,6 +5,48 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] — 2026-09-08
+
+### Dynamic Code Sandbox & Subprocess Environment Isolation (`sandbox_exec`)
+
+#### 💡 Ideas & Inspirations
+- **Protecting Host Stability & Preventing Accidental File Destruction**: Autonomous coding agents frequently generate and execute scripts, test runners, build systems, or third-party dependencies that carry substantial risks of destructive side effects, runaway memory/CPU loops, or unintended filesystem mutations outside target files.
+- **Multi-Tiered Layered Defense Architecture**: `minicode v0.2.10` introduces a dynamic, multi-tiered sandbox engine (`sandbox_exec`) that auto-negotiates the most secure available isolation tier on the host system:
+  - **Tier 1: Bubblewrap (`bwrap`) Unprivileged Linux Namespaces**: Employs user, IPC, PID, UTS, and network namespaces (`--unshare-all`, `--unshare-net`, `--tmpfs /tmp`, `--ro-bind-try`, `--die-with-parent`) to guarantee that child processes are completely sealed from unauthorized network exfiltration, host process inspection, and unauthorized directory writes without requiring root or setuid privileges.
+  - **Tier 2: Linux Landlock Kernel LSM & POSIX RLimits**: If Bubblewrap is unavailable, seamlessly applies kernel-level Landlock filesystem access control and TCP socket restrictions combined with in-process `libc::setrlimit` (`RLIMIT_AS` virtual memory ceilings, `RLIMIT_CPU` core time limits).
+  - **Tier 3: Sanitized Process-Isolated Execution**: Cross-platform fallback (macOS, Windows, Linux) stripping secrets and blocked prefixes from environment variables, enforcing process group (`process_group(0)`) lifecycle management, wall-clock timeouts, and ephemeral workspace clones.
+- **Deterministic Ephemeral Scratchpad Overlays**: When `ephemeral=true`, commands execute inside an isolated temporary directory where any generated build outputs, scratch files, or log files are detected, audited, and discarded upon process completion without leaving dirty artifacts in the git working tree.
+- **Read-Only Workspace & Network Policy Enforcement**: `read_only=true` prevents any modification to workspace files (triggering `Read-only file system` errors on write attempts), while `allow_network=false` blocks all external TCP/socket connectivity.
+- **Dual Exposure & TUI `/sandbox` Command**: Available to autonomous LLM turns via the `sandbox_exec` tool (total count 124) and to human developers via the `/sandbox` (or `/sb`) command in the interactive command palette with `--net`, `--ro`, and `--ephemeral` flag parsing.
+
+#### 📚 References & Sources
+- **Project Bubblewrap (bwrap, GNOME / Flatpak sandbox)**: Unprivileged containerization leveraging Linux user namespaces, bind mounts, and pivot_root isolation.
+- **Linux Landlock LSM (Kernel 5.13+)**: Unprivileged access-control security module for filesystem hierarchy sandboxing and network connection blocking.
+- **POSIX Resource Limits (`setrlimit(2)`)**: Process-level virtual memory ceilings (`RLIMIT_AS`) and CPU runtime limits (`RLIMIT_CPU`).
+- **SWE-bench & SWE-agent Sandboxed Evaluation Standards (2024–2025)**: Hermetic environment isolation preventing contamination across successive benchmark runs.
+
+#### 🚀 Features & Changes
+- **Dynamic Code Sandbox Engine (`src/sandbox/dynamic.rs` & `src/sandbox/mod.rs`)**:
+  - Implemented `SandboxBackendType` (Bubblewrap, Landlock, ProcessIsolated).
+  - Implemented `SandboxPolicy` with `allow_network`, `read_only_workspace`, `ephemeral_overlay`, `timeout_secs`, `max_memory_mb`, `max_cpu_seconds`, and `extra_env`.
+  - Implemented `SandboxExecutionResult` tracking output, exit codes, execution duration, discarded files, and security flags.
+  - Built `EphemeralDir` RAII guard with UUID-based tempdir isolation and automatic cleanup on drop.
+  - Built `run_bwrap`, `run_landlock_or_isolated`, and `execute_std_command_with_limits` with bounded async I/O, process group signal management, and compactor integration.
+  - Implemented `format_sandbox_result` generating clean, informative execution narrative summaries.
+- **Tool Registry Integration (`src/tools/registry/exec_tools.rs`)**:
+  - Registered `sandbox_exec` tool schema with validation for command, allow_network, read_only, ephemeral, timeout_secs, max_memory_mb, and extra_env.
+  - Implemented `dispatch` handler invoking `run_sandboxed`.
+- **Concurrency & Tool Constants (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` (123 → 124) with registry count assertion test passing.
+  - Classified `sandbox_exec` as `ToolSafetyLevel::Mutating` barrier.
+  - Added `sandbox_exec` to `APPROVAL_REQUIRED_TOOLS`.
+- **Prompt Ergonomics & TUI `/sandbox` Command (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added Rule 6 to `SYSTEM_PROMPT` explaining when to use `sandbox_exec`.
+  - Added `/sandbox` and `/sb` slash command and prompt submit handler with automatic flag parsing (`--net`, `--ro`, `--ephemeral`).
+  - Added `CommandCatalogItem` in `COMMAND_CATALOG` and `PaletteCommand` in `PALETTE_COMMANDS`.
+- **Comprehensive Integration Test Suite (`tests/integration_sandbox_exec.rs`)**:
+  - 7/7 integration tests passing covering basic execution, network isolation, read-only protection, ephemeral overlays, timeout termination, custom environment variables, and registry dispatch.
+
 ## [0.2.9] — 2026-09-07
 
 ### Autonomous Self-Healing Diagnostic Loop & LSP Error Auto-Triage (`repair_diagnostics`)

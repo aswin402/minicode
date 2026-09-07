@@ -431,7 +431,8 @@ pub const MAX_PARALLEL_TOOLS_CAP: usize = 16;
 
 // === Approval Enforcement ===
 /// Tools that require user approval before dispatch when running in strict mode
-pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &["write_file", "patch_file", "exec_cmd"];
+pub const APPROVAL_REQUIRED_TOOLS: &[&str] =
+    &["write_file", "patch_file", "exec_cmd", "sandbox_exec"];
 
 // === Security Limits ===
 /// Maximum allowed web response size in bytes (10 MB) to prevent OOM
@@ -665,7 +666,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 123;
+pub const TOTAL_TOOL_COUNT: usize = 124;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

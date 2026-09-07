@@ -260,6 +260,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/heal | /heal dry",
     },
     CommandCatalogItem {
+        name: "/sandbox",
+        category: "Execution & Security",
+        shortcut: "",
+        description: "Run command in isolated sandbox (network/fs/overlay protection)",
+        example: "/sandbox <cmd> | /sandbox --net <cmd> | /sandbox --ephemeral <cmd>",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

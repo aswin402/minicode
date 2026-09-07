@@ -8,6 +8,16 @@ use std::path::Path;
 /// Blocks TCP network operations if supported.
 #[cfg(target_os = "linux")]
 pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Result<()> {
+    apply_landlock_sandbox_with_opts(workspace_root, allow_network, false)
+}
+
+/// Applies Linux Landlock security restrictions with configurable read-only workspace option.
+#[cfg(target_os = "linux")]
+pub fn apply_landlock_sandbox_with_opts(
+    workspace_root: &Path,
+    allow_network: bool,
+    read_only: bool,
+) -> Result<()> {
     use landlock::{
         Access, AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
         ABI,
@@ -73,10 +83,15 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
         }
     };
 
-    // Allow read/write within workspace root
+    // Allow read/write or read-only within workspace root
     if let Ok(workspace_fd) = PathFd::new(workspace_root) {
+        let access = if read_only {
+            AccessFs::from_read(ABI::V1)
+        } else {
+            AccessFs::from_all(ABI::V1)
+        };
         ruleset_created = ruleset_created
-            .add_rule(PathBeneath::new(workspace_fd, AccessFs::from_all(ABI::V1)))
+            .add_rule(PathBeneath::new(workspace_fd, access))
             .map_err(|e| SecurityError::Landlock(format!("Failed to add workspace rule: {}", e)))?;
     }
 
@@ -169,6 +184,16 @@ pub fn apply_landlock_sandbox(workspace_root: &Path, allow_network: bool) -> Res
 
 #[cfg(not(target_os = "linux"))]
 pub fn apply_landlock_sandbox(_workspace_root: &Path, _allow_network: bool) -> Result<()> {
+    tracing::debug!("Landlock is Linux-only; skipping on this platform");
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn apply_landlock_sandbox_with_opts(
+    _workspace_root: &Path,
+    _allow_network: bool,
+    _read_only: bool,
+) -> Result<()> {
     tracing::debug!("Landlock is Linux-only; skipping on this platform");
     Ok(())
 }
