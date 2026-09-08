@@ -73,4 +73,26 @@ mod tests {
         assert!(popup.x + popup.width <= screen.width);
         assert!(popup.y + popup.height <= screen.height);
     }
+
+    #[test]
+    fn test_compute_scroll_offset() {
+        assert_eq!(compute_scroll_offset(0, 5), 0);
+        assert_eq!(compute_scroll_offset(4, 5), 0);
+        assert_eq!(compute_scroll_offset(5, 5), 1);
+        assert_eq!(compute_scroll_offset(10, 5), 6);
+        assert_eq!(compute_scroll_offset(3, 0), 0);
+    }
+}
+
+/// Computes the scroll offset for a list widget so that the selected item remains visible.
+#[must_use]
+pub fn compute_scroll_offset(selected_index: usize, max_visible: usize) -> usize {
+    if max_visible == 0 {
+        return 0;
+    }
+    if selected_index < max_visible {
+        0
+    } else {
+        selected_index.saturating_sub(max_visible - 1)
+    }
 }

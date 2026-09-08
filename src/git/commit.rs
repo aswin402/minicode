@@ -147,13 +147,7 @@ impl<'a> GitCommitService<'a> {
             let cleaned = summary
                 .trim_start_matches(|c: char| !c.is_alphanumeric())
                 .trim();
-            if cleaned.len() > GIT_COMMIT_MSG_MAX_LEN - 15 {
-                let mut truncated = cleaned[..GIT_COMMIT_MSG_MAX_LEN - 18].to_string();
-                truncated.push_str("...");
-                truncated
-            } else {
-                cleaned.to_string()
-            }
+            crate::utils::strings::truncate_display(cleaned, GIT_COMMIT_MSG_MAX_LEN - 15)
         } else if files_modified.len() == 1 {
             format!("update {}", files_modified[0])
         } else {

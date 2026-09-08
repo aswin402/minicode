@@ -1,6 +1,6 @@
 use crate::agent::provider::ToolSchema;
-use crate::error::{Result, ToolError};
-use crate::tools::parse_u64_param;
+use crate::error::Result;
+use crate::tools::param::*;
 use crate::tools::search;
 use serde_json::json;
 use std::path::Path;
@@ -195,29 +195,14 @@ pub fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "grep_search" => Some((|| {
-            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "grep_search".to_string(),
-                    reason: "Missing required argument 'query'".to_string(),
-                }
-            })?;
-            let is_regex = args
-                .get("is_regex")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let pattern = args.get("file_pattern").and_then(|v| v.as_str());
+            let query = require_str(args, "query", "grep_search")?;
+            let is_regex = opt_bool(args, "is_regex", false);
+            let pattern = opt_str(args, "file_pattern");
             search::grep_search(workspace_root, query, is_regex, pattern)
         })()),
         "locate_symbol" => Some((|| {
-            let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "locate_symbol".to_string(),
-                    reason: "Missing required argument 'name'".to_string(),
-                }
-            })?;
-            let limit = parse_u64_param(args.get("limit"))
-                .unwrap_or(crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT as u64)
-                as usize;
+            let name = require_str(args, "name", "locate_symbol")?;
+            let limit = opt_usize(args, "limit", crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT);
             let mut index = crate::context::index::SymbolIndex::new();
             index.build_index(workspace_root)?;
             let matches = if name.contains(' ') {
@@ -233,17 +218,9 @@ pub fn dispatch(
             Ok(index.format_matches(&matches, workspace_root))
         })()),
         "hybrid_search" => Some((|| {
-            let query = args["query"]
-                .as_str()
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "hybrid_search".to_string(),
-                    reason: "Missing 'query'".to_string(),
-                })?;
-            let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
-            let include_symbols = args
-                .get("include_symbols")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let query = require_str(args, "query", "hybrid_search")?;
+            let limit = opt_usize(args, "limit", 5);
+            let include_symbols = opt_bool(args, "include_symbols", true);
 
             let mut index = crate::context::hybrid::HybridIndex::new();
             index.build_index(workspace_root)?;
@@ -254,13 +231,8 @@ pub fn dispatch(
             ))
         })()),
         "semantic_search" => Some((|| {
-            let query = args["query"]
-                .as_str()
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "semantic_search".to_string(),
-                    reason: "Missing 'query'".to_string(),
-                })?;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+            let query = require_str(args, "query", "semantic_search")?;
+            let limit = opt_usize(args, "limit", 5);
 
             let mut index = crate::context::semantic::SemanticIndex::new();
             let _ = index.build_index(workspace_root)?;
@@ -292,13 +264,8 @@ pub fn dispatch(
             }
         })()),
         "search_symbols_semantic" => Some((|| {
-            let query = args["query"]
-                .as_str()
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "search_symbols_semantic".to_string(),
-                    reason: "Missing 'query'".to_string(),
-                })?;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+            let query = require_str(args, "query", "search_symbols_semantic")?;
+            let limit = opt_usize(args, "limit", 5);
 
             let mut index = crate::context::semantic::SemanticIndex::new();
             let _ = index.build_index(workspace_root)?;
@@ -335,15 +302,9 @@ pub fn dispatch(
             }
         })()),
         "ast_query" => Some((|| {
-            let file_path =
-                args["file_path"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "ast_query".to_string(),
-                        reason: "Missing 'file_path'".to_string(),
-                    })?;
-            let node_kind = args.get("node_kind").and_then(|v| v.as_str());
-            let name_filter = args.get("name_filter").and_then(|v| v.as_str());
+            let file_path = require_str(args, "file_path", "ast_query")?;
+            let node_kind = opt_str(args, "node_kind");
+            let name_filter = opt_str(args, "name_filter");
 
             let nodes = crate::context::ast_transform::AstTransformer::query_nodes(
                 workspace_root,
@@ -377,20 +338,8 @@ pub fn dispatch(
             }
         })()),
         "ast_extract_symbol" => Some((|| {
-            let file_path =
-                args["file_path"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "ast_extract_symbol".to_string(),
-                        reason: "Missing 'file_path'".to_string(),
-                    })?;
-            let symbol_name =
-                args["symbol_name"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "ast_extract_symbol".to_string(),
-                        reason: "Missing 'symbol_name'".to_string(),
-                    })?;
+            let file_path = require_str(args, "file_path", "ast_extract_symbol")?;
+            let symbol_name = require_str(args, "symbol_name", "ast_extract_symbol")?;
 
             let node = crate::context::ast_transform::AstTransformer::extract_symbol(
                 workspace_root,
@@ -412,14 +361,8 @@ pub fn dispatch(
             Ok(report)
         })()),
         "ast_diff" => Some((|| {
-            let file_path =
-                args["file_path"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "ast_diff".to_string(),
-                        reason: "Missing 'file_path'".to_string(),
-                    })?;
-            let new_content = args.get("new_content").and_then(|v| v.as_str());
+            let file_path = require_str(args, "file_path", "ast_diff")?;
+            let new_content = opt_str(args, "new_content");
 
             let report = crate::context::ast_diff::AstDiffEngine::diff_file(
                 workspace_root,
@@ -430,14 +373,9 @@ pub fn dispatch(
             Ok(report.format_markdown())
         })()),
         "locate_fault" => Some((|| {
-            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "locate_fault".to_string(),
-                    reason: "Missing required argument 'query'".to_string(),
-                }
-            })?;
-            let max_files = parse_u64_param(args.get("max_files")).map(|v| v as usize);
-            let include_callers = args.get("include_callers").and_then(|v| v.as_bool());
+            let query = require_str(args, "query", "locate_fault")?;
+            let max_files = get_usize(args, "max_files");
+            let include_callers = get_bool(args, "include_callers");
 
             let localizer = crate::context::fault_localizer::FaultLocalizer::new(workspace_root);
             let report = localizer.localize(query, max_files, include_callers)?;

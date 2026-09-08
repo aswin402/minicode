@@ -1,7 +1,7 @@
 use crate::agent::provider::ToolSchema;
-use crate::error::{Result, ToolError};
+use crate::error::Result;
 use crate::tools::exec;
-use crate::tools::parse_u64_param;
+use crate::tools::param::*;
 use serde_json::json;
 use std::path::Path;
 
@@ -72,60 +72,46 @@ pub async fn dispatch(
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
-        "exec_cmd" => Some({
-            let cmd = match args.get("command").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "exec_cmd".to_string(),
-                        reason: "Missing required argument 'command'".to_string(),
-                    }
-                    .into()));
+        "exec_cmd" => Some(
+            async {
+                let cmd = require_str(args, "command", "exec_cmd")?;
+                let timeout = opt_u64(args, "timeout_secs");
+                exec::exec_cmd(workspace_root, cmd, timeout).await
+            }
+            .await,
+        ),
+        "sandbox_exec" => Some(
+            async {
+                let cmd = require_str(args, "command", "sandbox_exec")?;
+                let mut policy = crate::sandbox::SandboxPolicy::default();
+                if let Some(net) = get_bool(args, "allow_network") {
+                    policy.allow_network = net;
                 }
-            };
-            let timeout = parse_u64_param(args.get("timeout_secs"));
-            exec::exec_cmd(workspace_root, cmd, timeout).await
-        }),
-        "sandbox_exec" => Some({
-            let cmd = match args.get("command").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "sandbox_exec".to_string(),
-                        reason: "Missing required argument 'command'".to_string(),
-                    }
-                    .into()));
+                if let Some(ro) = get_bool(args, "read_only") {
+                    policy.read_only_workspace = ro;
                 }
-            };
-            let mut policy = crate::sandbox::SandboxPolicy::default();
-            if let Some(net) = args.get("allow_network").and_then(|v| v.as_bool()) {
-                policy.allow_network = net;
-            }
-            if let Some(ro) = args.get("read_only").and_then(|v| v.as_bool()) {
-                policy.read_only_workspace = ro;
-            }
-            if let Some(eph) = args.get("ephemeral").and_then(|v| v.as_bool()) {
-                policy.ephemeral_overlay = eph;
-            }
-            if let Some(t) = parse_u64_param(args.get("timeout_secs")) {
-                policy.timeout_secs = t;
-            }
-            if let Some(m) = parse_u64_param(args.get("max_memory_mb")) {
-                policy.max_memory_mb = Some(m);
-            }
-            if let Some(extra) = args.get("extra_env").and_then(|v| v.as_object()) {
-                for (k, val) in extra {
-                    if let Some(s) = val.as_str() {
-                        policy.extra_env.insert(k.clone(), s.to_string());
+                if let Some(eph) = get_bool(args, "ephemeral") {
+                    policy.ephemeral_overlay = eph;
+                }
+                if let Some(t) = opt_u64(args, "timeout_secs") {
+                    policy.timeout_secs = t;
+                }
+                if let Some(m) = opt_u64(args, "max_memory_mb") {
+                    policy.max_memory_mb = Some(m);
+                }
+                if let Some(extra) = args.get("extra_env").and_then(|v| v.as_object()) {
+                    for (k, val) in extra {
+                        if let Some(s) = val.as_str() {
+                            policy.extra_env.insert(k.clone(), s.to_string());
+                        }
                     }
                 }
-            }
 
-            match crate::sandbox::run_sandboxed(workspace_root, cmd, &policy).await {
-                Ok(res) => Ok(crate::sandbox::format_sandbox_result(&res)),
-                Err(e) => Err(e),
+                let res = crate::sandbox::run_sandboxed(workspace_root, cmd, &policy).await?;
+                Ok(crate::sandbox::format_sandbox_result(&res))
             }
-        }),
+            .await,
+        ),
         _ => None,
     }
 }

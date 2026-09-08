@@ -44,12 +44,10 @@ impl SyntaxGuard {
                 format!("missing '{}'", node.kind())
             } else {
                 let text = node.utf8_text(code.as_bytes()).unwrap_or("<syntax>");
-                let display_text = if text.len() > 30 {
-                    format!("{}...", &text[..30])
-                } else if text.is_empty() {
+                let display_text = if text.is_empty() {
                     "<token>".to_string()
                 } else {
-                    text.to_string()
+                    crate::utils::strings::truncate_display(text, 30)
                 };
                 format!("unexpected token '{}'", display_text)
             };

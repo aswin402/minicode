@@ -1,7 +1,7 @@
 use crate::agent::provider::ToolSchema;
-use crate::error::{Result, ToolError};
+use crate::error::Result;
 use crate::tools::browser::{BrowserController, BrowserMode};
-use crate::tools::parse_u64_param;
+use crate::tools::param::*;
 use crate::tools::web;
 use serde_json::json;
 use std::path::Path;
@@ -264,6 +264,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn parse_browser_mode(args: &serde_json::Value) -> BrowserMode {
+    let mode_str = opt_str(args, "mode").unwrap_or("headless");
+    BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless)
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -272,26 +277,16 @@ pub async fn dispatch(
     match tool_name {
         "fetch_or_browse" => Some(
             async {
-                let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "fetch_or_browse".to_string(),
-                        reason: "Missing required argument 'url'".to_string(),
-                    }
-                })?;
-                let query_opt = args.get("query").and_then(|q| q.as_str());
+                let url = require_str(args, "url", "fetch_or_browse")?;
+                let query_opt = opt_str(args, "query");
                 web::fetch_or_browse(url, query_opt).await
             }
             .await,
         ),
         "search_web" => Some(
             async {
-                let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "search_web".to_string(),
-                        reason: "Missing required argument 'query'".to_string(),
-                    }
-                })?;
-                let max_results = parse_u64_param(args.get("max_results")).unwrap_or(5) as usize;
+                let query = require_str(args, "query", "search_web")?;
+                let max_results = opt_usize(args, "max_results", 5);
                 let results_md =
                     crate::tools::web_search::WebSearchService::search(query, max_results).await?;
                 Ok(results_md)
@@ -300,17 +295,8 @@ pub async fn dispatch(
         ),
         "browser_navigate" => Some(
             async {
-                let url = args["url"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "browser_navigate".to_string(),
-                        reason: "Missing 'url'".to_string(),
-                    })?;
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let url = require_str(args, "url", "browser_navigate")?;
+                let mode = parse_browser_mode(args);
 
                 let snapshot =
                     BrowserController::navigate_and_snapshot(url, mode, workspace_root).await?;
@@ -321,19 +307,10 @@ pub async fn dispatch(
         ),
         "browser_snapshot" => Some(
             async {
-                let url = args["url"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "browser_snapshot".to_string(),
-                        reason: "Missing 'url'".to_string(),
-                    })?;
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let url = require_str(args, "url", "browser_snapshot")?;
+                let mode = parse_browser_mode(args);
 
-                let html_opt = args["html"].as_str();
+                let html_opt = opt_str(args, "html");
                 let snapshot = if let Some(html) = html_opt {
                     BrowserController::parse_html_to_aria_snapshot(url, html)
                 } else {
@@ -346,18 +323,8 @@ pub async fn dispatch(
         ),
         "browser_click" => Some(
             async {
-                let target_ref =
-                    args["ref"]
-                        .as_str()
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "browser_click".to_string(),
-                            reason: "Missing 'ref'".to_string(),
-                        })?;
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let target_ref = require_str(args, "ref", "browser_click")?;
+                let mode = parse_browser_mode(args);
 
                 BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await
             }
@@ -365,24 +332,9 @@ pub async fn dispatch(
         ),
         "browser_fill" => Some(
             async {
-                let target_ref =
-                    args["ref"]
-                        .as_str()
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "browser_fill".to_string(),
-                            reason: "Missing 'ref'".to_string(),
-                        })?;
-                let text = args["text"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "browser_fill".to_string(),
-                        reason: "Missing 'text'".to_string(),
-                    })?;
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let target_ref = require_str(args, "ref", "browser_fill")?;
+                let text = require_str(args, "text", "browser_fill")?;
+                let mode = parse_browser_mode(args);
 
                 BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await
             }
@@ -390,15 +342,8 @@ pub async fn dispatch(
         ),
         "browser_scroll" => Some(
             async {
-                let direction = args
-                    .get("direction")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("down");
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let direction = opt_str(args, "direction").unwrap_or("down");
+                let mode = parse_browser_mode(args);
 
                 BrowserController::scroll(direction, mode, workspace_root).await
             }
@@ -406,11 +351,7 @@ pub async fn dispatch(
         ),
         "browser_debug_logs" => Some(
             async {
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let mode = parse_browser_mode(args);
 
                 BrowserController::get_debug_logs(mode, workspace_root).await
             }
@@ -418,18 +359,8 @@ pub async fn dispatch(
         ),
         "browser_eval" => Some(
             async {
-                let script =
-                    args["script"]
-                        .as_str()
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "browser_eval".to_string(),
-                            reason: "Missing 'script'".to_string(),
-                        })?;
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let script = require_str(args, "script", "browser_eval")?;
+                let mode = parse_browser_mode(args);
 
                 BrowserController::evaluate_js(script, mode, workspace_root).await
             }
@@ -437,12 +368,8 @@ pub async fn dispatch(
         ),
         "browser_screenshot" => Some(
             async {
-                let path_opt = args.get("path").and_then(|p| p.as_str());
-                let mode_str = args
-                    .get("mode")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("headless");
-                let mode = BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+                let path_opt = opt_str(args, "path");
+                let mode = parse_browser_mode(args);
 
                 BrowserController::take_screenshot(mode, workspace_root, path_opt).await
             }
@@ -450,22 +377,10 @@ pub async fn dispatch(
         ),
         "crawl_documentation" => Some(
             async {
-                let url = args["url"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "crawl_documentation".to_string(),
-                        reason: "Missing required argument 'url'".to_string(),
-                    })?;
-
-                let max_depth =
-                    crate::tools::parse_u64_param(args.get("max_depth")).unwrap_or(2) as usize;
-                let max_pages = crate::tools::parse_u64_param(args.get("max_pages"))
-                    .unwrap_or(8)
-                    .min(25) as usize;
-                let query_filter = args
-                    .get("query")
-                    .and_then(|q| q.as_str())
-                    .map(|s| s.to_string());
+                let url = require_str(args, "url", "crawl_documentation")?;
+                let max_depth = opt_usize(args, "max_depth", 2);
+                let max_pages = opt_usize(args, "max_pages", 8).min(25);
+                let query_filter = opt_str(args, "query").map(|s| s.to_string());
 
                 let config = crate::tools::crawler::CrawlerConfig {
                     max_depth,
@@ -525,14 +440,8 @@ pub async fn dispatch(
         ),
         "crawl_sitemap" => Some(
             async {
-                let url = args["url"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "crawl_sitemap".to_string(),
-                        reason: "Missing required argument 'url'".to_string(),
-                    })?;
-                let max_links =
-                    crate::tools::parse_u64_param(args.get("max_links")).unwrap_or(20) as usize;
+                let url = require_str(args, "url", "crawl_sitemap")?;
+                let max_links = opt_usize(args, "max_links", 20);
 
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(
@@ -573,13 +482,8 @@ pub async fn dispatch(
         ),
         "search_crawled_docs" => Some(
             async {
-                let query = args["query"]
-                    .as_str()
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "search_crawled_docs".to_string(),
-                        reason: "Missing required argument 'query'".to_string(),
-                    })?;
-                let limit = crate::tools::parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
+                let query = require_str(args, "query", "search_crawled_docs")?;
+                let limit = opt_usize(args, "limit", 5);
 
                 let results = crate::tools::crawler::CrawlerEngine::search_cached_docs(
                     workspace_root,

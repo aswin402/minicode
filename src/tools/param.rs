@@ -21,26 +21,36 @@ pub fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
+/// Extracts an optional boolean argument
+#[allow(dead_code)]
+pub fn get_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|v| v.as_bool())
+}
+
 /// Extracts a boolean argument with a default fallback
 #[allow(dead_code)]
 pub fn opt_bool(args: &Value, key: &str, default: bool) -> bool {
-    args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+    get_bool(args, key).unwrap_or(default)
+}
+
+/// Extracts an optional numeric `usize` parameter (accepts JSON integer or string)
+#[allow(dead_code)]
+pub fn get_usize(args: &Value, key: &str) -> Option<usize> {
+    args.get(key).and_then(|v| {
+        if let Some(n) = v.as_u64() {
+            usize::try_from(n).ok()
+        } else if let Some(s) = v.as_str() {
+            s.parse::<usize>().ok()
+        } else {
+            None
+        }
+    })
 }
 
 /// Extracts a numeric `usize` parameter (accepts JSON integer or string), falling back to default
 #[allow(dead_code)]
 pub fn opt_usize(args: &Value, key: &str, default: usize) -> usize {
-    args.get(key)
-        .and_then(|v| {
-            if let Some(n) = v.as_u64() {
-                usize::try_from(n).ok()
-            } else if let Some(s) = v.as_str() {
-                s.parse::<usize>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(default)
+    get_usize(args, key).unwrap_or(default)
 }
 
 /// Extracts an optional `u64` parameter using permissive parsing

@@ -12,6 +12,7 @@ mod sandbox;
 mod session;
 mod tools;
 mod ui;
+pub mod utils;
 
 use agent::types::{AgentEvent, StdinCommand};
 use agent::AgentLoop;

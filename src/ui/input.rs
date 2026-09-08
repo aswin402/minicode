@@ -690,12 +690,9 @@ impl<'a> InputDock<'a> {
             .slash_selected_index
             .min(matches.len().saturating_sub(1));
 
-        // Viewport windowing calculation for smooth scrolling (safe underflow guard)
-        let scroll_offset = if list_height > 0 && selected_idx >= list_height {
-            selected_idx.saturating_sub(list_height.saturating_sub(1))
-        } else {
-            0
-        };
+        // Viewport windowing calculation for smooth scrolling
+        let scroll_offset =
+            crate::ui::layout_utils::compute_scroll_offset(selected_idx, list_height);
 
         let mut item_lines = Vec::new();
         let inner_width = inner_area.width as usize;
