@@ -1,4 +1,6 @@
-use crate::constants::{WEB_TIMEOUT_SECS, WEB_USER_AGENT};
+use crate::constants::{
+    BRAVE_SEARCH_URL, DUCKDUCKGO_SEARCH_URL, TAVILY_SEARCH_URL, WEB_TIMEOUT_SECS, WEB_USER_AGENT,
+};
 use crate::error::{Result, ToolError};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -87,7 +89,7 @@ impl WebSearchService {
             })?;
 
         let resp: reqwest::Response = client
-            .post("https://html.duckduckgo.com/html/")
+            .post(DUCKDUCKGO_SEARCH_URL)
             .form(&[("q", query), ("b", "")])
             .header(
                 "Accept",
@@ -183,7 +185,7 @@ impl WebSearchService {
     ) -> Result<Vec<SearchResult>> {
         let client = reqwest::Client::new();
         let resp: reqwest::Response = client
-            .post("https://api.tavily.com/search")
+            .post(TAVILY_SEARCH_URL)
             .json(&serde_json::json!({
                 "api_key": api_key,
                 "query": query,
@@ -241,7 +243,7 @@ impl WebSearchService {
     ) -> Result<Vec<SearchResult>> {
         let client = reqwest::Client::new();
         let resp: reqwest::Response = client
-            .get("https://api.search.brave.com/res/v1/web/search")
+            .get(BRAVE_SEARCH_URL)
             .query(&[("q", query), ("count", &max_results.to_string())])
             .header("X-Subscription-Token", api_key)
             .send()

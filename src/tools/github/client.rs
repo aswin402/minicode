@@ -113,7 +113,8 @@ impl GitHubClient {
             endpoint.to_string()
         } else {
             format!(
-                "https://api.github.com/{}",
+                "{}/{}",
+                crate::constants::GITHUB_API_BASE_URL,
                 endpoint.trim_start_matches('/')
             )
         };

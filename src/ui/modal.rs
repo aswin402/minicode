@@ -15,6 +15,7 @@ use crate::constants::{
     WORKSPACE_ANALYSIS_WIDTH,
 };
 use crate::session::store::truncate_display;
+use crate::ui::layout_utils::{centered_rect, centered_rect_exact};
 use crate::ui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -938,8 +939,8 @@ impl ModalState {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // Search / filter input
-                        Constraint::Min(5),    // Models list
+                        Constraint::Length(crate::constants::MODAL_SEARCH_INPUT_HEIGHT), // Search / filter input
+                        Constraint::Min(5), // Models list
                     ])
                     .split(inner_area);
 
@@ -1694,8 +1695,8 @@ impl ModalState {
                 let v_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // Filter search input
-                        Constraint::Min(6),    // 2-column main area
+                        Constraint::Length(crate::constants::MODAL_SEARCH_INPUT_HEIGHT), // Filter search input
+                        Constraint::Min(6), // 2-column main area
                     ])
                     .split(inner_area);
 
@@ -1714,7 +1715,10 @@ impl ModalState {
                 // Split middle area horizontally (List vs Preview)
                 let h_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                    .constraints([
+                        Constraint::Percentage(crate::constants::MODAL_SPLIT_PRIMARY_PERCENT),
+                        Constraint::Percentage(crate::constants::MODAL_SPLIT_SECONDARY_PERCENT),
+                    ])
                     .split(v_chunks[1]);
 
                 let max_visible = (h_chunks[0].height.saturating_sub(2) as usize).max(1);
@@ -1883,7 +1887,10 @@ impl ModalState {
 
                 let v_chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Min(8)])
+                    .constraints([
+                        Constraint::Length(crate::constants::MODAL_SEARCH_INPUT_HEIGHT),
+                        Constraint::Min(8),
+                    ])
                     .split(inner_area);
 
                 // Search Bar
@@ -1932,7 +1939,10 @@ impl ModalState {
                 // Split into [Left List (42%), Right Details (58%)]
                 let h_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                    .constraints([
+                        Constraint::Percentage(crate::constants::MODAL_SPLIT_PRIMARY_PERCENT),
+                        Constraint::Percentage(crate::constants::MODAL_SPLIT_SECONDARY_PERCENT),
+                    ])
                     .split(v_chunks[1]);
 
                 let list_block = Block::default()
@@ -2254,8 +2264,8 @@ impl ModalState {
                 let v_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(3), // Search box
-                        Constraint::Min(5),    // Main content (2 cols)
+                        Constraint::Length(crate::constants::MODAL_SEARCH_INPUT_HEIGHT), // Search box
+                        Constraint::Min(5), // Main content (2 cols)
                     ])
                     .split(inner_area);
 
@@ -2794,44 +2804,6 @@ impl ModalState {
             }
         }
     }
-}
-
-/// Helper function to create an exact sized centered rect
-fn centered_rect_exact(width: u16, height: u16, r: Rect) -> Rect {
-    let w = width.min(r.width.saturating_sub(2));
-    let h = height.min(r.height.saturating_sub(2));
-    let x = r.x + (r.width.saturating_sub(w)) / 2;
-    let y = r.y + (r.height.saturating_sub(h)) / 2;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
-
-/// Helper function to create a centered rect rectangle
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let margin_y = 100_u16.saturating_sub(percent_y) / 2;
-    let margin_x = 100_u16.saturating_sub(percent_x) / 2;
-
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(margin_y),
-            Constraint::Percentage(percent_y.min(100)),
-            Constraint::Percentage(margin_y),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(margin_x),
-            Constraint::Percentage(percent_x.min(100)),
-            Constraint::Percentage(margin_x),
-        ])
-        .split(popup_layout[1])[1]
 }
 
 #[cfg(test)]

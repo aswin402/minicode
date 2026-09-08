@@ -303,8 +303,10 @@ impl GitHubService {
         let token = crate::tools::github::client::get_github_token()?;
 
         let url = format!(
-            "https://api.github.com/repos/{}/pulls/{}",
-            repo_slug, pr_number
+            "{}/repos/{}/pulls/{}",
+            crate::constants::GITHUB_API_BASE_URL,
+            repo_slug,
+            pr_number
         );
         let client = reqwest::Client::builder().build().unwrap_or_default();
         let resp = client

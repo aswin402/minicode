@@ -280,10 +280,7 @@ impl ApprovalModalState {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let width = (area.width.saturating_sub(4)).clamp(48, 62);
         let height = if self.is_typing_feedback { 12 } else { 8 };
-
-        let x = area.x + (area.width.saturating_sub(width)) / 2;
-        let y = area.y + (area.height.saturating_sub(height)) / 2;
-        let popup_area = Rect::new(x, y, width.min(area.width), height.min(area.height));
+        let popup_area = crate::ui::layout_utils::centered_rect_exact(width, height, area);
 
         frame.render_widget(Clear, popup_area);
 

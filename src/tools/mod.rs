@@ -10,6 +10,7 @@ pub mod fs;
 pub mod github;
 pub mod middleware;
 pub mod onpkg;
+pub mod param;
 pub mod registry;
 pub mod rtk_filter;
 pub mod search;

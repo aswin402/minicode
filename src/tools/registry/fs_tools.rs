@@ -1,8 +1,8 @@
 use crate::agent::provider::ToolSchema;
-use crate::error::{Result, ToolError};
+use crate::error::Result;
 use crate::session::backup::BackupManager;
 use crate::tools::fs;
-use crate::tools::parse_u64_param;
+use crate::tools::param;
 use serde_json::json;
 use std::path::Path;
 
@@ -165,32 +165,15 @@ pub fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "read_file" => Some((|| {
-            let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "read_file".to_string(),
-                    reason: "Missing required argument 'path'".to_string(),
-                }
-            })?;
+            let path = param::require_str(args, "path", "read_file")?;
             let start_line =
-                parse_u64_param(args.get("start_line")).and_then(|v| usize::try_from(v).ok());
-            let end_line =
-                parse_u64_param(args.get("end_line")).and_then(|v| usize::try_from(v).ok());
+                param::opt_u64(args, "start_line").and_then(|v| usize::try_from(v).ok());
+            let end_line = param::opt_u64(args, "end_line").and_then(|v| usize::try_from(v).ok());
             fs::read_file(workspace_root, path, start_line, end_line)
         })()),
         "write_file" => Some((|| {
-            let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "write_file".to_string(),
-                    reason: "Missing required argument 'path'".to_string(),
-                }
-            })?;
-            let content = args
-                .get("content")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "write_file".to_string(),
-                    reason: "Missing required argument 'content'".to_string(),
-                })?;
+            let path = param::require_str(args, "path", "write_file")?;
+            let content = param::require_str(args, "content", "write_file")?;
 
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
@@ -220,26 +203,9 @@ pub fn dispatch(
             res
         })()),
         "patch_file" => Some((|| {
-            let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "patch_file".to_string(),
-                    reason: "Missing required argument 'path'".to_string(),
-                }
-            })?;
-            let search = args
-                .get("search_block")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "patch_file".to_string(),
-                    reason: "Missing required argument 'search_block'".to_string(),
-                })?;
-            let replace = args
-                .get("replace_block")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "patch_file".to_string(),
-                    reason: "Missing required argument 'replace_block'".to_string(),
-                })?;
+            let path = param::require_str(args, "path", "patch_file")?;
+            let search = param::require_str(args, "search_block", "patch_file")?;
+            let replace = param::require_str(args, "replace_block", "patch_file")?;
 
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
@@ -269,26 +235,10 @@ pub fn dispatch(
             res
         })()),
         "ast_replace_node" => Some((|| {
-            let path = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "ast_replace_node".to_string(),
-                    reason: "Missing required argument 'path'".to_string(),
-                }
-            })?;
-            let symbol = args.get("symbol").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "ast_replace_node".to_string(),
-                    reason: "Missing required argument 'symbol'".to_string(),
-                }
-            })?;
-            let replacement = args
-                .get("replacement_code")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "ast_replace_node".to_string(),
-                    reason: "Missing required argument 'replacement_code'".to_string(),
-                })?;
-            let kind = args.get("kind").and_then(|v| v.as_str());
+            let path = param::require_str(args, "path", "ast_replace_node")?;
+            let symbol = param::require_str(args, "symbol", "ast_replace_node")?;
+            let replacement = param::require_str(args, "replacement_code", "ast_replace_node")?;
+            let kind = param::opt_str(args, "kind");
 
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
@@ -330,13 +280,7 @@ pub fn dispatch(
             Ok(result.format_receipt())
         })()),
         "begin_transaction" => Some((|| {
-            let desc = args
-                .get("description")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "begin_transaction".to_string(),
-                    reason: "Missing required argument 'description'".to_string(),
-                })?;
+            let desc = param::require_str(args, "description", "begin_transaction")?;
             let manifest =
                 crate::session::transaction::TransactionManager::begin(workspace_root, desc)?;
             Ok(format!(
@@ -345,14 +289,14 @@ pub fn dispatch(
             ))
         })()),
         "commit_transaction" => Some((|| {
-            let tx_id = args.get("tx_id").and_then(|v| v.as_str());
+            let tx_id = param::opt_str(args, "tx_id");
             let receipt =
                 crate::session::transaction::TransactionManager::commit(workspace_root, tx_id)?;
             Ok(receipt.format_receipt())
         })()),
         "rollback_transaction" => Some((|| {
-            let tx_id = args.get("tx_id").and_then(|v| v.as_str());
-            let reason = args.get("reason").and_then(|v| v.as_str());
+            let tx_id = param::opt_str(args, "tx_id");
+            let reason = param::opt_str(args, "reason");
             let receipt = crate::session::transaction::TransactionManager::rollback(
                 workspace_root,
                 tx_id,
@@ -362,7 +306,7 @@ pub fn dispatch(
         })()),
         "get_transaction_status" => {
             Some((|| {
-                let tx_id = args.get("tx_id").and_then(|v| v.as_str());
+                let tx_id = param::opt_str(args, "tx_id");
                 match crate::session::transaction::TransactionManager::status(workspace_root, tx_id)? {
                 Some(receipt) => Ok(receipt.format_receipt()),
                 None => Ok("No active workspace transaction. Workspace is in direct modification mode.".to_string()),

@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod configure;
 pub mod diff_viewer;
 pub mod input;
+pub mod layout_utils;
 pub mod markdown;
 pub mod modal;
 pub mod pty_drawer;
@@ -19,6 +20,8 @@ pub use configure::ConfigMenu;
 #[allow(unused_imports)]
 pub use diff_viewer::DiffViewer;
 pub use input::InputDock;
+#[allow(unused_imports)]
+pub use layout_utils::{centered_rect, centered_rect_exact};
 #[allow(unused_imports)]
 pub use markdown::MarkdownRenderer;
 pub use modal::ModalState;

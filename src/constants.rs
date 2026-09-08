@@ -439,6 +439,16 @@ pub const APPROVAL_REQUIRED_TOOLS: &[&str] =
 #[allow(dead_code)]
 pub const MAX_WEB_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
+// === Search Engine & Web Endpoints ===
+/// DuckDuckGo HTML search endpoint
+pub const DUCKDUCKGO_SEARCH_URL: &str = "https://html.duckduckgo.com/html/";
+/// Tavily AI search API endpoint
+pub const TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
+/// Brave Search API endpoint
+pub const BRAVE_SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+/// GitHub API base endpoint
+pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
+
 // === Model Provider Endpoints & Timeouts ===
 /// Default timeout in seconds for fetching live models
 pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
@@ -759,6 +769,12 @@ pub const GIT_DIFF_WIDTH_PCT: u16 = 88;
 pub const GIT_DIFF_HEIGHT_PCT: u16 = 84;
 pub const CODE_EXPLORER_WIDTH_PCT: u16 = 85;
 pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
+/// Two-column modal primary column width percentage (e.g. skills/tools left list)
+pub const MODAL_SPLIT_PRIMARY_PERCENT: u16 = 42;
+/// Two-column modal secondary column width percentage (e.g. skills/tools right details)
+pub const MODAL_SPLIT_SECONDARY_PERCENT: u16 = 58;
+/// Standard modal search input height in lines
+pub const MODAL_SEARCH_INPUT_HEIGHT: u16 = 3;
 
 // === UI Animation ===
 /// Standard 10-frame braille spinner sequence for async tool/agent activity

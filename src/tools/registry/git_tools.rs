@@ -1,5 +1,6 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::{Result, ToolError};
+use crate::tools::param;
 use crate::tools::parse_u64_param;
 use serde_json::json;
 use std::path::Path;
@@ -404,19 +405,8 @@ pub async fn dispatch(
         ),
         "git_commit" => Some(
             async {
-                let message = args
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "git_commit".to_string(),
-                        reason: "Missing required argument 'message'".to_string(),
-                    })?;
-                let paths: Option<Vec<String>> =
-                    args.get("paths").and_then(|v| v.as_array()).map(|arr| {
-                        arr.iter()
-                            .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
-                            .collect()
-                    });
+                let message = param::require_str(args, "message", "git_commit")?;
+                let paths = param::opt_string_array(args, "paths");
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
@@ -437,9 +427,7 @@ pub async fn dispatch(
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
                 }
-                let count = parse_u64_param(args.get("count"))
-                    .unwrap_or(crate::constants::GIT_LOG_DEFAULT_COUNT as u64)
-                    as usize;
+                let count = param::opt_usize(args, "count", crate::constants::GIT_LOG_DEFAULT_COUNT);
                 let log = git.log(count).await?;
                 if log.trim().is_empty() {
                     Ok("ℹ No commit history found".to_string())
@@ -676,15 +664,9 @@ pub async fn dispatch(
         ),
         "synthesize_commits" => Some(
             async {
-                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("synthesize");
-                let task_hint = args.get("task_hint").and_then(|v| v.as_str());
-                let paths: Option<Vec<String>> = args.get("paths").and_then(|v| {
-                    v.as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                });
+                let action = param::opt_str(args, "action").unwrap_or("synthesize");
+                let task_hint = param::opt_str(args, "task_hint");
+                let paths = param::opt_string_array(args, "paths");
 
                 let report = crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(
                     workspace_root,
@@ -695,7 +677,7 @@ pub async fn dispatch(
 
                 match action {
                     "changelog" => {
-                        let version = args.get("version").and_then(|v| v.as_str());
+                        let version = param::opt_str(args, "version");
                         if let Some(ver) = version {
                             let custom_changelog = crate::git::commit_synth::SemanticCommitSynthesizer::generate_changelog_draft(
                                 report.unified_proposal.commit_type,
