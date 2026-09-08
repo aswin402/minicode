@@ -199,8 +199,7 @@ impl ModelFetcher {
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "lmstudio" | "lm-studio" => {
-                let url =
-                    custom_base_url.unwrap_or(crate::constants::LMSTUDIO_DEFAULT_BASE_URL);
+                let url = custom_base_url.unwrap_or(crate::constants::LMSTUDIO_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "vllm" => {

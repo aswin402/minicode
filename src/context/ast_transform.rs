@@ -378,7 +378,9 @@ impl AstTransformer {
 
                 if let Some(wrapped_code) = wrapped {
                     if let Some(wrapped_tree) = parser.parse(&wrapped_code, None) {
-                        if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped_code).is_none() {
+                        if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped_code)
+                            .is_none()
+                        {
                             return Ok(());
                         }
                     }

@@ -6,6 +6,7 @@ pub mod input;
 pub mod layout_utils;
 pub mod markdown;
 pub mod modal;
+pub mod modals;
 pub mod pty_drawer;
 pub mod selection;
 pub mod status;
