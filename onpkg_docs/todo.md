@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 102 (v0.3.2) Automated Flaky Test Quarantine & Statistical Variance Analysis (`quarantine_flaky_tests`) | **Status:** ✅ Completed (127 Tools)
+> **Current Phase:** Phase 103 (v0.3.3) Automated Semantic Commit Synthesis & Conventional Changelog Generator (`synthesize_commits`) | **Status:** ✅ Complete (128 Tools)
 
 ---
 
@@ -1621,6 +1621,15 @@
 - [x] 102.4: Update system prompt ergonomics, add `/quarantine` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
 - [x] 102.5: Write comprehensive integration tests verifying variance calculation, signature detection, quarantine store persistence, and registry dispatch (`tests/integration_flaky_quarantine.rs`)
 - [x] 102.6: Version bump → `v0.3.2`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
+### Phase 103: Automated Semantic Commit Synthesis & Conventional Changelog Generator (v0.3.3)
+- [x] 103.1: Implement `CommitType`, `SemanticScope`, `SynthesizedCommitProposal`, `CommitSynthesisReport`, and `SemanticCommitSynthesizer` in `src/git/commit_synth.rs` & `src/git/mod.rs` with unit tests
+- [x] 103.2: Register `synthesize_commits` tool schema, argument parser, and executor dispatch in `src/tools/registry/git_tools.rs`
+- [x] 103.3: Increment `TOTAL_TOOL_COUNT` (127 → 128), add commit synthesis constants in `src/constants.rs`, classify `synthesize_commits` in `src/tools/concurrency.rs`
+- [x] 103.4: Integrate `/commit` (and `/ci`) command handler in `src/app.rs`, add catalog item in `src/ui/modal.rs`, palette item in `src/ui/input.rs`, and update `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`
+- [x] 103.5: Write comprehensive integration tests in `tests/integration_commit_synthesis.rs` verifying diff parsing, conventional commit synthesis, changelog generation, and registry dispatch
+- [x] 103.6: Version bump → `v0.3.3`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
 
 
 

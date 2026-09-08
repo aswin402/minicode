@@ -1275,6 +1275,106 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/commit" || prompt.starts_with("/commit ") || prompt == "/ci" || prompt.starts_with("/ci ") {
+                                    let arg = if let Some(stripped) = prompt.strip_prefix("/commit") {
+                                        stripped.trim()
+                                    } else if let Some(stripped) = prompt.strip_prefix("/ci") {
+                                        stripped.trim()
+                                    } else {
+                                        ""
+                                    };
+
+                                    if arg == "help" {
+                                        let help_msg = "📝 **Semantic Commit Synthesis & Changelog Commands**\n\n\
+                                            • `/commit` or `/commit preview [task hint]` — Synthesize conventional commit proposals & atomic sequence\n\
+                                            • `/commit now [task hint]` or `/commit -y` — Synthesize message and immediately commit working tree changes\n\
+                                            • `/commit changelog [version]` — Synthesize Keep-a-Changelog release draft from current diff\n\
+                                            • `/commit help` — Display this usage reference";
+                                        self.timeline.add_status(help_msg.to_string());
+                                        continue;
+                                    }
+
+                                    if arg == "changelog" || arg.starts_with("changelog ") {
+                                        let ver = arg.strip_prefix("changelog").unwrap_or("").trim();
+                                        let version = if ver.is_empty() { None } else { Some(ver) };
+                                        match crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(&self.workspace_root, None, None).await {
+                                            Ok(mut report) => {
+                                                if let Some(v) = version {
+                                                    report.changelog_markdown = crate::git::commit_synth::SemanticCommitSynthesizer::generate_changelog_draft(
+                                                        report.unified_proposal.commit_type,
+                                                        &report.unified_proposal.summary,
+                                                        &report.affected_files,
+                                                        &report.unified_proposal.scope,
+                                                        Some(v),
+                                                    );
+                                                }
+                                                self.timeline.add_status(format!(
+                                                    "📜 **Keep-a-Changelog Release Draft**:\n\n```markdown\n{}\n```",
+                                                    report.changelog_markdown
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("❌ Failed to synthesize changelog: {}", e));
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    if arg == "now" || arg.starts_with("now ") || arg == "-y" || arg.starts_with("-y ") {
+                                        let task_hint = if let Some(stripped) = arg.strip_prefix("now") {
+                                            let s = stripped.trim();
+                                            if s.is_empty() { None } else { Some(s) }
+                                        } else if let Some(stripped) = arg.strip_prefix("-y") {
+                                            let s = stripped.trim();
+                                            if s.is_empty() { None } else { Some(s) }
+                                        } else {
+                                            None
+                                        };
+
+                                        match crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(&self.workspace_root, None, task_hint).await {
+                                            Ok(report) => {
+                                                let commit_msg = report.unified_proposal.format_full_message();
+                                                match crate::git::commit_synth::SemanticCommitSynthesizer::execute_commit(&self.workspace_root, &commit_msg, None).await {
+                                                    Ok(res) => {
+                                                        self.timeline.add_status(format!(
+                                                            "✅ **Successfully Committed Working Tree Changes**\n\n{}\n\n**Commit Message:**\n```\n{}\n```",
+                                                            res,
+                                                            commit_msg
+                                                        ));
+                                                    }
+                                                    Err(e) => {
+                                                        self.timeline.add_status(format!("❌ Commit execution failed: {}", e));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("❌ Commit synthesis failed: {}", e));
+                                            }
+                                        }
+                                        continue;
+                                    }
+
+                                    // Default or /commit preview [task_hint]
+                                    let task_hint = if let Some(stripped) = arg.strip_prefix("preview") {
+                                        let s = stripped.trim();
+                                        if s.is_empty() { None } else { Some(s) }
+                                    } else if arg.is_empty() {
+                                        None
+                                    } else {
+                                        Some(arg)
+                                    };
+
+                                    match crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(&self.workspace_root, None, task_hint).await {
+                                        Ok(report) => {
+                                            self.timeline.add_status(report.format_markdown());
+                                        }
+                                        Err(e) => {
+                                            self.timeline.add_status(format!("❌ Commit synthesis failed: {}", e));
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2462,6 +2562,17 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(
                                     crate::context::flaky::QuarantineManager::format_report(&store),
                                 );
+                                self.modal = ModalState::None;
+                            }
+                            "/commit" => {
+                                match crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(&self.workspace_root, None, None).await {
+                                    Ok(report) => {
+                                        self.timeline.add_status(report.format_markdown());
+                                    }
+                                    Err(e) => {
+                                        self.timeline.add_status(format!("❌ Commit synthesis failed: {}", e));
+                                    }
+                                }
                                 self.modal = ModalState::None;
                             }
                             other => {

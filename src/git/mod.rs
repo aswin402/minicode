@@ -1,4 +1,5 @@
 pub mod commit;
+pub mod commit_synth;
 pub mod conflict_resolver;
 pub mod diff_filter;
 pub mod diff_projector;
@@ -8,6 +9,9 @@ pub mod service;
 pub mod worktree;
 
 pub use commit::GitCommitService;
+pub use commit_synth::{
+    CommitSynthesisReport, CommitType, SemanticCommitSynthesizer, SynthesizedCommitProposal,
+};
 pub use conflict_resolver::{
     ConflictBlock, ConflictResolver, ConflictResolverReport, FileResolutionReport, MergeStrategy,
 };

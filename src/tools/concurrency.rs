@@ -103,7 +103,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "create_pr"
         | "github_issue_create"
         | "github_pr_create"
-        | "resolve_git_conflicts" => ToolSafetyLevel::Mutating,
+        | "resolve_git_conflicts"
+        | "synthesize_commits" => ToolSafetyLevel::Mutating,
 
         // Terminal / Command Execution (Mutating Barrier)
         "exec_cmd" | "sandbox_exec" => ToolSafetyLevel::Mutating,

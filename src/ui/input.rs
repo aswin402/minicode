@@ -186,6 +186,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/commit",
+        title: "Synthesize Semantic Commits",
+        description: "Synthesize atomic Conventional Commits and release changelog from git diff",
+        category: CommandCategory::Tools,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",

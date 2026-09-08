@@ -301,6 +301,29 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "synthesize_commits".to_string(),
+            description: "Analyze working tree diffs and porcelain statuses to synthesize Conventional Commits, atomic multi-commit sequences, and Keep-a-Changelog release drafts.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["synthesize", "commit", "changelog"],
+                        "description": "Action to perform: 'synthesize' (default, generates conventional commit proposal and atomic sequences), 'commit' (synthesizes and executes git commit), or 'changelog' (outputs Keep-a-Changelog release section)"
+                    },
+                    "task_hint": {
+                        "type": "string",
+                        "description": "Optional human/agent intent or task summary to contextualize the synthesized commit message"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of specific file paths to scope the commit synthesis to"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -648,6 +671,67 @@ pub async fn dispatch(
                 .await?;
 
                 Ok(report.format_markdown())
+            }
+            .await,
+        ),
+        "synthesize_commits" => Some(
+            async {
+                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("synthesize");
+                let task_hint = args.get("task_hint").and_then(|v| v.as_str());
+                let paths: Option<Vec<String>> = args.get("paths").and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                });
+
+                let report = crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(
+                    workspace_root,
+                    paths.as_deref(),
+                    task_hint,
+                )
+                .await?;
+
+                match action {
+                    "changelog" => {
+                        let version = args.get("version").and_then(|v| v.as_str());
+                        if let Some(ver) = version {
+                            let custom_changelog = crate::git::commit_synth::SemanticCommitSynthesizer::generate_changelog_draft(
+                                report.unified_proposal.commit_type,
+                                &report.unified_proposal.summary,
+                                &report.affected_files,
+                                &report.unified_proposal.scope,
+                                Some(ver),
+                            );
+                            Ok(custom_changelog)
+                        } else {
+                            Ok(report.changelog_markdown)
+                        }
+                    }
+                    "commit" => {
+                        let commit_msg = report.unified_proposal.format_full_message();
+                        let hash = crate::git::commit_synth::SemanticCommitSynthesizer::execute_commit(
+                            workspace_root,
+                            &commit_msg,
+                            paths.as_deref(),
+                        )
+                        .await?;
+                        Ok(format!(
+                            "✅ Created commit `{}` with synthesized conventional message:\n\n```\n{}\n```",
+                            hash, commit_msg
+                        ))
+                    }
+                    "synthesize" | "preview" | "" => Ok(report.format_markdown()),
+                    other => Err(ToolError::InvalidArguments {
+                        name: "synthesize_commits".to_string(),
+                        reason: format!(
+                            "Unknown action '{}'. Supported actions: 'synthesize', 'commit', 'changelog'",
+                            other
+                        ),
+                    }
+                    .into()),
+                }
             }
             .await,
         ),

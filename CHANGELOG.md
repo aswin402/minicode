@@ -5,6 +5,49 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — 2026-09-08
+
+### Automated Semantic Commit Synthesis & Conventional Changelog Generator (`synthesize_commits`)
+
+#### 💡 Ideas & Inspirations
+- **Streamlining Git History for Autonomous & Human Workflows**: Formulating structured, conventional commit messages and release changelog summaries across complex multi-file changesets is tedious and prone to inconsistent conventions. Autonomous agents often generate low-quality commit titles or clump unrelated functional changes into a monolithic commit.
+- **Deep Working Tree Diff & Classification Engine**: `minicode v0.3.3` introduces `SemanticCommitSynthesizer` (`synthesize_commits`). It inspects the git working tree, parses hunk statistics (insertions, deletions, affected files), extracts primary architectural scopes (`context/*`, `tools/*`, `agent`, `ui`, `git`, `session`, `tests`, `docs`, `deps`, `ci`), and detects Conventional Commit types (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `build`, `ci`) with robust word-boundary heuristics.
+- **Dual Synthesis: Unified Squashed vs. Multi-Step Atomic Sequences**:
+  - **Unified Conventional Proposal**: One-shot squash-friendly Conventional Commit message with title, body file bullet points, and breaking change warnings.
+  - **Atomic Partitioned Sequence**: Intelligently decomposes complex multi-domain pull requests into ordered atomic steps (Core Implementation ➔ Unit/Integration Tests ➔ Documentation ➔ Build/Dependencies) so each stage can be reviewed or committed individually.
+- **Instant Keep-a-Changelog Markdown Release Notes**: Generates publication-ready release notes adhering to the Keep-a-Changelog standard, automatically routing changes into `Added`, `Fixed`, and `Changed` sections tagged with primary scopes and impacted file lists.
+- **Interactive TUI `/commit` (and `/ci`) Command & Palette Integration**: Seamlessly accessible to developers in the interactive TUI:
+  - `/commit` or `/commit preview [task hint]`: Synthesizes unified and atomic commit proposals with impact footprints.
+  - `/commit now [task hint]` or `/commit -y`: Synthesizes and immediately stages/commits working tree changes.
+  - `/commit changelog [version]`: Generates a formatted Keep-a-Changelog release entry.
+
+#### 📚 References & Sources
+- **Conventional Commits 1.0.0 Specification**: Formal convention for creating explicit commit history on top of SemVer (https://www.conventionalcommits.org/en/v1.0.0/).
+- **Keep a Changelog 1.0.0 Specification**: Standardized release documentation format for human and automated consumers (https://keepachangelog.com/en/1.0.0/).
+- **Semantic Versioning 2.0.0**: Structured versioning specification for backward-compatible library and CLI evolution (https://semver.org/spec/v2.0.0.html).
+
+#### 🚀 Features & Changes
+- **Core Semantic Commit Synthesizer (`src/git/commit_synth.rs` & `src/git/mod.rs`)**:
+  - Implemented `CommitType` enum with visual emoji badges (`✨ feat`, `🐛 fix`, `♻️ refactor`, `🧪 test`, `📝 docs`, `🔧 chore`, `⚡ perf`, `📦 build`, `👷 ci`).
+  - Implemented `SynthesizedCommitProposal` with `format_title()` and `format_full_message()`.
+  - Implemented `CommitSynthesisReport` with rich markdown formatting and diff footprint analytics.
+  - Implemented `SemanticCommitSynthesizer` with `analyze_diff`, `synthesize`, `execute_commit`, `detect_primary_scope`, `detect_commit_type`, `clean_task_summary`, and `partition_atomic_proposals`.
+  - Implemented `generate_changelog_draft` with optional release version tagging.
+- **Native Tool Registration (`src/tools/registry/git_tools.rs`)**:
+  - Registered `synthesize_commits` schema supporting `action` (`"synthesize"`, `"commit"`, `"changelog"`), `task_hint`, `paths`, and `version`.
+  - Added async execution dispatcher with argument validation and error propagation.
+- **Global Constants & Concurrency Safety (`src/constants.rs` & `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` from **127 ➔ 128**.
+  - Added `MAX_COMMIT_SUMMARY_LEN = 72`.
+  - Classified `synthesize_commits` as `ToolSafetyLevel::Mutating`.
+- **TUI Command Palette & Prompt Ergonomics (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added `synthesize_commits` guidelines to `STATIC_SYSTEM_PROMPT`.
+  - Added `/commit` prompt execution handler supporting `preview`, `now`, `changelog`, and `help`.
+  - Added `/commit` entry to `COMMAND_CATALOG` in `src/ui/modal.rs` under `"Workflows & Scaffolding"`.
+  - Added `/commit` to quick picker `PALETTE_COMMANDS` in `src/ui/input.rs` under `CommandCategory::Tools`.
+- **Integration Test Suite (`tests/integration_commit_synthesis.rs`)**:
+  - Added 5 comprehensive integration tests verifying diff analysis, heuristic detection, atomic partitioning, changelog drafting, and registry dispatch.
+
 ## [0.3.2] — 2026-09-08
 
 ### Automated Flaky Test Quarantine & Statistical Variance Analysis (`quarantine_flaky_tests`)

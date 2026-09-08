@@ -120,6 +120,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/goal refactor database models and pass tests",
     },
     CommandCatalogItem {
+        name: "/commit",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "Automated semantic commit synthesis & conventional changelog generation",
+        example: "/commit | /commit preview [task] | /commit now | /commit changelog",
+    },
+    CommandCatalogItem {
         name: "/diff",
         category: "Code & Inspection",
         shortcut: "Ctrl+D",

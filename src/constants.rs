@@ -666,7 +666,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 127;
+pub const TOTAL_TOOL_COUNT: usize = 128;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -775,6 +775,10 @@ pub const MIN_FLAKY_RUNS: usize = 2;
 pub const FLAKY_TEST_TIMEOUT_SECS: u64 = 15;
 /// Persistent quarantine filename under .minicode/
 pub const QUARANTINE_FILE_NAME: &str = "quarantine.json";
+
+// === Semantic Commit Synthesis (Phase 103) ===
+/// Default max length for synthesized conventional commit title summary
+pub const MAX_COMMIT_SUMMARY_LEN: usize = 72;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
