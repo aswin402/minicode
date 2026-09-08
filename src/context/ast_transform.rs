@@ -90,59 +90,22 @@ impl AstTransformer {
         })?;
 
         let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "ast_query".to_string(),
+                reason: format!("Unsupported language extension: '{}'", ext),
+            })?;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&lang)
+            .map_err(|e| ToolError::CommandExec(format!("Tree-sitter parser error: {}", e)))?;
 
         let mut nodes = Vec::new();
-        match ext {
-            "rs" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_rust::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(&content, None) {
-                    Self::traverse_rust(tree.root_node(), &content, &mut nodes);
-                }
-            }
-            "py" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_python::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(&content, None) {
-                    Self::traverse_python(tree.root_node(), &content, &mut nodes);
-                }
-            }
-            "ts" | "tsx" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(&content, None) {
-                    Self::traverse_ts(tree.root_node(), &content, &mut nodes);
-                }
-            }
-            "js" | "jsx" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_javascript::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(&content, None) {
-                    Self::traverse_ts(tree.root_node(), &content, &mut nodes);
-                }
-            }
-            _ => {
-                return Err(ToolError::InvalidArguments {
-                    name: "ast_query".to_string(),
-                    reason: format!("Unsupported language extension: '{}'", ext),
-                }
-                .into());
+        if let Some(tree) = parser.parse(&content, None) {
+            match ext {
+                "rs" => Self::traverse_rust(tree.root_node(), &content, &mut nodes),
+                "py" => Self::traverse_python(tree.root_node(), &content, &mut nodes),
+                _ => Self::traverse_ts(tree.root_node(), &content, &mut nodes),
             }
         }
 
@@ -394,101 +357,36 @@ impl AstTransformer {
 
     /// In-memory syntax verification before disk write.
     pub fn validate_syntax_in_memory(ext: &str, code: &str, _symbol_kind: &str) -> Result<()> {
+        let lang = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "ast_replace_node".to_string(),
+                reason: format!("Unsupported file extension '{}' for AST replacement", ext),
+            })?;
         let mut parser = tree_sitter::Parser::new();
-        match ext {
-            "rs" => {
-                parser
-                    .set_language(&tree_sitter_rust::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(code, None) {
-                    if let Some(err) = Self::check_syntax_errors(tree.root_node(), code) {
-                        // If symbol is inside an impl or struct, try wrapping in impl Dummy
-                        let wrapped = format!("impl Dummy {{\n{}\n}}", code);
-                        if let Some(wrapped_tree) = parser.parse(&wrapped, None) {
-                            if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped)
-                                .is_none()
-                            {
-                                return Ok(());
-                            }
+        parser
+            .set_language(&lang)
+            .map_err(|e| ToolError::CommandExec(format!("Tree-sitter parser error: {}", e)))?;
+
+        if let Some(tree) = parser.parse(code, None) {
+            if let Some(err) = Self::check_syntax_errors(tree.root_node(), code) {
+                // If symbol is inside an impl or struct or class, try wrapping in a dummy container
+                let wrapped = match ext {
+                    "rs" => Some(format!("impl Dummy {{\n{}\n}}", code)),
+                    "ts" | "tsx" | "js" | "jsx" => Some(format!("class Dummy {{\n{}\n}}", code)),
+                    _ => None,
+                };
+
+                if let Some(wrapped_code) = wrapped {
+                    if let Some(wrapped_tree) = parser.parse(&wrapped_code, None) {
+                        if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped_code).is_none() {
+                            return Ok(());
                         }
-                        return Err(ToolError::InvalidArguments {
-                            name: "ast_replace_node".to_string(),
-                            reason: format!("In-memory syntax validation failed: {}", err),
-                        }
-                        .into());
                     }
                 }
-            }
-            "py" => {
-                parser
-                    .set_language(&tree_sitter_python::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(code, None) {
-                    if let Some(err) = Self::check_syntax_errors(tree.root_node(), code) {
-                        return Err(ToolError::InvalidArguments {
-                            name: "ast_replace_node".to_string(),
-                            reason: format!("In-memory syntax validation failed: {}", err),
-                        }
-                        .into());
-                    }
-                }
-            }
-            "ts" | "tsx" => {
-                parser
-                    .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(code, None) {
-                    if let Some(err) = Self::check_syntax_errors(tree.root_node(), code) {
-                        let wrapped = format!("class Dummy {{\n{}\n}}", code);
-                        if let Some(wrapped_tree) = parser.parse(&wrapped, None) {
-                            if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped)
-                                .is_none()
-                            {
-                                return Ok(());
-                            }
-                        }
-                        return Err(ToolError::InvalidArguments {
-                            name: "ast_replace_node".to_string(),
-                            reason: format!("In-memory syntax validation failed: {}", err),
-                        }
-                        .into());
-                    }
-                }
-            }
-            "js" | "jsx" => {
-                parser
-                    .set_language(&tree_sitter_javascript::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(code, None) {
-                    if let Some(err) = Self::check_syntax_errors(tree.root_node(), code) {
-                        let wrapped = format!("class Dummy {{\n{}\n}}", code);
-                        if let Some(wrapped_tree) = parser.parse(&wrapped, None) {
-                            if Self::check_syntax_errors(wrapped_tree.root_node(), &wrapped)
-                                .is_none()
-                            {
-                                return Ok(());
-                            }
-                        }
-                        return Err(ToolError::InvalidArguments {
-                            name: "ast_replace_node".to_string(),
-                            reason: format!("In-memory syntax validation failed: {}", err),
-                        }
-                        .into());
-                    }
-                }
-            }
-            _ => {
+
                 return Err(ToolError::InvalidArguments {
                     name: "ast_replace_node".to_string(),
-                    reason: format!("Unsupported file extension '{}' for AST replacement", ext),
+                    reason: format!("In-memory syntax validation failed: {}", err),
                 }
                 .into());
             }

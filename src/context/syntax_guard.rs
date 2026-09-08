@@ -15,9 +15,8 @@ pub struct SyntaxErrorDetail {
 pub struct SyntaxGuard;
 
 impl SyntaxGuard {
-    /// Maps a file path to its corresponding Tree-sitter Language definition.
-    pub fn language_for_path(path: &Path) -> Option<Language> {
-        let ext = path.extension().and_then(|e| e.to_str())?;
+    /// Maps a file extension to its corresponding Tree-sitter Language definition.
+    pub fn language_for_extension(ext: &str) -> Option<Language> {
         match ext {
             "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
             "py" => Some(tree_sitter_python::LANGUAGE.into()),
@@ -27,6 +26,12 @@ impl SyntaxGuard {
             }
             _ => None,
         }
+    }
+
+    /// Maps a file path to its corresponding Tree-sitter Language definition.
+    pub fn language_for_path(path: &Path) -> Option<Language> {
+        let ext = path.extension().and_then(|e| e.to_str())?;
+        Self::language_for_extension(ext)
     }
 
     /// Recursively walks the AST to locate the first ERROR or MISSING node.

@@ -131,58 +131,22 @@ pub struct AstDiffEngine;
 impl AstDiffEngine {
     /// Extracts symbols from in-memory source content based on language extension
     pub fn parse_source(ext: &str, content: &str) -> Result<Vec<AstNodeInfo>> {
+        let lang = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "ast_diff".to_string(),
+                reason: format!("Unsupported file extension for AST diff: '{}'", ext),
+            })?;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&lang)
+            .map_err(|e| ToolError::CommandExec(format!("Tree-sitter parser error: {}", e)))?;
+
         let mut nodes = Vec::new();
-        match ext {
-            "rs" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_rust::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(content, None) {
-                    Self::traverse_rust(tree.root_node(), content, &mut nodes);
-                }
-            }
-            "py" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_python::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(content, None) {
-                    Self::traverse_python(tree.root_node(), content, &mut nodes);
-                }
-            }
-            "ts" | "tsx" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(content, None) {
-                    Self::traverse_ts(tree.root_node(), content, &mut nodes);
-                }
-            }
-            "js" | "jsx" => {
-                let mut parser = tree_sitter::Parser::new();
-                parser
-                    .set_language(&tree_sitter_javascript::LANGUAGE.into())
-                    .map_err(|e| {
-                        ToolError::CommandExec(format!("Tree-sitter parser error: {}", e))
-                    })?;
-                if let Some(tree) = parser.parse(content, None) {
-                    Self::traverse_ts(tree.root_node(), content, &mut nodes);
-                }
-            }
-            _ => {
-                return Err(ToolError::InvalidArguments {
-                    name: "ast_diff".to_string(),
-                    reason: format!("Unsupported file extension for AST diff: '{}'", ext),
-                }
-                .into());
+        if let Some(tree) = parser.parse(content, None) {
+            match ext {
+                "rs" => Self::traverse_rust(tree.root_node(), content, &mut nodes),
+                "py" => Self::traverse_python(tree.root_node(), content, &mut nodes),
+                _ => Self::traverse_ts(tree.root_node(), content, &mut nodes),
             }
         }
         Ok(nodes)

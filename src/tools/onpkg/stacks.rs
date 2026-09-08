@@ -28,5 +28,5 @@ pub struct Stack {
     pub hooks: Vec<StackHook>,
 }
 
-#[path = "templates/builtin/stacks_mod.rs"]
+#[path = "templates/builtin/mod.rs"]
 pub mod builtin;

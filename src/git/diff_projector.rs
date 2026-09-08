@@ -1,7 +1,7 @@
 use crate::context::ast_diff::AstDiffEngine;
 use crate::context::graph::CodeGraph;
 use crate::error::Result;
-use crate::git::diff_viewer::{GitDiffFile, GitDiffViewer};
+use crate::git::diff_parser::{GitDiffFile, GitDiffViewer};
 use crate::git::service::GitService;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

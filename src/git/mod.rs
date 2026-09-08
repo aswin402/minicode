@@ -2,8 +2,9 @@ pub mod commit;
 pub mod commit_synth;
 pub mod conflict_resolver;
 pub mod diff_filter;
+pub mod diff_parser;
+pub use diff_parser as diff_viewer;
 pub mod diff_projector;
-pub mod diff_viewer;
 pub mod reviewer;
 pub mod service;
 pub mod worktree;
@@ -16,10 +17,10 @@ pub use conflict_resolver::{
     ConflictBlock, ConflictResolver, ConflictResolverReport, FileResolutionReport, MergeStrategy,
 };
 pub use diff_filter::DiffFilter;
+pub use diff_parser::{GitDiffFile, GitDiffLine, GitDiffViewer};
 pub use diff_projector::{
     DiffProjectionReport, DiffProjector, ProjectedSymbolChange, SymbolMutationType,
 };
-pub use diff_viewer::{GitDiffFile, GitDiffLine, GitDiffViewer};
 pub use reviewer::{GitReviewer, ReviewFinding, ReviewReport};
 pub use service::{ConflictFile, GitService, GitStatus};
 pub use worktree::WorktreeManager;
