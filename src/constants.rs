@@ -666,7 +666,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 126;
+pub const TOTAL_TOOL_COUNT: usize = 127;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -763,6 +763,18 @@ pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
 // === UI Animation ===
 /// Standard 10-frame braille spinner sequence for async tool/agent activity
 pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// === Flaky Test Quarantine (Phase 102) ===
+/// Default number of burn-in runs to evaluate for statistical test variance
+pub const DEFAULT_FLAKY_RUNS: usize = 5;
+/// Maximum allowed burn-in runs for test variance analysis
+pub const MAX_FLAKY_RUNS: usize = 10;
+/// Minimum allowed burn-in runs for test variance analysis
+pub const MIN_FLAKY_RUNS: usize = 2;
+/// Execution timeout in seconds for a single burn-in test run
+pub const FLAKY_TEST_TIMEOUT_SECS: u64 = 15;
+/// Persistent quarantine filename under .minicode/
+pub const QUARANTINE_FILE_NAME: &str = "quarantine.json";
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

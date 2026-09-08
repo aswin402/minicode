@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 101 (v0.3.1) Adaptive Model Context Routing & Dynamic Provider Fallback Cascade (`route_model`) | **Status:** ✅ Completed (126 Tools)
+> **Current Phase:** Phase 102 (v0.3.2) Automated Flaky Test Quarantine & Statistical Variance Analysis (`quarantine_flaky_tests`) | **Status:** ✅ Completed (127 Tools)
 
 ---
 
@@ -1613,5 +1613,14 @@
 - [x] 101.4: Update system prompt ergonomics, add `/route` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
 - [x] 101.5: Write comprehensive integration tests verifying tier routing, fallback chains, circuit breaker transitions, and registry dispatch (`tests/integration_model_router.rs`)
 - [x] 101.6: Version bump → `v0.3.1`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
+### Phase 102: Automated Flaky Test Quarantine & Statistical Variance Analysis (v0.3.2)
+- [x] 102.1: Implement `FlakyTestDetector`, `QuarantineManager`, statistical variance metrics, failure signatures, and stabilization advice (`src/context/flaky.rs` & `src/context/mod.rs`)
+- [x] 102.2: Register `quarantine_flaky_tests` tool schema, argument parser, and executor dispatch (`src/tools/registry/context_tools.rs`)
+- [x] 102.3: Increment `TOTAL_TOOL_COUNT` (126 → 127), classify `quarantine_flaky_tests` as `ToolSafetyLevel::Mutating` in `src/tools/concurrency.rs`, add quarantine constants
+- [x] 102.4: Update system prompt ergonomics, add `/quarantine` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
+- [x] 102.5: Write comprehensive integration tests verifying variance calculation, signature detection, quarantine store persistence, and registry dispatch (`tests/integration_flaky_quarantine.rs`)
+- [x] 102.6: Version bump → `v0.3.2`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
 
 

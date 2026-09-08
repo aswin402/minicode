@@ -281,6 +281,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/route | /route auto | /route fast | /route standard | /route deep",
     },
     CommandCatalogItem {
+        name: "/quarantine",
+        category: "Code & Inspection",
+        shortcut: "",
+        description: "Automated flaky test quarantine and statistical variance analysis",
+        example: "/quarantine | /quarantine detect <test> 5 | /quarantine clear",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

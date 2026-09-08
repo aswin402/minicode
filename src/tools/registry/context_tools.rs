@@ -668,6 +668,36 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["query"]
             }),
         },
+        ToolSchema {
+            name: "quarantine_flaky_tests".to_string(),
+            description: "Execute statistical N-pass burn-in testing on a suspect or failing test, calculate variance and flakiness ratios, isolate non-deterministic tests into .minicode/quarantine.json, and get automated stabilization suggestions.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "test_name": {
+                        "type": "string",
+                        "description": "Optional test name or target filter (e.g. 'test_network_timeout' or 'test_socket')"
+                    },
+                    "runs": {
+                        "type": "integer",
+                        "description": "Number of statistical burn-in runs to execute (default: 5, min: 2, max: 10)"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform: 'detect' (default, runs burn-in & analyzes), 'quarantine' (force quarantine), 'unquarantine' (remove from quarantine), or 'list' (view all quarantined tests)",
+                        "enum": ["detect", "quarantine", "unquarantine", "list"]
+                    },
+                    "auto_quarantine": {
+                        "type": "boolean",
+                        "description": "Whether to automatically quarantine the test if flakiness is detected (default: true)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional custom reason when manually quarantining a test"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1563,6 +1593,90 @@ pub async fn dispatch(
                 Err(e) => Err(e),
             }
         }),
+        "quarantine_flaky_tests" => Some(async {
+            let test_name = args.get("test_name").and_then(|v| v.as_str()).unwrap_or("");
+            let runs = parse_u64_param(args.get("runs")).unwrap_or(crate::constants::DEFAULT_FLAKY_RUNS as u64) as usize;
+            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("detect");
+            let auto_quarantine = args.get("auto_quarantine").and_then(|v| v.as_bool()).unwrap_or(true);
+            let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("Statistical flakiness detected during burn-in");
+
+            match action {
+                "list" => {
+                    let store = crate::context::flaky::QuarantineManager::load(workspace_root);
+                    Ok(crate::context::flaky::QuarantineManager::format_report(&store))
+                }
+                "unquarantine" => {
+                    if test_name.is_empty() {
+                        return Err(ToolError::InvalidArguments {
+                            name: "quarantine_flaky_tests".to_string(),
+                            reason: "Missing 'test_name' for unquarantine action".to_string(),
+                        }.into());
+                    }
+                    let removed = crate::context::flaky::QuarantineManager::unquarantine(workspace_root, test_name)?;
+                    if removed {
+                        Ok(format!("✅ Successfully un-quarantined test `{}`.", test_name))
+                    } else {
+                        Ok(format!("ℹ Test `{}` was not found in the quarantine store.", test_name))
+                    }
+                }
+                "quarantine" => {
+                    if test_name.is_empty() {
+                        return Err(ToolError::InvalidArguments {
+                            name: "quarantine_flaky_tests".to_string(),
+                            reason: "Missing 'test_name' for quarantine action".to_string(),
+                        }.into());
+                    }
+                    let entry = crate::context::flaky::QuarantineManager::quarantine(
+                        workspace_root,
+                        test_name,
+                        1.0,
+                        crate::context::flaky::FlakySignature::Unknown,
+                        reason,
+                        1,
+                    )?;
+                    Ok(format!(
+                        "🛡️ Successfully quarantined test `{}`.\nReason: {}\nTimestamp: {}",
+                        entry.test_name, entry.reason, entry.quarantined_at
+                    ))
+                }
+                _ => {
+                    if test_name.is_empty() {
+                        return Err(ToolError::InvalidArguments {
+                            name: "quarantine_flaky_tests".to_string(),
+                            reason: "Missing required argument 'test_name' for detection burn-in".to_string(),
+                        }.into());
+                    }
+
+                    let report = crate::context::flaky::FlakyTestDetector::execute_burn_in(
+                        workspace_root,
+                        test_name,
+                        runs,
+                        crate::constants::FLAKY_TEST_TIMEOUT_SECS,
+                    ).await?;
+
+                    let mut out = report.format_markdown();
+
+                    if auto_quarantine && report.verdict == crate::context::flaky::FlakinessVerdict::FlakyIntermittent {
+                        let q_res = crate::context::flaky::QuarantineManager::quarantine(
+                            workspace_root,
+                            test_name,
+                            report.flakiness_ratio,
+                            report.signature,
+                            &format!("Automated quarantine: {:.1}% failure variance across {} burn-in runs", report.flakiness_ratio * 100.0, report.total_runs),
+                            report.total_runs,
+                        );
+                        if let Ok(entry) = q_res {
+                            out.push_str(&format!(
+                                "\n🛡️ **Automated Quarantine Applied**: Test `{}` has been added to `.minicode/quarantine.json` to shield future agent iterations.\n",
+                                entry.test_name
+                            ));
+                        }
+                    }
+
+                    Ok(out)
+                }
+            }
+        }.await),
         _ => None,
     }
 }

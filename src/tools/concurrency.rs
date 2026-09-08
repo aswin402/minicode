@@ -149,9 +149,18 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "route_model" => ToolSafetyLevel::ReadOnly,
 
         // Memory & Context Mutations
-        "remember_fact" | "update_fact" | "forget_fact" | "create_plan" | "log_finding"
-        | "update_progress" | "archive_plan" | "create_skill" | "wiki_write"
-        | "create_task_dag" | "complete_task" => ToolSafetyLevel::Mutating,
+        "remember_fact"
+        | "update_fact"
+        | "forget_fact"
+        | "create_plan"
+        | "log_finding"
+        | "update_progress"
+        | "archive_plan"
+        | "create_skill"
+        | "wiki_write"
+        | "create_task_dag"
+        | "complete_task"
+        | "quarantine_flaky_tests" => ToolSafetyLevel::Mutating,
 
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,

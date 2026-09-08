@@ -15,6 +15,7 @@ pub mod donut;
 pub mod episodic;
 pub mod explorer;
 pub mod fault_localizer;
+pub mod flaky;
 pub mod fusion;
 pub mod governance;
 pub mod graph;
@@ -48,6 +49,11 @@ pub use fault_localizer::{
     FaultLocalizationReport, FaultLocalizer, LocalizedFileHit, LocalizedSymbol,
 };
 
+#[allow(unused_imports)]
+pub use flaky::{
+    FlakinessVerdict, FlakyAnalysisReport, FlakySignature, FlakyTestDetector, QuarantineManager,
+    QuarantineStore, QuarantinedTest, SingleTestRun,
+};
 #[allow(unused_imports)]
 pub use fusion::{
     format_fused_bundle, FusedCallGraphNode, FusedCodeHit, FusedEpisodeHit, FusedKnowledgeBundle,

@@ -5,6 +5,49 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] — 2026-09-08
+
+### Automated Flaky Test Quarantine & Statistical Variance Analysis (`quarantine_flaky_tests`)
+
+#### 💡 Ideas & Inspirations
+- **Eliminating Intermittent CI & Agent Regressions**: Autonomous agents frequently get derailed by flaky tests—tests that pass or fail nondeterministically without any changes to underlying source code. Intermittent failures cause false-positive test triage loops, wasted LLM tokens attempting to fix non-existent bugs, and broken CI pipelines.
+- **Statistical Burn-In & Variance Quantification**: `minicode v0.3.2` introduces the `FlakyTestDetector` and `QuarantineManager` (`quarantine_flaky_tests`). By executing $N$ burn-in runs (configurable 2–10 iterations) on suspicious test targets, minicode computes the flakiness ratio ($R = \frac{\min(\text{passes}, \text{failures})}{\text{total runs}}$), average execution duration, and variance across runs.
+- **Automated Root-Cause Signature Heuristics**: Triages failure outputs using pattern recognition to categorize root causes:
+  - `⏱️ Timing Jitter`: Timeout deadlines, race conditions, unsynchronized Tokio channel latencies, sleep jitter.
+  - `🔒 Resource Contention`: Port collisions (address already in use), locked sqlite/file handles, tempdir collisions.
+  - `🔀 Assertion Variance`: Unordered hash map/set iteration order, PRNG entropy, fluctuating timestamps.
+  - `❓ Unknown`: Unclassified general errors.
+- **Automated Stabilization Recommendations**: Suggests targeted fixes based on identified failure signatures (e.g. replacing fixed sleeps with condition variables, binding ephemeral ports `127.0.0.1:0`, sorting collections before equality checks).
+- **Automated Quarantine Store (`.minicode/quarantine.json`)**: Intermittent tests can be automatically or manually isolated into the persistent workspace quarantine file, preventing broken test runs from blocking agent goal execution.
+- **Dual Exposure & TUI `/quarantine` Command**: Seamlessly accessible to autonomous agents via `quarantine_flaky_tests` (total tool count 127) and to developers via `/quarantine` (and `/q`) in the interactive command palette with subcommands: `/quarantine` (list), `/quarantine detect <test> [runs]`, `/quarantine add <test> [reason]`, `/quarantine rm <test>`, `/quarantine clear`.
+
+#### 📚 References & Sources
+- **DeFlaker: Automatically Detecting Flaky Tests (Bell et al., ICSE 2018)**: Groundbreaking framework detecting flakiness by monitoring code coverage and execution variance across repeated test executions.
+- **Empirical Analysis of Flaky Tests (Luo et al., FSE 2014)**: The seminal taxonomy of flaky tests identifying async wait / concurrency (timing jitter), test order dependency, and resource leaks as primary root causes.
+- **Google Testing Blog: Flaky Tests at Google and How We Mitigate Them (2016)**: Demonstrates that 16% of tests exhibit intermittent flakiness and establishes the industry practice of automated quarantining to protect mainline workflows.
+
+#### 🚀 Features & Changes
+- **Core Flaky Variance Analyzer & Quarantine Manager (`src/context/flaky.rs` & `src/context/mod.rs`)**:
+  - Implemented `FlakinessVerdict` (`DeterministicPass`, `DeterministicFail`, `FlakyIntermittent`) with visual badges.
+  - Implemented `FlakySignature` (`TimingJitter`, `ResourceContention`, `AssertionVariance`, `Unknown`) with regex-based error triage.
+  - Implemented `SingleTestRun`, `FlakyAnalysisReport` with rich markdown formatting and stabilization recommendations.
+  - Implemented `QuarantineManager` managing `.minicode/quarantine.json` with load, save, quarantine, unquarantine, is_quarantined, clear, and report formatting.
+  - Implemented `FlakyTestDetector::analyze_runs` and `execute_burn_in` executing N-pass runs with timeout guards and error capture.
+- **Tool Registry Integration (`src/tools/registry/context_tools.rs`)**:
+  - Registered `quarantine_flaky_tests` schema with arguments: `test_name`, `runs`, `action`, `auto_quarantine`, `reason`.
+  - Added async execution handler supporting actions: `detect` (burn-in and auto-quarantine), `quarantine`, `unquarantine`, `list`.
+- **Constants & Tool Registry Validation (`src/constants.rs` & `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` from **126 ➔ 127**.
+  - Added `DEFAULT_FLAKY_RUNS = 5`, `MAX_FLAKY_RUNS = 10`, `MIN_FLAKY_RUNS = 2`, `FLAKY_TEST_TIMEOUT_SECS = 15`, `QUARANTINE_FILE_NAME = "quarantine.json"`.
+  - Classified `quarantine_flaky_tests` as `ToolSafetyLevel::Mutating` in concurrency safety table.
+- **Interactive TUI & Prompt Integration (`src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`, `src/agent/prompt.rs`)**:
+  - Added `/quarantine` (and `/q`) prompt submission handler supporting `list`, `detect`, `add`, `rm`, `clear`.
+  - Added `"/quarantine" =>` palette execution action.
+  - Registered `/quarantine` in `COMMAND_CATALOG` (`src/ui/modal.rs`) and `PALETTE_COMMANDS` (`src/ui/input.rs`).
+  - Added Flaky Test Quarantine guidelines in `STATIC_SYSTEM_PROMPT` (`src/agent/prompt.rs`).
+- **Comprehensive Integration Tests (`tests/integration_flaky_quarantine.rs`)**:
+  - 4 integration tests validating statistical variance analysis, signature categorization, quarantine store CRUD/persistence, and tool registry dispatch.
+
 ## [0.3.1] — 2026-09-08
 
 ### Adaptive Model Context Routing & Dynamic Provider Fallback Cascade (`route_model`)

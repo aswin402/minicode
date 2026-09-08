@@ -1184,6 +1184,97 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/quarantine" || prompt.starts_with("/quarantine ") || prompt == "/q" || prompt.starts_with("/q ") {
+                                    let arg = if let Some(stripped) = prompt.strip_prefix("/quarantine") {
+                                        stripped.trim()
+                                    } else {
+                                        prompt.strip_prefix("/q").unwrap_or("").trim()
+                                    };
+
+                                    if arg.is_empty() || arg == "list" || arg == "status" {
+                                        let store = crate::context::flaky::QuarantineManager::load(&self.workspace_root);
+                                        self.timeline.add_status(crate::context::flaky::QuarantineManager::format_report(&store));
+                                    } else if arg == "clear" {
+                                        match crate::context::flaky::QuarantineManager::clear(&self.workspace_root) {
+                                            Ok(count) => {
+                                                self.timeline.add_status(format!("✅ Cleared {} quarantined test(s). All tests restored to active test runs.", count));
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("❌ Failed to clear quarantine: {}", e));
+                                            }
+                                        }
+                                    } else if let Some(target) = arg.strip_prefix("remove ").or_else(|| arg.strip_prefix("rm ")) {
+                                        let test_name = target.trim();
+                                        match crate::context::flaky::QuarantineManager::unquarantine(&self.workspace_root, test_name) {
+                                            Ok(true) => {
+                                                self.timeline.add_status(format!("✅ Removed `{}` from quarantine. It will now execute in standard test suites.", test_name));
+                                            }
+                                            Ok(false) => {
+                                                self.timeline.add_status(format!("ℹ `{}` was not found in active quarantine list.", test_name));
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("❌ Failed to remove `{}` from quarantine: {}", test_name, e));
+                                            }
+                                        }
+                                    } else if let Some(target) = arg.strip_prefix("add ") {
+                                        let parts: Vec<&str> = target.splitn(2, ' ').collect();
+                                        let test_name = parts[0].trim();
+                                        let reason = if parts.len() > 1 { parts[1].trim() } else { "Manual quarantine via /quarantine command" };
+                                        match crate::context::flaky::QuarantineManager::quarantine(
+                                            &self.workspace_root,
+                                            test_name,
+                                            1.0,
+                                            crate::context::flaky::FlakySignature::Unknown,
+                                            reason,
+                                            1,
+                                        ) {
+                                            Ok(_) => {
+                                                self.timeline.add_status(format!("🛡️ Successfully quarantined `{}`.\nReason: {}", test_name, reason));
+                                            }
+                                            Err(e) => {
+                                                self.timeline.add_status(format!("❌ Failed to quarantine `{}`: {}", test_name, e));
+                                            }
+                                        }
+                                    } else {
+                                        let trimmed = arg.strip_prefix("detect ").unwrap_or(arg).trim();
+                                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                                        let test_name = parts.first().copied().unwrap_or("");
+                                        let runs = parts.get(1).and_then(|r| r.parse::<usize>().ok()).unwrap_or(crate::constants::DEFAULT_FLAKY_RUNS);
+
+                                        if test_name.is_empty() {
+                                            self.timeline.add_status("❌ Please specify a test name to analyze: `/quarantine detect <test_name> [runs]`".to_string());
+                                        } else {
+                                            self.timeline.add_status(format!("🔬 Initiating {} burn-in executions for test `{}`...", runs, test_name));
+                                            match crate::context::flaky::FlakyTestDetector::execute_burn_in(
+                                                &self.workspace_root,
+                                                test_name,
+                                                runs,
+                                                crate::constants::FLAKY_TEST_TIMEOUT_SECS,
+                                            ).await {
+                                                Ok(report) => {
+                                                    let mut out = report.format_markdown();
+                                                    if report.verdict == crate::context::flaky::FlakinessVerdict::FlakyIntermittent {
+                                                        let _ = crate::context::flaky::QuarantineManager::quarantine(
+                                                            &self.workspace_root,
+                                                            test_name,
+                                                            report.flakiness_ratio,
+                                                            report.signature,
+                                                            &format!("Automated quarantine: {:.1}% failure variance across {} burn-in runs", report.flakiness_ratio * 100.0, report.total_runs),
+                                                            report.total_runs,
+                                                        );
+                                                        out.push_str(&format!("\n\n🛡️ **Auto-Quarantine Applied**: Test `{}` has been quarantined in `.minicode/quarantine.json`.", test_name));
+                                                    }
+                                                    self.timeline.add_status(out);
+                                                }
+                                                Err(e) => {
+                                                    self.timeline.add_status(format!("❌ Burn-in analysis failed: {}", e));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2362,6 +2453,15 @@ impl<'a> App<'a> {
                             "/route" => {
                                 let router = crate::agent::router::AdaptiveModelRouter::new();
                                 self.timeline.add_status(router.format_status_report());
+                                self.modal = ModalState::None;
+                            }
+                            "/quarantine" => {
+                                let store = crate::context::flaky::QuarantineManager::load(
+                                    &self.workspace_root,
+                                );
+                                self.timeline.add_status(
+                                    crate::context::flaky::QuarantineManager::format_report(&store),
+                                );
                                 self.modal = ModalState::None;
                             }
                             other => {
