@@ -11,6 +11,7 @@ pub mod orchestrator;
 pub mod pricing;
 pub mod prompt;
 pub mod provider;
+pub mod providers;
 pub mod replay;
 pub mod reproducer_guard;
 pub mod router;
