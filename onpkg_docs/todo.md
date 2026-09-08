@@ -1630,6 +1630,11 @@
 - [x] 103.5: Write comprehensive integration tests in `tests/integration_commit_synthesis.rs` verifying diff parsing, conventional commit synthesis, changelog generation, and registry dispatch
 - [x] 103.6: Version bump → `v0.3.3`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
 
-
-
-
+### Phase 104: Codebase Cleanliness, Constant Unification, Reusability & Modularity Refactor (v0.3.4)
+- [ ] 104.1: Centralize hardcoded local LLM base URLs, circuit breaker defaults, environment variable keys (`pub mod env_vars`), and hidden directory constants in `src/constants.rs`
+- [ ] 104.2: Create shared string utilities module (`src/utils/strings.rs`) with UTF-8 safety checks (`truncate_chars`, `truncate_display`, `mask_secret`), fix unsafe byte slicing in `syntax_guard.rs` and `commit.rs`, and deduplicate `compute_scroll_offset` in `src/ui/layout_utils.rs`
+- [ ] 104.3: Migrate tool parameter extraction boilerplate across `search_tools.rs`, `exec_tools.rs`, and `web_tools.rs` to `crate::tools::param::*`
+- [ ] 104.4: Deduplicate Tree-sitter language dispatch in `src/context/repomap.rs`, clean up duplicate SVG & binary assets, normalize `builtin/mod.rs`, and disambiguate `src/git/diff_parser.rs`
+- [ ] 104.5: Decompose `src/agent/provider.rs` (1,808 lines) into `src/agent/providers/` submodules (`gemini.rs`, `anthropic.rs`, `openai.rs`, `factory.rs`, `resilient.rs`)
+- [ ] 104.6: Decompose `src/ui/modal.rs` (2,937 lines) into `src/ui/modals/` submodules with dedicated renderers
+- [ ] 104.7: Verification, integration test suite, cargo check/clippy/fmt quality gates, and version bump → `v0.3.4`

@@ -1541,21 +1541,21 @@ pub fn create_provider_with_base_url(
             } else {
                 api_key
             },
-            custom_base_url.unwrap_or("http://localhost:1234/v1"),
-            "local-model",
+            custom_base_url.unwrap_or(crate::constants::LMSTUDIO_DEFAULT_BASE_URL),
+            crate::constants::DEFAULT_LOCAL_MODEL_NAME,
         ))),
         "vllm" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "vllm",
             if api_key.is_empty() { "none" } else { api_key },
-            custom_base_url.unwrap_or("http://localhost:8000/v1"),
+            custom_base_url.unwrap_or(crate::constants::VLLM_DEFAULT_BASE_URL),
             "default",
         ))),
         "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
             Ok(Box::new(OpenAiCompatibleProvider::new(
                 provider_name,
                 if api_key.is_empty() { "none" } else { api_key },
-                custom_base_url.unwrap_or("http://localhost:8080/v1"),
-                "local-model",
+                custom_base_url.unwrap_or(crate::constants::LOCALAI_DEFAULT_BASE_URL),
+                crate::constants::DEFAULT_LOCAL_MODEL_NAME,
             )))
         }
         custom_name => {
@@ -1565,15 +1565,15 @@ pub fn create_provider_with_base_url(
                     custom_name,
                     key,
                     url,
-                    "default-model",
+                    crate::constants::DEFAULT_FALLBACK_MODEL_NAME,
                 )))
             } else if custom_name.contains("local") || custom_name.contains("127.0.0.1") {
                 let key = if api_key.is_empty() { "none" } else { api_key };
                 Ok(Box::new(OpenAiCompatibleProvider::new(
                     custom_name,
                     key,
-                    "http://localhost:8080/v1",
-                    "local-model",
+                    crate::constants::LOCALAI_DEFAULT_BASE_URL,
+                    crate::constants::DEFAULT_LOCAL_MODEL_NAME,
                 )))
             } else {
                 Err(ProviderError::UnsupportedModel {

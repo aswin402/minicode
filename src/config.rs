@@ -116,7 +116,7 @@ impl Default for OllamaConfig {
 }
 
 fn default_ollama_host() -> String {
-    "http://localhost:11434".to_string()
+    crate::constants::DEFAULT_OLLAMA_HOST.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -842,10 +842,12 @@ impl Config {
 
         match norm.as_str() {
             "ollama" => Some(self.provider.ollama.host.clone()),
-            "lmstudio" | "lm-studio" => Some("http://localhost:1234/v1".to_string()),
-            "vllm" => Some("http://localhost:8000/v1".to_string()),
+            "lmstudio" | "lm-studio" => {
+                Some(crate::constants::LMSTUDIO_DEFAULT_BASE_URL.to_string())
+            }
+            "vllm" => Some(crate::constants::VLLM_DEFAULT_BASE_URL.to_string()),
             "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
-                Some("http://localhost:8080/v1".to_string())
+                Some(crate::constants::LOCALAI_DEFAULT_BASE_URL.to_string())
             }
             _ => None,
         }

@@ -268,7 +268,7 @@ user_pref("remote.active-protocols", 3);
             ))
         })?;
 
-        let cdp_http_url = format!("http://127.0.0.1:{}", config.cdp_port);
+        let cdp_http_url = format!("{}{}", crate::constants::CDP_HOST_PREFIX, config.cdp_port);
 
         // Poll CDP readiness
         let start = Instant::now();

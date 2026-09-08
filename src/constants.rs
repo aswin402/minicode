@@ -1,4 +1,5 @@
 //! Centralized constants for minicode to eliminate magic numbers, hardcoded paths, and protocol literals.
+#![allow(dead_code)]
 
 // === Directory & File Names ===
 /// Name of global configuration directory (~/.config/minicode)
@@ -57,6 +58,34 @@ pub const REPRODUCER_DIR_NAME: &str = "reproducers";
 pub const REPRODUCER_PREFIX: &str = "repro_";
 /// Default timeout for single reproducer test execution in milliseconds (15s)
 pub const REPRODUCER_TIMEOUT_MS: u64 = 15000;
+/// Subdirectory storing diagnostic and application logs (.minicode/logs)
+pub const LOGS_DIR_NAME: &str = "logs";
+/// Subdirectory storing exported artifacts (.minicode/exports)
+pub const EXPORTS_DIR_NAME: &str = "exports";
+/// Subdirectory storing isolated git worktrees (.minicode/worktrees)
+pub const WORKTREES_DIR_NAME: &str = "worktrees";
+/// Subdirectory storing crawled web documentation (.minicode/crawled)
+pub const CRAWLED_CACHE_DIR: &str = "crawled";
+/// Subdirectory storing local workspace wiki (.minicode/wiki)
+pub const WIKI_DIR_NAME: &str = "wiki";
+/// Hypotheses record JSON filename (.minicode/hypotheses.json)
+pub const HYPOTHESES_FILE_NAME: &str = "hypotheses.json";
+/// Task DAG execution JSON filename (.minicode/task_dag.json)
+pub const TASK_DAG_FILE_NAME: &str = "task_dag.json";
+/// Subagent scratchpad state JSON filename (.minicode/scratchpad.json)
+pub const SCRATCHPAD_FILE_NAME: &str = "scratchpad.json";
+/// Binary vector embeddings cache filename (.minicode/embeddings.bin)
+pub const EMBEDDINGS_CACHE_FILE: &str = "embeddings.bin";
+/// Episodic conversation memory JSON filename (.minicode/episodic_memory.json)
+pub const EPISODIC_MEMORY_FILE: &str = "episodic_memory.json";
+/// Cached code graph JSON filename (.minicode/graph.json)
+pub const GRAPH_FILE_NAME: &str = "graph.json";
+/// Package manifest filename for onpkg integration
+pub const ONPKG_MANIFEST_FILE: &str = "onpkg.json";
+/// Documentation directory for onpkg skills
+pub const ONPKG_DOCS_DIR: &str = "onpkg_docs";
+/// Standard git repository hidden directory name (.git)
+pub const GIT_DIR_NAME: &str = ".git";
 
 // === Agent Loop Limits ===
 /// Maximum tool calling steps per turn to prevent infinite loops
@@ -482,6 +511,22 @@ pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
 /// Ollama default API base URL
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
+/// Default Ollama raw host endpoint without API version suffix
+pub const DEFAULT_OLLAMA_HOST: &str = "http://localhost:11434";
+/// LM Studio default OpenAI-compatible base URL
+pub const LMSTUDIO_DEFAULT_BASE_URL: &str = "http://localhost:1234/v1";
+/// vLLM default OpenAI-compatible base URL
+pub const VLLM_DEFAULT_BASE_URL: &str = "http://localhost:8000/v1";
+/// LocalAI / llama.cpp / Jan default OpenAI-compatible base URL
+pub const LOCALAI_DEFAULT_BASE_URL: &str = "http://localhost:8080/v1";
+/// Chrome DevTools Protocol loopback prefix
+pub const CDP_HOST_PREFIX: &str = "http://127.0.0.1:";
+
+/// Default local model name fallback
+pub const DEFAULT_LOCAL_MODEL_NAME: &str = "local-model";
+/// Default fallback model name for custom providers
+pub const DEFAULT_FALLBACK_MODEL_NAME: &str = "default-model";
+
 /// Default provider name
 pub const DEFAULT_PROVIDER: &str = "gemini";
 /// Default Gemini model
@@ -552,6 +597,62 @@ pub const BROWSER_BLOCKED_HOSTS: &[&str] = &[
 pub const INDEX_CACHE_MAX_ENTRIES: usize = 1000;
 /// Grace period in milliseconds before escalating SIGTERM to SIGKILL for child processes
 pub const PROCESS_KILL_GRACE_PERIOD_MS: u64 = 500;
+
+// === Network Resiliency, Circuit Breakers & Retries ===
+/// Default failure threshold before tripping circuit breaker
+pub const CB_DEFAULT_FAILURE_THRESHOLD: u32 = 3;
+/// Default circuit breaker cooldown duration in seconds
+pub const CB_DEFAULT_COOLDOWN_SECS: u64 = 10;
+/// Default successful probe threshold to close half-open circuit breaker
+pub const CB_DEFAULT_HALF_OPEN_SUCCESS: u32 = 2;
+/// Default initial retry delay in milliseconds
+pub const DEFAULT_RETRY_INITIAL_DELAY_MS: u64 = 400;
+/// Default maximum retry backoff delay in seconds
+pub const DEFAULT_RETRY_MAX_DELAY_SECS: u64 = 5;
+/// Default exponential backoff multiplier
+pub const DEFAULT_RETRY_BACKOFF_MULTIPLIER: f64 = 2.0;
+
+/// Default timeout in seconds for GitHub REST API calls
+pub const GITHUB_API_TIMEOUT_SECS: u64 = 15;
+/// Default timeout in seconds for headless browser HTTP management calls
+pub const BROWSER_HTTP_TIMEOUT_SECS: u64 = 10;
+/// Default TTL in seconds for web search cache (15 minutes)
+pub const WEB_SEARCH_CACHE_TTL_SECS: u64 = 15 * 60;
+/// Maximum time window in milliseconds between double-Escape presses to exit
+pub const DOUBLE_ESC_EXIT_WINDOW_MS: u64 = 1500;
+/// Timeout for python syntax check in compiler tools (milliseconds)
+pub const PYTHON_SYNTAX_TIMEOUT_MS: u64 = 2000;
+/// Timeout for LSP client request roundtrips in seconds
+pub const LSP_REQUEST_TIMEOUT_SECS: u64 = 5;
+/// Timeout for LSP diagnostic drain in seconds
+pub const LSP_DIAGNOSTICS_TIMEOUT_SECS: u64 = 4;
+
+// === Environment Variable Names ===
+pub mod env_vars {
+    pub const MINICODE_MODEL: &str = "MINICODE_MODEL";
+    pub const MINICODE_PROVIDER: &str = "MINICODE_PROVIDER";
+    pub const MINICODE_AUTO_APPROVE: &str = "MINICODE_AUTO_APPROVE";
+    pub const MINICODE_APPROVAL_POLICY: &str = "MINICODE_APPROVAL_POLICY";
+    pub const MINICODE_TEMPERATURE: &str = "MINICODE_TEMPERATURE";
+    pub const MINICODE_MAX_TOKENS: &str = "MINICODE_MAX_TOKENS";
+    pub const MINICODE_TIMEOUT: &str = "MINICODE_TIMEOUT";
+    pub const MINICODE_PLAIN: &str = "MINICODE_PLAIN";
+    pub const MINICODE_THEME: &str = "MINICODE_THEME";
+    pub const MINICODE_LOG_LEVEL: &str = "MINICODE_LOG_LEVEL";
+    pub const MINICODE_PARALLEL_TOOLS: &str = "MINICODE_PARALLEL_TOOLS";
+    pub const MINICODE_SPECULATIVE_EXECUTION: &str = "MINICODE_SPECULATIVE_EXECUTION";
+    pub const MINICODE_MAX_PARALLEL_TOOLS: &str = "MINICODE_MAX_PARALLEL_TOOLS";
+    pub const MINICODE_BROWSER: &str = "MINICODE_BROWSER";
+
+    pub const OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
+    pub const HOME: &str = "HOME";
+    pub const TERM: &str = "TERM";
+    pub const COLORTERM: &str = "COLORTERM";
+    pub const TAVILY_API_KEY: &str = "TAVILY_API_KEY";
+    pub const BRAVE_API_KEY: &str = "BRAVE_API_KEY";
+    pub const GITHUB_TOKEN: &str = "GITHUB_TOKEN";
+    pub const GH_TOKEN: &str = "GH_TOKEN";
+}
 
 // === Git Operations & Diff Limits ===
 /// Maximum recommended length for Git commit summary line

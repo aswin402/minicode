@@ -199,15 +199,16 @@ impl ModelFetcher {
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "lmstudio" | "lm-studio" => {
-                let url = custom_base_url.unwrap_or("http://localhost:1234/v1");
+                let url =
+                    custom_base_url.unwrap_or(crate::constants::LMSTUDIO_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "vllm" => {
-                let url = custom_base_url.unwrap_or("http://localhost:8000/v1");
+                let url = custom_base_url.unwrap_or(crate::constants::VLLM_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
-                let url = custom_base_url.unwrap_or("http://localhost:8080/v1");
+                let url = custom_base_url.unwrap_or(crate::constants::LOCALAI_DEFAULT_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             _ => {

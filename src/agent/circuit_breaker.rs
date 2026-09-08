@@ -24,9 +24,9 @@ pub struct CircuitBreakerConfig {
 impl Default for CircuitBreakerConfig {
     fn default() -> Self {
         Self {
-            failure_threshold: 3,
-            cooldown_duration: Duration::from_secs(10),
-            half_open_success_threshold: 2,
+            failure_threshold: crate::constants::CB_DEFAULT_FAILURE_THRESHOLD,
+            cooldown_duration: Duration::from_secs(crate::constants::CB_DEFAULT_COOLDOWN_SECS),
+            half_open_success_threshold: crate::constants::CB_DEFAULT_HALF_OPEN_SUCCESS,
         }
     }
 }
@@ -129,10 +129,10 @@ pub struct RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            max_retries: 3,
-            initial_delay: Duration::from_millis(400),
-            max_delay: Duration::from_secs(5),
-            multiplier: 2.0,
+            max_retries: crate::constants::DEFAULT_MAX_RETRIES,
+            initial_delay: Duration::from_millis(crate::constants::DEFAULT_RETRY_INITIAL_DELAY_MS),
+            max_delay: Duration::from_secs(crate::constants::DEFAULT_RETRY_MAX_DELAY_SECS),
+            multiplier: crate::constants::DEFAULT_RETRY_BACKOFF_MULTIPLIER,
         }
     }
 }
