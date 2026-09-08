@@ -1127,6 +1127,63 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                if prompt == "/route" || prompt.starts_with("/route ") || prompt == "/ro" || prompt.starts_with("/ro ") {
+                                    let arg = if let Some(stripped) = prompt.strip_prefix("/route") {
+                                        stripped.trim()
+                                    } else {
+                                        prompt.strip_prefix("/ro").unwrap_or("").trim()
+                                    };
+
+                                    let mut router = crate::agent::router::AdaptiveModelRouter::new();
+
+                                    if arg.is_empty() || arg == "status" {
+                                        self.timeline.add_status(router.format_status_report());
+                                    } else if arg.eq_ignore_ascii_case("auto") {
+                                        router.set_forced_tier(None);
+                                        self.timeline.add_status("⚡ **Model Router Mode**: Set to Adaptive Auto-Routing (Complexity-Driven).".to_string());
+                                    } else if let Some(tier) = crate::agent::router::ModelTier::parse_tier(arg) {
+                                        router.set_forced_tier(Some(tier));
+                                        self.timeline.add_status(format!(
+                                            "🔒 **Model Router Mode**: Manually locked to `{}` tier ({}).\nRun `/route auto` to restore adaptive mode.",
+                                            tier.badge(),
+                                            tier.description()
+                                        ));
+                                    } else {
+                                        let decision = router.route_turn(arg, 0, false, 0, 0);
+                                        let mut out = format!(
+                                            "# 🔀 Model Routing Assessment: {}\n\n",
+                                            decision.tier.badge()
+                                        );
+                                        out.push_str(&format!("📋 **Query/Task:** `{}`\n", arg));
+                                        out.push_str(&format!("🎯 **Recommended Tier:** `{}` ({})\n", decision.tier.badge(), decision.tier.description()));
+                                        out.push_str(&format!("💡 **Reasoning:** {}\n", decision.reason));
+                                        out.push_str(&format!("💰 **Relative Cost Factor:** {:.2}x\n\n", decision.estimated_cost_factor));
+                                        out.push_str(&format!(
+                                            "🚀 **Primary Target:** `{}` / `{}` (Priority: {}, Context: {}k)\n\n",
+                                            decision.primary_endpoint.provider_name,
+                                            decision.primary_endpoint.model_name,
+                                            decision.primary_endpoint.priority,
+                                            decision.primary_endpoint.max_context / 1000,
+                                        ));
+                                        if !decision.fallback_chain.is_empty() {
+                                            out.push_str("🛡️ **Fallback Failover Chain:**\n");
+                                            for (idx, fb) in decision.fallback_chain.iter().enumerate() {
+                                                out.push_str(&format!(
+                                                    "{}. `{}` / `{}` (Priority: {}, Context: {}k{})\n",
+                                                    idx + 1,
+                                                    fb.provider_name,
+                                                    fb.model_name,
+                                                    fb.priority,
+                                                    fb.max_context / 1000,
+                                                    if fb.is_local { ", Local" } else { "" }
+                                                ));
+                                            }
+                                        }
+                                        self.timeline.add_status(out);
+                                    }
+                                    continue;
+                                }
+
                                 if prompt == "/thinking" || prompt.starts_with("/thinking ") {
                                     let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
                                     if args.is_empty() {
@@ -2300,6 +2357,11 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(
                                     "ℹ **Usage**: Type `/retrieve <query>` in prompt to execute multi-modal knowledge fusion across CodeGraph, vectors, wiki, and memory.".to_string(),
                                 );
+                                self.modal = ModalState::None;
+                            }
+                            "/route" => {
+                                let router = crate::agent::router::AdaptiveModelRouter::new();
+                                self.timeline.add_status(router.format_status_report());
                                 self.modal = ModalState::None;
                             }
                             other => {

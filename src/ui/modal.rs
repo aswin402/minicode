@@ -274,6 +274,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/retrieve <query> | /retrieve transaction rollback",
     },
     CommandCatalogItem {
+        name: "/route",
+        category: "Model & Intelligence",
+        shortcut: "",
+        description: "Adaptive model routing, complexity assessment, and provider fallback",
+        example: "/route | /route auto | /route fast | /route standard | /route deep",
+    },
+    CommandCatalogItem {
         name: "/copy",
         category: "Utilities",
         shortcut: "",

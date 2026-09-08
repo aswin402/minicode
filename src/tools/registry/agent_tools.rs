@@ -637,6 +637,29 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["subagent_id"]
             }),
         },
+        ToolSchema {
+            name: "route_model".to_string(),
+            description: "Assess task complexity, check model tier recommendations (Fast, Standard, DeepReasoning), inspect provider health and fallback chains, or query/override active model routing.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_description": {
+                        "type": "string",
+                        "description": "Optional prompt or task description to assess complexity and optimal model tier"
+                    },
+                    "force_tier": {
+                        "type": "string",
+                        "description": "Optional tier override to enforce: 'fast', 'standard', 'deep', or 'auto' (clear override)",
+                        "enum": ["fast", "standard", "deep", "auto"]
+                    },
+                    "query_type": {
+                        "type": "string",
+                        "description": "Query mode: 'assess' (default), 'status' (health & telemetry), or 'override'",
+                        "enum": ["assess", "status", "override"]
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1413,6 +1436,67 @@ pub async fn dispatch(
             ).await?;
 
             Ok(report.format_summary(workspace_root))
+        }.await),
+        "route_model" => Some(async {
+            let task_description = args.get("task_description").and_then(|v| v.as_str()).unwrap_or("");
+            let force_tier_str = args.get("force_tier").and_then(|v| v.as_str());
+            let query_type = args.get("query_type").and_then(|v| v.as_str()).unwrap_or("assess");
+
+            let mut router = crate::agent::router::AdaptiveModelRouter::new();
+
+            if let Some(tier_str) = force_tier_str {
+                let tier = if tier_str.eq_ignore_ascii_case("auto") {
+                    None
+                } else {
+                    crate::agent::router::ModelTier::parse_tier(tier_str)
+                };
+                router.set_forced_tier(tier);
+            }
+
+            match query_type {
+                "status" => Ok(router.format_status_report()),
+                "override" => {
+                    let forced = router.get_forced_tier();
+                    let msg = match forced {
+                        Some(t) => format!("Router locked to {} tier ({})", t.badge(), t.description()),
+                        None => "Router set to adaptive auto-routing mode".to_string(),
+                    };
+                    Ok(format!("{}\n\n{}", msg, router.format_status_report()))
+                }
+                _ => {
+                    let decision = router.route_turn(task_description, 0, false, 0, 0);
+                    let mut out = format!(
+                        "# 🔀 Model Routing Assessment: {}\n\n",
+                        decision.tier.badge()
+                    );
+                    out.push_str(&format!("📋 **Task:** {}\n", if task_description.is_empty() { "(empty/general)" } else { task_description }));
+                    out.push_str(&format!("🎯 **Selected Tier:** `{}` ({})\n", decision.tier.badge(), decision.tier.description()));
+                    out.push_str(&format!("💡 **Reasoning:** {}\n", decision.reason));
+                    out.push_str(&format!("💰 **Relative Cost Factor:** {:.2}x\n\n", decision.estimated_cost_factor));
+                    out.push_str(&format!(
+                        "🚀 **Primary Endpoint:** `{}` / `{}` (Priority: {}, Context: {}k)\n\n",
+                        decision.primary_endpoint.provider_name,
+                        decision.primary_endpoint.model_name,
+                        decision.primary_endpoint.priority,
+                        decision.primary_endpoint.max_context / 1000,
+                    ));
+                    if !decision.fallback_chain.is_empty() {
+                        out.push_str("🛡️ **Fallback Chain (Auto-Failover on 429/5xx):**\n");
+                        for (idx, fb) in decision.fallback_chain.iter().enumerate() {
+                            out.push_str(&format!(
+                                "{}. `{}` / `{}` (Priority: {}, Context: {}k{})\n",
+                                idx + 1,
+                                fb.provider_name,
+                                fb.model_name,
+                                fb.priority,
+                                fb.max_context / 1000,
+                                if fb.is_local { ", Local" } else { "" }
+                            ));
+                        }
+                    }
+                    Ok(out)
+                }
+            }
         }.await),
         _ => None,
     }

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 100 (v0.3.0) Multi-Modal Semantic Memory & Vector Graph Fusion (`hybrid_retrieve`) | **Status:** ✅ Completed (125 Tools)
+> **Current Phase:** Phase 101 (v0.3.1) Adaptive Model Context Routing & Dynamic Provider Fallback Cascade (`route_model`) | **Status:** ✅ Completed (126 Tools)
 
 ---
 
@@ -1605,4 +1605,13 @@
 - [x] 100.4: Update system prompt ergonomics, add `/retrieve` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
 - [x] 100.5: Write comprehensive integration tests verifying multi-modal fusion, graph topology, wiki/memory integration, and registry dispatch (`tests/integration_hybrid_retrieve.rs`)
 - [x] 100.6: Version bump → `v0.3.0`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
+### Phase 101: Adaptive Model Context Routing & Dynamic Provider Fallback Cascade (v0.3.1)
+- [x] 101.1: Implement `AdaptiveModelRouter`, `ModelTier` classification, `ComplexityAnalyzer`, fallback chains, and circuit-breaker provider health tracking (`src/agent/router.rs` & `src/agent/mod.rs`)
+- [x] 101.2: Register `route_model` tool schema, argument parser, and executor dispatch (`src/tools/registry/agent_tools.rs`)
+- [x] 101.3: Increment `TOTAL_TOOL_COUNT` (125 → 126), classify `route_model` as `ToolSafetyLevel::ReadOnly` in `src/tools/concurrency.rs`
+- [x] 101.4: Update system prompt ergonomics, add `/route` palette command, slash command, catalog item, and execution timeline rendering (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)
+- [x] 101.5: Write comprehensive integration tests verifying tier routing, fallback chains, circuit breaker transitions, and registry dispatch (`tests/integration_model_router.rs`)
+- [x] 101.6: Version bump → `v0.3.1`, update `CHANGELOG.md`, run `./localupdate.sh`, commit, tag, and push
+
 

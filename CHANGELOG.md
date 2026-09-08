@@ -5,6 +5,44 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-09-08
+
+### Adaptive Model Context Routing & Dynamic Provider Fallback Cascade (`route_model`)
+
+#### 💡 Ideas & Inspirations
+- **Model Cost & Latency Optimization**: Autonomous agent execution loops traditionally dispatch all turns to a single statically configured model. This forces trivial operations (read-only file searches, single-line edits, status checks, diff formatting) to consume expensive frontier reasoning tokens (`claude-3-7-sonnet`, `o3-mini`, `gpt-4o`) when a lightweight model (`claude-3-5-haiku`, `gpt-4o-mini`, `gemini-1.5-flash`, `deepseek-chat`, or local `qwen2.5-coder:7b`) would execute 5–10x faster at a fraction of the cost.
+- **Dynamic Turn Complexity Assessment**: `minicode v0.3.1` introduces the `AdaptiveModelRouter` (`route_model`), which dynamically inspects turn parameters (prompt length, architectural keywords, error recovery / self-healing state, and workspace footprint) to objectively score turn complexity from `0.0` to `1.0` and route to the optimal model tier:
+  - `ModelTier::Fast`: Ultra-fast, economical tokens for simple queries, grep triage, and short edits.
+  - `ModelTier::Standard`: Balanced generalist coding and tool dispatch.
+  - `ModelTier::DeepReasoning`: Frontier models with extended thinking budgets for architectural refactoring, DAG execution, and self-healing compiler error recovery.
+- **Automated Fallback Cascade on 429/5xx Errors**: When an API endpoint triggers rate limits (HTTP 429), capacity overload (503), or timeout errors, the router automatically fails over through configured secondary and tertiary providers (e.g. Anthropic ➔ OpenRouter ➔ Gemini ➔ Local Ollama) without crashing the agent session.
+- **Circuit Breaker Health Tracking**: Implements state-aware health tracking (`Healthy`, `Degraded`, `CoolingOff`) with automatic cooldown timers, avoiding retry storms on rate-limited endpoints.
+- **Dual Exposure & TUI `/route` Command**: Available to autonomous agents via `route_model` (total tool count 126) and to developers via `/route` (and `/ro`) in the command palette with mode locking (`/route auto`, `/route fast`, `/route standard`, `/route deep`).
+
+#### 📚 References & Sources
+- **FrugalGPT: How to Use Large Language Models While Reducing Cost and Improving Performance (Chen et al., NeurIPS 2023)**: Proving that adaptive cascade routing across model families cuts inference costs by up to 98% while matching frontier accuracy.
+- **RouteLLM: Learning to Route LLMs with Preference Data (Ouyang et al., LMSYS 2024)**: Demonstrates cost-effective routing between strong and weak models based on task complexity.
+- **Circuit Breaker Design Pattern (Nygard, Release It! 2018)**: Resilient failover preventing cascading failures under quota exhaustion.
+
+#### 🚀 Features & Changes
+- **Core Adaptive Model Router (`src/agent/router.rs` & `src/agent/mod.rs`)**:
+  - Implemented `ModelTier` (`Fast`, `Standard`, `DeepReasoning`), `ComplexityAssessment`, `ProviderEndpoint`, `RouteDecision`, and `RouterTelemetry`.
+  - Implemented `ComplexityAnalyzer` scoring heuristic complexity factors with keyword and error recovery detection.
+  - Implemented `AdaptiveModelRouter` with tiered endpoints, circuit breaker cooldowns, fallback chain generation, and markdown status reporting.
+  - 5 inline unit tests passing in `src/agent/router.rs`.
+- **Tool Registry Integration (`src/tools/registry/agent_tools.rs`)**:
+  - Registered `route_model` tool schema supporting `task_description`, `force_tier`, and `query_type` (`assess`, `status`, `override`).
+  - Implemented tool dispatch returning formatted markdown assessment reports.
+- **Concurrency & Constants (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Incremented `TOTAL_TOOL_COUNT` (125 → 126) with registry count assertion test passing.
+  - Classified `route_model` as `ToolSafetyLevel::ReadOnly` for concurrent speculative execution.
+- **Prompt Ergonomics & TUI `/route` Command (`src/agent/prompt.rs`, `src/app.rs`, `src/ui/modal.rs`, `src/ui/input.rs`)**:
+  - Added Adaptive Model Routing & Cost Efficiency guidance to `STATIC_SYSTEM_PROMPT`.
+  - Added `/route` and `/ro` slash command and prompt submit handler with live timeline rendering.
+  - Added `CommandCatalogItem` in `COMMAND_CATALOG` and `PaletteCommand` in `PALETTE_COMMANDS`.
+- **Comprehensive Integration Test Suite (`tests/integration_model_router.rs`)**:
+  - 6/6 integration tests passing covering fast tier, deep reasoning, fallback chains, circuit breaker cooldown, manual override, and registry dispatch.
+
 ## [0.3.0] — 2026-09-08
 
 ### Multi-Modal Semantic Memory & Vector Graph Fusion (`hybrid_retrieve`)

@@ -13,6 +13,7 @@ pub mod prompt;
 pub mod provider;
 pub mod replay;
 pub mod reproducer_guard;
+pub mod router;
 pub mod self_healing;
 pub mod sequential_thinking;
 pub mod speculative;
@@ -36,6 +37,11 @@ pub use provider::*;
 pub use r#loop::AgentLoop;
 #[allow(unused_imports)]
 pub use reproducer_guard::{ReproducerGuard, ReproducerPhase, ReproducerRecord, ReproducerReport};
+#[allow(unused_imports)]
+pub use router::{
+    AdaptiveModelRouter, ComplexityAnalyzer, ComplexityAssessment, ModelTier, ProviderEndpoint,
+    ProviderHealthStatus, RouteDecision, RouterTelemetry,
+};
 #[allow(unused_imports)]
 pub use self_healing::{
     DiagnosticCategory, DiagnosticCluster, DiagnosticTriageEngine, DiagnosticTriageReport,

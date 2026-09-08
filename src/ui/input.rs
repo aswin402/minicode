@@ -172,6 +172,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/route",
+        title: "Adaptive Model Router",
+        description: "Adaptive tier routing (Fast/Standard/Deep) and provider health",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/clear",
         title: "Clear Timeline",
         description: "Clear active conversation timeline messages",
