@@ -36,6 +36,7 @@ pub struct BackedUpFile {
     pub existed_before: bool,
 }
 
+#[derive(Clone)]
 pub struct BackupManager {
     workspace_root: PathBuf,
     backup_root: PathBuf,

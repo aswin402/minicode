@@ -415,11 +415,23 @@ impl AgentLoop {
 
                 if self.config.agent.streaming {
                     // --- Streaming mode: consume chunks incrementally, emit deltas live ---
-                    let mut stream = match self
+                    let stream_fut = self
                         .provider
-                        .stream_completion(&self.messages, &tools, &options)
-                        .await
-                    {
+                        .stream_completion(&self.messages, &tools, &options);
+                    let stream_res = if let Some(cancel) = &cancel_token {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                was_cancelled = true;
+                                self.speculative_executor.cancel_all().await;
+                                break;
+                            }
+                            res = stream_fut => res,
+                        }
+                    } else {
+                        stream_fut.await
+                    };
+
+                    let mut stream = match stream_res {
                         Ok(s) => s,
                         Err(e) => {
                             self.speculative_executor.cancel_all().await;
@@ -604,17 +616,27 @@ impl AgentLoop {
                     success = true;
                 } else {
                     // --- Non-streaming mode: collect full response, emit aggregated events ---
-                    match self
-                        .run_nonstreaming_iteration(
-                            &self.messages,
-                            &tools,
-                            &options,
-                            &event_sender,
-                            &self.session_id,
-                            turn_id,
-                        )
-                        .await
-                    {
+                    let nonstreaming_fut = self.run_nonstreaming_iteration(
+                        &self.messages,
+                        &tools,
+                        &options,
+                        &event_sender,
+                        &self.session_id,
+                        turn_id,
+                    );
+                    let nonstreaming_res = if let Some(cancel) = &cancel_token {
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                was_cancelled = true;
+                                break;
+                            }
+                            res = nonstreaming_fut => res,
+                        }
+                    } else {
+                        nonstreaming_fut.await
+                    };
+
+                    match nonstreaming_res {
                         Ok((iter_text, tool_calls, last_pt, cum_ct)) => {
                             iteration_text = iter_text;
                             pending_tool_calls = tool_calls;
@@ -697,10 +719,21 @@ impl AgentLoop {
                                 }
                             }
 
-                            let parallel_results = self
+                            let parallel_fut = self
                                 .speculative_executor
-                                .execute_parallel_stage(&parallel_calls, turn_id)
-                                .await;
+                                .execute_parallel_stage(&parallel_calls, turn_id);
+                            let parallel_results = if let Some(cancel) = &cancel_token {
+                                tokio::select! {
+                                    _ = cancel.cancelled() => {
+                                        was_cancelled = true;
+                                        self.speculative_executor.cancel_all().await;
+                                        break;
+                                    }
+                                    res = parallel_fut => res,
+                                }
+                            } else {
+                                parallel_fut.await
+                            };
 
                             for (tool_call, mut tool_result) in
                                 parallel_calls.into_iter().zip(parallel_results)
@@ -878,39 +911,68 @@ impl AgentLoop {
                                 };
 
                             // Execute tool (MCP vs Built-in)
-                            let tool_result = if tool_call.name.starts_with(MCP_TOOL_PREFIX) {
-                                let start = std::time::Instant::now();
-                                let res = self
-                                    .mcp_client
-                                    .call_tool(&tool_call.name, &tool_call.arguments)
-                                    .await;
-                                let duration_ms = start.elapsed().as_millis() as u64;
-                                match res {
-                                    Ok(output) => crate::agent::types::ToolResult {
-                                        tool_id: tool_call.id.clone(),
-                                        tool_name: tool_call.name.clone(),
-                                        success: true,
-                                        output,
-                                        duration_ms,
-                                    },
-                                    Err(e) => crate::agent::types::ToolResult {
-                                        tool_id: tool_call.id.clone(),
-                                        tool_name: tool_call.name.clone(),
-                                        success: false,
-                                        output: format!("MCP tool error: {}", e),
-                                        duration_ms,
-                                    },
+                            let is_mcp = tool_call.name.starts_with(MCP_TOOL_PREFIX);
+                            let mcp_client = self.mcp_client.clone();
+                            let ws_root = self.workspace_root.clone();
+                            let backup_mgr = self.backup_manager.clone();
+                            let tool_id = tool_call.id.clone();
+                            let tool_name = tool_call.name.clone();
+                            let tool_args = tool_call.arguments.clone();
+
+                            let tool_fut = async move {
+                                if is_mcp {
+                                    let start = std::time::Instant::now();
+                                    let res = mcp_client
+                                        .call_tool(&tool_name, &tool_args)
+                                        .await;
+                                    let duration_ms = start.elapsed().as_millis() as u64;
+                                    match res {
+                                        Ok(output) => crate::agent::types::ToolResult {
+                                            tool_id,
+                                            tool_name,
+                                            success: true,
+                                            output,
+                                            duration_ms,
+                                        },
+                                        Err(e) => crate::agent::types::ToolResult {
+                                            tool_id,
+                                            tool_name,
+                                            success: false,
+                                            output: format!("MCP tool error: {}", e),
+                                            duration_ms,
+                                        },
+                                    }
+                                } else {
+                                    crate::tools::ToolRegistry::dispatch(
+                                        &ws_root,
+                                        &tool_id,
+                                        &tool_name,
+                                        &tool_args,
+                                        Some(&backup_mgr),
+                                        turn_id,
+                                    )
+                                    .await
+                                }
+                            };
+
+                            let tool_result = if let Some(cancel) = &cancel_token {
+                                tokio::select! {
+                                    _ = cancel.cancelled() => {
+                                        was_cancelled = true;
+                                        Self::emit_rejected_tool_result(
+                                            self,
+                                            &event_sender,
+                                            turn_id,
+                                            &tool_call,
+                                            "cancelled by user (Esc)",
+                                            &mut turn_tool_results,
+                                        );
+                                        break;
+                                    }
+                                    res = tool_fut => res,
                                 }
                             } else {
-                                crate::tools::ToolRegistry::dispatch(
-                                    &self.workspace_root,
-                                    &tool_call.id,
-                                    &tool_call.name,
-                                    &tool_call.arguments,
-                                    Some(&self.backup_manager),
-                                    turn_id,
-                                )
-                                .await
+                                tool_fut.await
                             };
 
                             // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
@@ -996,7 +1058,15 @@ impl AgentLoop {
                         }
                     }
                 }
+
+                if was_cancelled {
+                    break;
+                }
             } else {
+                if was_cancelled {
+                    break;
+                }
+
                 // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===
                 if !turn_files_modified.is_empty()
                     && heal_attempts < crate::constants::VERIFICATION_MAX_ATTEMPTS
@@ -1075,7 +1145,7 @@ impl AgentLoop {
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
         // Autonomous Git Auto-Commit if files were modified during this turn
-        if !turn_files_modified.is_empty() && self.config.git.auto_commit {
+        if !turn_files_modified.is_empty() && self.config.git.auto_commit && !was_cancelled {
             let git = crate::git::GitService::new(self.workspace_root.clone());
             if git.is_git_repo().await {
                 let commit_svc = crate::git::GitCommitService::new(&git)
@@ -1135,20 +1205,22 @@ impl AgentLoop {
         }
         event_sender.send(end_event)?;
 
-        // Sync turn learnings & facts into Progressive Multi-Tier Memory
-        let mut prog_mem =
-            crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);
-        prog_mem.extract_and_store_facts(&turn_response, &format!("turn_{}", turn_id));
-        prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
-        if !turn_files_modified.is_empty() {
-            prog_mem.record_l1_anchor(
-                &format!("Modified {} files", turn_files_modified.len()),
-                &turn_files_modified,
-                user_prompt,
-                &format!("turn_{}", turn_id),
-            );
+        if !was_cancelled {
+            // Sync turn learnings & facts into Progressive Multi-Tier Memory
+            let mut prog_mem =
+                crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);
+            prog_mem.extract_and_store_facts(&turn_response, &format!("turn_{}", turn_id));
+            prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
+            if !turn_files_modified.is_empty() {
+                prog_mem.record_l1_anchor(
+                    &format!("Modified {} files", turn_files_modified.len()),
+                    &turn_files_modified,
+                    user_prompt,
+                    &format!("turn_{}", turn_id),
+                );
+            }
+            let _ = prog_mem.save(&self.workspace_root);
         }
-        let _ = prog_mem.save(&self.workspace_root);
 
         let turn = Turn {
             turn_id,

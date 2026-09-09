@@ -1145,8 +1145,16 @@ impl<'a> App<'a> {
                         crate::agent::types::ApprovalDecision::Reject,
                     );
                     self.modal = ModalState::None;
+                    if let Some(token) = self.cancel_token.take() {
+                        token.cancel();
+                    }
+                    self.is_working = false;
+                    self.current_activity = None;
+                    let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
+                    self.timeline.finalize_pending_thoughts(elapsed_secs);
                     self.timeline
-                        .add_status("ℹ Action cancelled by user".to_string());
+                        .add_status("⏹ Action & turn cancelled by user (Esc)".to_string());
+                    self.timeline.auto_scroll.set(true);
                 }
                 KeyCode::Up => {
                     approval_state.prev_option();

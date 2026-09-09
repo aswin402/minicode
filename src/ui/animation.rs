@@ -142,6 +142,8 @@ pub const ANIMATION_OPTIONS: &[AnimationOption] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentActivity {
     Thinking,
+    Working,
+    Responding,
     InternetResearch { query: String },
     RepoResearch { target: String },
     EditingFile { path: String },
@@ -434,6 +436,16 @@ pub fn render_live_activity_line(
             theme.brand_accent,
             theme.highlight,
         ),
+        AgentActivity::Working => (
+            "Working...".to_string(),
+            theme.brand_accent,
+            theme.info,
+        ),
+        AgentActivity::Responding => (
+            "Generating response...".to_string(),
+            theme.highlight,
+            theme.success,
+        ),
         AgentActivity::InternetResearch { query } => (
             format!("Searching web: \"{}\"...", query),
             theme.info,
@@ -579,10 +591,19 @@ mod tests {
     #[test]
     fn test_render_live_activity_line() {
         let theme = Theme::aura_dark();
-        let activity = AgentActivity::Thinking;
-        for opt in ANIMATION_OPTIONS {
-            let line = render_live_activity_line(&activity, opt.style, 250, 1.5, &theme);
-            assert!(!line.spans.is_empty());
+        let activities = vec![
+            AgentActivity::Thinking,
+            AgentActivity::Working,
+            AgentActivity::Responding,
+            AgentActivity::EditingFile {
+                path: "src/main.rs".to_string(),
+            },
+        ];
+        for activity in activities {
+            for opt in ANIMATION_OPTIONS {
+                let line = render_live_activity_line(&activity, opt.style, 250, 1.5, &theme);
+                assert!(!line.spans.is_empty());
+            }
         }
     }
 }

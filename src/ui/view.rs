@@ -211,6 +211,7 @@ impl TimelineView {
         self.thought_start = None;
         self.in_thought_mode = false;
         self.thought_tag_buffer.clear();
+        self.auto_scroll.set(true);
     }
 
     pub fn append_thought_delta(&mut self, delta: &str) {
@@ -1244,6 +1245,9 @@ impl TimelineView {
                 elapsed_secs,
                 theme,
             );
+            if !lines.is_empty() && lines.last().map(|l| !l.spans.is_empty()).unwrap_or(false) {
+                lines.push(Line::from(String::new()));
+            }
             lines.push(activity_line);
         }
 

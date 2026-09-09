@@ -312,13 +312,32 @@ impl<'a> App<'a> {
 
                     // Handle Agent streaming events from background actor
                     Some(agent_event) = event_rx.recv() => {
+                        // If turn was cancelled or finished, ignore trailing stream/tool events
+                        if !self.is_working {
+                            if let AgentEvent::TurnEnd { total_tokens_used, .. } = agent_event {
+                                self.last_turn_tokens = total_tokens_used;
+                                self.cancel_token = None;
+                            }
+                            continue;
+                        }
+
                         match agent_event {
-                            AgentEvent::StreamDelta { delta, .. } => {
+                            AgentEvent::TurnStart { .. } => {
+                                self.is_working = true;
                                 if self.current_activity.is_none() {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::Thinking);
                                 }
+                            }
+                            AgentEvent::StreamDelta { delta, .. } => {
                                 self.timeline.append_assistant_delta(&delta);
+                                if self.timeline.in_thought_mode {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::Thinking);
+                                } else {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::Responding);
+                                }
                             }
                             AgentEvent::ToolCall { tool, args, .. } => {
                                 self.current_activity = Some(crate::ui::AgentActivity::from_tool_call(
@@ -335,7 +354,7 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.current_activity =
-                                    Some(crate::ui::AgentActivity::Thinking);
+                                    Some(crate::ui::AgentActivity::Working);
                                 self.timeline
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }
@@ -631,8 +650,10 @@ impl<'a> App<'a> {
                                         }
                                         self.is_working = false;
                                         self.current_activity = None;
-                                        self.work_start = None;
-                                        self.timeline.add_status("⏹ Turn interrupted by user".to_string());
+                                        let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
+                                        self.timeline.finalize_pending_thoughts(elapsed_secs);
+                                        self.timeline.add_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
+                                        self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else {
                                         let now = Instant::now();
@@ -654,8 +675,10 @@ impl<'a> App<'a> {
                                         }
                                         self.is_working = false;
                                         self.current_activity = None;
-                                        self.work_start = None;
-                                        self.timeline.add_status("⏹ Turn interrupted by user".to_string());
+                                        let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
+                                        self.timeline.finalize_pending_thoughts(elapsed_secs);
+                                        self.timeline.add_status("⏹ Turn interrupted by user (Esc)".to_string());
+                                        self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else if self.timeline.has_selection() {
                                         self.timeline.clear_selection();
