@@ -85,6 +85,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "get_ast_outline"
         | "score_task_complexity"
         | "check_architecture"
+        | "audit_architecture"
         | "impact_analysis" => ToolSafetyLevel::ReadOnly,
 
         // Git & GitHub Inspection (Read-Only)

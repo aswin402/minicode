@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 104 (v0.3.4) Codebase Cleanliness, Constant Unification, Reusability & Modularity Refactor | **Status:** ✅ Complete (128 Tools)
+> **Current Phase:** Phase 105 (v0.3.5) Architectural Boundary Enforcer & Layered Dependency Linter | **Status:** ✅ Complete (129 Tools)
 
 ---
 
@@ -1638,3 +1638,12 @@
 - [x] 104.5: Decompose `src/agent/provider.rs` (1,808 lines) into `src/agent/providers/` submodules (`gemini.rs`, `anthropic.rs`, `openai.rs`, `factory.rs`, `resilient.rs`)
 - [x] 104.6: Decompose `src/ui/modal.rs` (2,937 lines) into `src/ui/modals/` submodules with dedicated renderers
 - [x] 104.7: Verification, integration test suite (`tests/integration_refactored_architecture.rs`), cargo check/clippy/fmt quality gates, and version bump → `v0.3.4`
+
+### Phase 105: Architectural Boundary Enforcer & Layered Dependency Linter (v0.3.5)
+- [x] 105.1: Implement AST import parser supporting Rust (nested use trees, `super::` resolution), JS/TS, and Python (`src/context/arch_parser.rs`)
+- [x] 105.2: Implement declarative Clean Architecture boundary rules engine (`R1_CORE_NO_UI`, `R2_DATA_NO_SERVICE`, `R3_UTILITY_PURITY`, `R4_PROVIDER_ISOLATION`) in `src/context/arch_rules.rs`
+- [x] 105.3: Upgrade `ArchitectureGovernor` with Petgraph `DiGraph`, Tarjan SCC circular cycle detection, Robert C. Martin instability metrics ($C_a, C_e, I$), and God-file/fan-out detection in `src/context/governance.rs`
+- [x] 105.4: Register `audit_architecture` tool schema (modes: `check`, `matrix`, `cycles`, `full`, flags: `enforce`, `format`), bump `TOTAL_TOOL_COUNT` (128 → 129), and classify as `ToolSafetyLevel::ReadOnly` in `src/tools/concurrency.rs`
+- [x] 105.5: Build 3-tab interactive TUI modal (`[1] Overview & Violations`, `[2] Coupling Matrix`, `[3] Circular Cycles`) in `src/ui/modals/architecture.rs`, register `/arch` command, palette command, and catalog entry
+- [x] 105.6: Write comprehensive integration test suite (`tests/integration_architecture_governor.rs`), verify with cargo check/clippy/fmt, and bump version → `v0.3.5`
+

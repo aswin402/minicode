@@ -1,3 +1,5 @@
+pub mod arch_parser;
+pub mod arch_rules;
 pub mod ast_diff;
 pub mod ast_refactor;
 pub mod ast_transform;

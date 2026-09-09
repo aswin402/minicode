@@ -67,6 +67,7 @@ impl LayerClassifier {
 
         // 1. UI & Presentation
         if path_str.contains("/ui/")
+            || path_str.contains("/presentation/")
             || path_str.contains("/views/")
             || path_str.contains("/components/")
             || path_str.contains("/templates/")
@@ -103,7 +104,8 @@ impl LayerClassifier {
         }
 
         // 3. Data & Persistence
-        if path_str.contains("/models/")
+        if path_str.contains("/data/")
+            || path_str.contains("/models/")
             || path_str.contains("/db/")
             || path_str.contains("/database/")
             || path_str.contains("/schema/")

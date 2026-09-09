@@ -334,6 +334,29 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "audit_architecture".to_string(),
+            description: "Audits codebase software architecture boundaries, detects circular dependency cycles with Tarjan's SCC, checks layered isolation (UI > Service > Data > Utility), and computes module coupling & instability metrics (Ca, Ce, I).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["check", "matrix", "cycles", "full"],
+                        "description": "Analysis mode: 'check' (summary + violations, default), 'matrix' (module coupling Ca, Ce, instability), 'cycles' (circular dependency DAG paths), or 'full' (all sections combined)."
+                    },
+                    "enforce": {
+                        "type": "boolean",
+                        "description": "If true, fails with an error if circular dependency cycles or layer boundary violations are detected."
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "json"],
+                        "description": "Output format: 'markdown' (human-readable tables, default) or 'json' (structured machine-readable payload)."
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "test_coverage_gaps".to_string(),
             description: "Analyze codebase AST call-graph reachability from test entrypoints to identify untested symbols, missing test coverage gaps, and composite risk scores.".to_string(),
             parameters: json!({
@@ -1110,10 +1133,91 @@ pub async fn dispatch(
             );
             Ok(report)
         })()),
-        "check_architecture" => Some((|| {
+        "audit_architecture" | "check_architecture" => Some((|| {
+            let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("check");
+            let enforce = args
+                .get("enforce")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let format = args
+                .get("format")
+                .and_then(|v| v.as_str())
+                .unwrap_or("markdown");
+
             let report =
                 crate::context::governance::ArchitectureGovernor::scan_workspace(workspace_root)?;
-            Ok(report.format_markdown())
+
+            if enforce
+                && (!report.circular_cycles.is_empty()
+                    || !report.layer_violations.is_empty()
+                    || report.health_score < crate::constants::ARCH_MIN_HEALTH_SCORE)
+            {
+                return Err(crate::error::ToolError::CommandExec(format!(
+                    "Architectural Enforcement Failed: {} circular cycles, {} boundary violations, health score {}/100 (threshold {})",
+                    report.circular_cycles.len(),
+                    report.layer_violations.len(),
+                    report.health_score,
+                    crate::constants::ARCH_MIN_HEALTH_SCORE
+                ))
+                .into());
+            }
+
+            if format == "json" {
+                return Ok(serde_json::to_string_pretty(&report.to_json())?);
+            }
+
+            match mode {
+                "matrix" => {
+                    let mut out = format!(
+                        "# 🏛️ Module Coupling & Instability Matrix (Health Score: {}/100)\n\n",
+                        report.health_score
+                    );
+                    out.push_str(
+                        "| Module | Files | LOC | Afferent ($C_a$) | Efferent ($C_e$) | Instability ($I$) | Role |\n",
+                    );
+                    out.push_str(
+                        "| :--- | :---: | :---: | :---: | :---: | :---: | :--- |\n",
+                    );
+                    for m in &report.coupling_metrics {
+                        let role = if m.instability < 0.3 {
+                            "🛡️ Stable Base"
+                        } else if m.instability > 0.7 {
+                            "🍃 Flexible Leaf"
+                        } else {
+                            "⚖️ Balanced"
+                        };
+                        out.push_str(&format!(
+                            "| `{}` | {} | {} | {} | {} | {:.2} | {} |\n",
+                            m.module_name,
+                            m.file_count,
+                            m.total_loc,
+                            m.afferent_coupling,
+                            m.efferent_coupling,
+                            m.instability,
+                            role
+                        ));
+                    }
+                    Ok(out)
+                }
+                "cycles" => {
+                    if report.circular_cycles.is_empty() {
+                        Ok(
+                            "✔ **Zero Circular Cycles:** Codebase dependency graph is a 100% acyclic DAG."
+                                .to_string(),
+                        )
+                    } else {
+                        let mut out = format!(
+                            "⚠️ **{} Circular Dependency Cycles Detected:**\n\n",
+                            report.circular_cycles.len()
+                        );
+                        for cycle in &report.circular_cycles {
+                            out.push_str(&format!("- 🔄 Cycle: `{}`\n", cycle.join(" ➔ ")));
+                        }
+                        Ok(out)
+                    }
+                }
+                _ => Ok(report.format_markdown()),
+            }
         })()),
         "test_coverage_gaps" => Some((|| {
             let target_file = args.get("target_file").and_then(|v| v.as_str());

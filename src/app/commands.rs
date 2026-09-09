@@ -1051,6 +1051,21 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/arch" || prompt == "/architecture" {
+            match crate::context::governance::ArchitectureGovernor::scan_workspace(
+                &self.workspace_root,
+            ) {
+                Ok(report) => {
+                    self.modal = ModalState::new_architecture_audit(report);
+                }
+                Err(e) => {
+                    self.timeline
+                        .add_status(format!("✗ Failed to audit architecture: {}", e));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/compact" {
             let model_limit =
                 crate::agent::models::get_model_context_limit(&self.config.provider.model);

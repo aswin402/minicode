@@ -5,6 +5,54 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] — 2026-09-09
+
+### Architectural Boundary Enforcer & Layered Dependency Linter (`audit_architecture` / `/arch`)
+
+#### 💡 Ideas & Inspirations
+- **Preventing Architectural Decay & Unintentional Boundary Inversion**: As multi-tier codebases evolve, developers and autonomous agents frequently introduce subtle architectural violations — such as lower-level core modules importing UI presentation logic, foundation utility libraries importing domain services, or hidden circular dependency cycles that hinder refactoring and compilation speed.
+- **AST-Driven Dependency Graph with Petgraph & Tarjan SCC**: `minicode v0.3.5` introduces deep AST-level import extraction across Rust (nested brace use trees, `super::` resolution, grouped statements), TypeScript/JavaScript (ES imports, CommonJS `require`), and Python (`from ... import`, `import ...`). It constructs a directed module dependency graph (`petgraph::DiGraph`) and executes Tarjan's Strongly Connected Components algorithm to uncover circular dependency cycles in milliseconds.
+- **Robert C. Martin's Package Instability Metric ($I$)**: Computes Afferent Coupling ($C_a$, incoming dependencies), Efferent Coupling ($C_e$, outgoing dependencies), and Instability ($I = \frac{C_e}{C_a + C_e}$) for each module, categorizing them into Stable Bases, Flexible Leaves, or Balanced components to guide architectural hygiene.
+- **God-File & Fan-Out Spikes Detection**: Surfaces architectural hotspots where individual files exceed 1,000 LOC or have excessive outgoing fan-out (>15 module imports), pinpointing candidates for refactoring before technical debt compounds.
+- **Dual Invocation Modes (LLM Tool + Interactive TUI Modal)**:
+  - **Autonomous Tool (`audit_architecture`)**: Allows the AI agent to audit code before or after major refactoring runs with modes `check`, `matrix`, `cycles`, `full`, markdown/JSON formats, and an `enforce: true` gate that fails if health score drops below threshold.
+  - **Interactive TUI Modal (`/arch`)**: A 3-tab terminal modal (`[1] Overview & Violations`, `[2] Coupling Matrix`, `[3] Circular Cycles`) with keyboard navigation (`1/2/3/Tab`, `↑/↓` scrolling, `Esc` dismiss).
+
+#### 📚 References & Sources
+- **Robert C. Martin's Clean Architecture & Package Principles**: Stable Dependencies Principle (SDP) and Instability Metric calculation (Martin, 2002).
+- **Robert Tarjan's Strongly Connected Components Algorithm**: $O(V + E)$ linear time cycle detection in directed graphs (Tarjan, 1972).
+- **Petgraph Crate**: High-performance graph data structures and algorithms in pure Rust (https://crates.io/crates/petgraph).
+
+#### 🚀 Features & Changes
+- **AST Import Parser (`src/context/arch_parser.rs`)**:
+  - Implemented recursive brace-tree expander for multiline Rust `use` declarations (e.g. `use foo::{bar, baz::{qux as Q, nested}};`).
+  - Added module directory resolution supporting `super::` and `crate::` specifiers, stripping raw identifiers (`r#`), and filtering uppercase type symbols.
+  - Implemented JavaScript/TypeScript import extractor supporting static imports, dynamic requires, and relative/alias paths (`@/*`).
+  - Implemented Python import extractor resolving relative dots (`from .service import worker`) and package imports (`from src.data import db`).
+- **Clean Architecture Boundary Rules Engine (`src/context/arch_rules.rs`)**:
+  - Declarative policy evaluation across five architectural tiers: `Ui` (Presentation), `Api` (Protocols), `Service` (Domain Logic), `Data` (Persistence), `Utility` (Foundation).
+  - Enforced four core rules:
+    - `R1_CORE_NO_UI`: Core domain and data layers may never import Presentation/UI components.
+    - `R2_DATA_NO_SERVICE`: Persistence and data access layers must not depend on interactive service agents or mutating tools.
+    - `R3_UTILITY_PURITY`: Foundation utility helpers must be pure leaf nodes and cannot import higher-level domain or UI modules.
+    - `R4_PROVIDER_ISOLATION`: External LLM provider client modules must remain completely isolated from application UI and internal agent loops.
+- **Petgraph Architecture Governor (`src/context/governance.rs`)**:
+  - Upgraded `ArchitectureGovernor::scan_workspace` to build module-level and file-level `DiGraph`s.
+  - Computes architectural health score index (0-100) penalized by boundary violations, circular SCC cycles, and God-file hotspots.
+  - Formats rich GitHub Flavored Markdown and machine-readable JSON reports.
+- **Native Tool Registration (`src/tools/registry/context_tools.rs` & `src/constants.rs`)**:
+  - Registered `audit_architecture` with modes `check`, `matrix`, `cycles`, `full`, and `enforce` flag.
+  - Bumped `TOTAL_TOOL_COUNT` (128 → 129) and classified as `ToolSafetyLevel::ReadOnly` in `src/tools/concurrency.rs`.
+  - Injected architectural governance guidelines into `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`.
+- **Interactive TUI Modal & Command Integration**:
+  - Implemented `render_architecture_audit` in `src/ui/modals/architecture.rs`.
+  - Added `ModalState::ArchitectureAudit` and key navigation in `src/app/modals.rs`.
+  - Added `/arch` (and `/architecture`) slash command handler in `src/app/commands.rs`.
+  - Registered `/arch` in `COMMAND_CATALOG_ITEMS` (`src/ui/modals/command_catalog.rs`) and `PALETTE_COMMANDS` (`src/ui/input.rs`).
+- **Comprehensive Verification & Tests**:
+  - Created `tests/integration_architecture_governor.rs` covering multi-language boundary violations, circular dependency detection, tool execution modes, JSON formatting, and enforcement gate.
+  - All 23 unit tests and integration tests pass with zero compiler warnings and zero clippy warnings.
+
 ## [0.3.4] — 2026-09-09
 
 ### Codebase Cleanliness, Constant Unification, Reusability & Modularity Refactor

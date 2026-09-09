@@ -1,6 +1,7 @@
 //! Modal dialog state management and rendering dispatch.
 
 pub mod api_key;
+pub mod architecture;
 pub mod code_explorer;
 pub mod command_catalog;
 pub mod common;
@@ -99,11 +100,26 @@ pub enum ModalState {
         workspace_name: String,
         selected_yes: bool,
     },
+    ArchitectureAudit {
+        report: Box<crate::context::governance::ArchitectureReport>,
+        active_tab: usize,
+        selected_index: usize,
+        scroll_offset: usize,
+    },
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_architecture_audit(report: crate::context::governance::ArchitectureReport) -> Self {
+        Self::ArchitectureAudit {
+            report: Box::new(report),
+            active_tab: 0,
+            selected_index: 0,
+            scroll_offset: 0,
+        }
     }
 
     pub fn new_exit_confirm(workspace_root: &std::path::Path) -> Self {
@@ -638,6 +654,22 @@ impl ModalState {
                     *selected_yes,
                 );
             }
+            ModalState::ArchitectureAudit {
+                report,
+                active_tab,
+                selected_index,
+                scroll_offset,
+            } => {
+                architecture::render_architecture_audit(
+                    frame,
+                    area,
+                    theme,
+                    report,
+                    *active_tab,
+                    *selected_index,
+                    *scroll_offset,
+                );
+            }
         }
     }
 }
@@ -766,6 +798,32 @@ mod tests {
             .draw(|f| {
                 let area = f.area();
                 populated_modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_architecture_audit_render() {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let report = crate::context::governance::ArchitectureReport {
+            health_score: 95,
+            total_files: 12,
+            total_loc: 1500,
+            circular_cycles: vec![vec!["mod_a".into(), "mod_b".into()]],
+            layer_violations: vec![],
+            coupling_metrics: vec![],
+            god_files: vec![],
+            fan_out_spikes: vec![],
+        };
+
+        let modal = ModalState::new_architecture_audit(report);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
             })
             .unwrap();
     }

@@ -87,6 +87,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/review",
     },
     CommandCatalogItem {
+        name: "/arch",
+        category: "Code & Inspection",
+        shortcut: "",
+        description: "Lint layered software architecture boundaries, instability & circular cycles",
+        example: "/arch",
+    },
+    CommandCatalogItem {
         name: "/subagent",
         category: "Workflows & Scaffolding",
         shortcut: "",

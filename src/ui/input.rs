@@ -243,6 +243,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        slash_name: "/arch",
+        title: "Architecture Governor",
+        description: "Lint layered boundaries, instability metrics & circular cycles",
+        category: CommandCategory::Intelligence,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/compact",
         title: "Compact Context",
         description: "Manually compact conversation context tokens",

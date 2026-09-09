@@ -777,7 +777,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 128;
+pub const TOTAL_TOOL_COUNT: usize = 129;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -896,6 +896,14 @@ pub const QUARANTINE_FILE_NAME: &str = "quarantine.json";
 // === Semantic Commit Synthesis (Phase 103) ===
 /// Default max length for synthesized conventional commit title summary
 pub const MAX_COMMIT_SUMMARY_LEN: usize = 72;
+
+// === Architectural Governance (Phase 105) ===
+/// Maximum permitted LOC before a source file is flagged as a high-complexity God File
+pub const ARCH_GOD_FILE_LOC_THRESHOLD: usize = 1_000;
+/// Outgoing import threshold before a source file is flagged as a Fan-Out spike
+pub const ARCH_FAN_OUT_THRESHOLD: usize = 15;
+/// Minimum architecture health score required to pass pre-completion verification
+pub const ARCH_MIN_HEALTH_SCORE: u32 = 70;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

@@ -1231,6 +1231,62 @@ impl<'a> App<'a> {
                     self.execute_workspace_analysis_action(act, is_indexed_flag);
                 }
             }
+            ModalState::ArchitectureAudit {
+                report,
+                active_tab,
+                selected_index,
+                scroll_offset,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Tab => {
+                    *active_tab = (*active_tab + 1) % 3;
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::BackTab => {
+                    *active_tab = if *active_tab == 0 { 2 } else { *active_tab - 1 };
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('1') => {
+                    *active_tab = 0;
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('2') => {
+                    *active_tab = 1;
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('3') => {
+                    *active_tab = 2;
+                    *selected_index = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                    *selected_index = selected_index.saturating_sub(1);
+                    if *selected_index < *scroll_offset {
+                        *scroll_offset = *selected_index;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    let total_items = match *active_tab {
+                        0 => report.layer_violations.len(),
+                        1 => report.coupling_metrics.len(),
+                        2 => report.circular_cycles.len(),
+                        _ => 0,
+                    };
+                    if total_items > 0 && *selected_index + 1 < total_items {
+                        *selected_index += 1;
+                        if *selected_index >= *scroll_offset + 12 {
+                            *scroll_offset = selected_index.saturating_sub(11);
+                        }
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
