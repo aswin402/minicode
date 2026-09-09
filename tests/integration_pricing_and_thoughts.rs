@@ -60,7 +60,21 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
     assert!(combined.contains("Refactor database"));
     assert!(combined.contains("• Thought for 1.5s"));
     assert!(combined.contains("Analyzing schema dependencies"));
-    assert!(combined.contains("Thinking"));
+    assert!(combined.contains("Here is the refactored database connection."));
+
+    let activity_line = minicode::ui::animation::render_live_activity_line(
+        &minicode::ui::animation::AgentActivity::Thinking,
+        minicode::ui::animation::SpinnerStyle::DualPillars,
+        1500,
+        1.5,
+        &theme,
+    );
+    let act_text: String = activity_line
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(act_text.contains("Thinking..."));
 }
 
 #[test]
@@ -90,11 +104,17 @@ fn test_cross_chunk_streaming_thoughts() {
 #[test]
 fn test_claude_thinking_tags_parsing() {
     let mut timeline = TimelineView::new();
-    timeline.append_assistant_delta("<thinking>\nAnalyzing AST nodes and symbol graph.\n</thinking>\nHere is the plan.");
+    timeline.append_assistant_delta(
+        "<thinking>\nAnalyzing AST nodes and symbol graph.\n</thinking>\nHere is the plan.",
+    );
     timeline.finalize_pending_thoughts(Some(2.1));
 
     assert_eq!(timeline.entries.len(), 2);
-    if let minicode::ui::view::TimelineEntry::ThoughtBlock { text, duration_secs } = &timeline.entries[0] {
+    if let minicode::ui::view::TimelineEntry::ThoughtBlock {
+        text,
+        duration_secs,
+    } = &timeline.entries[0]
+    {
         assert!(text.contains("Analyzing AST nodes and symbol graph."));
         assert!(!text.contains("<thinking>"));
         assert!(!text.contains("</thinking>"));
@@ -132,9 +152,11 @@ fn test_visual_row_count_word_wrap_accuracy() {
 
     let backend = TestBackend::new(30, 10);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| {
-        timeline.render(f, area, &ctx);
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            timeline.render(f, area, &ctx);
+        })
+        .unwrap();
 
     // Auto-scroll must be enabled and pointing at max_scroll
     assert!(timeline.auto_scroll.get());

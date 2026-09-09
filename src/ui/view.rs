@@ -448,6 +448,15 @@ impl TimelineView {
 
     pub fn add_tool_call(&mut self, name: String, args: String) {
         let display_cmd = Self::extract_cmd_display(&name, &args);
+        if let Some(TimelineEntry::ToolStart {
+            name: n,
+            command_or_path: c,
+        }) = self.entries.last()
+        {
+            if n == &name && c == &display_cmd {
+                return;
+            }
+        }
         self.entries.push(TimelineEntry::ToolStart {
             name,
             command_or_path: display_cmd,
@@ -867,10 +876,7 @@ impl TimelineView {
                                 .fg(theme.success)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            "You approved ",
-                            Style::default().fg(theme.muted),
-                        ),
+                        Span::styled("You approved ", Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("{} ", title),
                             Style::default()
@@ -1054,7 +1060,9 @@ impl TimelineView {
                         Span::styled("  └ ", Style::default().fg(theme.muted)),
                         Span::styled(
                             format!("{} ", status_glyph),
-                            Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(glyph_color)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             format!("{}{}", status_text, dur_str),
@@ -1452,24 +1460,6 @@ impl TimelineView {
             }
         }
 
-        // Live working / activity status spinner and dynamic text shimmer at bottom if running
-        if ctx.is_working {
-            let elapsed_secs = (ctx.working_millis as f64) / 1000.0;
-            let default_act = crate::ui::animation::AgentActivity::Thinking;
-            let act = ctx.current_activity.unwrap_or(&default_act);
-            let activity_line = crate::ui::animation::render_live_activity_line(
-                act,
-                ctx.spinner_style,
-                ctx.working_millis,
-                elapsed_secs,
-                theme,
-            );
-            if !lines.is_empty() && lines.last().map(|l| !l.spans.is_empty()).unwrap_or(false) {
-                lines.push(Line::from(String::new()));
-            }
-            lines.push(activity_line);
-        }
-
         self.selection.timeline_area.set(area);
         self.selection.cache_plain_lines(&lines);
         let lines = self.selection.apply_highlight(lines, theme);
@@ -1502,7 +1492,7 @@ impl TimelineView {
     /// ratatui's Paragraph::wrap expands long logical lines into multiple
     /// visual rows by wrapping on whitespace word boundaries. We simulate
     /// this word-wrapping to ensure scroll bounds never underestimate height,
-    /// which would otherwise push the live activity indicator off-screen.
+    /// which would otherwise push streaming content off-screen.
     fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
         let usable = usize::from(width.max(1));
         let total: usize = lines
@@ -1512,37 +1502,45 @@ impl TimelineView {
                 if text.is_empty() {
                     return 1;
                 }
-                let mut rows: usize = 1;
-                let mut current_row_width: usize = 0;
-
-                for word in text.split(' ') {
-                    let word_width = UnicodeWidthStr::width(word);
-                    if current_row_width == 0 {
-                        if word_width > usable {
-                            let extra = (word_width.saturating_sub(1)) / usable;
-                            rows += extra;
-                            current_row_width = word_width % usable;
-                            if current_row_width == 0 {
-                                current_row_width = usable;
-                            }
-                        } else {
-                            current_row_width = word_width;
-                        }
-                    } else if current_row_width + 1 + word_width <= usable {
-                        current_row_width += 1 + word_width;
-                    } else {
+                let mut rows: usize = 0;
+                for sub_line in text.split('\n') {
+                    if sub_line.is_empty() {
                         rows += 1;
-                        if word_width > usable {
-                            let extra = (word_width.saturating_sub(1)) / usable;
-                            rows += extra;
-                            current_row_width = word_width % usable;
-                            if current_row_width == 0 {
-                                current_row_width = usable;
+                        continue;
+                    }
+                    let mut line_rows: usize = 1;
+                    let mut current_row_width: usize = 0;
+
+                    for word in sub_line.split(' ') {
+                        let word_width = UnicodeWidthStr::width(word);
+                        if current_row_width == 0 {
+                            if word_width > usable {
+                                let extra = (word_width.saturating_sub(1)) / usable;
+                                line_rows += extra;
+                                current_row_width = word_width % usable;
+                                if current_row_width == 0 {
+                                    current_row_width = usable;
+                                }
+                            } else {
+                                current_row_width = word_width;
                             }
+                        } else if current_row_width + 1 + word_width <= usable {
+                            current_row_width += 1 + word_width;
                         } else {
-                            current_row_width = word_width;
+                            line_rows += 1;
+                            if word_width > usable {
+                                let extra = (word_width.saturating_sub(1)) / usable;
+                                line_rows += extra;
+                                current_row_width = word_width % usable;
+                                if current_row_width == 0 {
+                                    current_row_width = usable;
+                                }
+                            } else {
+                                current_row_width = word_width;
+                            }
                         }
                     }
+                    rows += line_rows;
                 }
                 rows
             })
@@ -1721,8 +1719,14 @@ mod tests {
         assert_eq!(TimelineView::format_tool_title("exec_cmd"), "Bash");
         assert_eq!(TimelineView::format_tool_title("read_file"), "Read File");
         assert_eq!(TimelineView::format_tool_title("patch_file"), "Edit File");
-        assert_eq!(TimelineView::format_tool_title("list_directory"), "List Dir");
-        assert_eq!(TimelineView::format_tool_title("grep_search"), "Grep Search");
+        assert_eq!(
+            TimelineView::format_tool_title("list_directory"),
+            "List Dir"
+        );
+        assert_eq!(
+            TimelineView::format_tool_title("grep_search"),
+            "Grep Search"
+        );
         assert_eq!(
             TimelineView::format_tool_title("custom_inspect_node"),
             "Custom Inspect Node"
@@ -1743,10 +1747,7 @@ mod tests {
             TimelineView::extract_cmd_display("grep_search", r#"{"query": "required_height"}"#),
             "\"required_height\""
         );
-        assert_eq!(
-            TimelineView::extract_cmd_display("git_status", "{}"),
-            ""
-        );
+        assert_eq!(TimelineView::extract_cmd_display("git_status", "{}"), "");
     }
 
     #[test]
@@ -1759,7 +1760,10 @@ mod tests {
 
         assert_eq!(view.entries.len(), 1);
         match &view.entries[0] {
-            TimelineEntry::ToolStart { name, command_or_path } => {
+            TimelineEntry::ToolStart {
+                name,
+                command_or_path,
+            } => {
                 assert_eq!(name, "exec_cmd");
                 assert_eq!(command_or_path, "cargo check");
             }
@@ -1788,4 +1792,3 @@ mod tests {
         }
     }
 }
-

@@ -16,7 +16,8 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 use std::io::stdout;
 use std::path::Path;
@@ -106,7 +107,11 @@ impl<'a> App<'a> {
                 AgentEvent::UserPrompt { prompt, .. } => {
                     self.timeline.add_user_message(prompt.clone());
                 }
-                AgentEvent::TurnStart { .. } => {}
+                AgentEvent::TurnStart { context_tokens, .. } => {
+                    if *context_tokens > 0 {
+                        self.last_turn_tokens = *context_tokens;
+                    }
+                }
                 AgentEvent::StreamDelta { delta, .. } => {
                     self.timeline.append_assistant_delta(delta);
                 }
@@ -123,7 +128,13 @@ impl<'a> App<'a> {
                     self.timeline
                         .finish_tool_call(tool, *success, output.clone(), *duration_ms);
                 }
-                AgentEvent::TurnEnd { .. } => {}
+                AgentEvent::TurnEnd {
+                    total_tokens_used, ..
+                } => {
+                    if *total_tokens_used > 0 {
+                        self.last_turn_tokens = *total_tokens_used;
+                    }
+                }
                 AgentEvent::ContextCompacted {
                     tier,
                     turns_summarized,
@@ -144,6 +155,24 @@ impl<'a> App<'a> {
                     self.timeline.add_status(format!("Error: {}", message));
                 }
                 _ => {}
+            }
+        }
+
+        if self.last_turn_tokens == 0 {
+            let total_chars: usize = self
+                .timeline
+                .entries
+                .iter()
+                .map(|e| match e {
+                    crate::ui::view::TimelineEntry::UserPrompt(s) => s.len(),
+                    crate::ui::view::TimelineEntry::ThoughtBlock { text, .. } => text.len(),
+                    crate::ui::view::TimelineEntry::AssistantMarkdown(s) => s.len(),
+                    crate::ui::view::TimelineEntry::ToolFinished { output, .. } => output.len(),
+                    _ => 0,
+                })
+                .sum();
+            if total_chars > 0 {
+                self.last_turn_tokens = total_chars / 4;
             }
         }
     }
@@ -235,12 +264,13 @@ impl<'a> App<'a> {
                     );
                 } else {
                     let input_height = self.input_dock.required_height();
+                    let activity_spacer_height = if self.is_working { 2 } else { 1 };
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Min(4),               // 0: Streaming Timeline
-                            Constraint::Length(1), // 1: Top Spacer / Margin above input dock
-                            Constraint::Length(input_height), // 2: Dynamic Input Dock
+                            Constraint::Min(4),                         // 0: Streaming Timeline
+                            Constraint::Length(activity_spacer_height), // 1: Live Activity Bar + Bottom Spacer above input dock
+                            Constraint::Length(input_height),           // 2: Dynamic Input Dock
                             Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
                             Constraint::Length(1), // 4: Minimal Bottom Status Line
                         ])
@@ -259,6 +289,30 @@ impl<'a> App<'a> {
                         model: &self.config.provider.model,
                     };
                     self.timeline.render(frame, chunks[0], &timeline_ctx);
+
+                    if self.is_working {
+                        let elapsed_secs = (working_millis as f64) / 1000.0;
+                        let default_act = crate::ui::animation::AgentActivity::Thinking;
+                        let act = self.current_activity.as_ref().unwrap_or(&default_act);
+                        let activity_line = crate::ui::animation::render_live_activity_line(
+                            act,
+                            spinner_style,
+                            working_millis,
+                            elapsed_secs,
+                            &self.theme,
+                        );
+                        let mut padded_spans = vec![Span::raw(" ")];
+                        padded_spans.extend(activity_line.spans);
+                        frame.render_widget(
+                            Paragraph::new(vec![
+                                Line::from(padded_spans),
+                                Line::from(String::new()),
+                            ])
+                            .style(Style::default().bg(self.theme.bg_primary)),
+                            chunks[1],
+                        );
+                    }
+
                     self.input_dock.render(frame, chunks[2], &self.theme);
 
                     let active_mcp_count = self
@@ -315,17 +369,22 @@ impl<'a> App<'a> {
                         // If turn was cancelled or finished, ignore trailing stream/tool events
                         if !self.is_working {
                             if let AgentEvent::TurnEnd { total_tokens_used, .. } = agent_event {
-                                self.last_turn_tokens = total_tokens_used;
+                                if total_tokens_used > 0 {
+                                    self.last_turn_tokens = total_tokens_used;
+                                }
                                 self.cancel_token = None;
                             }
                             continue;
                         }
 
                         match agent_event {
-                            AgentEvent::TurnStart { .. } => {
+                            AgentEvent::TurnStart { context_tokens, .. } => {
                                 self.is_working = true;
                                 self.timeline.auto_scroll.set(true);
                                 self.timeline.scroll_to_bottom();
+                                if context_tokens > 0 {
+                                    self.last_turn_tokens = context_tokens;
+                                }
                                 if self.current_activity.is_none() {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::Thinking);
@@ -363,7 +422,9 @@ impl<'a> App<'a> {
                             AgentEvent::TurnEnd {
                                 total_tokens_used, ..
                             } => {
-                                self.last_turn_tokens = total_tokens_used;
+                                if total_tokens_used > 0 {
+                                    self.last_turn_tokens = total_tokens_used;
+                                }
                                 let prompt_toks = (total_tokens_used * 3) / 4;
                                 let comp_toks = total_tokens_used / 4;
                                 let turn_cost = crate::agent::pricing::ModelPricing::calculate_cost(
@@ -796,5 +857,43 @@ impl<'a> App<'a> {
             config: Box::new(self.config.clone()),
             provider: new_prov,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::AgentEvent;
+    use crate::config::Config;
+    use std::path::Path;
+
+    #[test]
+    fn test_hydrate_session_token_metrics() {
+        let config = Config::default();
+        let mut app = App::new(Path::new("."), config);
+        assert_eq!(app.last_turn_tokens, 0);
+
+        let events = vec![
+            AgentEvent::UserPrompt {
+                turn_id: 1,
+                timestamp: "2026-09-09T12:00:00Z".to_string(),
+                prompt: "Hello assistant".to_string(),
+            },
+            AgentEvent::TurnStart {
+                turn_id: 1,
+                timestamp: "2026-09-09T12:00:01Z".to_string(),
+                model: "MiniMax-M2.7".to_string(),
+                context_tokens: 1420,
+            },
+            AgentEvent::TurnEnd {
+                turn_id: 1,
+                status: "complete".to_string(),
+                total_tokens_used: 1580,
+                files_modified: vec![],
+            },
+        ];
+
+        app.hydrate_session(&events);
+        assert_eq!(app.last_turn_tokens, 1580);
     }
 }

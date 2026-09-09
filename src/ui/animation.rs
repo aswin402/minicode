@@ -176,7 +176,11 @@ impl AgentActivity {
             || tool_lower == "create_file"
             || tool_lower == "replace_file_content"
             || tool_lower == "edit_file"
+            || tool_lower == "ast_replace_node"
             || tool_lower.contains("patch")
+            || tool_lower.contains("edit")
+            || tool_lower.contains("write")
+            || tool_lower.contains("replace")
         {
             let path =
                 Self::extract_arg_or_default(args_str, &["path", "file_path", "target"], "file");
@@ -188,6 +192,11 @@ impl AgentActivity {
             || tool_lower == "sandbox_exec"
             || tool_lower == "run_command"
             || tool_lower == "execute_command"
+            || tool_lower.contains("exec")
+            || tool_lower.contains("cmd")
+            || tool_lower.contains("command")
+            || tool_lower.contains("bash")
+            || tool_lower.contains("terminal")
         {
             let cmd = Self::extract_arg_or_default(args_str, &["command", "cmd"], "command");
             let cmd_lower = cmd.to_ascii_lowercase();
@@ -225,6 +234,8 @@ impl AgentActivity {
             || tool_lower.contains("graph")
             || tool_lower.contains("search")
             || tool_lower.contains("explore")
+            || tool_lower.contains("read")
+            || tool_lower.contains("find")
         {
             let target = Self::extract_arg_or_default(
                 args_str,
@@ -434,40 +445,30 @@ pub fn render_live_activity_line(
             theme.brand_accent,
             theme.highlight,
         ),
-        AgentActivity::Working => (
-            "Working...".to_string(),
-            theme.brand_accent,
+        AgentActivity::Working => ("Working...".to_string(), theme.brand_accent, theme.info),
+        AgentActivity::Responding => ("Generating...".to_string(), theme.info, theme.brand_accent),
+        AgentActivity::InternetResearch { .. } => {
+            ("Searching web...".to_string(), theme.info, theme.success)
+        }
+        AgentActivity::RepoResearch { .. } => (
+            "Searching files...".to_string(),
             theme.info,
-        ),
-        AgentActivity::Responding => (
-            "Generating response...".to_string(),
-            theme.highlight,
-            theme.success,
-        ),
-        AgentActivity::InternetResearch { query } => (
-            format!("Searching web: \"{}\"...", query),
-            theme.info,
-            theme.success,
-        ),
-        AgentActivity::RepoResearch { target } => (
-            format!("Researching repo: {}...", target),
-            theme.brand_accent,
-            theme.info,
-        ),
-        AgentActivity::EditingFile { path } => (
-            format!("Applying edits to {}...", path),
-            theme.warning,
             theme.brand_accent,
         ),
-        AgentActivity::Debugging { step } => (
-            format!("Debugging & verifying: {}...", step),
-            theme.success,
-            theme.warning,
-        ),
-        AgentActivity::ExecutingCommand { command } => (
-            format!("Executing: {}...", command),
+        AgentActivity::EditingFile { .. } => (
+            "Editing files...".to_string(),
             theme.info,
-            theme.text_primary,
+            theme.brand_accent,
+        ),
+        AgentActivity::Debugging { .. } => (
+            "Running command...".to_string(),
+            theme.info,
+            theme.brand_accent,
+        ),
+        AgentActivity::ExecutingCommand { .. } => (
+            "Running command...".to_string(),
+            theme.info,
+            theme.brand_accent,
         ),
         AgentActivity::SubagentWorking { role } => (
             format!("Subagent active: {}...", role),
@@ -475,7 +476,7 @@ pub fn render_live_activity_line(
             theme.brand_accent,
         ),
         AgentActivity::CompactingContext => (
-            "Compacting conversation memory...".to_string(),
+            "Compacting memory...".to_string(),
             theme.muted,
             theme.text_primary,
         ),
@@ -590,17 +591,33 @@ mod tests {
     fn test_render_live_activity_line() {
         let theme = Theme::aura_dark();
         let activities = vec![
-            AgentActivity::Thinking,
-            AgentActivity::Working,
-            AgentActivity::Responding,
-            AgentActivity::EditingFile {
-                path: "src/main.rs".to_string(),
-            },
+            (AgentActivity::Thinking, "Thinking..."),
+            (AgentActivity::Working, "Working..."),
+            (AgentActivity::Responding, "Generating..."),
+            (
+                AgentActivity::EditingFile {
+                    path: "src/main.rs".to_string(),
+                },
+                "Editing files...",
+            ),
+            (
+                AgentActivity::ExecutingCommand {
+                    command: "cargo test".to_string(),
+                },
+                "Running command...",
+            ),
         ];
-        for activity in activities {
+        for (activity, expected_label) in activities {
             for opt in ANIMATION_OPTIONS {
                 let line = render_live_activity_line(&activity, opt.style, 250, 1.5, &theme);
                 assert!(!line.spans.is_empty());
+                let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                assert!(
+                    full_text.contains(expected_label),
+                    "Expected line '{}' to contain '{}'",
+                    full_text,
+                    expected_label
+                );
             }
         }
     }

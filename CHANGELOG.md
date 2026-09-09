@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — 2026-09-09
+
+### Pinned Live Activity Status Bar, Bottom Spacing & Accurate Token Metrics
+
+#### 💡 Ideas & Inspirations
+- **Pinned Live Activity Docking**: When rendering dynamic loading spinners and progress text inside a scrollable paragraph, terminal viewport scrolling and text wrapping can inadvertently push the active status line off the bottom of the visible area. Decoupling the live activity status bar into a dedicated, fixed layout slot above the input box guarantees that the active spinner, activity verb, elapsed time, and interrupt hints remain 100% visible at all times.
+- **Visual Breathing Room & Input Anchoring**: Giving a 1-line margin between the live status indicator (`Thinking...`, `Editing files...`) and the top border of the input box improves visual clarity and prevents the active text from colliding with the input frame. Calculating layout constraints relative to the terminal base ensures the input box never jumps or shifts during state transitions.
+- **Accurate Context Counter & Stream Usage Hydration**: AI developers rely on the status bar counter to gauge model context usage against limits. Modern OpenAI-compatible streaming endpoints require explicit opt-in (`stream_options.include_usage = true`) to emit token metrics upon stream completion, complemented by heuristic fallbacks and session hydration.
+
+#### 🚀 Features & Changes
+- **Pinned Live Activity Bar (`src/app/mod.rs`)**:
+  - Dedicated layout slot `chunks[1]` for rendering the active spinner and activity text (`Thinking...`, `Editing files...`, `Running command...`, `Generating...`, `Searching files...`, `Searching web...`).
+  - Added bottom spacing (`activity_spacer_height = if self.is_working { 2 } else { 1 }`) so the active status indicator has breathing space above the input box border.
+  - Kept input dock anchored to a fixed vertical position regardless of agent working state.
+- **Streaming Timeline Optimization (`src/ui/view.rs`)**:
+  - Removed transient inline activity indicator from the scrollable message timeline so the timeline only contains conversation messages.
+  - Upgraded `TimelineView::visual_row_count` to recursively account for embedded `\n` newlines across sub-lines, ensuring scroll bounds never underestimate visual height.
+  - Ensured auto-scroll accurately tracks the newest generating tokens right to the bottom edge without clipping.
+- **Token Context Usage Tracking (`src/agent/`, `src/app/`)**:
+  - Configured `"stream_options": { "include_usage": true }` in `OpenAiCompatibleProvider` (`src/agent/providers/openai.rs`).
+  - Added initial context token estimation and completion token fallbacks in `AgentLoop` (`src/agent/loop.rs`).
+  - Implemented token metric hydration on session resume in `App::hydrate_session` (`src/app/mod.rs`), resolving the `0 / 128k` static counter issue.
+- **Sequential Tool Dispatch Notifications & Activity Classification**:
+  - Emitted `AgentEvent::ToolCall` before sequential and parallel tool executions in `AgentLoop`.
+  - Added deduplication in `TimelineView::add_tool_call` to prevent duplicate tool start entries.
+  - Standardized activity verbs across `AgentActivity` in `src/ui/animation.rs`.
+
 ## [0.3.6] — 2026-09-09
 
 ### Streaming Reasoning State Machine & Live TUI Thinking Spinner

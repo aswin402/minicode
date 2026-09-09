@@ -414,10 +414,16 @@ impl<'a> App<'a> {
 
                                 // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
-                                    tracing::warn!("Failed to save theme setting to workspace config: {}", e);
+                                    tracing::warn!(
+                                        "Failed to save theme setting to workspace config: {}",
+                                        e
+                                    );
                                 }
                                 if let Err(e) = self.config.save(None) {
-                                    tracing::warn!("Failed to save theme setting to global config: {}", e);
+                                    tracing::warn!(
+                                        "Failed to save theme setting to global config: {}",
+                                        e
+                                    );
                                 }
 
                                 self.timeline.add_status(format!(

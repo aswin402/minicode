@@ -351,8 +351,10 @@ impl AgentLoop {
         let _ = event_sender.send(prompt_event);
 
         let initial_context_tokens = crate::context::compressor::ContextCompressor::new()
+            .ok()
             .map(|c| c.count_messages_tokens(&self.messages))
-            .unwrap_or(0);
+            .filter(|&t| t > 0)
+            .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
 
         let start_event = AgentEvent::TurnStart {
             turn_id,
@@ -415,9 +417,9 @@ impl AgentLoop {
 
                 if self.config.agent.streaming {
                     // --- Streaming mode: consume chunks incrementally, emit deltas live ---
-                    let stream_fut = self
-                        .provider
-                        .stream_completion(&self.messages, &tools, &options);
+                    let stream_fut =
+                        self.provider
+                            .stream_completion(&self.messages, &tools, &options);
                     let stream_res = if let Some(cancel) = &cancel_token {
                         tokio::select! {
                             _ = cancel.cancelled() => {
@@ -719,6 +721,17 @@ impl AgentLoop {
                                 }
                             }
 
+                            // Notify UI of active tool activity
+                            if let Some(first_call) = parallel_calls.first() {
+                                let call_event = AgentEvent::ToolCall {
+                                    turn_id,
+                                    tool_id: first_call.id.clone(),
+                                    tool: first_call.name.clone(),
+                                    args: first_call.arguments.clone(),
+                                };
+                                let _ = event_sender.send(call_event);
+                            }
+
                             let parallel_fut = self
                                 .speculative_executor
                                 .execute_parallel_stage(&parallel_calls, turn_id);
@@ -910,6 +923,15 @@ impl AgentLoop {
                                     None
                                 };
 
+                            // Emit ToolCall event so UI immediately displays active activity during execution
+                            let call_event = AgentEvent::ToolCall {
+                                turn_id,
+                                tool_id: tool_call.id.clone(),
+                                tool: tool_call.name.clone(),
+                                args: tool_call.arguments.clone(),
+                            };
+                            let _ = event_sender.send(call_event);
+
                             // Execute tool (MCP vs Built-in)
                             let is_mcp = tool_call.name.starts_with(MCP_TOOL_PREFIX);
                             let mcp_client = self.mcp_client.clone();
@@ -922,9 +944,7 @@ impl AgentLoop {
                             let tool_fut = async move {
                                 if is_mcp {
                                     let start = std::time::Instant::now();
-                                    let res = mcp_client
-                                        .call_tool(&tool_name, &tool_args)
-                                        .await;
+                                    let res = mcp_client.call_tool(&tool_name, &tool_args).await;
                                     let duration_ms = start.elapsed().as_millis() as u64;
                                     match res {
                                         Ok(output) => crate::agent::types::ToolResult {
@@ -1141,7 +1161,14 @@ impl AgentLoop {
             }
         }
 
-        let turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
+        let mut turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
+        if turn_tokens_used == 0 {
+            turn_tokens_used = crate::context::compressor::ContextCompressor::new()
+                .ok()
+                .map(|c| c.count_messages_tokens(&self.messages))
+                .filter(|&t| t > 0)
+                .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
+        }
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
         // Autonomous Git Auto-Commit if files were modified during this turn

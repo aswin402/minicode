@@ -1285,6 +1285,9 @@ impl<'a> App<'a> {
         self.is_working = true;
         self.current_activity = Some(crate::ui::AgentActivity::Thinking);
         self.work_start = Some(Instant::now());
+        if self.last_turn_tokens == 0 {
+            self.last_turn_tokens = prompt_to_run.len().max(4) / 4;
+        }
 
         let cancel = tokio_util::sync::CancellationToken::new();
         self.cancel_token = Some(cancel.clone());

@@ -174,6 +174,9 @@ impl OpenAiCompatibleProvider {
             "model": model,
             "messages": formatted_messages,
             "stream": true,
+            "stream_options": {
+                "include_usage": true
+            }
         });
 
         if !is_reasoning_model {

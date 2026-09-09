@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 106 (v0.3.6) Streaming Reasoning State Machine & Live TUI Activity Architecture | **Status:** ✅ Complete (129 Tools)
+> **Current Phase:** Phase 107 (v0.3.7) Pinned Live Activity Bar, Bottom Spacing & Accurate Token Metrics | **Status:** ✅ Complete (129 Tools)
 
 ---
 
@@ -1654,5 +1654,14 @@
 - [x] 106.4: Fix activity state transitions on `AgentEvent::ToolResult` and preserve `AgentActivity::Working` for generic and background tools
 - [x] 106.5: Enhance `finalize_pending_thoughts` with reverse search to reliably record thought durations even after subsequent timeline entries are appended
 - [x] 106.6: Add comprehensive integration tests in `tests/integration_pricing_and_thoughts.rs`, verify quality gates (cargo check, clippy, tests), and bump version → `v0.3.6`
+
+### Phase 107: Pinned Live Activity Bar, Bottom Spacing & Accurate Token Metrics (v0.3.7)
+- [x] 107.1: Decouple live activity status indicator into dedicated `chunks[1]` layout slot above the input box, eliminating scroll-clipping bugs
+- [x] 107.2: Add 1-line breathing room spacing below the active indicator (`activity_spacer_height = if self.is_working { 2 } else { 1 }`) anchored relative to the terminal base
+- [x] 107.3: Remove inline activity from scrollable conversation timeline and enhance `visual_row_count` with recursive newline parsing
+- [x] 107.4: Enable `stream_options.include_usage = true` in OpenAI provider, add token estimation fallbacks and session hydration to fix static `0 / 128k` counter
+- [x] 107.5: Standardize activity action verbs across `AgentActivity` and emit `ToolCall` events before tool dispatch
+- [x] 107.6: Verify with cargo check, clippy (-D warnings), fmt, integration tests, and bump version → `v0.3.7`
+
 
 
