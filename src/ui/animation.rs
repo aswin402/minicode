@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Quadrant loading square spinner (rotating clockwise)
+#[allow(dead_code)]
 pub const SQUARE_SPINNER_FRAMES: &[&str] = &["▖", "▘", "▝", "▗"];
 
 /// Standard Braille spinner
@@ -17,9 +18,8 @@ pub const CONCENTRIC_SPINNER_FRAMES: &[&str] = &["▫", "◽", "◻", "⬜", "�
 #[allow(dead_code)]
 pub const PULSE_SPINNER_FRAMES: &[&str] = &["░", "▒", "▓", "█", "▓", "▒"];
 
-/// MiniCode Brand Dual-Pillars spinner
-#[allow(dead_code)]
-pub const BRAND_SPINNER_FRAMES: &[&str] = &["▰▱", "▰▰", "▱▰", "▱▱"];
+/// MiniCode Brand Dual-Pillars spinner (alternating left and right pillar states)
+pub const BRAND_SPINNER_FRAMES: &[(&str, &str)] = &[("▰", "▱"), ("▰", "▰"), ("▱", "▰"), ("▱", "▱")];
 
 /// Represents the specific activity the agent is executing
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,10 +210,20 @@ pub fn render_live_activity_line(
     elapsed_secs: f64,
     theme: &Theme,
 ) -> Line<'static> {
-    // 1. Calculate spinner frame from SQUARE_SPINNER_FRAMES (rotating quadrant square)
-    let spinner_idx =
-        ((millis / crate::constants::SPINNER_FRAME_MS) as usize) % SQUARE_SPINNER_FRAMES.len();
-    let spinner = SQUARE_SPINNER_FRAMES[spinner_idx];
+    // 1. Calculate spinner frame from BRAND_SPINNER_FRAMES (MiniCode Dual-Pillars Glyph)
+    let spinner_idx = ((millis / 120) as usize) % BRAND_SPINNER_FRAMES.len();
+    let (left_glyph, right_glyph) = BRAND_SPINNER_FRAMES[spinner_idx];
+
+    let left_color = if left_glyph == "▰" {
+        theme.brand_accent
+    } else {
+        theme.muted
+    };
+    let right_color = if right_glyph == "▰" {
+        theme.info
+    } else {
+        theme.muted
+    };
 
     // 2. Determine activity title and dynamic color pair from the active Theme
     let (label, c1, c2) = match activity {
@@ -260,15 +270,21 @@ pub fn render_live_activity_line(
     };
 
     // 3. Assemble Spans:
-    //    [Spinner] in c1
+    //    [Dual-Pillars Spinner] in theme.brand_accent and theme.info
     //    [Shimmering Text]
     //    [Elapsed Time + Cancel Hint] in theme.muted
     let mut spans = Vec::new();
 
-    // Spinner glyph in primary activity color with bold
+    // MiniCode Dual-Pillar spinner glyphs styled with dynamic theme colors
     spans.push(Span::styled(
-        format!("{}  ", spinner),
-        Style::default().fg(c1).add_modifier(Modifier::BOLD),
+        left_glyph,
+        Style::default().fg(left_color).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!("{}  ", right_glyph),
+        Style::default()
+            .fg(right_color)
+            .add_modifier(Modifier::BOLD),
     ));
 
     // Dynamic wave shimmer across the text: speed 160.0, frequency 0.32
