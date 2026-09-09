@@ -100,6 +100,7 @@ pub struct TimelineView {
     pub thought_tag_buffer: String,
 }
 
+#[allow(dead_code)]
 pub struct TimelineContext<'a> {
     pub theme: &'a Theme,
     pub is_working: bool,
@@ -191,6 +192,12 @@ impl TimelineView {
     pub fn scroll_to_bottom(&self) {
         self.auto_scroll.set(true);
         self.scroll_offset.set(self.max_scroll.get());
+    }
+
+    /// Returns true if there are no messages or entries in the timeline.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn add_user_message(&mut self, prompt: String) {
@@ -631,70 +638,7 @@ impl TimelineView {
         let mut lines: Vec<Line> = Vec::new();
 
         if self.entries.is_empty() {
-            let display_path = if let Some(ref home) = dirs::home_dir() {
-                if let Ok(rel) = ctx.workspace.strip_prefix(home) {
-                    format!("~/{}", rel.display())
-                } else {
-                    ctx.workspace.display().to_string()
-                }
-            } else {
-                ctx.workspace.display().to_string()
-            };
-
-            // 3D Isometric Block (Retro-Futuristic) minicode Wordmark
-            lines.push(Line::from(String::new()));
-            lines.push(Line::from(vec![Span::styled(
-                crate::constants::ASCII_WORDMARK_LINES[0],
-                Style::default().fg(theme.brand_accent),
-            )]));
-
-            lines.push(Line::from(vec![
-                Span::styled(
-                    crate::constants::ASCII_WORDMARK_LINES[1],
-                    Style::default().fg(theme.brand_accent),
-                ),
-                Span::styled(
-                    format!("  v{}", env!("CARGO_PKG_VERSION")),
-                    Style::default()
-                        .fg(theme.success)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-
-            lines.push(Line::from(vec![Span::styled(
-                crate::constants::ASCII_WORDMARK_LINES[2],
-                Style::default().fg(theme.highlight),
-            )]));
-
-            lines.push(Line::from(vec![Span::styled(
-                crate::constants::ASCII_WORDMARK_LINES[3],
-                Style::default().fg(theme.success),
-            )]));
-
-            lines.push(Line::from(String::new()));
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(
-                    format!("{} | {}", ctx.provider, ctx.model),
-                    Style::default().fg(theme.warning),
-                ),
-            ]));
-
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(display_path, Style::default().fg(theme.info)),
-            ]));
-
-            if let Some(branch) = crate::ui::status::StatusWidgets::get_git_branch(ctx.workspace) {
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(
-                        format!("git: {}", branch),
-                        Style::default().fg(theme.success),
-                    ),
-                ]));
-            }
-            lines.push(Line::from(String::new()));
+            return;
         }
 
         for entry in &self.entries {

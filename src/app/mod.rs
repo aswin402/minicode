@@ -218,52 +218,67 @@ impl<'a> App<'a> {
                     .style(Style::default().bg(self.theme.bg_primary));
                 frame.render_widget(background_block, frame.area());
 
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Min(4),    // 0: Streaming Timeline
-                        Constraint::Length(1), // 1: Top Spacer / Margin above input dock
-                        Constraint::Length(3), // 2: Input Dock
-                        Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
-                        Constraint::Length(1), // 4: Minimal Bottom Status Line
-                    ])
-                    .split(frame.area());
+                if self.timeline.is_empty() {
+                    let welcome_ctx = crate::ui::WelcomeContext {
+                        workspace: &self.workspace_root,
+                        provider: &self.config.provider.default,
+                        model: &self.config.provider.model,
+                    };
+                    crate::ui::render_welcome_screen(
+                        frame,
+                        frame.area(),
+                        &self.theme,
+                        &welcome_ctx,
+                        &self.input_dock,
+                    );
+                } else {
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Min(4),    // 0: Streaming Timeline
+                            Constraint::Length(1), // 1: Top Spacer / Margin above input dock
+                            Constraint::Length(3), // 2: Input Dock
+                            Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
+                            Constraint::Length(1), // 4: Minimal Bottom Status Line
+                        ])
+                        .split(frame.area());
 
-                let timeline_ctx = TimelineContext {
-                    theme: &self.theme,
-                    is_working: self.is_working,
-                    working_millis,
-                    workspace: &self.workspace_root,
-                    provider: &self.config.provider.default,
-                    model: &self.config.provider.model,
-                };
-                self.timeline.render(frame, chunks[0], &timeline_ctx);
-                self.input_dock.render(frame, chunks[2], &self.theme);
+                    let timeline_ctx = TimelineContext {
+                        theme: &self.theme,
+                        is_working: self.is_working,
+                        working_millis,
+                        workspace: &self.workspace_root,
+                        provider: &self.config.provider.default,
+                        model: &self.config.provider.model,
+                    };
+                    self.timeline.render(frame, chunks[0], &timeline_ctx);
+                    self.input_dock.render(frame, chunks[2], &self.theme);
 
-                let active_mcp_count = self
-                    .config
-                    .mcp
-                    .servers
-                    .values()
-                    .filter(|s| s.enabled)
-                    .count();
+                    let active_mcp_count = self
+                        .config
+                        .mcp
+                        .servers
+                        .values()
+                        .filter(|s| s.enabled)
+                        .count();
 
-                let max_context =
-                    crate::agent::models::get_model_context_limit(&self.config.provider.model);
+                    let max_context =
+                        crate::agent::models::get_model_context_limit(&self.config.provider.model);
 
-                let status_ctx = crate::ui::StatusContext {
-                    theme: &self.theme,
-                    workspace: &self.workspace_root,
-                    provider: &self.config.provider.default,
-                    model: &self.config.provider.model,
-                    mcp_count: active_mcp_count,
-                    used_tokens: self.last_turn_tokens,
-                    max_context,
-                    show_cost: self.config.ui.show_cost,
-                    session_cost_usd: self.total_cost_usd,
-                };
+                    let status_ctx = crate::ui::StatusContext {
+                        theme: &self.theme,
+                        workspace: &self.workspace_root,
+                        provider: &self.config.provider.default,
+                        model: &self.config.provider.model,
+                        mcp_count: active_mcp_count,
+                        used_tokens: self.last_turn_tokens,
+                        max_context,
+                        show_cost: self.config.ui.show_cost,
+                        session_cost_usd: self.total_cost_usd,
+                    };
 
-                StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+                    StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+                }
 
                 // Render Floating Spotlight Command Palette Overlay when typing '/'
                 if self.input_dock.has_active_slash_query() {

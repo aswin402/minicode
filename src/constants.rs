@@ -840,7 +840,7 @@ pub const EXPLORER_BADGE_DISPLAY_COLS: usize = 10;
 pub const SESSION_TIME_AGO_COLS: usize = 8;
 
 /// Default placeholder text displayed in the interactive input dock textarea
-pub const DEFAULT_INPUT_PLACEHOLDER: &str = "Ask minicode to do anything...";
+pub const DEFAULT_INPUT_PLACEHOLDER: &str = "Ask MiniCode to do anything...";
 /// Height in rows of the floating spotlight command palette
 pub const COMMAND_PALETTE_HEIGHT: u16 = 10;
 /// Width percentage of screen for floating spotlight command palette

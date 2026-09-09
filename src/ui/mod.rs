@@ -12,6 +12,7 @@ pub mod selection;
 pub mod status;
 pub mod theme;
 pub mod view;
+pub mod welcome;
 
 #[allow(unused_imports)]
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
@@ -30,3 +31,4 @@ pub use pty_drawer::PtyDrawer;
 pub use status::{StatusContext, StatusWidgets};
 pub use theme::Theme;
 pub use view::{TimelineContext, TimelineView};
+pub use welcome::{render_welcome_screen, WelcomeContext};
