@@ -106,6 +106,7 @@ pub struct TimelineContext<'a> {
     pub is_working: bool,
     pub working_millis: u64,
     pub current_activity: Option<&'a crate::ui::animation::AgentActivity>,
+    pub spinner_style: crate::ui::animation::SpinnerStyle,
     pub workspace: &'a std::path::Path,
     pub provider: &'a str,
     pub model: &'a str,
@@ -1238,6 +1239,7 @@ impl TimelineView {
             let act = ctx.current_activity.unwrap_or(&default_act);
             let activity_line = crate::ui::animation::render_live_activity_line(
                 act,
+                ctx.spinner_style,
                 ctx.working_millis,
                 elapsed_secs,
                 theme,

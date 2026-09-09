@@ -244,6 +244,9 @@ pub struct UiConfig {
     #[serde(default = "default_theme")]
     pub theme: String,
 
+    #[serde(default = "default_animation")]
+    pub animation: String,
+
     #[serde(default)]
     pub plain: bool,
 
@@ -258,6 +261,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            animation: default_animation(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -267,6 +271,10 @@ impl Default for UiConfig {
 
 fn default_theme() -> String {
     "auto".to_string()
+}
+
+fn default_animation() -> String {
+    "dual_pillars".to_string()
 }
 
 fn default_max_width() -> usize {

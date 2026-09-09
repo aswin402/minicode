@@ -353,38 +353,101 @@ impl<'a> App<'a> {
             },
             ModalState::ThemeSelect {
                 ref themes,
-                ref mut selected_index,
+                ref animations,
+                ref mut active_tab,
+                ref mut theme_selected_index,
+                ref mut animation_selected_index,
+                ref mut active_theme_id,
+                ref mut active_animation_id,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
                 }
-                KeyCode::Up => {
-                    *selected_index = selected_index.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    if *selected_index + 1 < themes.len() {
-                        *selected_index += 1;
-                    }
-                }
-                KeyCode::Enter => {
-                    if !themes.is_empty() && *selected_index < themes.len() {
-                        let chosen = &themes[*selected_index];
-                        let chosen_id = chosen.id.clone();
-                        let chosen_name = chosen.name.clone();
-
-                        // Apply live theme
-                        self.theme = Theme::detect(&chosen_id);
-                        self.config.ui.theme = chosen_id;
-
-                        // Persist to configuration file
-                        if let Err(e) = self.config.save(Some(&self.workspace_root)) {
-                            tracing::warn!("Failed to save theme setting to config: {}", e);
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    *active_tab = match *active_tab {
+                        crate::ui::modals::ThemeModalTab::Themes => {
+                            crate::ui::modals::ThemeModalTab::Animations
                         }
+                        crate::ui::modals::ThemeModalTab::Animations => {
+                            crate::ui::modals::ThemeModalTab::Themes
+                        }
+                    };
+                }
+                KeyCode::Char('1') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::Themes;
+                }
+                KeyCode::Char('2') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::Animations;
+                }
+                KeyCode::Up => match *active_tab {
+                    crate::ui::modals::ThemeModalTab::Themes => {
+                        *theme_selected_index = theme_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::Animations => {
+                        *animation_selected_index = animation_selected_index.saturating_sub(1);
+                    }
+                },
+                KeyCode::Down => match *active_tab {
+                    crate::ui::modals::ThemeModalTab::Themes => {
+                        if *theme_selected_index + 1 < themes.len() {
+                            *theme_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::Animations => {
+                        if *animation_selected_index + 1 < animations.len() {
+                            *animation_selected_index += 1;
+                        }
+                    }
+                },
+                KeyCode::Enter => {
+                    match *active_tab {
+                        crate::ui::modals::ThemeModalTab::Themes => {
+                            if !themes.is_empty() && *theme_selected_index < themes.len() {
+                                let chosen = &themes[*theme_selected_index];
+                                let chosen_id = chosen.id.clone();
+                                let chosen_name = chosen.name.clone();
 
-                        self.timeline.add_status(format!(
-                            "✔ Active theme switched to '{}' and saved to config",
-                            chosen_name
-                        ));
+                                // Apply live theme
+                                self.theme = Theme::detect(&chosen_id);
+                                self.config.ui.theme = chosen_id.clone();
+                                *active_theme_id = chosen_id;
+
+                                // Persist to configuration file
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!("Failed to save theme setting to config: {}", e);
+                                }
+
+                                self.timeline.add_status(format!(
+                                    "✔ Active theme switched to '{}' and saved to config",
+                                    chosen_name
+                                ));
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::Animations => {
+                            if !animations.is_empty()
+                                && *animation_selected_index < animations.len()
+                            {
+                                let chosen = &animations[*animation_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.animation = chosen_id.clone();
+                                *active_animation_id = chosen_id;
+
+                                // Persist to configuration file
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save animation setting to config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.timeline.add_status(format!(
+                                    "✔ Loading animation switched to '{}' and saved to config",
+                                    chosen_name
+                                ));
+                            }
+                        }
                     }
                     self.modal = ModalState::None;
                 }
@@ -678,7 +741,10 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(status_msg);
                             }
                             "/theme" => {
-                                self.modal = ModalState::new_theme_select(&self.config.ui.theme);
+                                self.modal = ModalState::new_theme_select(
+                                    &self.config.ui.theme,
+                                    &self.config.ui.animation,
+                                );
                             }
                             "/explore" => {
                                 self.modal = ModalState::new_code_explorer(&self.workspace_root);

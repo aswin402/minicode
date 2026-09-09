@@ -25,6 +25,12 @@ use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::Frame;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeModalTab {
+    Themes,
+    Animations,
+}
+
 #[derive(Debug, Clone)]
 pub enum ModalState {
     None,
@@ -52,7 +58,12 @@ pub enum ModalState {
     },
     ThemeSelect {
         themes: Vec<crate::ui::theme::ThemeInfo>,
-        selected_index: usize,
+        animations: Vec<crate::ui::animation::AnimationOption>,
+        active_tab: ThemeModalTab,
+        theme_selected_index: usize,
+        animation_selected_index: usize,
+        active_theme_id: String,
+        active_animation_id: String,
     },
     SessionBrowser {
         sessions: Vec<crate::session::store::SessionMetadata>,
@@ -203,15 +214,25 @@ impl ModalState {
         }
     }
 
-    pub fn new_theme_select(active_theme_id: &str) -> Self {
+    pub fn new_theme_select(active_theme_id: &str, active_animation_id: &str) -> Self {
         let themes = crate::ui::theme::Theme::list_themes();
-        let selected_index = themes
+        let theme_selected_index = themes
             .iter()
             .position(|t| t.id == active_theme_id || active_theme_id.starts_with(&t.id))
             .unwrap_or(0);
+        let animations = crate::ui::animation::ANIMATION_OPTIONS.to_vec();
+        let animation_selected_index = animations
+            .iter()
+            .position(|a| a.id == active_animation_id)
+            .unwrap_or(0);
         ModalState::ThemeSelect {
             themes,
-            selected_index,
+            animations,
+            active_tab: ThemeModalTab::Themes,
+            theme_selected_index,
+            animation_selected_index,
+            active_theme_id: active_theme_id.to_string(),
+            active_animation_id: active_animation_id.to_string(),
         }
     }
 
@@ -524,9 +545,23 @@ impl ModalState {
             }
             ModalState::ThemeSelect {
                 themes,
-                selected_index,
+                animations,
+                active_tab,
+                theme_selected_index,
+                animation_selected_index,
+                active_theme_id,
+                active_animation_id,
             } => {
-                theme_select::render_theme_select(frame, area, theme, themes, *selected_index);
+                let ctx = theme_select::ThemeSelectContext {
+                    themes,
+                    animations,
+                    active_tab: *active_tab,
+                    theme_selected_index: *theme_selected_index,
+                    animation_selected_index: *animation_selected_index,
+                    active_theme_id,
+                    active_animation_id,
+                };
+                theme_select::render_theme_select(frame, area, theme, &ctx);
             }
             ModalState::SessionBrowser {
                 sessions,

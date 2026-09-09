@@ -21,6 +21,123 @@ pub const PULSE_SPINNER_FRAMES: &[&str] = &["░", "▒", "▓", "█", "▓", "
 /// MiniCode Brand Dual-Pillars spinner (alternating left and right pillar states)
 pub const BRAND_SPINNER_FRAMES: &[(&str, &str)] = &[("▰", "▱"), ("▰", "▰"), ("▱", "▰"), ("▱", "▱")];
 
+/// Rotating corner frame quadrants
+#[allow(dead_code)]
+pub const CORNER_ANGLES_FRAMES: &[&str] = &["◰", "◳", "◲", "◱"];
+
+/// Horizontal scanning progress beam
+#[allow(dead_code)]
+pub const SCANNER_BAR_FRAMES: &[&str] = &[
+    "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█", "▉", "▊", "▋", "▌", "▍", "▎",
+];
+
+/// Dual orbital particle dots
+#[allow(dead_code)]
+pub const PARTICLE_ORBIT_FRAMES: &[&str] = &["⠋", "⠙", "⠚", "⠞", "⠦", "⠴", "⠲", "⠳"];
+
+/// Supported loading animation styles selectable by the user in /theme
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpinnerStyle {
+    #[default]
+    DualPillars,
+    Quadrants,
+    PulseMatrix,
+    Concentric,
+    BrailleWave,
+    CornerAngles,
+    ScannerBar,
+    ParticleOrbit,
+}
+
+impl SpinnerStyle {
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "quadrants" => SpinnerStyle::Quadrants,
+            "pulse_matrix" => SpinnerStyle::PulseMatrix,
+            "concentric" => SpinnerStyle::Concentric,
+            "braille_wave" => SpinnerStyle::BrailleWave,
+            "corner_angles" => SpinnerStyle::CornerAngles,
+            "scanner_bar" => SpinnerStyle::ScannerBar,
+            "particle_orbit" => SpinnerStyle::ParticleOrbit,
+            _ => SpinnerStyle::DualPillars,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn to_id(self) -> &'static str {
+        match self {
+            SpinnerStyle::DualPillars => "dual_pillars",
+            SpinnerStyle::Quadrants => "quadrants",
+            SpinnerStyle::PulseMatrix => "pulse_matrix",
+            SpinnerStyle::Concentric => "concentric",
+            SpinnerStyle::BrailleWave => "braille_wave",
+            SpinnerStyle::CornerAngles => "corner_angles",
+            SpinnerStyle::ScannerBar => "scanner_bar",
+            SpinnerStyle::ParticleOrbit => "particle_orbit",
+        }
+    }
+}
+
+/// Metadata for selectable animations in the /theme modal
+#[derive(Debug, Clone)]
+pub struct AnimationOption {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub style: SpinnerStyle,
+}
+
+pub const ANIMATION_OPTIONS: &[AnimationOption] = &[
+    AnimationOption {
+        id: "dual_pillars",
+        name: "MiniCode Dual-Pillars",
+        description: "Stepped brand logo pillars with dynamic dual-color lighting",
+        style: SpinnerStyle::DualPillars,
+    },
+    AnimationOption {
+        id: "quadrants",
+        name: "Rotating Quadrants",
+        description: "Smooth 2x2 corner-orbit rotating square blocks",
+        style: SpinnerStyle::Quadrants,
+    },
+    AnimationOption {
+        id: "pulse_matrix",
+        name: "Cyber Pulse Block",
+        description: "High-tech breathing block density matrix",
+        style: SpinnerStyle::PulseMatrix,
+    },
+    AnimationOption {
+        id: "concentric",
+        name: "Concentric Squares",
+        description: "Nested geometric expanding and contracting boxes",
+        style: SpinnerStyle::Concentric,
+    },
+    AnimationOption {
+        id: "braille_wave",
+        name: "Orbital Dots Wave",
+        description: "Classic high-speed smooth Braille orbital spinner",
+        style: SpinnerStyle::BrailleWave,
+    },
+    AnimationOption {
+        id: "corner_angles",
+        name: "Rotating Corner Frames",
+        description: "Precision geometric corner frame quadrants",
+        style: SpinnerStyle::CornerAngles,
+    },
+    AnimationOption {
+        id: "scanner_bar",
+        name: "Horizontal Pulse Bar",
+        description: "Progressive horizontal block scanning beam",
+        style: SpinnerStyle::ScannerBar,
+    },
+    AnimationOption {
+        id: "particle_orbit",
+        name: "Quantum Satellite",
+        description: "Dual revolving particle dot satellites",
+        style: SpinnerStyle::ParticleOrbit,
+    },
+];
+
 /// Represents the specific activity the agent is executing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentActivity {
@@ -202,30 +319,115 @@ pub fn render_shimmer_spans(
     spans
 }
 
-/// Renders the complete live activity line with loading square spinner,
+/// Renders the spinner glyph spans according to the selected SpinnerStyle
+pub fn render_spinner_spans(
+    style: SpinnerStyle,
+    millis: u64,
+    c1: Color,
+    c2: Color,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    match style {
+        SpinnerStyle::DualPillars => {
+            let spinner_idx = ((millis / 120) as usize) % BRAND_SPINNER_FRAMES.len();
+            let (left_glyph, right_glyph) = BRAND_SPINNER_FRAMES[spinner_idx];
+            let left_color = if left_glyph == "▰" {
+                theme.brand_accent
+            } else {
+                theme.muted
+            };
+            let right_color = if right_glyph == "▰" {
+                theme.info
+            } else {
+                theme.muted
+            };
+            vec![
+                Span::styled(
+                    left_glyph,
+                    Style::default().fg(left_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}  ", right_glyph),
+                    Style::default()
+                        .fg(right_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]
+        }
+        SpinnerStyle::Quadrants => {
+            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % SQUARE_SPINNER_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", SQUARE_SPINNER_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::PulseMatrix => {
+            let idx = ((millis / 100) as usize) % PULSE_SPINNER_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", PULSE_SPINNER_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::Concentric => {
+            let idx = ((millis / 120) as usize) % CONCENTRIC_SPINNER_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", CONCENTRIC_SPINNER_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::BrailleWave => {
+            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % BRAILLE_SPINNER_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", BRAILLE_SPINNER_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::CornerAngles => {
+            let idx = ((millis / 100) as usize) % CORNER_ANGLES_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", CORNER_ANGLES_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::ScannerBar => {
+            let idx = ((millis / 70) as usize) % SCANNER_BAR_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", SCANNER_BAR_FRAMES[idx]),
+                Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::ParticleOrbit => {
+            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
+                % PARTICLE_ORBIT_FRAMES.len();
+            vec![Span::styled(
+                format!("{}  ", PARTICLE_ORBIT_FRAMES[idx]),
+                Style::default().fg(c2).add_modifier(Modifier::BOLD),
+            )]
+        }
+    }
+}
+
+/// Renders a single preview of a spinner for the /theme modal
+pub fn render_preview_spinner(
+    style: SpinnerStyle,
+    millis: u64,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    render_spinner_spans(style, millis, theme.brand_accent, theme.info, theme)
+}
+
+/// Renders the complete live activity line with loading spinner,
 /// dynamic shimmering gradient text ("t to g..."), and elapsed timer.
 pub fn render_live_activity_line(
     activity: &AgentActivity,
+    spinner_style: SpinnerStyle,
     millis: u64,
     elapsed_secs: f64,
     theme: &Theme,
 ) -> Line<'static> {
-    // 1. Calculate spinner frame from BRAND_SPINNER_FRAMES (MiniCode Dual-Pillars Glyph)
-    let spinner_idx = ((millis / 120) as usize) % BRAND_SPINNER_FRAMES.len();
-    let (left_glyph, right_glyph) = BRAND_SPINNER_FRAMES[spinner_idx];
-
-    let left_color = if left_glyph == "▰" {
-        theme.brand_accent
-    } else {
-        theme.muted
-    };
-    let right_color = if right_glyph == "▰" {
-        theme.info
-    } else {
-        theme.muted
-    };
-
-    // 2. Determine activity title and dynamic color pair from the active Theme
+    // 1. Determine activity title and dynamic color pair from the active Theme
     let (label, c1, c2) = match activity {
         AgentActivity::Thinking => (
             "Thinking...".to_string(),
@@ -269,23 +471,11 @@ pub fn render_live_activity_line(
         ),
     };
 
-    // 3. Assemble Spans:
-    //    [Dual-Pillars Spinner] in theme.brand_accent and theme.info
+    // 2. Assemble Spans:
+    //    [Selected Spinner Style]
     //    [Shimmering Text]
     //    [Elapsed Time + Cancel Hint] in theme.muted
-    let mut spans = Vec::new();
-
-    // MiniCode Dual-Pillar spinner glyphs styled with dynamic theme colors
-    spans.push(Span::styled(
-        left_glyph,
-        Style::default().fg(left_color).add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::styled(
-        format!("{}  ", right_glyph),
-        Style::default()
-            .fg(right_color)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let mut spans = render_spinner_spans(spinner_style, millis, c1, c2, theme);
 
     // Dynamic wave shimmer across the text: speed 160.0, frequency 0.32
     let shimmer_spans = render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32);
@@ -390,7 +580,9 @@ mod tests {
     fn test_render_live_activity_line() {
         let theme = Theme::aura_dark();
         let activity = AgentActivity::Thinking;
-        let line = render_live_activity_line(&activity, 250, 1.5, &theme);
-        assert!(!line.spans.is_empty());
+        for opt in ANIMATION_OPTIONS {
+            let line = render_live_activity_line(&activity, opt.style, 250, 1.5, &theme);
+            assert!(!line.spans.is_empty());
+        }
     }
 }

@@ -38,6 +38,7 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
         is_working: true,
         working_millis: 1500,
         current_activity: None,
+        spinner_style: minicode::ui::animation::SpinnerStyle::DualPillars,
         workspace,
         provider: "anthropic",
         model: "claude-3-5-sonnet",

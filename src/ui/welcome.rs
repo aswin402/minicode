@@ -61,13 +61,15 @@ pub fn render_welcome_screen(
         .style(Style::default().bg(theme.bg_primary));
     frame.render_widget(bg_block, area);
 
+    let input_height = input_dock.required_height();
+
     // Fallback for extremely constrained terminal dimensions
     if area.height < 10 || area.width < 30 {
         let fallback_input = Rect {
             x: area.x,
-            y: area.y + area.height.saturating_sub(3) / 2,
+            y: area.y + area.height.saturating_sub(input_height) / 2,
             width: area.width,
-            height: 3.min(area.height),
+            height: input_height.min(area.height),
         };
         input_dock.render(frame, fallback_input, theme);
         return fallback_input;
@@ -77,15 +79,15 @@ pub fn render_welcome_screen(
     let vert_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // 0: Top Header
-            Constraint::Min(1),    // 1: Top spacer (flexible)
-            Constraint::Length(3), // 2: Brand logo lockup (3 lines)
-            Constraint::Length(1), // 3: Spacer between logo and input dock
-            Constraint::Length(3), // 4: Centered Input Dock
-            Constraint::Length(1), // 5: Spacer between input and status
-            Constraint::Length(1), // 6: Status strip (● READY | Model)
-            Constraint::Min(2),    // 7: Bottom spacer (flexible)
-            Constraint::Length(1), // 8: Bottom Edge Bar
+            Constraint::Length(1),            // 0: Top Header
+            Constraint::Min(1),               // 1: Top spacer (flexible)
+            Constraint::Length(3),            // 2: Brand logo lockup (3 lines)
+            Constraint::Length(1),            // 3: Spacer between logo and input dock
+            Constraint::Length(input_height), // 4: Centered Dynamic Input Dock
+            Constraint::Length(1),            // 5: Spacer between input and status
+            Constraint::Length(1),            // 6: Status strip (● READY | Model)
+            Constraint::Min(2),               // 7: Bottom spacer (flexible)
+            Constraint::Length(1),            // 8: Bottom Edge Bar
         ])
         .split(area);
 

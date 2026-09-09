@@ -96,10 +96,7 @@ fn test_modularized_modals_instantiation() {
         selected_index: 0,
         cached_summary: None,
     };
-    let _ = ModalState::ThemeSelect {
-        themes: vec![],
-        selected_index: 0,
-    };
+    let _ = ModalState::new_theme_select("aura_dark", "dual_pillars");
     let _ = ModalState::UndoCheckpoint {
         checkpoints: vec![],
         selected_index: 0,

@@ -234,22 +234,26 @@ impl<'a> App<'a> {
                         &self.input_dock,
                     );
                 } else {
+                    let input_height = self.input_dock.required_height();
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Min(4),    // 0: Streaming Timeline
+                            Constraint::Min(4),               // 0: Streaming Timeline
                             Constraint::Length(1), // 1: Top Spacer / Margin above input dock
-                            Constraint::Length(3), // 2: Input Dock
+                            Constraint::Length(input_height), // 2: Dynamic Input Dock
                             Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
                             Constraint::Length(1), // 4: Minimal Bottom Status Line
                         ])
                         .split(frame.area());
 
+                    let spinner_style =
+                        crate::ui::animation::SpinnerStyle::from_id(&self.config.ui.animation);
                     let timeline_ctx = TimelineContext {
                         theme: &self.theme,
                         is_working: self.is_working,
                         working_millis,
                         current_activity: self.current_activity.as_ref(),
+                        spinner_style,
                         workspace: &self.workspace_root,
                         provider: &self.config.provider.default,
                         model: &self.config.provider.model,

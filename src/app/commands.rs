@@ -214,7 +214,8 @@ impl<'a> App<'a> {
         }
 
         if prompt == "/theme" || prompt == "/themes" {
-            self.modal = ModalState::new_theme_select(&self.config.ui.theme);
+            self.modal =
+                ModalState::new_theme_select(&self.config.ui.theme, &self.config.ui.animation);
             return Ok(CommandAction::Continue);
         }
 

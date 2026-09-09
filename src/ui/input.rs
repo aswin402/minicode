@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use tui_textarea::TextArea;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Categories for organizing palette commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +340,7 @@ pub struct InputDock<'a> {
     pub textarea: TextArea<'a>,
     pub slash_selected_index: usize,
     pub category_index: usize,
+    pub last_width: std::cell::Cell<u16>,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -357,6 +358,115 @@ impl<'a> InputDock<'a> {
             textarea,
             slash_selected_index: 0,
             category_index: 0,
+            last_width: std::cell::Cell::new(80),
+        }
+    }
+
+    /// Returns the required dynamic height for the input dock (border top + lines + border bottom)
+    pub fn required_height(&self) -> u16 {
+        let num_lines = self.textarea.lines().len().clamp(1, 5);
+        (num_lines as u16) + 2
+    }
+
+    /// Automatically wraps lines that exceed the visible input dock width
+    pub fn auto_wrap(&mut self) {
+        if self.has_active_slash_query() {
+            return;
+        }
+
+        let width = self.last_width.get();
+        // Leave 2 cols for cursor buffer and safety
+        let max_width = (width.saturating_sub(2) as usize).max(20);
+
+        let (mut cursor_row, mut cursor_col) = self.textarea.cursor();
+        let mut lines = self.textarea.lines().to_vec();
+        if lines.is_empty() {
+            return;
+        }
+
+        let mut changed = false;
+        let mut r = 0;
+        while r < lines.len() {
+            let line_width = UnicodeWidthStr::width(lines[r].as_str());
+            if line_width > max_width {
+                let current = &lines[r];
+
+                // Find the last space at or before max_width chars
+                let mut current_w = 0;
+                let mut last_space_char_idx = None;
+
+                for (char_idx, ch) in current.chars().enumerate() {
+                    current_w += UnicodeWidthChar::width(ch).unwrap_or(1);
+                    if ch == ' ' && current_w <= max_width {
+                        last_space_char_idx = Some(char_idx);
+                    }
+                    if current_w > max_width {
+                        break;
+                    }
+                }
+
+                let char_break = match last_space_char_idx {
+                    Some(idx) => idx,
+                    None => {
+                        // No space before max_width; hard break at max_width
+                        let mut w = 0;
+                        let mut hard_idx = 0;
+                        for (char_idx, ch) in current.chars().enumerate() {
+                            let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+                            if w + cw > max_width {
+                                break;
+                            }
+                            w += cw;
+                            hard_idx = char_idx + 1;
+                        }
+                        hard_idx.max(1)
+                    }
+                };
+
+                let char_vec: Vec<char> = current.chars().collect();
+                let first_part: String = char_vec[..char_break].iter().collect();
+                let rest_start = if char_break < char_vec.len() && char_vec[char_break] == ' ' {
+                    char_break + 1
+                } else {
+                    char_break
+                };
+                let second_part: String = char_vec[rest_start..].iter().collect();
+
+                lines[r] = first_part;
+                if r + 1 < lines.len() {
+                    lines[r + 1] = if second_part.is_empty() {
+                        lines[r + 1].clone()
+                    } else {
+                        format!("{} {}", second_part, lines[r + 1])
+                    };
+                } else {
+                    lines.push(second_part);
+                }
+
+                // Adjust cursor if cursor was on this row
+                if cursor_row == r {
+                    if cursor_col > char_break {
+                        cursor_row = r + 1;
+                        cursor_col = cursor_col.saturating_sub(rest_start);
+                    }
+                } else if cursor_row > r {
+                    cursor_row += 1;
+                }
+
+                changed = true;
+            }
+            r += 1;
+        }
+
+        if changed {
+            let mut new_ta = TextArea::new(lines);
+            new_ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
+            new_ta.set_cursor_line_style(Style::default());
+            new_ta.move_cursor(tui_textarea::CursorMove::Jump(
+                cursor_row as u16,
+                cursor_col as u16,
+            ));
+            self.textarea = new_ta;
         }
     }
 
@@ -542,6 +652,7 @@ impl<'a> InputDock<'a> {
                 if self.slash_selected_index >= new_matches.len() {
                     self.slash_selected_index = new_matches.len().saturating_sub(1);
                 }
+                self.auto_wrap();
                 None
             }
         }
@@ -557,24 +668,47 @@ impl<'a> InputDock<'a> {
         let inner_area = block.inner(area);
         frame.render_widget(block, area);
 
-        // Subdivide inner area to render "› " prompt and text editor inline
+        // Subdivide inner area to render prefix ("› " / "- ") and text editor inline
         let input_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(2), // "› "
+                Constraint::Length(2), // "› " on line 1, "- " on continuation lines
                 Constraint::Min(1),    // TextArea input
             ])
             .split(inner_area);
 
-        let prompt_span = Span::styled(
-            "› ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .bg(theme.bg_input)
-                .add_modifier(Modifier::BOLD),
-        );
-        let prompt_widget = Paragraph::new(Line::from(vec![prompt_span]))
-            .style(Style::default().bg(theme.bg_input));
+        self.last_width.set(input_chunks[1].width);
+
+        let view_height = inner_area.height as usize;
+        let cursor_row = self.textarea.cursor().0;
+        let scroll_row = if cursor_row >= view_height {
+            cursor_row.saturating_sub(view_height.saturating_sub(1))
+        } else {
+            0
+        };
+
+        let mut prefix_lines = Vec::with_capacity(view_height.max(1));
+        for i in 0..view_height.max(1) {
+            let actual_line_idx = scroll_row + i;
+            if actual_line_idx == 0 {
+                prefix_lines.push(Line::from(vec![Span::styled(
+                    "› ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .bg(theme.bg_input)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+            } else {
+                prefix_lines.push(Line::from(vec![Span::styled(
+                    "- ",
+                    Style::default()
+                        .fg(theme.muted)
+                        .bg(theme.bg_input)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+            }
+        }
+        let prompt_widget = Paragraph::new(prefix_lines).style(Style::default().bg(theme.bg_input));
         frame.render_widget(prompt_widget, input_chunks[0]);
 
         let mut cloned = self.textarea.clone();
@@ -785,5 +919,36 @@ mod tests {
         assert_eq!(dock.category_index, 1);
         dock.cycle_category(false);
         assert_eq!(dock.category_index, 0);
+    }
+
+    #[test]
+    fn test_required_height() {
+        let mut dock = InputDock::new();
+        assert_eq!(dock.required_height(), 3); // 1 line + 2 borders
+
+        dock.textarea.insert_newline();
+        assert_eq!(dock.required_height(), 4); // 2 lines + 2 borders
+
+        dock.textarea.insert_newline();
+        assert_eq!(dock.required_height(), 5); // 3 lines + 2 borders
+
+        dock.reset();
+        assert_eq!(dock.required_height(), 3);
+    }
+
+    #[test]
+    fn test_auto_wrap() {
+        let mut dock = InputDock::new();
+        // Set visible width to 24 (max_width will be (24-2) = 22)
+        dock.last_width.set(24);
+        dock.textarea
+            .insert_str("This is a long sentence that wraps");
+        dock.auto_wrap();
+
+        let lines = dock.textarea.lines();
+        assert!(lines.len() >= 2);
+        assert_eq!(lines[0], "This is a long");
+        assert_eq!(lines[1], "sentence that wraps");
+        assert_eq!(dock.required_height(), 4);
     }
 }
