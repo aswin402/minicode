@@ -86,3 +86,57 @@ fn test_cross_chunk_streaming_thoughts() {
         panic!("Second entry should be AssistantMarkdown");
     }
 }
+
+#[test]
+fn test_claude_thinking_tags_parsing() {
+    let mut timeline = TimelineView::new();
+    timeline.append_assistant_delta("<thinking>\nAnalyzing AST nodes and symbol graph.\n</thinking>\nHere is the plan.");
+    timeline.finalize_pending_thoughts(Some(2.1));
+
+    assert_eq!(timeline.entries.len(), 2);
+    if let minicode::ui::view::TimelineEntry::ThoughtBlock { text, duration_secs } = &timeline.entries[0] {
+        assert!(text.contains("Analyzing AST nodes and symbol graph."));
+        assert!(!text.contains("<thinking>"));
+        assert!(!text.contains("</thinking>"));
+        assert_eq!(*duration_secs, Some(2.1));
+    } else {
+        panic!("First entry should be ThoughtBlock for <thinking> tag");
+    }
+
+    if let minicode::ui::view::TimelineEntry::AssistantMarkdown(text) = &timeline.entries[1] {
+        assert!(text.contains("Here is the plan."));
+    } else {
+        panic!("Second entry should be AssistantMarkdown");
+    }
+}
+
+#[test]
+fn test_visual_row_count_word_wrap_accuracy() {
+    // Width 30 forces word breaks that raw division would underestimate
+    let area = Rect::new(0, 0, 30, 10);
+    let mut timeline = TimelineView::new();
+    timeline.add_status("• Executing command `cargo clippy --workspace --all-targets`".to_string());
+    timeline.add_status("✔ Completed with zero warnings in 150ms".to_string());
+    let theme = Theme::aura_dark();
+    let workspace = Path::new(".");
+    let ctx = TimelineContext {
+        theme: &theme,
+        is_working: true,
+        working_millis: 1200,
+        current_activity: Some(&minicode::ui::animation::AgentActivity::Thinking),
+        spinner_style: minicode::ui::animation::SpinnerStyle::BrailleWave,
+        workspace,
+        provider: "minimax",
+        model: "MiniMax-M2.7",
+    };
+
+    let backend = TestBackend::new(30, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| {
+        timeline.render(f, area, &ctx);
+    }).unwrap();
+
+    // Auto-scroll must be enabled and pointing at max_scroll
+    assert!(timeline.auto_scroll.get());
+    assert_eq!(timeline.scroll_offset.get(), timeline.max_scroll.get());
+}

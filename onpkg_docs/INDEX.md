@@ -2,13 +2,14 @@
 
 This directory contains instructions and guidelines for AI agents working on this project.
 
-## Project Workflow 📋
-Use these documents to manage project progress, feature requests, and design alignment:
-- [Product Requirements (prd.md)](file://./prd.md)
-- [Content & Pages (content.md)](file://./content.md)
-- [UI & Design Tokens (design.md)](file://./design.md)
-- [Technical Implementation (implementation.md)](file://./implementation.md)
-- [Task Tracker (todo.md)](file://./todo.md)
-
-## Technology Skills 🛠️
-- [rust](file://./rust.md) / [rust/skill.md](file://./rust/skill.md)
+## Available Skills
+- [content](file://./content.md)
+- [design](file://./design.md)
+- [implementation](file://./implementation.md)
+- [index](file://./index.md)
+- [log](file://./log.md)
+- [prd](file://./prd.md)
+- [review_fix_plan](file://./review_fix_plan.md)
+- [review_fix_todo](file://./review_fix_todo.md)
+- [rust](file://./rust.md)
+- [todo](file://./todo.md)

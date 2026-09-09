@@ -447,6 +447,9 @@ pub struct RawAgentConfig {
     pub warning_threshold: Option<f32>,
     pub auto_heal: Option<bool>,
     pub streaming: Option<bool>,
+    pub tool_mode: Option<ToolFilterMode>,
+    pub syntax_barrier: Option<bool>,
+    pub auto_lint: Option<bool>,
     pub parallel_tools: Option<bool>,
     pub speculative_execution: Option<bool>,
     pub max_parallel_tools: Option<usize>,
@@ -456,7 +459,9 @@ pub struct RawAgentConfig {
 pub struct RawUiConfig {
     pub plain: Option<bool>,
     pub theme: Option<String>,
+    pub animation: Option<String>,
     pub max_width: Option<usize>,
+    pub show_cost: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -690,6 +695,15 @@ impl Config {
         if let Some(streaming) = other.agent.streaming {
             self.agent.streaming = streaming;
         }
+        if let Some(tool_mode) = other.agent.tool_mode {
+            self.agent.tool_mode = tool_mode;
+        }
+        if let Some(syntax_barrier) = other.agent.syntax_barrier {
+            self.agent.syntax_barrier = syntax_barrier;
+        }
+        if let Some(auto_lint) = other.agent.auto_lint {
+            self.agent.auto_lint = auto_lint;
+        }
         if let Some(parallel_tools) = other.agent.parallel_tools {
             self.agent.parallel_tools = parallel_tools;
         }
@@ -708,8 +722,14 @@ impl Config {
         if let Some(theme) = other.ui.theme {
             self.ui.theme = theme;
         }
+        if let Some(animation) = other.ui.animation {
+            self.ui.animation = animation;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
+        }
+        if let Some(show_cost) = other.ui.show_cost {
+            self.ui.show_cost = show_cost;
         }
         if let Some(level) = other.logging.level {
             self.logging.level = level;
@@ -782,6 +802,9 @@ impl Config {
         }
         if let Ok(theme) = std::env::var("MINICODE_THEME") {
             self.ui.theme = theme;
+        }
+        if let Ok(animation) = std::env::var("MINICODE_ANIMATION") {
+            self.ui.animation = animation;
         }
         if let Ok(level) = std::env::var("MINICODE_LOG_LEVEL") {
             self.logging.level = level;
@@ -1022,6 +1045,32 @@ mod tests {
         assert_eq!(config.agent.map_tokens, 2048);
         assert!(config.ui.plain);
         assert_eq!(config.ui.theme, "dark");
+    }
+
+    #[test]
+    fn test_raw_config_merge_animation_and_ui_preferences() {
+        let mut config = Config::default();
+        assert_eq!(config.ui.animation, "dual_pillars");
+
+        let override_toml = r#"
+            [ui]
+            animation = "braille_wave"
+            theme = "monokai"
+            show_cost = true
+
+            [agent]
+            tool_mode = "full"
+            syntax_barrier = false
+            auto_lint = false
+        "#;
+        let raw: RawConfig = toml::from_str(override_toml).unwrap();
+        config.merge_raw(raw);
+        assert_eq!(config.ui.animation, "braille_wave");
+        assert_eq!(config.ui.theme, "monokai");
+        assert!(config.ui.show_cost);
+        assert_eq!(config.agent.tool_mode, ToolFilterMode::Full);
+        assert!(!config.agent.syntax_barrier);
+        assert!(!config.agent.auto_lint);
     }
 
     #[test]

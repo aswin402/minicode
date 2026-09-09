@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — 2026-09-09
+
+### Streaming Reasoning State Machine & Live TUI Thinking Spinner
+
+#### 💡 Ideas & Inspirations
+- **Continuous Real-Time Thinking Feedback**: Complex AI coding tasks demand transparent visibility into the model's inner reasoning stream. When reasoning tokens are streamed from modern LLMs (DeepSeek R1, MiniMax, Claude 3.7 Sonnet, Gemini 2.5), users need persistent visual confirmation ("Thinking...", elapsed duration, dynamic shimmer gradient) rather than a spinner that prematurely flickers out before generation finishes.
+- **Single-Boundary State Machine vs Token Encapsulation**: Streaming SSE protocols deliver reasoning delta by delta. Wrapping each chunk in boundary tags (`<thought>...</thought>`) breaks parser state machines on the very first token. Tracking reasoning transitions with a single opening `<thought>` and closing `</thought>` only on stream transition preserves continuity across the entire pipeline.
+- **Accurate Viewport Word-Wrapping**: Terminal UI timelines wrap long status and tool execution lines on word boundaries. A naive mathematical division (`chars / width`) under-reports row counts, causing Ratatui's viewport to clip the bottom live activity indicator. Accurate Unicode width word-wrap calculation guarantees that the live activity line is always pinned and visible.
+
+#### 🚀 Features & Changes
+- **Provider Streaming Reasoning State Machines (`src/agent/providers/`)**:
+  - **OpenAI Provider (`openai.rs`)**: Added `in_reasoning_mode` state tracking for `reasoning_content` and `reasoning` deltas. Emits `<thought>` on the first reasoning token and `</thought>` once text, tool calls, or stream conclusion begins.
+  - **Gemini Provider (`gemini.rs`)**: Implemented thought-part transition tracking emitting `<thought>` and `</thought>` boundaries for thought content parts.
+  - **Anthropic Provider (`anthropic.rs`)**: Implemented `in_thinking_mode` state tracking for `thinking_delta` and `thinking` blocks.
+- **Expanded Reasoning Tag Parser (`src/ui/view.rs`)**:
+  - Added support for `<thinking>`, `</thinking>`, `<reasoning>`, `</reasoning>`, and uppercase variants (`<Thinking>`, `<Thought>`, `<Reasoning>`, `<THINK>`) to `ALL_THOUGHT_TAGS` and sanitizer pipelines.
+- **Accurate Viewport Word-Wrap Clamping (`src/ui/view.rs`)**:
+  - Implemented accurate Unicode word-wrap row calculation in `TimelineView::visual_row_count`.
+  - Ensures `max_scroll` accurately accounts for multiline wrapped text so the bottom live activity line (`Thinking...`, `Working...`, `Responding...`) is never hidden below the visible viewport.
+- **Activity State Transitions & Auto-Scroll Resumption (`src/app/mod.rs`, `src/app/modals.rs`)**:
+  - `AgentEvent::ToolResult` transitions `current_activity` to `Thinking` while awaiting subsequent model iterations.
+  - `AgentEvent::TurnStart` and approval feedback modals reset `auto_scroll` and scroll to the bottom.
+  - Retained `AgentActivity::Working` as a fallback for generic tools and background tasks in `src/ui/animation.rs`.
+- **Thought Duration Finalization (`src/ui/view.rs`)**:
+  - Enhanced `finalize_pending_thoughts` with reverse search (`.iter_mut().rev().find(...)`) to reliably finalize thought durations even after subsequent assistant markdown or tool entries have been rendered.
+- **Verification & Test Coverage (`tests/integration_pricing_and_thoughts.rs`)**:
+  - Added integration tests covering Claude thinking tag parsing, cross-chunk thought stream boundaries, and word-wrap viewport clamping accuracy.
+
 ## [0.3.5] — 2026-09-09
 
 ### Architectural Boundary Enforcer & Layered Dependency Linter (`audit_architecture` / `/arch`)

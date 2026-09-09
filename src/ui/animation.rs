@@ -234,10 +234,8 @@ impl AgentActivity {
             return AgentActivity::RepoResearch { target };
         }
 
-        // Default to executing command or generic tool
-        AgentActivity::ExecutingCommand {
-            command: tool.to_string(),
-        }
+        // Default to working for any other tool
+        AgentActivity::Working
     }
 
     fn extract_arg_or_default(args_str: &str, keys: &[&str], default: &str) -> String {

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 105 (v0.3.5) Architectural Boundary Enforcer & Layered Dependency Linter | **Status:** ✅ Complete (129 Tools)
+> **Current Phase:** Phase 106 (v0.3.6) Streaming Reasoning State Machine & Live TUI Activity Architecture | **Status:** ✅ Complete (129 Tools)
 
 ---
 
@@ -1646,4 +1646,13 @@
 - [x] 105.4: Register `audit_architecture` tool schema (modes: `check`, `matrix`, `cycles`, `full`, flags: `enforce`, `format`), bump `TOTAL_TOOL_COUNT` (128 → 129), and classify as `ToolSafetyLevel::ReadOnly` in `src/tools/concurrency.rs`
 - [x] 105.5: Build 3-tab interactive TUI modal (`[1] Overview & Violations`, `[2] Coupling Matrix`, `[3] Circular Cycles`) in `src/ui/modals/architecture.rs`, register `/arch` command, palette command, and catalog entry
 - [x] 105.6: Write comprehensive integration test suite (`tests/integration_architecture_governor.rs`), verify with cargo check/clippy/fmt, and bump version → `v0.3.5`
+
+### Phase 106: Streaming Reasoning State Machine & Live TUI Activity Architecture (v0.3.6)
+- [x] 106.1: Refactor streaming reasoning state machines in OpenAI, Gemini, and Anthropic providers to emit single-boundary thought tags (`<thought>...</thought>`) preventing premature termination of thinking mode
+- [x] 106.2: Expand thought tag parser in `TimelineView` to recognize `<thinking>`, `<reasoning>`, and capitalized tag variants
+- [x] 106.3: Upgrade `visual_row_count` in `TimelineView` to use `UnicodeWidthStr` word-wrap calculation, guaranteeing the live activity indicator is never pushed below the viewport
+- [x] 106.4: Fix activity state transitions on `AgentEvent::ToolResult` and preserve `AgentActivity::Working` for generic and background tools
+- [x] 106.5: Enhance `finalize_pending_thoughts` with reverse search to reliably record thought durations even after subsequent timeline entries are appended
+- [x] 106.6: Add comprehensive integration tests in `tests/integration_pricing_and_thoughts.rs`, verify quality gates (cargo check, clippy, tests), and bump version → `v0.3.6`
+
 

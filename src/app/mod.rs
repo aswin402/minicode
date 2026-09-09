@@ -324,6 +324,8 @@ impl<'a> App<'a> {
                         match agent_event {
                             AgentEvent::TurnStart { .. } => {
                                 self.is_working = true;
+                                self.timeline.auto_scroll.set(true);
+                                self.timeline.scroll_to_bottom();
                                 if self.current_activity.is_none() {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::Thinking);
@@ -354,7 +356,7 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.current_activity =
-                                    Some(crate::ui::AgentActivity::Working);
+                                    Some(crate::ui::AgentActivity::Thinking);
                                 self.timeline
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }

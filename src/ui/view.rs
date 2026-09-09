@@ -5,6 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 /// Execution status of a subagent tool action item
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,7 +256,11 @@ impl TimelineView {
         if let Some(TimelineEntry::ThoughtBlock {
             duration_secs,
             text,
-        }) = self.entries.last_mut()
+        }) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| matches!(e, TimelineEntry::ThoughtBlock { .. }))
         {
             *text = Self::sanitize_thought_text(text);
             if duration_secs.is_none() || duration_secs.unwrap_or(0.0) < 0.1 {
@@ -267,19 +272,33 @@ impl TimelineView {
         self.in_thought_mode = false;
     }
 
+    pub const ALL_THOUGHT_TAGS: &'static [&'static str] = &[
+        "<think>",
+        "</think>",
+        "<thought>",
+        "</thought>",
+        "<thinking>",
+        "</thinking>",
+        "<reasoning>",
+        "</reasoning>",
+        "<antThinking>",
+        "</antThinking>",
+        "<Think>",
+        "</Think>",
+        "<Thought>",
+        "</Thought>",
+        "<Thinking>",
+        "</Thinking>",
+        "<Reasoning>",
+        "</Reasoning>",
+        "<THINK>",
+        "</THINK>",
+    ];
+
     /// Strips any raw thinking XML tags (<think>, </think>, <thought>, </thought>, etc.)
     pub fn sanitize_thought_text(raw: &str) -> String {
         let mut s = raw.to_string();
-        for tag in &[
-            "<think>",
-            "</think>",
-            "<thought>",
-            "</thought>",
-            "<reasoning>",
-            "</reasoning>",
-            "<antThinking>",
-            "</antThinking>",
-        ] {
+        for tag in Self::ALL_THOUGHT_TAGS {
             s = s.replace(tag, "");
         }
         s
@@ -288,24 +307,37 @@ impl TimelineView {
     /// Strips any stray thinking XML tags that might leak into assistant markdown
     pub fn sanitize_assistant_text(raw: &str) -> String {
         let mut s = raw.to_string();
-        for tag in &[
-            "<think>",
-            "</think>",
-            "<thought>",
-            "</thought>",
-            "<reasoning>",
-            "</reasoning>",
-            "<antThinking>",
-            "</antThinking>",
-        ] {
+        for tag in Self::ALL_THOUGHT_TAGS {
             s = s.replace(tag, "");
         }
         s
     }
 
     pub fn append_assistant_delta(&mut self, delta: &str) {
-        const OPEN_TAGS: &[&str] = &["<think>", "<thought>", "<reasoning>", "<antThinking>"];
-        const CLOSE_TAGS: &[&str] = &["</think>", "</thought>", "</reasoning>", "</antThinking>"];
+        const OPEN_TAGS: &[&str] = &[
+            "<think>",
+            "<thought>",
+            "<thinking>",
+            "<reasoning>",
+            "<antThinking>",
+            "<Think>",
+            "<Thought>",
+            "<Thinking>",
+            "<Reasoning>",
+            "<THINK>",
+        ];
+        const CLOSE_TAGS: &[&str] = &[
+            "</think>",
+            "</thought>",
+            "</thinking>",
+            "</reasoning>",
+            "</antThinking>",
+            "</Think>",
+            "</Thought>",
+            "</Thinking>",
+            "</Reasoning>",
+            "</THINK>",
+        ];
 
         let mut working_text = if self.thought_tag_buffer.is_empty() {
             delta.to_string()
@@ -429,9 +461,10 @@ impl TimelineView {
         output: String,
         duration_ms: u64,
     ) {
-        // Find corresponding tool start
+        // Find corresponding tool start from the back to update in-place
+        let mut found_idx = None;
         let mut display_cmd = String::new();
-        for entry in self.entries.iter().rev() {
+        for (idx, entry) in self.entries.iter().enumerate().rev() {
             if let TimelineEntry::ToolStart {
                 command_or_path,
                 name: n,
@@ -439,18 +472,25 @@ impl TimelineView {
             {
                 if n == name {
                     display_cmd = command_or_path.clone();
+                    found_idx = Some(idx);
                     break;
                 }
             }
         }
 
-        self.entries.push(TimelineEntry::ToolFinished {
+        let finished = TimelineEntry::ToolFinished {
             name: name.to_string(),
             command_or_path: display_cmd,
             success,
             output,
             duration_ms: Some(duration_ms),
-        });
+        };
+
+        if let Some(idx) = found_idx {
+            self.entries[idx] = finished;
+        } else {
+            self.entries.push(finished);
+        }
     }
 
     pub fn add_status(&mut self, status: String) {
@@ -618,22 +658,97 @@ impl TimelineView {
         self.selection.extract_selected_text()
     }
 
+    /// Formats an internal tool identifier into a human-readable badge title
+    pub fn format_tool_title(raw_name: &str) -> String {
+        match raw_name {
+            "exec_cmd" | "bash" | "run_command" | "shell" | "cmd" => "Bash".to_string(),
+            "read_file" | "cat" | "view_file" => "Read File".to_string(),
+            "write_file" | "create_file" => "Write File".to_string(),
+            "patch_file" | "edit_file" | "replace_file_content" => "Edit File".to_string(),
+            "list_directory" | "list_dir" | "ls" => "List Dir".to_string(),
+            "grep_search" | "search_code" | "grep" => "Grep Search".to_string(),
+            "find_files" | "find_by_name" | "locate_files" => "Find Files".to_string(),
+            "file_info" | "stat_file" => "File Info".to_string(),
+            "make_directory" | "mkdir" => "Make Dir".to_string(),
+            "remove_file" | "rm" => "Remove File".to_string(),
+            "web_fetch" | "fetch_web_page" | "curl" => "Web Fetch".to_string(),
+            "web_search" => "Web Search".to_string(),
+            "git_status" => "Git Status".to_string(),
+            "git_diff" => "Git Diff".to_string(),
+            "git_commit" => "Git Commit".to_string(),
+            "git_log" => "Git Log".to_string(),
+            "git_branch" => "Git Branch".to_string(),
+            "code_graph" | "symbol_graph" => "Code Graph".to_string(),
+            "semantic_search" => "Semantic Search".to_string(),
+            "explore_symbol" | "symbol_definition" => "Explore Symbol".to_string(),
+            "blast_radius" => "Blast Radius".to_string(),
+            "onpkg_doctor" => "onpkg Doctor".to_string(),
+            "onpkg_stack_list" => "onpkg Stack List".to_string(),
+            "onpkg_stack_add" => "onpkg Stack Add".to_string(),
+            "spawn_subagent" => "Spawn Subagent".to_string(),
+            "send_subagent_message" => "Message Subagent".to_string(),
+            "begin_transaction" => "Begin Transaction".to_string(),
+            "commit_transaction" => "Commit Transaction".to_string(),
+            "rollback_transaction" => "Rollback Transaction".to_string(),
+            other => other
+                .split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+
     fn extract_cmd_display(name: &str, args_json: &str) -> String {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(args_json) {
-            if let Some(cmd) = val.get("command").and_then(|c| c.as_str()) {
+            if let Some(cmd) = val
+                .get("command")
+                .or_else(|| val.get("cmd"))
+                .and_then(|c| c.as_str())
+            {
                 return cmd.to_string();
             }
-            if let Some(path) = val.get("path").and_then(|p| p.as_str()) {
+            if let Some(path) = val
+                .get("path")
+                .or_else(|| val.get("file_path"))
+                .or_else(|| val.get("target_file"))
+                .and_then(|p| p.as_str())
+            {
                 return path.to_string();
             }
-            if let Some(query) = val.get("query").and_then(|q| q.as_str()) {
-                return format!("query: {}", query);
+            if let Some(query) = val
+                .get("query")
+                .or_else(|| val.get("pattern"))
+                .and_then(|q| q.as_str())
+            {
+                return format!("\"{}\"", query);
             }
             if let Some(url) = val.get("url").and_then(|u| u.as_str()) {
                 return url.to_string();
             }
+            if let Some(symbol) = val
+                .get("symbol")
+                .or_else(|| val.get("symbol_name"))
+                .and_then(|s| s.as_str())
+            {
+                return symbol.to_string();
+            }
+            if let Some(message) = val.get("message").and_then(|m| m.as_str()) {
+                let first_line = message.lines().next().unwrap_or("").trim();
+                return format!("\"{}\"", first_line);
+            }
         }
-        format!("{}({})", name, args_json)
+        let trimmed = args_json.trim();
+        if trimmed == "{}" || trimmed.is_empty() {
+            String::new()
+        } else {
+            format!("{}({})", name, trimmed)
+        }
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &TimelineContext) {
@@ -708,16 +823,43 @@ impl TimelineView {
                     lines.extend(parsed_lines);
                 }
                 TimelineEntry::ToolStart {
-                    command_or_path, ..
+                    name,
+                    command_or_path,
                 } => {
+                    let title = Self::format_tool_title(name);
+                    let mut spans = vec![
+                        Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                        Span::styled(
+                            format!("{} ", title),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    if !command_or_path.is_empty() {
+                        spans.push(Span::styled(
+                            command_or_path,
+                            Style::default().fg(theme.text_primary),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
                     lines.push(Line::from(vec![
-                        Span::styled("• Running ", Style::default().fg(theme.muted)),
-                        Span::styled(command_or_path, Style::default().fg(theme.text_primary)),
+                        Span::styled("  └ ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            "running...",
+                            Style::default()
+                                .fg(theme.muted)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
                     ]));
+                    lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::ToolApproved {
-                    command_or_path, ..
+                    name,
+                    command_or_path,
+                    ..
                 } => {
+                    let title = Self::format_tool_title(name);
                     lines.push(Line::from(vec![
                         Span::styled(
                             "✔ ",
@@ -726,30 +868,51 @@ impl TimelineView {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            "You approved minicode to run ",
+                            "You approved ",
                             Style::default().fg(theme.muted),
+                        ),
+                        Span::styled(
+                            format!("{} ", title),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(command_or_path, Style::default().fg(theme.text_primary)),
                         Span::styled(" this time", Style::default().fg(theme.muted)),
                     ]));
+                    lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::ToolFinished {
+                    name,
                     command_or_path,
                     output,
                     success,
+                    duration_ms,
                     ..
                 } => {
-                    let verb = if *success { "Ran" } else { "Failed" };
-                    let verb_color = if *success {
-                        theme.muted
+                    let title = Self::format_tool_title(name);
+                    let status_color = if *success {
+                        theme.brand_accent
                     } else {
                         theme.destructive
                     };
 
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("• {} ", verb), Style::default().fg(verb_color)),
-                        Span::styled(command_or_path, Style::default().fg(theme.warning)),
-                    ]));
+                    let mut spans = vec![
+                        Span::styled("• ", Style::default().fg(status_color)),
+                        Span::styled(
+                            format!("{} ", title),
+                            Style::default()
+                                .fg(status_color)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    if !command_or_path.is_empty() {
+                        spans.push(Span::styled(
+                            command_or_path,
+                            Style::default().fg(theme.text_primary),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
 
                     // Check for inline diff block
                     let diff_marker = crate::tools::middleware::DIFF_MARKER;
@@ -771,7 +934,7 @@ impl TimelineView {
                         for diff_line in diff_section.lines() {
                             if diff_line.starts_with("---") || diff_line.starts_with("+++") {
                                 lines.push(Line::from(vec![
-                                    Span::styled("  ", Style::default()),
+                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
                                     Span::styled(
                                         diff_line,
                                         Style::default()
@@ -781,6 +944,7 @@ impl TimelineView {
                                 ]));
                             } else if let Some(rest) = diff_line.strip_prefix("+ ") {
                                 lines.push(Line::from(vec![
+                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
                                     Span::styled(
                                         "+",
                                         Style::default()
@@ -795,6 +959,7 @@ impl TimelineView {
                                 diff_line_count += 1;
                             } else if let Some(rest) = diff_line.strip_prefix("- ") {
                                 lines.push(Line::from(vec![
+                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
                                     Span::styled(
                                         "-",
                                         Style::default()
@@ -809,7 +974,7 @@ impl TimelineView {
                                 diff_line_count += 1;
                             } else if let Some(rest) = diff_line.strip_prefix("  ") {
                                 lines.push(Line::from(vec![
-                                    Span::styled("  ", Style::default()),
+                                    Span::styled("  │   ", Style::default().fg(theme.muted)),
                                     Span::styled(
                                         rest.to_string(),
                                         Style::default().fg(theme.muted),
@@ -823,10 +988,13 @@ impl TimelineView {
                                     .count()
                                     .saturating_sub(diff_line_count);
                                 if remaining > 0 {
-                                    lines.push(Line::from(vec![Span::styled(
-                                        format!("    ... +{} diff lines (folded)", remaining),
-                                        Style::default().fg(theme.border),
-                                    )]));
+                                    lines.push(Line::from(vec![
+                                        Span::styled("  │ ", Style::default().fg(theme.muted)),
+                                        Span::styled(
+                                            format!("... +{} diff lines (folded)", remaining),
+                                            Style::default().fg(theme.border),
+                                        ),
+                                    ]));
                                 }
                                 break;
                             }
@@ -835,20 +1003,11 @@ impl TimelineView {
 
                     // Render regular tool output (summary after diff)
                     let trimmed = regular_output;
-                    if trimmed.is_empty() && diff_section.is_empty() {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  └ (no output)",
-                            Style::default().fg(theme.muted),
-                        )]));
-                    } else if !trimmed.is_empty() {
-                        let mut first = true;
+                    if !trimmed.is_empty() {
                         for out_line in trimmed
                             .lines()
                             .take(crate::constants::UI_MAX_TOOL_OUTPUT_LINES)
                         {
-                            let prefix = if first { "  └ " } else { "    " };
-                            first = false;
-
                             let line_color = if out_line.starts_with('+') {
                                 theme.success
                             } else if out_line.starts_with('-') {
@@ -862,7 +1021,7 @@ impl TimelineView {
                             };
 
                             lines.push(Line::from(vec![
-                                Span::styled(prefix, Style::default().fg(theme.muted)),
+                                Span::styled("  │ ", Style::default().fg(theme.muted)),
                                 Span::styled(out_line, Style::default().fg(line_color)),
                             ]));
                         }
@@ -871,12 +1030,37 @@ impl TimelineView {
                                 .lines()
                                 .count()
                                 .saturating_sub(crate::constants::UI_MAX_TOOL_OUTPUT_LINES);
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("    ... +{} lines (output folded)", remaining),
-                                Style::default().fg(theme.border),
-                            )]));
+                            lines.push(Line::from(vec![
+                                Span::styled("  │ ", Style::default().fg(theme.muted)),
+                                Span::styled(
+                                    format!("... +{} lines (output folded)", remaining),
+                                    Style::default().fg(theme.border),
+                                ),
+                            ]));
                         }
                     }
+
+                    let dur_str = duration_ms
+                        .filter(|d| *d > 0)
+                        .map(|d| format!(" ({}ms)", d))
+                        .unwrap_or_default();
+                    let (status_glyph, glyph_color, status_text) = if *success {
+                        ("✓", theme.success, "completed")
+                    } else {
+                        ("✗", theme.destructive, "failed")
+                    };
+
+                    lines.push(Line::from(vec![
+                        Span::styled("  └ ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{} ", status_glyph),
+                            Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{}{}", status_text, dur_str),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SubagentTree(block) => {
@@ -1225,10 +1409,45 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SystemStatus(status) => {
-                    lines.push(Line::from(vec![
-                        Span::styled("• ", Style::default().fg(theme.brand_accent)),
-                        Span::styled(status, Style::default().fg(theme.text_primary)),
-                    ]));
+                    let trimmed = status.trim_start();
+                    let prefixes = [
+                        ("✔ ", theme.success),
+                        ("✓ ", theme.success),
+                        ("✗ ", theme.destructive),
+                        ("✖ ", theme.destructive),
+                        ("ℹ ", theme.info),
+                        ("⏹ ", theme.warning),
+                        ("• ", theme.brand_accent),
+                        ("✨ ", theme.brand_accent),
+                        ("🛡️ ", theme.info),
+                        ("🛡 ", theme.info),
+                        ("🗑️ ", theme.destructive),
+                        ("🗑 ", theme.destructive),
+                        ("● ", theme.brand_accent),
+                        ("⚠ ", theme.warning),
+                    ];
+
+                    let mut matched = false;
+                    for (prefix, color) in prefixes {
+                        if let Some(rest) = trimmed.strip_prefix(prefix) {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    prefix,
+                                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(rest, Style::default().fg(theme.text_primary)),
+                            ]));
+                            matched = true;
+                            break;
+                        }
+                    }
+
+                    if !matched {
+                        lines.push(Line::from(vec![
+                            Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                            Span::styled(status, Style::default().fg(theme.text_primary)),
+                        ]));
+                    }
                 }
             }
         }
@@ -1281,15 +1500,51 @@ impl TimelineView {
     /// Counts visually rendered rows for `lines` at the given wrap width.
     ///
     /// ratatui's Paragraph::wrap expands long logical lines into multiple
-    /// visual rows; scroll math must operate on visual rows or the offset can
-    /// point past reachable content (blank screen / hidden tail).
+    /// visual rows by wrapping on whitespace word boundaries. We simulate
+    /// this word-wrapping to ensure scroll bounds never underestimate height,
+    /// which would otherwise push the live activity indicator off-screen.
     fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
         let usable = usize::from(width.max(1));
         let total: usize = lines
             .iter()
             .map(|line| {
-                let w: usize = line.spans.iter().map(|s| s.width()).sum();
-                (w.div_ceil(usable)).max(1)
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                if text.is_empty() {
+                    return 1;
+                }
+                let mut rows: usize = 1;
+                let mut current_row_width: usize = 0;
+
+                for word in text.split(' ') {
+                    let word_width = UnicodeWidthStr::width(word);
+                    if current_row_width == 0 {
+                        if word_width > usable {
+                            let extra = (word_width.saturating_sub(1)) / usable;
+                            rows += extra;
+                            current_row_width = word_width % usable;
+                            if current_row_width == 0 {
+                                current_row_width = usable;
+                            }
+                        } else {
+                            current_row_width = word_width;
+                        }
+                    } else if current_row_width + 1 + word_width <= usable {
+                        current_row_width += 1 + word_width;
+                    } else {
+                        rows += 1;
+                        if word_width > usable {
+                            let extra = (word_width.saturating_sub(1)) / usable;
+                            rows += extra;
+                            current_row_width = word_width % usable;
+                            if current_row_width == 0 {
+                                current_row_width = usable;
+                            }
+                        } else {
+                            current_row_width = word_width;
+                        }
+                    }
+                }
+                rows
             })
             .sum();
         total.min(u16::MAX as usize) as u16
@@ -1460,4 +1715,77 @@ mod tests {
             "Expected clean AssistantMarkdown from split chunks"
         );
     }
+
+    #[test]
+    fn test_format_tool_title() {
+        assert_eq!(TimelineView::format_tool_title("exec_cmd"), "Bash");
+        assert_eq!(TimelineView::format_tool_title("read_file"), "Read File");
+        assert_eq!(TimelineView::format_tool_title("patch_file"), "Edit File");
+        assert_eq!(TimelineView::format_tool_title("list_directory"), "List Dir");
+        assert_eq!(TimelineView::format_tool_title("grep_search"), "Grep Search");
+        assert_eq!(
+            TimelineView::format_tool_title("custom_inspect_node"),
+            "Custom Inspect Node"
+        );
+    }
+
+    #[test]
+    fn test_extract_cmd_display() {
+        assert_eq!(
+            TimelineView::extract_cmd_display("exec_cmd", r#"{"command": "cargo test"}"#),
+            "cargo test"
+        );
+        assert_eq!(
+            TimelineView::extract_cmd_display("read_file", r#"{"path": "src/main.rs"}"#),
+            "src/main.rs"
+        );
+        assert_eq!(
+            TimelineView::extract_cmd_display("grep_search", r#"{"query": "required_height"}"#),
+            "\"required_height\""
+        );
+        assert_eq!(
+            TimelineView::extract_cmd_display("git_status", "{}"),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_finish_tool_call_updates_in_place() {
+        let mut view = TimelineView::new();
+        view.add_tool_call(
+            "exec_cmd".to_string(),
+            r#"{"command": "cargo check"}"#.to_string(),
+        );
+
+        assert_eq!(view.entries.len(), 1);
+        match &view.entries[0] {
+            TimelineEntry::ToolStart { name, command_or_path } => {
+                assert_eq!(name, "exec_cmd");
+                assert_eq!(command_or_path, "cargo check");
+            }
+            _ => panic!("Expected ToolStart"),
+        }
+
+        view.finish_tool_call("exec_cmd", true, "Finished dev profile".to_string(), 120);
+
+        // Crucial test: entries.len() MUST remain 1 (no duplicate Running + Ran entries!)
+        assert_eq!(view.entries.len(), 1);
+        match &view.entries[0] {
+            TimelineEntry::ToolFinished {
+                name,
+                command_or_path,
+                success,
+                output,
+                duration_ms,
+            } => {
+                assert_eq!(name, "exec_cmd");
+                assert_eq!(command_or_path, "cargo check");
+                assert!(*success);
+                assert!(output.contains("Finished dev profile"));
+                assert_eq!(*duration_ms, Some(120));
+            }
+            _ => panic!("Expected ToolFinished"),
+        }
+    }
 }
+

@@ -282,6 +282,7 @@ impl AnthropicProvider {
         tool_accumulator: &mut std::collections::BTreeMap<usize, (String, String, String)>,
         prompt_tokens: &mut usize,
         completion_tokens: &mut usize,
+        in_thinking_mode: &mut bool,
     ) -> Vec<StreamChunk> {
         let mut chunks = Vec::new();
         let eff_type = val
@@ -314,6 +315,9 @@ impl AnthropicProvider {
                             .unwrap_or("")
                             .to_string();
                         tool_accumulator.insert(index, (id, name, String::new()));
+                    } else if block_type == "thinking" && !*in_thinking_mode {
+                        *in_thinking_mode = true;
+                        chunks.push(StreamChunk::Delta("<thought>".to_string()));
                     }
                 }
             }
@@ -325,6 +329,10 @@ impl AnthropicProvider {
                         "text_delta" => {
                             if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
                                 if !text.is_empty() {
+                                    if *in_thinking_mode {
+                                        *in_thinking_mode = false;
+                                        chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                                    }
                                     chunks.push(StreamChunk::Delta(text.to_string()));
                                 }
                             }
@@ -332,10 +340,11 @@ impl AnthropicProvider {
                         "thinking_delta" => {
                             if let Some(thinking) = delta.get("thinking").and_then(|t| t.as_str()) {
                                 if !thinking.is_empty() {
-                                    chunks.push(StreamChunk::Delta(format!(
-                                        "<thought>{}</thought>",
-                                        thinking
-                                    )));
+                                    if !*in_thinking_mode {
+                                        *in_thinking_mode = true;
+                                        chunks.push(StreamChunk::Delta("<thought>".to_string()));
+                                    }
+                                    chunks.push(StreamChunk::Delta(thinking.to_string()));
                                 }
                             }
                         }
@@ -354,6 +363,10 @@ impl AnthropicProvider {
             }
             "content_block_stop" => {
                 let index = val.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                if *in_thinking_mode {
+                    *in_thinking_mode = false;
+                    chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                }
                 if let Some((id, name, args_str)) = tool_accumulator.remove(&index) {
                     let parsed_args = match serde_json::from_str::<serde_json::Value>(&args_str) {
                         Ok(parsed) => parsed,
@@ -380,6 +393,10 @@ impl AnthropicProvider {
                 }
             }
             "message_stop" => {
+                if *in_thinking_mode {
+                    *in_thinking_mode = false;
+                    chunks.push(StreamChunk::Delta("</thought>".to_string()));
+                }
                 if *prompt_tokens > 0 || *completion_tokens > 0 {
                     chunks.push(StreamChunk::Usage {
                         prompt_tokens: *prompt_tokens,
@@ -433,6 +450,7 @@ impl Provider for AnthropicProvider {
             let mut event_source = event_source;
             let mut prompt_tokens = 0usize;
             let mut completion_tokens = 0usize;
+            let mut in_thinking_mode = false;
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new();
 
@@ -469,6 +487,7 @@ impl Provider for AnthropicProvider {
                             &mut tool_calls_accumulator,
                             &mut prompt_tokens,
                             &mut completion_tokens,
+                            &mut in_thinking_mode,
                         );
 
                         let mut is_done = false;
@@ -515,6 +534,10 @@ impl Provider for AnthropicProvider {
                         break;
                     }
                 }
+            }
+
+            if in_thinking_mode {
+                yield Ok(StreamChunk::Delta("</thought>".to_string()));
             }
 
             // Drain any remaining tool calls

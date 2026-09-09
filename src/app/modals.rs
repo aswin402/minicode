@@ -412,9 +412,12 @@ impl<'a> App<'a> {
                                 self.config.ui.theme = chosen_id.clone();
                                 *active_theme_id = chosen_id;
 
-                                // Persist to configuration file
+                                // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
-                                    tracing::warn!("Failed to save theme setting to config: {}", e);
+                                    tracing::warn!("Failed to save theme setting to workspace config: {}", e);
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!("Failed to save theme setting to global config: {}", e);
                                 }
 
                                 self.timeline.add_status(format!(
@@ -434,10 +437,16 @@ impl<'a> App<'a> {
                                 self.config.ui.animation = chosen_id.clone();
                                 *active_animation_id = chosen_id;
 
-                                // Persist to configuration file
+                                // Persist to configuration file (workspace and global)
                                 if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                                     tracing::warn!(
-                                        "Failed to save animation setting to config: {}",
+                                        "Failed to save animation setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save animation setting to global config: {}",
                                         e
                                     );
                                 }
@@ -1245,6 +1254,8 @@ impl<'a> App<'a> {
                                 );
                                 self.timeline
                                     .add_status(format!("💬 User feedback sent: \"{}\"", feedback));
+                                self.timeline.add_user_message(feedback.clone());
+                                self.timeline.auto_scroll.set(true);
                                 self.modal = ModalState::None;
 
                                 let token = tokio_util::sync::CancellationToken::new();

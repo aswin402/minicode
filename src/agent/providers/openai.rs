@@ -276,6 +276,7 @@ impl Provider for OpenAiCompatibleProvider {
             let mut event_source = event_source;
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new(); // (id, name, args_json)
+            let mut in_reasoning_mode = false;
 
             while let Some(event_res) = event_source.next().await {
                 match event_res {
@@ -284,6 +285,10 @@ impl Provider for OpenAiCompatibleProvider {
                     }
                     Ok(Event::Message(message)) => {
                         if message.data.trim() == "[DONE]" {
+                            if in_reasoning_mode {
+                                in_reasoning_mode = false;
+                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                            }
                             // Emit any accumulated tool calls before concluding
                             for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
                                 let parsed_args = match serde_json::from_str::<serde_json::Value>(&args_str) {
@@ -314,22 +319,34 @@ impl Provider for OpenAiCompatibleProvider {
                                 if let Some(choices) = val.get("choices").and_then(|c| c.as_array()) {
                                     for choice in choices {
                                         if let Some(delta) = choice.get("delta") {
-                                            // 1. Reasoning / Thought Delta (DeepSeek R1, OpenAI o1/o3, etc.)
+                                            // 1. Reasoning / Thought Delta (DeepSeek R1, OpenAI o1/o3, MiniMax, etc.)
                                             if let Some(reasoning) = delta.get("reasoning_content").or_else(|| delta.get("reasoning")).and_then(|r| r.as_str()) {
                                                 if !reasoning.is_empty() {
-                                                    yield Ok(StreamChunk::Delta(format!("<thought>{}</thought>", reasoning)));
+                                                    if !in_reasoning_mode {
+                                                        in_reasoning_mode = true;
+                                                        yield Ok(StreamChunk::Delta("<thought>".to_string()));
+                                                    }
+                                                    yield Ok(StreamChunk::Delta(reasoning.to_string()));
                                                 }
                                             }
 
                                             // 2. Text Delta
                                             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                                                 if !content.is_empty() {
+                                                    if in_reasoning_mode {
+                                                        in_reasoning_mode = false;
+                                                        yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                    }
                                                     yield Ok(StreamChunk::Delta(content.to_string()));
                                                 }
                                             }
 
-                                            // 2. Tool Calls Delta
+                                            // 3. Tool Calls Delta
                                             if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
+                                                if !tool_calls.is_empty() && in_reasoning_mode {
+                                                    in_reasoning_mode = false;
+                                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                }
                                                 for tc in tool_calls {
                                                     let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
                                                     let entry = tool_calls_accumulator.entry(index).or_insert_with(|| (
@@ -409,6 +426,10 @@ impl Provider for OpenAiCompatibleProvider {
                         break;
                     }
                 }
+            }
+
+            if in_reasoning_mode {
+                yield Ok(StreamChunk::Delta("</thought>".to_string()));
             }
 
             // Drain any remaining tool calls if stream completed without explicit [DONE]

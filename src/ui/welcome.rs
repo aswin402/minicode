@@ -185,7 +185,7 @@ pub fn render_welcome_screen(
         x: input_x,
         y: vert_chunks[4].y,
         width: input_width,
-        height: 3,
+        height: vert_chunks[4].height,
     };
     input_dock.render(frame, centered_input_rect, theme);
 

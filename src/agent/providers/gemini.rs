@@ -212,6 +212,7 @@ impl Provider for GeminiProvider {
 
         let stream = async_stream::stream! {
             let mut event_source = event_source;
+            let mut in_reasoning_mode = false;
 
             while let Some(event_res) = event_source.next().await {
                 match event_res {
@@ -220,6 +221,10 @@ impl Provider for GeminiProvider {
                     }
                     Ok(Event::Message(message)) => {
                         if message.data.trim() == "[DONE]" {
+                            if in_reasoning_mode {
+                                in_reasoning_mode = false;
+                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                            }
                             yield Ok(StreamChunk::Done);
                             break;
                         }
@@ -262,6 +267,9 @@ impl Provider for GeminiProvider {
                                     for candidate in candidates {
                                         if let Some(reason) = candidate.get("finishReason").and_then(|r| r.as_str()) {
                                             if reason == "SAFETY" || reason == "RECITATION" || reason == "BLOCKLIST" || reason == "PROHIBITED_CONTENT" {
+                                                if in_reasoning_mode {
+                                                    yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                }
                                                 yield Err(ProviderError::Api {
                                                     status: 400,
                                                     message: format!("Gemini candidate generation halted: finishReason={}", reason),
@@ -276,8 +284,16 @@ impl Provider for GeminiProvider {
                                                 if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                                     if !text.is_empty() {
                                                         if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
-                                                            yield Ok(StreamChunk::Delta(format!("<thought>{}</thought>", text)));
+                                                            if !in_reasoning_mode {
+                                                                in_reasoning_mode = true;
+                                                                yield Ok(StreamChunk::Delta("<thought>".to_string()));
+                                                            }
+                                                            yield Ok(StreamChunk::Delta(text.to_string()));
                                                         } else {
+                                                            if in_reasoning_mode {
+                                                                in_reasoning_mode = false;
+                                                                yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                            }
                                                             yield Ok(StreamChunk::Delta(text.to_string()));
                                                         }
                                                     }
@@ -285,6 +301,10 @@ impl Provider for GeminiProvider {
 
                                                 // Handle function / tool call
                                                 if let Some(func_call) = part.get("functionCall") {
+                                                    if in_reasoning_mode {
+                                                        in_reasoning_mode = false;
+                                                        yield Ok(StreamChunk::Delta("</thought>".to_string()));
+                                                    }
                                                     if let Some(name) = func_call.get("name").and_then(|n| n.as_str()) {
                                                         let args = func_call.get("args").cloned().unwrap_or(serde_json::json!({}));
                                                         let call_id = func_call
@@ -358,6 +378,10 @@ impl Provider for GeminiProvider {
                         break;
                     }
                 }
+            }
+
+            if in_reasoning_mode {
+                yield Ok(StreamChunk::Delta("</thought>".to_string()));
             }
         };
 
