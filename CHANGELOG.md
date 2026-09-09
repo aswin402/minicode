@@ -5,6 +5,58 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] — 2026-09-09
+
+### Codebase Cleanliness, Constant Unification, Reusability & Modularity Refactor
+
+#### 💡 Ideas & Inspirations
+- **Eliminating Codebase Tech Debt & Bloated Monoliths**: As minicode rapidly expanded to over 128 tools, several files grew into sprawling monoliths (e.g. `src/agent/provider.rs` at 1,808 lines and `src/ui/modal.rs` at 2,937 lines). In addition, hardcoded literals (local LLM endpoints, circuit breaker timeouts, environment variable strings) and duplicate helper functions were scattered across the codebase.
+- **Architectural Modularity & Isolation**: Decoupling massive multi-domain files into focused submodules with explicit boundaries improves maintainability, accelerates incremental compilation, and makes isolated unit testing straightforward.
+- **UTF-8 Safety & Resilient String Operations**: Preventing UTF-8 boundary panics when slicing strings in terminal UI and commit messages by introducing centralized unicode-aware truncation and secret masking utilities.
+
+#### 📚 References & Sources
+- **Rust API Guidelines**: Single responsibility principle, module organization, and backwards-compatible re-exports (https://rust-lang.github.io/api-guidelines/).
+- **Tree-sitter Grammar Integration**: Centralized grammar loader pattern avoiding repeated parser allocations.
+
+#### 🚀 Features & Changes
+- **Centralized Constants & Magic Literals (`src/constants.rs`)**:
+  - Centralized local model default base URLs: `LMSTUDIO_DEFAULT_BASE_URL` (`http://localhost:1234/v1`), `VLLM_DEFAULT_BASE_URL` (`http://localhost:8000/v1`), `LOCALAI_DEFAULT_BASE_URL` (`http://localhost:8080/v1`), and `CDP_HOST_PREFIX` (`http://127.0.0.1:`).
+  - Centralized circuit breaker defaults: `CB_DEFAULT_FAILURE_THRESHOLD`, `CB_DEFAULT_COOLDOWN_SECS`, `CB_DEFAULT_HALF_OPEN_SUCCESS`.
+  - Centralized retry defaults: `DEFAULT_RETRY_INITIAL_DELAY_MS`, `DEFAULT_RETRY_MAX_DELAY_SECS`, `DEFAULT_RETRY_BACKOFF_MULTIPLIER`.
+  - Consolidated environment variable identifiers into dedicated submodule `pub mod env_vars`.
+- **Reusable String & Layout Utilities (`src/utils/strings.rs` & `src/ui/layout_utils.rs`)**:
+  - Implemented `truncate_chars` for UTF-8 boundary-safe char slicing.
+  - Implemented `truncate_display` for terminal-safe string truncation with unicode ellipsis (`…`).
+  - Implemented `mask_secret` for secure API token redaction displaying trailing characters.
+  - Extracted shared `compute_scroll_offset` into `src/ui/layout_utils.rs` and removed duplicated implementations from `src/ui/input.rs`.
+  - Replaced unsafe raw byte slicing (`&s[..50]`) in `syntax_guard.rs` and `commit.rs` with safe unicode truncation.
+- **Tool Parameter Extraction Deduplication (`src/tools/param.rs` & registries)**:
+  - Added `get_bool` and `get_usize` helpers in `src/tools/param.rs`.
+  - Migrated verbose manual `args.get(...).and_then(...)` boilerplate across `search_tools.rs`, `exec_tools.rs`, and `web_tools.rs`.
+- **Tree-sitter Parser & Asset Cleanups**:
+  - Added centralized `SyntaxGuard::language_for_extension` mapping extensions to Tree-sitter language instances.
+  - Reused `SyntaxGuard::language_for_extension` across `src/context/ast_diff.rs` and `src/context/ast_transform.rs`, eliminating repetitive match blocks.
+  - Disambiguated `src/git/diff_viewer.rs` to `src/git/diff_parser.rs`.
+  - Removed duplicate and orphan SVG/binary mock assets from repository root.
+- **Decomposition of Provider Monolith (`src/agent/providers/`)**:
+  - Modularized `src/agent/provider.rs` into dedicated submodules:
+    - `gemini.rs`: Google Gemini streaming and tool-calling implementation.
+    - `anthropic.rs`: Anthropic Claude messages API with thinking budget integration.
+    - `openai.rs`: Generic OpenAI-compatible client (OpenAI, OpenRouter, Ollama, LM Studio, vLLM, LocalAI).
+    - `resilient.rs`: Adaptive retry and circuit-breaker wrapper provider.
+    - `unconfigured.rs`: Informative fallback provider with setup instructions.
+    - `factory.rs`: Clean provider instantiation factory (`create_provider`, `create_provider_with_base_url`).
+  - Maintained 100% backward compatibility via `src/agent/provider.rs` re-exporting `pub use crate::agent::providers::*;`.
+- **Decomposition of Modal Monolith (`src/ui/modals/`)**:
+  - Modularized `src/ui/modal.rs` (2,937 lines) into dedicated render submodules:
+    - `api_key.rs`, `code_explorer.rs`, `command_catalog.rs`, `common.rs`, `exit_confirm.rs`, `git_diff.rs`, `help.rs`, `provider_select.rs`, `session_browser.rs`, `stack_select.rs`, `theme_select.rs`, `undo_checkpoint.rs`, `workspace_analysis.rs`.
+  - Maintained backward compatibility via `src/ui/modal.rs` re-exporting all modal components and states.
+- **Session Persistence Data Integrity**:
+  - Restored atomic appending with `OpenOptions::new().append(true)` and explicit `file.sync_data()?` in `src/session/store.rs`, preventing accidental session history overwrite regressions.
+- **Verification & Testing**:
+  - Added comprehensive architecture integration test suite in `tests/integration_refactored_architecture.rs`.
+  - All unit and integration test suites pass with zero compiler warnings and zero clippy warnings.
+
 ## [0.3.3] — 2026-09-08
 
 ### Automated Semantic Commit Synthesis & Conventional Changelog Generator (`synthesize_commits`)
