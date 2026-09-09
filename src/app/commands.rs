@@ -113,6 +113,9 @@ impl<'a> App<'a> {
                 );
                 self.timeline.add_user_message(prompt.to_string());
                 self.is_working = true;
+                self.current_activity = Some(crate::ui::AgentActivity::RepoResearch {
+                    target: query.to_string(),
+                });
                 self.work_start = Some(Instant::now());
                 let cancel = tokio_util::sync::CancellationToken::new();
                 self.cancel_token = Some(cancel.clone());
@@ -130,6 +133,7 @@ impl<'a> App<'a> {
             };
             self.timeline.add_user_message(prompt.to_string());
             self.is_working = true;
+            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
             self.work_start = Some(Instant::now());
             let cancel = tokio_util::sync::CancellationToken::new();
             self.cancel_token = Some(cancel.clone());
@@ -146,6 +150,7 @@ impl<'a> App<'a> {
             };
             self.timeline.add_user_message(prompt.to_string());
             self.is_working = true;
+            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
             self.work_start = Some(Instant::now());
             let cancel = tokio_util::sync::CancellationToken::new();
             self.cancel_token = Some(cancel.clone());
@@ -1277,6 +1282,7 @@ impl<'a> App<'a> {
         }
 
         self.is_working = true;
+        self.current_activity = Some(crate::ui::AgentActivity::Thinking);
         self.work_start = Some(Instant::now());
 
         let cancel = tokio_util::sync::CancellationToken::new();

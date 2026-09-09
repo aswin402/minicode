@@ -49,6 +49,7 @@ pub struct App<'a> {
     modal: ModalState,
     model_fetcher: ModelFetcher,
     is_working: bool,
+    current_activity: Option<crate::ui::AgentActivity>,
     work_start: Option<Instant>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     last_user_prompt: Option<String>,
@@ -80,6 +81,7 @@ impl<'a> App<'a> {
             modal: initial_modal,
             model_fetcher: ModelFetcher::new(),
             is_working: false,
+            current_activity: None,
             work_start: None,
             cancel_token: None,
             last_user_prompt: None,
@@ -247,6 +249,7 @@ impl<'a> App<'a> {
                         theme: &self.theme,
                         is_working: self.is_working,
                         working_millis,
+                        current_activity: self.current_activity.as_ref(),
                         workspace: &self.workspace_root,
                         provider: &self.config.provider.default,
                         model: &self.config.provider.model,
@@ -307,15 +310,34 @@ impl<'a> App<'a> {
                     Some(agent_event) = event_rx.recv() => {
                         match agent_event {
                             AgentEvent::StreamDelta { delta, .. } => {
+                                if self.current_activity.is_none() {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::Thinking);
+                                }
                                 self.timeline.append_assistant_delta(&delta);
                             }
                             AgentEvent::ToolCall { tool, args, .. } => {
+                                self.current_activity = Some(crate::ui::AgentActivity::from_tool_call(
+                                    &tool,
+                                    &args.to_string(),
+                                ));
                                 self.timeline.add_tool_call(tool, args.to_string());
                             }
-                            AgentEvent::ToolResult { tool, success, output, duration_ms, .. } => {
-                                self.timeline.finish_tool_call(&tool, success, output, duration_ms);
+                            AgentEvent::ToolResult {
+                                tool,
+                                success,
+                                output,
+                                duration_ms,
+                                ..
+                            } => {
+                                self.current_activity =
+                                    Some(crate::ui::AgentActivity::Thinking);
+                                self.timeline
+                                    .finish_tool_call(&tool, success, output, duration_ms);
                             }
-                            AgentEvent::TurnEnd { total_tokens_used, .. } => {
+                            AgentEvent::TurnEnd {
+                                total_tokens_used, ..
+                            } => {
                                 self.last_turn_tokens = total_tokens_used;
                                 let prompt_toks = (total_tokens_used * 3) / 4;
                                 let comp_toks = total_tokens_used / 4;
@@ -326,16 +348,25 @@ impl<'a> App<'a> {
                                     comp_toks,
                                 );
                                 self.total_cost_usd += turn_cost;
-                                let elapsed_secs = self.work_start.map(|s| s.elapsed().as_secs_f64());
+                                let elapsed_secs =
+                                    self.work_start.map(|s| s.elapsed().as_secs_f64());
                                 self.timeline.finalize_pending_thoughts(elapsed_secs);
                                 self.is_working = false;
+                                self.current_activity = None;
                                 self.work_start = None;
                                 self.cancel_token = None;
                             }
                             AgentEvent::GitCommit { hash, message, .. } => {
-                                self.timeline.add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
+                                self.timeline
+                                    .add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
                             }
-                            AgentEvent::ApprovalRequest { turn_id, tool_id, tool, args, .. } => {
+                            AgentEvent::ApprovalRequest {
+                                turn_id,
+                                tool_id,
+                                tool,
+                                args,
+                                ..
+                            } => {
                                 if self.config.agent.auto_approve {
                                     self.resolve_approval(
                                         &tool_id,
@@ -346,14 +377,16 @@ impl<'a> App<'a> {
                                         tool
                                     ));
                                 } else {
-                                    let approval_state = crate::ui::approval::ApprovalModalState::from_tool_call(
-                                        turn_id,
-                                        &tool_id,
-                                        &tool,
-                                        &args,
-                                        &self.theme,
-                                    );
-                                    self.modal = crate::ui::modal::ModalState::Approval(approval_state);
+                                    let approval_state =
+                                        crate::ui::approval::ApprovalModalState::from_tool_call(
+                                            turn_id,
+                                            &tool_id,
+                                            &tool,
+                                            &args,
+                                            &self.theme,
+                                        );
+                                    self.modal =
+                                        crate::ui::modal::ModalState::Approval(approval_state);
                                 }
                             }
                             AgentEvent::ContextCompacted {
@@ -364,6 +397,8 @@ impl<'a> App<'a> {
                                 savings_percent,
                                 ..
                             } => {
+                                self.current_activity =
+                                    Some(crate::ui::AgentActivity::CompactingContext);
                                 self.timeline.add_context_compaction(
                                     tier,
                                     turns_summarized,
@@ -372,12 +407,16 @@ impl<'a> App<'a> {
                                     savings_percent,
                                 );
                             }
-                            AgentEvent::Error { message, retrying, .. } => {
+                            AgentEvent::Error {
+                                message, retrying, ..
+                            } => {
                                 if retrying {
                                     self.timeline.add_status(message);
                                 } else {
-                                    self.timeline.append_assistant_delta(&format!("\n✗ Error: {}\n", message));
+                                    self.timeline
+                                        .append_assistant_delta(&format!("\n✗ Error: {}\n", message));
                                     self.is_working = false;
+                                    self.current_activity = None;
                                     self.work_start = None;
                                     self.cancel_token = None;
                                 }
@@ -587,6 +626,7 @@ impl<'a> App<'a> {
                                             token.cancel();
                                         }
                                         self.is_working = false;
+                                        self.current_activity = None;
                                         self.work_start = None;
                                         self.timeline.add_status("⏹ Turn interrupted by user".to_string());
                                         continue;
@@ -609,6 +649,7 @@ impl<'a> App<'a> {
                                             token.cancel();
                                         }
                                         self.is_working = false;
+                                        self.current_activity = None;
                                         self.work_start = None;
                                         self.timeline.add_status("⏹ Turn interrupted by user".to_string());
                                         continue;

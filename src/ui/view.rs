@@ -105,6 +105,7 @@ pub struct TimelineContext<'a> {
     pub theme: &'a Theme,
     pub is_working: bool,
     pub working_millis: u64,
+    pub current_activity: Option<&'a crate::ui::animation::AgentActivity>,
     pub workspace: &'a std::path::Path,
     pub provider: &'a str,
     pub model: &'a str,
@@ -1230,25 +1231,18 @@ impl TimelineView {
             }
         }
 
-        // Live working / thinking status spinner at bottom if running
+        // Live working / activity status spinner and dynamic text shimmer at bottom if running
         if ctx.is_working {
-            let frame_idx = ((ctx.working_millis / crate::constants::SPINNER_FRAME_MS) as usize)
-                % SPINNER_FRAMES.len();
-            let spinner = SPINNER_FRAMES[frame_idx];
             let elapsed_secs = (ctx.working_millis as f64) / 1000.0;
-
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} Thinking ", spinner),
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("({:.1}s • esc to interrupt)", elapsed_secs),
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
+            let default_act = crate::ui::animation::AgentActivity::Thinking;
+            let act = ctx.current_activity.unwrap_or(&default_act);
+            let activity_line = crate::ui::animation::render_live_activity_line(
+                act,
+                ctx.working_millis,
+                elapsed_secs,
+                theme,
+            );
+            lines.push(activity_line);
         }
 
         self.selection.timeline_area.set(area);

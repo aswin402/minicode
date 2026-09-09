@@ -1176,6 +1176,7 @@ impl<'a> App<'a> {
                                 let token = tokio_util::sync::CancellationToken::new();
                                 self.cancel_token = Some(token.clone());
                                 self.is_working = true;
+                                self.current_activity = Some(crate::ui::AgentActivity::Thinking);
                                 self.work_start = Some(Instant::now());
                                 let _ =
                                     control_tx.send(AgentCommand::Prompt(feedback, Some(token)));

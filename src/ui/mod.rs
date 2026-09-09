@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod approval;
 pub mod clipboard;
 pub mod configure;
@@ -14,6 +15,8 @@ pub mod theme;
 pub mod view;
 pub mod welcome;
 
+#[allow(unused_imports)]
+pub use animation::{render_live_activity_line, AgentActivity};
 #[allow(unused_imports)]
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
 #[allow(unused_imports)]

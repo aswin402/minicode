@@ -37,6 +37,7 @@ fn test_timeline_thought_block_and_thinking_spinner_rendering() {
         theme: &theme,
         is_working: true,
         working_millis: 1500,
+        current_activity: None,
         workspace,
         provider: "anthropic",
         model: "claude-3-5-sonnet",
