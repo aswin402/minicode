@@ -1470,7 +1470,8 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_dir);
-        let config = Config::default();
+        let mut config = Config::default();
+        config.provider.model = "dummy".to_string();
         let provider = Box::new(DummyProvider);
         let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
 
