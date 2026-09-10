@@ -1,5 +1,6 @@
 use crate::agent::provider::ToolSchema;
-use crate::error::{Result, ToolError};
+use crate::error::Result;
+use crate::tools::param::*;
 use serde_json::json;
 use std::path::Path;
 
@@ -103,38 +104,23 @@ pub async fn dispatch(
     match tool_name {
         "onpkg_stack_list" => Some(
             async {
-                let category = args.get("category").and_then(|v| v.as_str());
+                let category = opt_str(args, "category");
                 crate::tools::onpkg::OnpkgService::list_stacks(workspace_root, category).await
             }
             .await,
         ),
         "onpkg_stack_show" => Some(
             async {
-                let stack_name =
-                    args.get("stack_name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "onpkg_stack_show".to_string(),
-                            reason: "Missing required argument 'stack_name'".to_string(),
-                        })?;
+                let stack_name = require_str(args, "stack_name", "onpkg_stack_show")?;
                 crate::tools::onpkg::OnpkgService::show_stack(workspace_root, stack_name).await
             }
             .await,
         ),
         "onpkg_stack_add" => Some(
             async {
-                let stack_name =
-                    args.get("stack_name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "onpkg_stack_add".to_string(),
-                            reason: "Missing required argument 'stack_name'".to_string(),
-                        })?;
-                let target_dir = args.get("target_dir").and_then(|v| v.as_str());
-                let no_install = args
-                    .get("no_install")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let stack_name = require_str(args, "stack_name", "onpkg_stack_add")?;
+                let target_dir = opt_str(args, "target_dir");
+                let no_install = opt_bool(args, "no_install", false);
                 crate::tools::onpkg::OnpkgService::add_stack(
                     workspace_root,
                     stack_name,
@@ -150,13 +136,7 @@ pub async fn dispatch(
         ),
         "onpkg_skill_install" => Some(
             async {
-                let skill_name =
-                    args.get("skill_name")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "onpkg_skill_install".to_string(),
-                            reason: "Missing required argument 'skill_name'".to_string(),
-                        })?;
+                let skill_name = require_str(args, "skill_name", "onpkg_skill_install")?;
                 crate::tools::onpkg::OnpkgService::install_skill(workspace_root, skill_name).await
             }
             .await,

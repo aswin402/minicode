@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
@@ -84,15 +84,18 @@ impl PtyDrawer {
     }
 
     /// Renders the terminal drawer overlaid at the bottom 40% of the screen.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &crate::ui::Theme) {
         if !self.is_open {
             return;
         }
 
-        // Allocate bottom 40% of viewport
+        // Allocate bottom percentage of viewport
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([
+                Constraint::Percentage(100 - crate::constants::PTY_DRAWER_HEIGHT_PERCENT),
+                Constraint::Percentage(crate::constants::PTY_DRAWER_HEIGHT_PERCENT),
+            ])
             .split(area);
 
         let drawer_area = chunks[1];
@@ -100,11 +103,11 @@ impl PtyDrawer {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(97, 255, 202))) // Mint Green
+            .border_style(Style::default().fg(theme.brand_accent))
             .title(Span::styled(
                 " [ ⚡ Terminal Drawer (Ctrl+T to hide) ] ",
                 Style::default()
-                    .fg(Color::Rgb(255, 202, 97))
+                    .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
             ));
 
@@ -127,24 +130,21 @@ impl PtyDrawer {
                         Span::styled(
                             "$ ",
                             Style::default()
-                                .fg(Color::Rgb(97, 255, 202))
+                                .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             l.trim_start_matches("$ "),
-                            Style::default().fg(Color::White),
+                            Style::default().fg(theme.text_primary),
                         ),
                     ])
                 } else if l.contains("error") || l.contains("Error") || l.contains("FAIL") {
                     Line::from(Span::styled(
                         l.as_str(),
-                        Style::default().fg(Color::Rgb(255, 103, 103)),
+                        Style::default().fg(theme.destructive),
                     ))
                 } else {
-                    Line::from(Span::styled(
-                        l.as_str(),
-                        Style::default().fg(Color::Rgb(170, 170, 170)),
-                    ))
+                    Line::from(Span::styled(l.as_str(), Style::default().fg(theme.muted)))
                 }
             })
             .collect();
@@ -168,12 +168,10 @@ impl PtyDrawer {
         let prompt_line = Line::from(vec![
             Span::styled(
                 "❯ ",
-                Style::default()
-                    .fg(Color::Rgb(130, 226, 255))
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&self.input_buffer, Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(Color::Rgb(97, 255, 202))),
+            Span::styled(&self.input_buffer, Style::default().fg(theme.text_primary)),
+            Span::styled("█", Style::default().fg(theme.brand_accent)),
         ]);
 
         frame.render_widget(Paragraph::new(prompt_line), inner_chunks[1]);

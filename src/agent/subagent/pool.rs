@@ -138,7 +138,7 @@ impl SubagentPool {
                 SubagentState::Failed(_) => "✗ Failed",
                 SubagentState::Canceled => "⊘ Canceled",
             };
-            let short_prompt: String = item.prompt.chars().take(40).collect();
+            let short_prompt = crate::utils::truncate_ellipsis(&item.prompt, 40);
             out.push_str(&format!(
                 "| `{}` | **{}** | {} | {} | {} | {} |\n",
                 item.id,

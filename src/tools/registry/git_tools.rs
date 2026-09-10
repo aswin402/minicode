@@ -1,7 +1,6 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::{Result, ToolError};
 use crate::tools::param;
-use crate::tools::parse_u64_param;
 use serde_json::json;
 use std::path::Path;
 
@@ -384,16 +383,8 @@ pub async fn dispatch(
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
                 }
-                let staged_only = args
-                    .get("staged_only")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let paths: Option<Vec<String>> =
-                    args.get("paths").and_then(|v| v.as_array()).map(|arr| {
-                        arr.iter()
-                            .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
-                            .collect()
-                    });
+                let staged_only = param::opt_bool(args, "staged_only", false);
+                let paths = param::opt_string_array(args, "paths");
                 let diff_output = git.diff(staged_only, paths.as_deref()).await?;
                 if diff_output.trim().is_empty() {
                     Ok("ℹ No changes detected".to_string())
@@ -473,20 +464,10 @@ pub async fn dispatch(
         ),
         "create_pr" => Some(
             async {
-                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "create_pr".to_string(),
-                        reason: "Missing required argument 'title'".to_string(),
-                    }
-                })?;
-                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "create_pr".to_string(),
-                        reason: "Missing required argument 'body'".to_string(),
-                    }
-                })?;
-                let base = args.get("base").and_then(|v| v.as_str());
-                let draft = args.get("draft").and_then(|v| v.as_bool()).unwrap_or(false);
+                let title = param::require_str(args, "title", "create_pr")?;
+                let body = param::require_str(args, "body", "create_pr")?;
+                let base = param::opt_str(args, "base");
+                let draft = param::opt_bool(args, "draft", false);
 
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
@@ -499,13 +480,8 @@ pub async fn dispatch(
         ),
         "github_issue_view" => Some(
             async {
-                let issue_num = parse_u64_param(args.get("issue_number")).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_issue_view".to_string(),
-                        reason: "Missing required argument 'issue_number'".to_string(),
-                    }
-                })?;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let issue_num = param::require_u64(args, "issue_number", "github_issue_view")?;
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_issue(workspace_root, repo, issue_num)
                     .await
             }
@@ -513,9 +489,9 @@ pub async fn dispatch(
         ),
         "github_issue_list" => Some(
             async {
-                let state = args.get("state").and_then(|v| v.as_str());
-                let limit = parse_u64_param(args.get("limit")).unwrap_or(10) as usize;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let state = param::opt_str(args, "state");
+                let limit = param::opt_usize(args, "limit", 10);
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::list_issues(workspace_root, repo, state, limit)
                     .await
             }
@@ -523,28 +499,10 @@ pub async fn dispatch(
         ),
         "github_issue_create" => Some(
             async {
-                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_issue_create".to_string(),
-                        reason: "Missing required argument 'title'".to_string(),
-                    }
-                })?;
-                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_issue_create".to_string(),
-                        reason: "Missing required argument 'body'".to_string(),
-                    }
-                })?;
-                let labels: Vec<String> = args
-                    .get("labels")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|s| s.as_str().map(|v| v.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let title = param::require_str(args, "title", "github_issue_create")?;
+                let body = param::require_str(args, "body", "github_issue_create")?;
+                let labels = param::opt_string_array(args, "labels").unwrap_or_default();
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::create_issue(
                     workspace_root,
                     repo,
@@ -558,26 +516,16 @@ pub async fn dispatch(
         ),
         "github_pr_view" => Some(
             async {
-                let pr_num = parse_u64_param(args.get("pr_number")).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_pr_view".to_string(),
-                        reason: "Missing required argument 'pr_number'".to_string(),
-                    }
-                })?;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let pr_num = param::require_u64(args, "pr_number", "github_pr_view")?;
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_pr(workspace_root, repo, pr_num).await
             }
             .await,
         ),
         "github_pr_diff" => Some(
             async {
-                let pr_num = parse_u64_param(args.get("pr_number")).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_pr_diff".to_string(),
-                        reason: "Missing required argument 'pr_number'".to_string(),
-                    }
-                })?;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let pr_num = param::require_u64(args, "pr_number", "github_pr_diff")?;
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_pr_diff(workspace_root, repo, pr_num)
                     .await
             }
@@ -585,21 +533,11 @@ pub async fn dispatch(
         ),
         "github_pr_create" => Some(
             async {
-                let title = args.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_pr_create".to_string(),
-                        reason: "Missing required argument 'title'".to_string(),
-                    }
-                })?;
-                let body = args.get("body").and_then(|v| v.as_str()).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_pr_create".to_string(),
-                        reason: "Missing required argument 'body'".to_string(),
-                    }
-                })?;
-                let base = args.get("base").and_then(|v| v.as_str()).unwrap_or("main");
-                let draft = args.get("draft").and_then(|v| v.as_bool()).unwrap_or(false);
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let title = param::require_str(args, "title", "github_pr_create")?;
+                let body = param::require_str(args, "body", "github_pr_create")?;
+                let base = param::opt_str(args, "base").unwrap_or("main");
+                let draft = param::opt_bool(args, "draft", false);
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::create_pr(
                     workspace_root,
                     repo,
@@ -614,9 +552,9 @@ pub async fn dispatch(
         ),
         "github_ci_status" => Some(
             async {
-                let branch = args.get("branch").and_then(|v| v.as_str());
-                let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let branch = param::opt_str(args, "branch");
+                let limit = param::opt_usize(args, "limit", 5);
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::get_ci_status(
                     workspace_root,
                     repo,
@@ -629,25 +567,17 @@ pub async fn dispatch(
         ),
         "github_ci_logs" => Some(
             async {
-                let run_id = parse_u64_param(args.get("run_id")).ok_or_else(|| {
-                    ToolError::InvalidArguments {
-                        name: "github_ci_logs".to_string(),
-                        reason: "Missing required argument 'run_id'".to_string(),
-                    }
-                })?;
-                let repo = args.get("repo").and_then(|v| v.as_str());
+                let run_id = param::require_u64(args, "run_id", "github_ci_logs")?;
+                let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::get_ci_logs(workspace_root, repo, run_id).await
             }
             .await,
         ),
         "resolve_git_conflicts" => Some(
             async {
-                let file_path = args.get("file_path").and_then(|v| v.as_str());
-                let strategy_str = args
-                    .get("strategy")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("auto");
-                let stage = args.get("stage").and_then(|v| v.as_bool()).unwrap_or(true);
+                let file_path = param::opt_str(args, "file_path");
+                let strategy_str = param::opt_str(args, "strategy").unwrap_or("auto");
+                let stage = param::opt_bool(args, "stage", true);
 
                 let strategy = crate::git::MergeStrategy::from_strategy_str(strategy_str);
                 let report = crate::git::ConflictResolver::resolve_workspace(

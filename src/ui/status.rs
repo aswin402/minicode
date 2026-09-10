@@ -212,7 +212,9 @@ impl StatusWidgets {
             .direction(ratatui::layout::Direction::Horizontal)
             .constraints([
                 ratatui::layout::Constraint::Min(1), // Left: Provider, Path, Git, MCP
-                ratatui::layout::Constraint::Length(30), // Right: Dollar spend + Token Context
+                ratatui::layout::Constraint::Length(
+                    crate::constants::STATUS_BAR_RIGHT_METRICS_WIDTH,
+                ), // Right: Dollar spend + Token Context
             ])
             .split(area);
 

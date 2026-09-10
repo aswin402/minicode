@@ -12,6 +12,8 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> &str {
     }
 }
 
+use unicode_width::UnicodeWidthStr;
+
 /// Truncates a string to at most `max_chars` unicode characters, appending an ellipsis (`…`)
 /// if truncation occurred.
 #[must_use]
@@ -27,6 +29,47 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
         truncated.push(ch);
     }
     truncated.push('…');
+    truncated
+}
+
+/// Truncates a string to fit within `max_cols` visual display columns.
+/// Handles CJK full-width characters and emojis safely without breaking characters.
+#[must_use]
+pub fn truncate_cols(s: &str, max_cols: usize, suffix: &str) -> String {
+    if UnicodeWidthStr::width(s) <= max_cols {
+        return s.to_string();
+    }
+    let suffix_width = UnicodeWidthStr::width(suffix);
+    let target = max_cols.saturating_sub(suffix_width);
+    let mut width = 0;
+    let mut end_idx = 0;
+    for (idx, ch) in s.char_indices() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > target {
+            break;
+        }
+        width += w;
+        end_idx = idx + ch.len_utf8();
+    }
+    format!("{}{}", &s[..end_idx], suffix)
+}
+
+/// Truncates a string to at most `max_chars` characters, appending `"..."` if truncated.
+#[must_use]
+pub fn truncate_ellipsis(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        return s.to_string();
+    }
+    let keep_chars = max_chars.saturating_sub(3);
+    if keep_chars == 0 {
+        return "...".chars().take(max_chars).collect();
+    }
+    let mut truncated = String::with_capacity(s.len().min(max_chars * 4) + 3);
+    for ch in s.chars().take(keep_chars) {
+        truncated.push(ch);
+    }
+    truncated.push_str("...");
     truncated
 }
 
@@ -84,6 +127,23 @@ mod tests {
         assert_eq!(truncate_display("🦀🚀🌟🔥", 3), "🦀🚀…");
         assert_eq!(truncate_display("", 5), "");
         assert_eq!(truncate_display("a", 1), "a");
+    }
+
+    #[test]
+    fn test_truncate_cols() {
+        let s = "你好世界";
+        assert_eq!(truncate_cols(s, 5, "..."), "你...");
+        assert_eq!(truncate_cols(s, 6, "…"), "你好…");
+        assert_eq!(truncate_cols(s, 8, "…"), "你好世界");
+    }
+
+    #[test]
+    fn test_truncate_ellipsis() {
+        assert_eq!(truncate_ellipsis("hello", 5), "hello");
+        assert_eq!(truncate_ellipsis("hello world", 8), "hello...");
+        assert_eq!(truncate_ellipsis("short", 10), "short");
+        assert_eq!(truncate_ellipsis("abcde", 4), "a...");
+        assert_eq!(truncate_ellipsis("abcde", 2), "..");
     }
 
     #[test]

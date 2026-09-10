@@ -626,6 +626,8 @@ pub const PYTHON_SYNTAX_TIMEOUT_MS: u64 = 2000;
 pub const LSP_REQUEST_TIMEOUT_SECS: u64 = 5;
 /// Timeout for LSP diagnostic drain in seconds
 pub const LSP_DIAGNOSTICS_TIMEOUT_SECS: u64 = 4;
+/// Timeout for GitHub API client requests in seconds
+pub const GITHUB_CLIENT_TIMEOUT_SECS: u64 = 15;
 
 // === Environment Variable Names ===
 pub mod env_vars {
@@ -638,6 +640,7 @@ pub mod env_vars {
     pub const MINICODE_TIMEOUT: &str = "MINICODE_TIMEOUT";
     pub const MINICODE_PLAIN: &str = "MINICODE_PLAIN";
     pub const MINICODE_THEME: &str = "MINICODE_THEME";
+    pub const MINICODE_ANIMATION: &str = "MINICODE_ANIMATION";
     pub const MINICODE_LOG_LEVEL: &str = "MINICODE_LOG_LEVEL";
     pub const MINICODE_PARALLEL_TOOLS: &str = "MINICODE_PARALLEL_TOOLS";
     pub const MINICODE_SPECULATIVE_EXECUTION: &str = "MINICODE_SPECULATIVE_EXECUTION";
@@ -870,12 +873,21 @@ pub const GIT_DIFF_WIDTH_PCT: u16 = 88;
 pub const GIT_DIFF_HEIGHT_PCT: u16 = 84;
 pub const CODE_EXPLORER_WIDTH_PCT: u16 = 85;
 pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
+pub const ARCHITECTURE_MODAL_WIDTH_PCT: u16 = 82;
+pub const ARCHITECTURE_MODAL_HEIGHT_PCT: u16 = 80;
+pub const API_KEY_MODAL_WIDTH_PCT: u16 = 65;
+pub const API_KEY_MODAL_HEIGHT_PCT: u16 = 30;
+
 /// Two-column modal primary column width percentage (e.g. skills/tools left list)
 pub const MODAL_SPLIT_PRIMARY_PERCENT: u16 = 42;
 /// Two-column modal secondary column width percentage (e.g. skills/tools right details)
 pub const MODAL_SPLIT_SECONDARY_PERCENT: u16 = 58;
 /// Standard modal search input height in lines
 pub const MODAL_SEARCH_INPUT_HEIGHT: u16 = 3;
+/// Percentage of screen height allocated to the terminal drawer overlay
+pub const PTY_DRAWER_HEIGHT_PERCENT: u16 = 40;
+/// Width in columns for right-aligned token metrics and dollar spend in bottom status bar
+pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 36;
 
 // === UI Animation ===
 /// Standard 10-frame braille spinner sequence for async tool/agent activity

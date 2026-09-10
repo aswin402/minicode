@@ -1,5 +1,6 @@
 //! API key input configuration modal rendering.
 
+use crate::constants::{API_KEY_MODAL_HEIGHT_PCT, API_KEY_MODAL_WIDTH_PCT};
 use crate::ui::layout_utils::centered_rect;
 use crate::ui::theme::Theme;
 use crate::utils::strings::mask_secret;
@@ -17,7 +18,7 @@ pub fn render_api_key_input(
     env_var: &str,
     input: &str,
 ) {
-    let popup_area = centered_rect(65, 30, area);
+    let popup_area = centered_rect(API_KEY_MODAL_WIDTH_PCT, API_KEY_MODAL_HEIGHT_PCT, area);
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()

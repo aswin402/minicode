@@ -59,6 +59,15 @@ pub fn opt_u64(args: &Value, key: &str) -> Option<u64> {
     crate::tools::parse_u64_param(args.get(key))
 }
 
+/// Extracts a mandatory `u64` parameter using permissive parsing
+#[allow(dead_code)]
+pub fn require_u64(args: &Value, key: &str, tool_name: &str) -> Result<u64, ToolError> {
+    opt_u64(args, key).ok_or_else(|| ToolError::InvalidArguments {
+        name: tool_name.to_string(),
+        reason: format!("Missing required argument '{}'", key),
+    })
+}
+
 /// Extracts an optional array of strings
 #[allow(dead_code)]
 pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
@@ -66,6 +75,21 @@ pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
         v.as_array().map(|arr| {
             arr.iter()
                 .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+    })
+}
+
+/// Extracts an optional key-value string map (e.g. environment variables)
+#[allow(dead_code)]
+pub fn opt_string_map(
+    args: &Value,
+    key: &str,
+) -> Option<std::collections::HashMap<String, String>> {
+    args.get(key).and_then(|v| {
+        v.as_object().map(|obj| {
+            obj.iter()
+                .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
                 .collect()
         })
     })

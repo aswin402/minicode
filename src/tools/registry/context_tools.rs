@@ -1,5 +1,6 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::{Result, ToolError};
+use crate::tools::param;
 use crate::tools::parse_u64_param;
 use serde_json::json;
 use std::path::Path;
@@ -731,26 +732,10 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "remember_fact" => Some((|| {
-            let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "remember_fact".to_string(),
-                    reason: "Missing required argument 'key'".to_string(),
-                }
-            })?;
-            let value = args.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "remember_fact".to_string(),
-                    reason: "Missing required argument 'value'".to_string(),
-                }
-            })?;
-            let is_global = args
-                .get("is_global")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let cat_str = args
-                .get("category")
-                .and_then(|v| v.as_str())
-                .unwrap_or("project_fact");
+            let key = param::require_str(args, "key", "remember_fact")?;
+            let value = param::require_str(args, "value", "remember_fact")?;
+            let is_global = param::opt_bool(args, "is_global", false);
+            let cat_str = param::opt_str(args, "category").unwrap_or("project_fact");
             let category = match cat_str {
                 "preference" => crate::context::memory::MemoryCategory::Preference,
                 "pattern" => crate::context::memory::MemoryCategory::Pattern,
@@ -767,19 +752,8 @@ pub async fn dispatch(
                 })
         })()),
         "update_fact" => Some((|| {
-            let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "update_fact".to_string(),
-                    reason: "Missing required argument 'key'".to_string(),
-                }
-            })?;
-            let new_value = args
-                .get("new_value")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "update_fact".to_string(),
-                    reason: "Missing required argument 'new_value'".to_string(),
-                })?;
+            let key = param::require_str(args, "key", "update_fact")?;
+            let new_value = param::require_str(args, "new_value", "update_fact")?;
             let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
             mem.update(workspace_root, key, new_value).map(|updated| {
                 if updated {
@@ -790,12 +764,7 @@ pub async fn dispatch(
             })
         })()),
         "forget_fact" => Some((|| {
-            let key = args.get("key").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "forget_fact".to_string(),
-                    reason: "Missing required argument 'key'".to_string(),
-                }
-            })?;
+            let key = param::require_str(args, "key", "forget_fact")?;
             let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
             mem.forget(workspace_root, key).map(|forgotten| {
                 if forgotten {
@@ -806,22 +775,13 @@ pub async fn dispatch(
             })
         })()),
         "create_plan" => Some((|| {
-            let title = args
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Task Plan");
-            let steps: Vec<String> = args
-                .get("steps")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .ok_or_else(|| ToolError::InvalidArguments {
+            let title = param::opt_str(args, "title").unwrap_or("Task Plan");
+            let steps = param::opt_string_array(args, "steps").ok_or_else(|| {
+                ToolError::InvalidArguments {
                     name: "create_plan".to_string(),
                     reason: "Missing required argument 'steps'".to_string(),
-                })?;
+                }
+            })?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.init_plan(title, &steps).map(|_| {
                 format!(
@@ -839,28 +799,14 @@ pub async fn dispatch(
             }
         }),
         "log_finding" => Some((|| {
-            let finding = args
-                .get("finding")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "log_finding".to_string(),
-                    reason: "Missing required argument 'finding'".to_string(),
-                })?;
+            let finding = param::require_str(args, "finding", "log_finding")?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.append_finding(finding)
                 .map(|_| "✔ Logged observation into .minicode/plan/findings.md".to_string())
         })()),
         "update_progress" => Some((|| {
-            let step = args.get("step").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "update_progress".to_string(),
-                    reason: "Missing required argument 'step'".to_string(),
-                }
-            })?;
-            let status = args
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Completed");
+            let step = param::require_str(args, "step", "update_progress")?;
+            let status = param::opt_str(args, "status").unwrap_or("Completed");
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.update_progress(step, status)
                 .map(|_| format!("✔ Updated step '{}' status to '{}'", step, status))
@@ -889,33 +835,25 @@ pub async fn dispatch(
             Ok(report.summary)
         })()),
         "repo_map" => Some((|| {
-            let max_tokens = parse_u64_param(args.get("max_tokens"))
-                .and_then(|v| usize::try_from(v).ok())
-                .unwrap_or(crate::constants::DEFAULT_MAP_TOKENS);
+            let max_tokens = param::opt_usize(args, "max_tokens", crate::constants::DEFAULT_MAP_TOKENS);
             let mut graph = crate::context::graph::CodeGraph::new();
             graph.build_graph(workspace_root)?;
             Ok(graph.format_repomap(workspace_root, &[], max_tokens))
         })()),
         "lsp_diagnostics" => Some({
-            let max_items = parse_u64_param(args.get("max_items")).unwrap_or(8) as usize;
+            let max_items = param::opt_usize(args, "max_items", 8);
             match crate::lsp::LspEngine::run_diagnostics(workspace_root).await {
                 Ok(report) => Ok(report.format_for_agent(workspace_root, max_items)),
                 Err(e) => Err(e),
             }
         }),
         "lsp_goto_definition" => Some({
-            let path = match args.get("path").and_then(|v| v.as_str()) {
-                Some(p) => p,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "lsp_goto_definition".to_string(),
-                        reason: "Missing required argument 'path'".to_string(),
-                    }
-                    .into()));
-                }
+            let path = match param::require_str(args, "path", "lsp_goto_definition") {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e.into())),
             };
-            let line = parse_u64_param(args.get("line")).unwrap_or(1) as u32;
-            let character = parse_u64_param(args.get("character")).unwrap_or(1) as u32;
+            let line = param::opt_usize(args, "line", 1) as u32;
+            let character = param::opt_usize(args, "character", 1) as u32;
 
             let lsp_line = line.saturating_sub(1);
             let lsp_col = character.saturating_sub(1);
@@ -956,18 +894,12 @@ pub async fn dispatch(
             }
         }),
         "lsp_find_references" => Some({
-            let path = match args.get("path").and_then(|v| v.as_str()) {
-                Some(p) => p,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "lsp_find_references".to_string(),
-                        reason: "Missing required argument 'path'".to_string(),
-                    }
-                    .into()));
-                }
+            let path = match param::require_str(args, "path", "lsp_find_references") {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e.into())),
             };
-            let line = parse_u64_param(args.get("line")).unwrap_or(1) as u32;
-            let character = parse_u64_param(args.get("character")).unwrap_or(1) as u32;
+            let line = param::opt_usize(args, "line", 1) as u32;
+            let character = param::opt_usize(args, "character", 1) as u32;
 
             let lsp_line = line.saturating_sub(1);
             let lsp_col = character.saturating_sub(1);
@@ -1261,16 +1193,9 @@ pub async fn dispatch(
             Ok(markdown)
         })()),
         "graph_visualize" => Some((|| {
-            let target = args.get("target").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "graph_visualize".to_string(),
-                    reason: "Missing required argument 'target'".to_string(),
-                }
-            })?;
-            let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
-            let max_depth = parse_u64_param(args.get("max_depth"))
-                .map(|v| (v as usize).clamp(1, 6))
-                .unwrap_or(3);
+            let target = param::require_str(args, "target", "graph_visualize")?;
+            let mode_str = param::opt_str(args, "mode").unwrap_or("both");
+            let max_depth = param::opt_usize(args, "max_depth", 3).clamp(1, 6);
 
             let mode = crate::context::graph_visualizer::VisualizeMode::from_str(mode_str);
 
@@ -1432,16 +1357,9 @@ pub async fn dispatch(
             Ok(markdown)
         })()),
         "semantic_code_search" => Some((|| {
-            let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "semantic_code_search".to_string(),
-                    reason: "Missing required argument 'query'".to_string(),
-                }
-            })?;
-            let limit = parse_u64_param(args.get("limit"))
-                .map(|v| (v as usize).clamp(1, 20))
-                .unwrap_or(5);
-            let target_layer = args.get("target_layer").and_then(|v| v.as_str());
+            let query = param::require_str(args, "query", "semantic_code_search")?;
+            let limit = param::opt_usize(args, "limit", 5).clamp(1, 20);
+            let target_layer = param::opt_str(args, "target_layer");
 
             let result = crate::context::reranker::CrossEncoderReranker::search_and_rerank(
                 workspace_root,
@@ -1454,18 +1372,9 @@ pub async fn dispatch(
             Ok(markdown)
         })()),
         "generate_architecture_docs" => Some((|| {
-            let write_to_file = args
-                .get("write_to_file")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let include_mermaid = args
-                .get("include_mermaid")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let include_symbol_catalog = args
-                .get("include_symbol_catalog")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let write_to_file = param::opt_bool(args, "write_to_file", false);
+            let include_mermaid = param::opt_bool(args, "include_mermaid", true);
+            let include_symbol_catalog = param::opt_bool(args, "include_symbol_catalog", true);
 
             let options = crate::context::doc_synthesizer::ArchitectureDocOptions {
                 write_to_file,
@@ -1520,13 +1429,8 @@ pub async fn dispatch(
             Ok(report.format_markdown())
         })()),
         "checkpoint_session" => Some((|| {
-            let label = args.get("label").and_then(|v| v.as_str()).ok_or_else(|| {
-                crate::error::ToolError::InvalidArguments {
-                    name: "checkpoint_session".to_string(),
-                    reason: "Missing required parameter 'label'".to_string(),
-                }
-            })?;
-            let description = args.get("description").and_then(|v| v.as_str());
+            let label = param::require_str(args, "label", "checkpoint_session")?;
+            let description = param::opt_str(args, "description");
 
             let info = crate::context::checkpoint::SessionCheckpointer::create_checkpoint(
                 workspace_root,
@@ -1545,10 +1449,7 @@ pub async fn dispatch(
             ))
         })()),
         "rewind_session" => Some((|| {
-            let action = args
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("list");
+            let action = param::opt_str(args, "action").unwrap_or("list");
 
             match action {
                 "list" => {
@@ -1575,13 +1476,7 @@ pub async fn dispatch(
                     Ok(out)
                 }
                 "rewind" => {
-                    let ckpt_id = args
-                        .get("checkpoint_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                            name: "rewind_session".to_string(),
-                            reason: "Missing required parameter 'checkpoint_id'".to_string(),
-                        })?;
+                    let ckpt_id = param::require_str(args, "checkpoint_id", "rewind_session")?;
                     let (report, _) =
                         crate::context::checkpoint::SessionCheckpointer::rewind_checkpoint(
                             workspace_root,
@@ -1591,14 +1486,8 @@ pub async fn dispatch(
                     Ok(report.format_markdown())
                 }
                 "fork" => {
-                    let ckpt_id = args
-                        .get("checkpoint_id")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                            name: "rewind_session".to_string(),
-                            reason: "Missing required parameter 'checkpoint_id'".to_string(),
-                        })?;
-                    let fork_label = args.get("fork_label").and_then(|v| v.as_str());
+                    let ckpt_id = param::require_str(args, "checkpoint_id", "rewind_session")?;
+                    let fork_label = param::opt_str(args, "fork_label");
                     let forked = crate::context::checkpoint::SessionCheckpointer::fork_checkpoint(
                         workspace_root,
                         ckpt_id,
@@ -1661,29 +1550,14 @@ pub async fn dispatch(
             Ok(report.format_markdown())
         }),
         "hybrid_retrieve" => Some({
-            let query = match args.get("query").and_then(|v| v.as_str()) {
-                Some(q) => q,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "hybrid_retrieve".to_string(),
-                        reason: "Missing required argument 'query'".to_string(),
-                    }
-                    .into()));
-                }
+            let query = match param::require_str(args, "query", "hybrid_retrieve") {
+                Ok(q) => q,
+                Err(e) => return Some(Err(e.into())),
             };
-            let limit = parse_u64_param(args.get("limit")).unwrap_or(5) as usize;
-            let include_graph = args
-                .get("include_graph")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let include_wiki = args
-                .get("include_wiki")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            let include_memory = args
-                .get("include_memory")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let limit = param::opt_usize(args, "limit", 5);
+            let include_graph = param::opt_bool(args, "include_graph", true);
+            let include_wiki = param::opt_bool(args, "include_wiki", true);
+            let include_memory = param::opt_bool(args, "include_memory", true);
 
             match crate::context::fusion::KnowledgeFusionEngine::retrieve(
                 workspace_root,
@@ -1698,11 +1572,11 @@ pub async fn dispatch(
             }
         }),
         "quarantine_flaky_tests" => Some(async {
-            let test_name = args.get("test_name").and_then(|v| v.as_str()).unwrap_or("");
-            let runs = parse_u64_param(args.get("runs")).unwrap_or(crate::constants::DEFAULT_FLAKY_RUNS as u64) as usize;
-            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("detect");
-            let auto_quarantine = args.get("auto_quarantine").and_then(|v| v.as_bool()).unwrap_or(true);
-            let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("Statistical flakiness detected during burn-in");
+            let test_name = param::opt_str(args, "test_name").unwrap_or("");
+            let runs = param::opt_usize(args, "runs", crate::constants::DEFAULT_FLAKY_RUNS);
+            let action = param::opt_str(args, "action").unwrap_or("detect");
+            let auto_quarantine = param::opt_bool(args, "auto_quarantine", true);
+            let reason = param::opt_str(args, "reason").unwrap_or("Statistical flakiness detected during burn-in");
 
             match action {
                 "list" => {

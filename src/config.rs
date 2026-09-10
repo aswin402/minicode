@@ -1,4 +1,4 @@
-use crate::constants::{DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
+use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
 use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -51,6 +51,18 @@ pub struct ProviderConfig {
 
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+
+    /// Explicit user override for context window size in tokens
+    #[serde(default)]
+    pub context_window: Option<usize>,
+
+    /// Custom prompt rate per 1,000,000 tokens in USD
+    #[serde(default)]
+    pub prompt_cost_per_m: Option<f64>,
+
+    /// Custom completion rate per 1,000,000 tokens in USD
+    #[serde(default)]
+    pub completion_cost_per_m: Option<f64>,
 }
 
 impl Default for ProviderConfig {
@@ -65,6 +77,9 @@ impl Default for ProviderConfig {
             custom_endpoints: std::collections::HashMap::new(),
             thinking_budget: None,
             reasoning_effort: None,
+            context_window: None,
+            prompt_cost_per_m: None,
+            completion_cost_per_m: None,
         }
     }
 }
@@ -436,6 +451,9 @@ pub struct RawProviderConfig {
     pub ollama: Option<OllamaConfig>,
     pub api_keys: Option<std::collections::HashMap<String, String>>,
     pub custom_endpoints: Option<std::collections::HashMap<String, String>>,
+    pub context_window: Option<usize>,
+    pub prompt_cost_per_m: Option<f64>,
+    pub completion_cost_per_m: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -674,6 +692,15 @@ impl Config {
         if let Some(ollama) = other.provider.ollama {
             self.provider.ollama = ollama;
         }
+        if let Some(context_window) = other.provider.context_window {
+            self.provider.context_window = Some(context_window);
+        }
+        if let Some(prompt_cost) = other.provider.prompt_cost_per_m {
+            self.provider.prompt_cost_per_m = Some(prompt_cost);
+        }
+        if let Some(comp_cost) = other.provider.completion_cost_per_m {
+            self.provider.completion_cost_per_m = Some(comp_cost);
+        }
         if let Some(auto_approve) = other.agent.auto_approve {
             self.agent.auto_approve = auto_approve;
         }
@@ -769,53 +796,53 @@ impl Config {
     }
 
     fn apply_env_overrides(&mut self) {
-        if let Ok(model) = std::env::var("MINICODE_MODEL") {
+        if let Ok(model) = std::env::var(env_vars::MINICODE_MODEL) {
             self.provider.model = model;
         }
-        if let Ok(provider) = std::env::var("MINICODE_PROVIDER") {
+        if let Ok(provider) = std::env::var(env_vars::MINICODE_PROVIDER) {
             self.provider.default = provider;
         }
-        if let Ok(auto_approve) = std::env::var("MINICODE_AUTO_APPROVE") {
+        if let Ok(auto_approve) = std::env::var(env_vars::MINICODE_AUTO_APPROVE) {
             self.agent.auto_approve =
                 auto_approve == "1" || auto_approve.eq_ignore_ascii_case("true");
         }
-        if let Ok(policy) = std::env::var("MINICODE_APPROVAL_POLICY") {
+        if let Ok(policy) = std::env::var(env_vars::MINICODE_APPROVAL_POLICY) {
             self.agent.approval_policy = policy;
         }
-        if let Ok(temp_str) = std::env::var("MINICODE_TEMPERATURE") {
+        if let Ok(temp_str) = std::env::var(env_vars::MINICODE_TEMPERATURE) {
             if let Ok(temp) = temp_str.parse::<f32>() {
                 self.provider.temperature = temp;
             }
         }
-        if let Ok(tokens_str) = std::env::var("MINICODE_MAX_TOKENS") {
+        if let Ok(tokens_str) = std::env::var(env_vars::MINICODE_MAX_TOKENS) {
             if let Ok(tokens) = tokens_str.parse::<usize>() {
                 self.provider.max_tokens = tokens;
             }
         }
-        if let Ok(timeout_str) = std::env::var("MINICODE_TIMEOUT") {
+        if let Ok(timeout_str) = std::env::var(env_vars::MINICODE_TIMEOUT) {
             if let Ok(timeout) = timeout_str.parse::<u64>() {
                 self.agent.timeout = timeout;
             }
         }
-        if let Ok(plain) = std::env::var("MINICODE_PLAIN") {
+        if let Ok(plain) = std::env::var(env_vars::MINICODE_PLAIN) {
             self.ui.plain = plain == "1" || plain.eq_ignore_ascii_case("true");
         }
-        if let Ok(theme) = std::env::var("MINICODE_THEME") {
+        if let Ok(theme) = std::env::var(env_vars::MINICODE_THEME) {
             self.ui.theme = theme;
         }
-        if let Ok(animation) = std::env::var("MINICODE_ANIMATION") {
+        if let Ok(animation) = std::env::var(env_vars::MINICODE_ANIMATION) {
             self.ui.animation = animation;
         }
-        if let Ok(level) = std::env::var("MINICODE_LOG_LEVEL") {
+        if let Ok(level) = std::env::var(env_vars::MINICODE_LOG_LEVEL) {
             self.logging.level = level;
         }
-        if let Ok(parallel) = std::env::var("MINICODE_PARALLEL_TOOLS") {
+        if let Ok(parallel) = std::env::var(env_vars::MINICODE_PARALLEL_TOOLS) {
             self.agent.parallel_tools = parallel == "1" || parallel.eq_ignore_ascii_case("true");
         }
-        if let Ok(spec) = std::env::var("MINICODE_SPECULATIVE_EXECUTION") {
+        if let Ok(spec) = std::env::var(env_vars::MINICODE_SPECULATIVE_EXECUTION) {
             self.agent.speculative_execution = spec == "1" || spec.eq_ignore_ascii_case("true");
         }
-        if let Ok(max_p_str) = std::env::var("MINICODE_MAX_PARALLEL_TOOLS") {
+        if let Ok(max_p_str) = std::env::var(env_vars::MINICODE_MAX_PARALLEL_TOOLS) {
             if let Ok(val) = max_p_str.parse::<usize>() {
                 self.agent.max_parallel_tools = val.clamp(
                     crate::constants::MIN_PARALLEL_TOOLS,

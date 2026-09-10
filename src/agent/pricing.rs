@@ -45,6 +45,23 @@ impl ModelPricing {
         prompt_cost + completion_cost
     }
 
+    /// Computes estimated dollar cost, honoring optional user custom rates (per 1M tokens) if set
+    pub fn calculate_cost_with_custom(
+        provider: &str,
+        model: &str,
+        prompt_tokens: usize,
+        completion_tokens: usize,
+        custom_prompt_rate: Option<f64>,
+        custom_comp_rate: Option<f64>,
+    ) -> f64 {
+        if let (Some(p_rate), Some(c_rate)) = (custom_prompt_rate, custom_comp_rate) {
+            let prompt_cost = (prompt_tokens as f64 / 1_000_000.0) * p_rate;
+            let completion_cost = (completion_tokens as f64 / 1_000_000.0) * c_rate;
+            return prompt_cost + completion_cost;
+        }
+        Self::calculate_cost(provider, model, prompt_tokens, completion_tokens)
+    }
+
     /// Formats cost into human readable currency string (e.g. "$0.0042" or "$0.18")
     pub fn format_cost(usd: f64) -> String {
         if usd <= 0.00001 {

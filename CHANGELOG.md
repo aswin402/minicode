@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] — 2026-09-10
+
+### 5-Tier Adaptive Context Window, Dynamic Pricing Engine & Tool Parsing Standardization
+
+#### 💡 Ideas & Inspirations
+- **Dynamic Context Ceiling vs. Static Model Tables**: AI models evolve weekly, while local models (Ollama, LMStudio, vLLM) frequently configure custom context lengths (e.g. `num_ctx = 32768` or `65536`). Hardcoded `if / else if` cascades inevitably fall out of date or misclassify models into inaccurate buckets. Modern tools (Aider, LiteLLM, OpenCode) rely on a multi-tier resolution hierarchy: explicit user overrides in `config.toml`, dynamic provider API introspection (OpenRouter `context_length`, Gemini `inputTokenLimit`), and smart name pattern extraction (`-32k`, `-64k`, `-128k`, `-1m`, `-2m`).
+- **Reusable Parameter Parsing & Safety**: Writing repetitive manual JSON unwrapping boilerplate (`args.get(...).and_then(...).ok_or_else(...)`) across tool registries creates opportunities for inconsistent error reporting and bugs. Centralizing extraction helpers in `src/tools/param.rs` standardizes validation error messages across all tools.
+- **Session Durability & Zero-Loss Disk Sync**: When sessions append events to disk via `std::fs::File`, relying on implicit stdio buffering can lead to truncated session events if a process is abruptly terminated. Adding explicit `.flush()?` before `.sync_all()` and `.sync_data()` guarantees byte-perfect durability.
+
+#### 🚀 Features & Changes
+- **5-Tier Adaptive Context Window Engine (`src/agent/models.rs`, `src/config.rs`, `src/app/mod.rs`)**:
+  - **Tier 1 (User Override)**: Added `context_window: Option<usize>` to `ProviderConfig` in `src/config.rs`. When configured in `config.toml`, it takes immediate absolute precedence.
+  - **Tier 2 (Live API Introspection)**: Added `lookup_cached_model_context(model)` to read live API-reported context lengths stored in `models_cache.json` (e.g. Gemini `inputTokenLimit` and OpenRouter `context_length: 163,840`).
+  - **Tier 3 (Suffix Pattern Extractor)**: Implemented `parse_context_window_from_name(model)` supporting `-32k`, `-64k`, `-128k`, `-1m`, `-2m` while distinguishing model parameter sizes (`:32b`, `70b`).
+  - **Tier 4 (Family Baselines)**: Calibrated baselines for Gemini (1M–2M), Claude 3.5/3.7 (200k), GPT-4o/o1/o3 (128k), DeepSeek (128k+), Qwen (128k).
+  - **Tier 5 (Safe Default)**: Standard 128,000 token default.
+- **Dynamic Cost Calculation (`src/agent/pricing.rs`, `src/config.rs`, `src/app/mod.rs`)**:
+  - Added `prompt_cost_per_m: Option<f64>` and `completion_cost_per_m: Option<f64>` to `ProviderConfig`.
+  - Added `ModelPricing::calculate_cost_with_custom` to compute dollar spend with user-defined rates.
+- **UI Layout & Metrics Column Expansion (`src/constants.rs`, `src/ui/status.rs`, `src/ui/pty_drawer.rs`)**:
+  - Centralized `STATUS_BAR_RIGHT_METRICS_WIDTH = 36` in `src/constants.rs`, giving ample breathing room for metrics like `⚡ $0.0042 • 45k / 2M`.
+  - Centralized `PTY_DRAWER_HEIGHT_PERCENT = 40` in `src/constants.rs` and applied it to `src/ui/pty_drawer.rs`.
+- **Tool Registry Modernization (`src/tools/param.rs`, `src/tools/registry/`)**:
+  - Added `opt_string_map(args, key)` for key-value maps.
+  - Migrated `sandbox_exec` in `exec_tools.rs` and all onpkg commands in `onpkg_tools.rs` to standard `param::*` helpers.
+- **Session Durability & UTF-8 Safety (`src/session/store.rs`, `src/utils/strings.rs`)**:
+  - Added explicit `.flush()?` before disk sync operations in `create_session` and `append_event`.
+  - Consolidated UTF-8 character and column-width truncation in `src/utils/strings.rs`.
+
 ## [0.3.7] — 2026-09-09
 
 ### Pinned Live Activity Status Bar, Bottom Spacing & Accurate Token Metrics

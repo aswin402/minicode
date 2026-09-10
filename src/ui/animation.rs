@@ -255,11 +255,7 @@ impl AgentActivity {
                 if let Some(val) = v.get(*key).and_then(|val| val.as_str()) {
                     let s = val.trim();
                     if !s.is_empty() {
-                        return if s.chars().count() > 36 {
-                            format!("{}...", s.chars().take(33).collect::<String>())
-                        } else {
-                            s.to_string()
-                        };
+                        return crate::utils::truncate_ellipsis(s, 36);
                     }
                 }
             }

@@ -323,8 +323,9 @@ impl<'a> App<'a> {
                         .filter(|s| s.enabled)
                         .count();
 
-                    let max_context =
-                        crate::agent::models::get_model_context_limit(&self.config.provider.model);
+                    let max_context = self.config.provider.context_window.unwrap_or_else(|| {
+                        crate::agent::models::get_model_context_limit(&self.config.provider.model)
+                    });
 
                     let status_ctx = crate::ui::StatusContext {
                         theme: &self.theme,
@@ -354,7 +355,7 @@ impl<'a> App<'a> {
 
                 // Render Embedded PTY Terminal Drawer if active
                 if self.pty_drawer.is_open {
-                    self.pty_drawer.render(frame, frame.area());
+                    self.pty_drawer.render(frame, frame.area(), &self.theme);
                 }
             })?;
 
@@ -427,12 +428,15 @@ impl<'a> App<'a> {
                                 }
                                 let prompt_toks = (total_tokens_used * 3) / 4;
                                 let comp_toks = total_tokens_used / 4;
-                                let turn_cost = crate::agent::pricing::ModelPricing::calculate_cost(
-                                    &self.config.provider.default,
-                                    &self.config.provider.model,
-                                    prompt_toks,
-                                    comp_toks,
-                                );
+                                let turn_cost =
+                                    crate::agent::pricing::ModelPricing::calculate_cost_with_custom(
+                                        &self.config.provider.default,
+                                        &self.config.provider.model,
+                                        prompt_toks,
+                                        comp_toks,
+                                        self.config.provider.prompt_cost_per_m,
+                                        self.config.provider.completion_cost_per_m,
+                                    );
                                 self.total_cost_usd += turn_cost;
                                 let elapsed_secs =
                                     self.work_start.map(|s| s.elapsed().as_secs_f64());
@@ -550,11 +554,7 @@ impl<'a> App<'a> {
                                         if let Some(selected_text) = selected_text {
                                             let trimmed = selected_text.trim();
                                             if !trimmed.is_empty() {
-                                                let preview = if trimmed.chars().count() > 25 {
-                                                    format!("{}...", trimmed.chars().take(25).collect::<String>())
-                                                } else {
-                                                    trimmed.to_string()
-                                                };
+                                                let preview = crate::utils::truncate_ellipsis(trimmed, 28);
                                                 self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
                                             }
                                         }

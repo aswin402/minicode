@@ -194,6 +194,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
     let mut tool_accumulator = BTreeMap::new();
     let mut prompt_tokens = 0usize;
     let mut completion_tokens = 0usize;
+    let mut in_thinking_mode = false;
 
     // 1. message_start with prompt usage
     let start_event = serde_json::json!({
@@ -211,6 +212,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
     assert!(chunks.is_empty());
     assert_eq!(prompt_tokens, 320);
@@ -227,8 +229,9 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
-    assert!(chunks.is_empty());
+    assert_eq!(chunks, vec![StreamChunk::Delta("<thought>".to_string())]);
 
     // 3. content_block_delta with thinking_delta
     let think_delta = serde_json::json!({
@@ -245,14 +248,31 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
-    assert_eq!(chunks.len(), 1);
     assert_eq!(
-        chunks[0],
-        StreamChunk::Delta(
-            "<thought>Analyzing graph dependencies for circular references...</thought>"
-                .to_string()
-        )
+        chunks,
+        vec![StreamChunk::Delta(
+            "Analyzing graph dependencies for circular references...".to_string()
+        )]
+    );
+
+    // 3b. content_block_stop for thinking block
+    let think_stop = serde_json::json!({
+        "type": "content_block_stop",
+        "index": 0
+    });
+    let stop_think_chunks = AnthropicProvider::parse_anthropic_event(
+        "content_block_stop",
+        &think_stop,
+        &mut tool_accumulator,
+        &mut prompt_tokens,
+        &mut completion_tokens,
+        &mut in_thinking_mode,
+    );
+    assert_eq!(
+        stop_think_chunks,
+        vec![StreamChunk::Delta("</thought>".to_string())]
     );
 
     // 4. content_block_start for tool_use
@@ -271,6 +291,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
 
     // 5. content_block_delta with input_json_delta
@@ -288,6 +309,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
 
     // 6. content_block_stop for tool_use
@@ -301,6 +323,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
     assert_eq!(tool_chunks.len(), 1);
     match &tool_chunks[0] {
@@ -324,6 +347,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
     assert_eq!(completion_tokens, 128);
 
@@ -335,6 +359,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut in_thinking_mode,
     );
     assert_eq!(stop_chunks.len(), 2);
     assert_eq!(

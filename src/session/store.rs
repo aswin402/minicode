@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
@@ -107,6 +106,7 @@ impl SessionStore {
             "session_meta": meta
         }))?;
         writeln!(file, "{}", meta_line)?;
+        file.flush()?;
         file.sync_all()?;
 
         tracing::info!(session_id = %session_id, "Initialized new session store");
@@ -141,6 +141,7 @@ impl SessionStore {
 
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
+        file.flush()?;
         file.sync_data()?;
         Ok(())
     }
@@ -686,22 +687,7 @@ pub fn truncate_safe(s: &str, max_bytes: usize, suffix: &str) -> String {
 /// Truncates a string to fit within `max_cols` visual display columns.
 /// Handles CJK full-width characters and emojis safely without breaking characters.
 pub fn truncate_display(s: &str, max_cols: usize, suffix: &str) -> String {
-    if UnicodeWidthStr::width(s) <= max_cols {
-        return s.to_string();
-    }
-    let suffix_width = UnicodeWidthStr::width(suffix);
-    let target = max_cols.saturating_sub(suffix_width);
-    let mut width = 0;
-    let mut end_idx = 0;
-    for (idx, ch) in s.char_indices() {
-        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + w > target {
-            break;
-        }
-        width += w;
-        end_idx = idx + ch.len_utf8();
-    }
-    format!("{}{}", &s[..end_idx], suffix)
+    crate::utils::strings::truncate_cols(s, max_cols, suffix)
 }
 
 /// Analytical summary of a completed or active conversation session

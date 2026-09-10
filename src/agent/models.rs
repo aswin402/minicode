@@ -13,10 +13,70 @@ pub struct ModelInfo {
     pub is_free: bool,
 }
 
-/// Returns estimated max context window length in tokens for common models.
-pub fn get_model_context_limit(model: &str) -> usize {
+/// Extracts context window size encoded in the model name (e.g. `llama-3.1-8b-instruct-128k`, `qwen2.5-32k`, `gemini-1.5-pro-2m`)
+pub fn parse_context_window_from_name(model: &str) -> Option<usize> {
     let lower = model.to_lowercase();
-    if lower.contains("gemini-2")
+    for part in lower.split(|c: char| !c.is_alphanumeric()) {
+        if let Some(num_str) = part.strip_suffix('m') {
+            if let Ok(n) = num_str.parse::<usize>() {
+                if n > 0 && n <= 100 {
+                    return Some(n * 1_000_000);
+                }
+            }
+        } else if let Some(num_str) = part.strip_suffix('k') {
+            if let Ok(n) = num_str.parse::<usize>() {
+                if n > 0 && n <= 10_000 {
+                    let tokens = match n {
+                        32 => 32_768,
+                        64 => 65_536,
+                        other => other * 1_000,
+                    };
+                    return Some(tokens);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Looks up dynamic context length reported by live provider API from local disk cache
+pub fn lookup_cached_model_context(model: &str) -> Option<usize> {
+    let fetcher = ModelFetcher::new();
+    let cache = fetcher.load_cache();
+    let lower = model.to_lowercase();
+    for models in cache.providers.values() {
+        for m in models {
+            let m_id = m.id.to_lowercase();
+            if m_id == lower || lower.ends_with(&m_id) || m_id.ends_with(&lower) {
+                if let Some(ctx) = m.context_length {
+                    if ctx > 0 {
+                        return Some(ctx);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolves estimated max context window length using a 4-tier cascade:
+/// 1. Local disk cache populated by dynamic provider API calls (Gemini, OpenRouter, Ollama)
+/// 2. Automatic pattern extractor from model identifier (e.g. `-32k`, `-128k`, `-1m`, `-2m`)
+/// 3. Well-known model family heuristics
+/// 4. Safe standard default: 128,000 tokens
+pub fn get_model_context_limit(model: &str) -> usize {
+    if let Some(cached) = lookup_cached_model_context(model) {
+        return cached;
+    }
+
+    if let Some(parsed) = parse_context_window_from_name(model) {
+        return parsed;
+    }
+
+    let lower = model.to_lowercase();
+    if lower.contains("gemini-1.5-pro") || lower.contains("2m") {
+        2_000_000
+    } else if lower.contains("gemini-2")
         || lower.contains("gemini-1.5")
         || lower.contains("1m")
         || lower.contains("minimax-text-01")
@@ -28,32 +88,32 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("sonnet")
         || lower.contains("opus")
         || lower.contains("codestral")
-        || lower.contains("mistral")
+        || lower.contains("mistral-large")
     {
         200_000
     } else if lower.contains("gpt-4o")
+        || lower.contains("gpt-4.1")
         || lower.contains("o1")
         || lower.contains("o3")
+        || lower.contains("o4")
         || lower.contains("glm")
         || lower.contains("z.ai")
         || lower.contains("zhipu")
+        || lower.contains("deepseek")
+        || lower.contains("qwen-2.5")
+        || lower.contains("qwen2.5")
+        || lower.contains("llama-3.1")
+        || lower.contains("llama-3.2")
+        || lower.contains("llama-3.3")
     {
         128_000
-    } else if lower.contains("deepseek")
-        || lower.contains("qwen")
+    } else if lower.contains("qwen")
         || lower.contains("liquid")
         || lower.contains("lfm")
         || lower.contains("north")
     {
         65_536
-    } else if lower.contains("gemma") {
-        8_192
-    } else if lower.contains("llama-3.1")
-        || lower.contains("llama-3.2")
-        || lower.contains("llama-3.3")
-    {
-        128_000
-    } else if lower.contains("llama-3") {
+    } else if lower.contains("gemma") || lower.contains("llama-3") {
         8_192
     } else {
         128_000
@@ -596,11 +656,18 @@ impl ModelFetcher {
                     .and_then(|i| i.as_str())
                     .or_else(|| item.get("name").and_then(|n| n.as_str()))
                 {
+                    let context_length = item
+                        .get("context_length")
+                        .or_else(|| item.get("max_model_len"))
+                        .and_then(|c| c.as_u64())
+                        .map(|c| c as usize)
+                        .or_else(|| parse_context_window_from_name(id));
+
                     models.push(ModelInfo {
                         id: id.to_string(),
                         name: id.to_string(),
                         description: None,
-                        context_length: None,
+                        context_length,
                         is_free: id.contains("free"),
                     });
                 }
@@ -609,5 +676,55 @@ impl ModelFetcher {
 
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_context_window_from_name() {
+        assert_eq!(
+            parse_context_window_from_name("llama-3.1-8b-instruct-128k"),
+            Some(128_000)
+        );
+        assert_eq!(
+            parse_context_window_from_name("qwen2.5-coder-32k"),
+            Some(32_768)
+        );
+        assert_eq!(
+            parse_context_window_from_name("mistral-small-24b-64k"),
+            Some(65_536)
+        );
+        assert_eq!(
+            parse_context_window_from_name("custom-model-1m"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            parse_context_window_from_name("gemini-1.5-pro-2m"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            parse_context_window_from_name("deepseek-v3:64k"),
+            Some(65_536)
+        );
+        // 32b parameter size should NOT match as a context window
+        assert_eq!(parse_context_window_from_name("qwen2.5-coder:32b"), None);
+    }
+
+    #[test]
+    fn test_get_model_context_limit_heuristics() {
+        assert_eq!(get_model_context_limit("gemini-1.5-pro"), 2_000_000);
+        assert_eq!(get_model_context_limit("gemini-2.0-flash"), 1_000_000);
+        assert_eq!(get_model_context_limit("claude-3-5-sonnet"), 200_000);
+        assert_eq!(get_model_context_limit("gpt-4o"), 128_000);
+        // Live API cache reports 163,840; fallback heuristic is 128,000
+        assert!(get_model_context_limit("deepseek-chat") >= 128_000);
+        assert_eq!(get_model_context_limit("unknown-fine-tune-32k"), 32_768);
+        assert_eq!(
+            get_model_context_limit("completely-unknown-custom-model"),
+            128_000
+        );
     }
 }

@@ -99,12 +99,8 @@ pub async fn dispatch(
                 if let Some(m) = opt_u64(args, "max_memory_mb") {
                     policy.max_memory_mb = Some(m);
                 }
-                if let Some(extra) = args.get("extra_env").and_then(|v| v.as_object()) {
-                    for (k, val) in extra {
-                        if let Some(s) = val.as_str() {
-                            policy.extra_env.insert(k.clone(), s.to_string());
-                        }
-                    }
+                if let Some(extra) = opt_string_map(args, "extra_env") {
+                    policy.extra_env.extend(extra);
                 }
 
                 let res = crate::sandbox::run_sandboxed(workspace_root, cmd, &policy).await?;

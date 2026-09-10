@@ -50,7 +50,11 @@ fn test_pty_drawer_rendering_test_backend() {
 
     terminal
         .draw(|frame| {
-            drawer.render(frame, Rect::new(0, 0, 100, 30));
+            drawer.render(
+                frame,
+                Rect::new(0, 0, 100, 30),
+                &minicode::ui::Theme::aura_dark(),
+            );
         })
         .unwrap();
 

@@ -119,7 +119,7 @@ impl MultiAgentOrchestrator {
                 } else {
                     "Shared Read-Only".to_string()
                 };
-                let short_prompt: String = prompt.chars().take(60).collect();
+                let short_prompt = crate::utils::truncate_ellipsis(&prompt, 60);
                 out.push_str(&format!(
                     "- `{}` (**{}**) [{}]: \"{}\"\n",
                     id, badge, mode, short_prompt

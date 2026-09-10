@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 107 (v0.3.7) Pinned Live Activity Bar, Bottom Spacing & Accurate Token Metrics | **Status:** ✅ Complete (129 Tools)
+> **Current Phase:** Phase 108 (v0.3.8) 5-Tier Adaptive Context Window & Dynamic Pricing Engine | **Status:** ✅ Complete (129 Tools)
 
 ---
 
@@ -1663,5 +1663,10 @@
 - [x] 107.5: Standardize activity action verbs across `AgentActivity` and emit `ToolCall` events before tool dispatch
 - [x] 107.6: Verify with cargo check, clippy (-D warnings), fmt, integration tests, and bump version → `v0.3.7`
 
-
-
+### Phase 108: 5-Tier Adaptive Context Window, Dynamic Pricing Engine & Tool Parsing (v0.3.8)
+- [x] 108.1: Implement 5-tier adaptive context window resolution (User Override, Dynamic Cache Introspection, Suffix Pattern Parser, Family Baselines, Safe Fallback) in `src/agent/models.rs`, `src/config.rs`, and `src/app/mod.rs`
+- [x] 108.2: Support custom per-M token rates (`prompt_cost_per_m`, `completion_cost_per_m`) in `ProviderConfig` and `ModelPricing::calculate_cost_with_custom`
+- [x] 108.3: Centralize layout metrics (`STATUS_BAR_RIGHT_METRICS_WIDTH = 36`, `PTY_DRAWER_HEIGHT_PERCENT = 40`) in `src/constants.rs` to avoid clipped metrics and magic numbers
+- [x] 108.4: Standardize parameter parsing in `exec_tools.rs` and `onpkg_tools.rs` using `crate::tools::param::*` and new `opt_string_map` helper
+- [x] 108.5: Ensure session durability with explicit `.flush()?` before disk sync in `src/session/store.rs`, and consolidate UTF-8 string truncation in `src/utils/strings.rs`
+- [x] 108.6: Verify with cargo check, clippy (-D warnings), fmt, targeted unit tests, and bump version → `v0.3.8`

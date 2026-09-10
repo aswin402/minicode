@@ -1,5 +1,6 @@
 //! Interactive software architecture governance and dependency linting modal rendering.
 
+use crate::constants::{ARCHITECTURE_MODAL_HEIGHT_PCT, ARCHITECTURE_MODAL_WIDTH_PCT};
 use crate::context::governance::ArchitectureReport;
 use crate::ui::layout_utils::centered_rect;
 use crate::ui::theme::Theme;
@@ -19,7 +20,11 @@ pub fn render_architecture_audit(
     selected_index: usize,
     scroll_offset: usize,
 ) {
-    let popup_area = centered_rect(82, 80, area);
+    let popup_area = centered_rect(
+        ARCHITECTURE_MODAL_WIDTH_PCT,
+        ARCHITECTURE_MODAL_HEIGHT_PCT,
+        area,
+    );
     frame.render_widget(Clear, popup_area);
 
     let chunks = Layout::default()
