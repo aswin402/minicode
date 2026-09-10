@@ -41,6 +41,8 @@ pub struct AgentLoop {
     pub speculative_executor: crate::agent::speculative::SpeculativeExecutor,
     /// Cumulative tokens expended across all turns in this session.
     pub cumulative_tokens_used: usize,
+    /// RAII Guard registering this active agent process in the runtime registry.
+    _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
 
 impl AgentLoop {
@@ -49,6 +51,15 @@ impl AgentLoop {
         let session_id = session_store
             .create_session(workspace_root)
             .unwrap_or_else(|_| "ephemeral-session".to_string());
+        let session_file = session_store.session_file_path(&session_id);
+        let active_guard = crate::logging::register_active_session(
+            &session_id,
+            workspace_root,
+            &config.provider.default,
+            &config.provider.model,
+            &session_file,
+        )
+        .ok();
 
         let mcp_client = McpClientManager::new();
 
@@ -84,6 +95,7 @@ impl AgentLoop {
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
             speculative_executor,
             cumulative_tokens_used: 0,
+            _active_guard: active_guard,
         }
     }
 

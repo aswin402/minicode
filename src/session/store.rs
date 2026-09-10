@@ -347,7 +347,7 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    fn session_file_path(&self, session_id: &str) -> PathBuf {
+    pub fn session_file_path(&self, session_id: &str) -> PathBuf {
         self.sessions_dir.join(format!("{}.jsonl", session_id))
     }
 

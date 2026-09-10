@@ -194,6 +194,40 @@ enum Commands {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+
+    /// Stream live or inspect historical agent logs with Hono-style micro-badges
+    Logs {
+        /// Session ID to stream or view (defaults to active session in current workspace, or latest)
+        session_id: Option<String>,
+
+        /// Stream live logs continuously like a server (tail -f)
+        #[arg(short = 'f', long)]
+        follow: bool,
+
+        /// Number of recent log events to show (e.g. 50, 100, 200)
+        #[arg(short = 'n', long, alias = "lines", default_value = "50")]
+        tail: usize,
+
+        /// List all active agents and recent sessions across all repositories
+        #[arg(short = 'l', long)]
+        list: bool,
+
+        /// Output in machine-readable NDJSON format for AI agents
+        #[arg(long)]
+        json: bool,
+
+        /// Disable ANSI colors (plain text)
+        #[arg(long)]
+        no_color: bool,
+
+        /// Stream raw internal tracing log instead of semantic agent event stream
+        #[arg(long)]
+        raw: bool,
+
+        /// Filter events by type (tools, llm, errors, all)
+        #[arg(long)]
+        filter: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -248,9 +282,36 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let workspace_canonical = std::fs::canonicalize(&workspace_dir).unwrap_or(workspace_dir);
 
-    // 2. Dispatch configure command immediately if requested
+    // 2. Dispatch early commands (configure, logs) immediately before file logger initialization
     if let Some(Commands::Configure) = cli.command {
         ConfigMenu::run_interactive(&workspace_canonical).await?;
+        return Ok(());
+    }
+    if let Some(Commands::Logs {
+        session_id,
+        follow,
+        tail,
+        list,
+        json,
+        no_color,
+        raw,
+        filter,
+    }) = cli.command
+    {
+        logging::handle_logs_cli(
+            &workspace_canonical,
+            logging::LogsCliArgs {
+                session_id,
+                follow,
+                tail,
+                list,
+                json,
+                no_color,
+                raw,
+                filter,
+            },
+        )
+        .await?;
         return Ok(());
     }
 
@@ -299,6 +360,7 @@ async fn main() -> anyhow::Result<()> {
     // 5. Dispatch execution mode
     match cli.command {
         Some(Commands::Configure) => unreachable!(), // Handled earlier
+        Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
         Some(Commands::Run { task }) => {
             run_headless_task(&workspace_canonical, &config, &task, cli.json_stream).await?;
         }

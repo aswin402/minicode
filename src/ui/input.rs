@@ -116,6 +116,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("ctrl+h"),
     },
     PaletteCommand {
+        slash_name: "/logs",
+        title: "Agent Live Logs",
+        description: "Stream live server-style agent logs (tail -f, -n 100, session IDs)",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
         slash_name: "/tokens",
         title: "Token Breakdown",
         description: "Display detailed token usage & context stats",

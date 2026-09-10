@@ -34,6 +34,10 @@ pub const AGENTS_MD_FILE: &str = "AGENTS.md";
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
 /// Session store subdirectory name (~/.config/minicode/sessions)
 pub const SESSIONS_DIR_NAME: &str = "sessions";
+/// Active runtime process registry subdirectory name (~/.config/minicode/runtime)
+pub const RUNTIME_DIR_NAME: &str = "runtime";
+/// Default line count for `minicode logs` tailing
+pub const DEFAULT_LOG_TAIL_LINES: usize = 50;
 /// Workspace backup subdirectory name (.minicode/backups)
 pub const BACKUPS_DIR_NAME: &str = "backups";
 /// Workspace transactions subdirectory name (.minicode/transactions)

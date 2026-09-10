@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 108 (v0.3.8) 5-Tier Adaptive Context Window & Dynamic Pricing Engine | **Status:** ✅ Complete (129 Tools)
+> **Current Phase:** Phase 109 (v0.3.9) Live Server-Style Agent Log Streamer & Diagnostic Inspector | **Status:** ✅ COMPLETE (129 Tools)
 
 ---
 
@@ -1670,3 +1670,12 @@
 - [x] 108.4: Standardize parameter parsing in `exec_tools.rs` and `onpkg_tools.rs` using `crate::tools::param::*` and new `opt_string_map` helper
 - [x] 108.5: Ensure session durability with explicit `.flush()?` before disk sync in `src/session/store.rs`, and consolidate UTF-8 string truncation in `src/utils/strings.rs`
 - [x] 108.6: Verify with cargo check, clippy (-D warnings), fmt, targeted unit tests, and bump version → `v0.3.8`
+
+### Phase 109: Live Server-Style Agent Log Streamer & Diagnostic Inspector (v0.3.9)
+- [x] 109.1: Architect and implement `RuntimeRegistry` in `src/logging/runtime.rs` (`~/.config/minicode/runtime/`) with zero-daemon active process registration, PID liveness detection (`/proc/<pid>`), stale PID purging, and session prefix resolver
+- [x] 109.2: Design and implement Hono-style semantic log formatter (`HonoLogFormatter`) in `src/logging/formatter.rs` with colored direction badges (`-->`, `<--`), HTTP-style status indicators (`200 OK`, `500 ERR`), millisecond elapsed times, token/cost summaries, and NDJSON streaming (`--json`)
+- [x] 109.3: Build async log tailing engine (`LogTailer`) in `src/logging/tail.rs` supporting `-n`/`--tail` (initial $N$ lines, e.g. 100/200), live async following (`-f`/`--follow`) without full file buffering, and process completion detection
+- [x] 109.4: Implement `minicode logs` CLI subcommand in `src/main.rs` and `src/logging/cli.rs` supporting flags (`-f`, `-n`, `-l`/`--list`, `--json`, `--no-color`, `--raw`), wiring active session registration into `main.rs` and `agent/loop.rs`
+- [x] 109.5: Develop comprehensive integration test suite in `tests/integration_logs_streamer.rs` covering active registration, PID liveness, prefix matching, Hono formatting, JSON serialization, and live tailing
+- [x] 109.6: Verify with `cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, update `CHANGELOG.md`, bump version → `v0.3.9`, run `./localupdate.sh`, and commit
+

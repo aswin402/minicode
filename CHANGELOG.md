@@ -5,6 +5,40 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] — 2026-09-10
+
+### Live Server-Style Agent Log Streamer & Diagnostic Inspector (`minicode logs`)
+
+#### 💡 Ideas & Inspirations
+- **Server-Style Observability for Local AI Agents**: As AI coding agents run complex, multi-turn reasoning loops, developers and secondary AI agents need real-time, non-intrusive visibility into active tasks across multiple workspaces. Drawing inspiration from modern server loggers (Hono HTTP server logs, Docker `tail -f`, PM2, and Cloudflare Wrangler `tail`), `minicode logs` provides instant, live-streamed observability with minimal micro-badges, execution durations, and HTTP-style status indicators.
+- **Zero-Daemon Multi-Process Architecture**: Rather than introducing background daemons or socket servers that can hang or consume background resources, `minicode` uses a resilient lockfile-based runtime registry (`~/.config/minicode/runtime/<session_id>.json`). Active agents register upon startup and clean up upon exit with RAII guards. Process liveness is confirmed on Linux/Unix via `/proc/<pid>`, automatically purging stale entries if an agent was abruptly terminated.
+- **Dual Human & AI Agent Ergonomics**: Developers benefit from compact, high-contrast Hono-style log lines (`--> USER`, `--> LLM`, `... THK`, `--> TOOL`, `<-- TOOL 200/500`, `=== GIT`, `<-- DONE`) with ANSI colors and sub-second elapsed times. Automated systems and AI coding agents can consume identical data via `--json` streaming NDJSON with structured fields (`timestamp`, `event_type`, `turn_id`, `status_code`, `summary`, `raw`).
+
+#### 🚀 Features & Changes
+- **Runtime Registry & Process Discovery (`src/logging/runtime.rs`)**:
+  - Registered active running agent processes in `~/.config/minicode/runtime/<session_id>.json` with PID, workspace path, provider, and model information.
+  - Implemented `/proc/<pid>` liveness checking with automatic stale-entry purging in `list_active_sessions`.
+  - Added RAII `ActiveSessionGuard` in `src/agent/loop.rs` ensuring lockfile cleanup on process termination.
+  - Implemented `find_session_by_id_or_prefix` with prefix, suffix, and exact-match fuzzy lookups.
+  - Implemented `resolve_default_session` prioritizing active agents in the current workspace, active agents globally, and recent sessions.
+- **Hono-Inspired Semantic Log Formatter (`src/logging/formatter.rs`)**:
+  - Direction badges: `--> USER` (cyan), `--> LLM` (magenta), `... THK` (dim cyan), `--> TOOL` (yellow), `<-- TOOL 200/500` (green/red), `=== GIT` (magenta), `<-- DONE` (green).
+  - Accurate elapsed execution times (`Xms`, `X.Xs`), status codes (`200 OK`, `400 BAD`, `499 CANCEL`, `500 ERR`), and compact JSON argument previews.
+  - Machine-readable `--json` NDJSON streaming with structured log records.
+  - ANSI color stripping for plain-text environments and respect for `NO_COLOR` environment variable.
+- **Async Tail Engine (`src/logging/tail.rs`)**:
+  - Configurable initial tail count (`-n 100`, `-n 200`, etc.) with bounded ring buffer memory efficiency.
+  - Async live follow mode (`-f`, `--follow`) watching file growth without full file re-reading.
+  - Process exit detection terminating the live stream gracefully when the target agent process finishes.
+  - Keyword filtering (`--filter <keyword>`) for targeted event debugging.
+- **CLI Subcommand & In-App Integration (`src/main.rs`, `src/logging/cli.rs`, `src/app/`)**:
+  - Added `minicode logs [SESSION_ID] [-f] [-n <TAIL>] [-l] [--json] [--no-color] [--raw] [--filter <KEYWORD>]` to CLI and `--help`.
+  - Added `minicode logs --list` displaying running agent processes with PID, workspace, and recent historical sessions.
+  - Added `/logs` palette command, slash command, and command catalog entry inside the TUI.
+  - Added self-awareness in agent system prompt (`src/agent/prompt.rs`) explaining how agents can inspect other agents' live logs.
+- **Test Suite**:
+  - 8 new integration tests in `tests/integration_logs_streamer.rs` covering registration, PID liveness, purging, prefix resolution, plain & ANSI formatting, JSON serialization, and live tailing.
+
 ## [0.3.8] — 2026-09-10
 
 ### 5-Tier Adaptive Context Window, Dynamic Pricing Engine & Tool Parsing Standardization

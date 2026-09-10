@@ -1103,6 +1103,28 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/logs" || prompt.starts_with("/logs ") {
+            let active = crate::logging::list_active_sessions();
+            let mut msg = String::from("📋 minicode Live Agent Logs & Observability:\n");
+            msg.push_str("To stream live server-style logs in another terminal:\n");
+            msg.push_str("  minicode logs -f\n");
+            msg.push_str("To view the last 100 logs from current session:\n");
+            msg.push_str("  minicode logs -n 100\n");
+            msg.push_str("To list all running agents across all repositories:\n");
+            msg.push_str("  minicode logs --list\n");
+            if !active.is_empty() {
+                msg.push_str(&format!("\nActive agents on machine ({}):\n", active.len()));
+                for act in active.iter().take(4) {
+                    msg.push_str(&format!(
+                        "  • PID {} [{}] in {}\n",
+                        act.pid, act.session_id, act.workspace
+                    ));
+                }
+            }
+            self.timeline.add_status(msg);
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/export" || prompt.starts_with("/export ") {
             let target_path = prompt.strip_prefix("/export").unwrap_or("").trim();
             let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
