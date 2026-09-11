@@ -12,6 +12,7 @@ pub mod middleware;
 pub mod onpkg;
 pub mod param;
 pub mod registry;
+pub mod repair;
 pub mod rtk_filter;
 pub mod search;
 pub mod web;
@@ -148,6 +149,7 @@ impl ToolRegistry {
         // 1. Filesystem Tools
         if let Some(res) =
             registry::fs_tools::dispatch(tool_name, args, workspace_root, backup_manager, turn_id)
+                .await
         {
             return res;
         }

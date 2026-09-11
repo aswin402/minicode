@@ -53,6 +53,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "repair_patch".to_string(),
+            description: "Surgical fault repair: Atomically applies a search-and-replace block patch to a file with 5-tier resilient matching, executes an optional pre-flight verification gate (e.g. 'cargo test -j 3' or 'npm test'), and automatically rolls back changes to pristine state if tests or compilation break.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative workspace path to target file (e.g. 'src/calc.rs', 'app.py')"
+                    },
+                    "search_block": {
+                        "type": "string",
+                        "description": "The exact unique code block in the file to replace (include surrounding context if needed)"
+                    },
+                    "replace_block": {
+                        "type": "string",
+                        "description": "The replacement code block"
+                    },
+                    "verification_cmd": {
+                        "type": "string",
+                        "description": "Optional test or build command to run before finalizing patch (e.g. 'cargo test -j 3 --test foo', 'npm test'). If omitted, runs scoped compiler check."
+                    }
+                },
+                "required": ["path", "search_block", "replace_block"]
+            }),
+        },
+        ToolSchema {
             name: "write_file".to_string(),
             description: "Create a new file or completely overwrite an existing file with the provided content.".to_string(),
             parameters: json!({
@@ -156,7 +182,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
-pub fn dispatch(
+pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
@@ -234,6 +260,48 @@ pub fn dispatch(
             }
             res
         })()),
+        "repair_patch" => Some(async {
+            let path = param::require_str(args, "path", "repair_patch")?;
+            let search = param::require_str(args, "search_block", "repair_patch")?;
+            let replace = param::require_str(args, "replace_block", "repair_patch")?;
+            let verification_cmd = param::opt_str(args, "verification_cmd");
+
+            let validated_path =
+                crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
+
+            // Safety checkpoint before repair
+            if let Some(mgr) = backup_manager {
+                if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id) {
+                    tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before repair_patch");
+                }
+            }
+
+            // Transaction WAL pre-mutation hook
+            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
+                workspace_root,
+                &validated_path,
+            ) {
+                tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for repair_patch");
+            }
+
+            let result = crate::tools::repair::SurgicalRepairEngine::execute_surgical_repair(
+                workspace_root,
+                path,
+                search,
+                replace,
+                verification_cmd,
+            )
+            .await?;
+
+            if result.success {
+                let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                    workspace_root,
+                    &validated_path,
+                );
+            }
+
+            Ok(result.format_markdown())
+        }.await),
         "ast_replace_node" => Some((|| {
             let path = param::require_str(args, "path", "ast_replace_node")?;
             let symbol = param::require_str(args, "symbol", "ast_replace_node")?;

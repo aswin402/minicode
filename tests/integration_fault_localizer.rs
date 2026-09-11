@@ -9,6 +9,7 @@ use tempfile::tempdir;
 fn test_fault_localization_report_markdown_formatting() {
     let report = FaultLocalizationReport {
         query: "panic in session serialization".to_string(),
+        stack_frames: Vec::new(),
         total_files_scanned: 2,
         hits: vec![
             LocalizedFileHit {
@@ -58,6 +59,7 @@ fn test_fault_localization_report_markdown_formatting() {
 fn test_fault_localization_empty_query_or_no_hits() {
     let report = FaultLocalizationReport {
         query: "nonexistent_term_xyz_123".to_string(),
+        stack_frames: Vec::new(),
         total_files_scanned: 0,
         hits: Vec::new(),
     };
@@ -100,7 +102,7 @@ impl TokenManager {
 
     let localizer = FaultLocalizer::new(root);
     let report = localizer
-        .localize("validate bearer token failure", Some(3), Some(false))
+        .localize("validate bearer token failure", Some(3), Some(false), None)
         .unwrap();
 
     assert!(
@@ -207,11 +209,144 @@ fn test_execute_tx() {
 
     let localizer = FaultLocalizer::new(root);
     let report = localizer
-        .localize("execute_transaction", Some(3), Some(true))
+        .localize("execute_transaction", Some(3), Some(true), None)
         .unwrap();
 
     assert!(!report.hits.is_empty());
     let md = report.format_markdown();
     assert!(md.contains("Hierarchical Fault Localization Report"));
     assert!(md.contains("execute_transaction"));
+}
+
+#[tokio::test]
+async fn test_fault_localizer_stack_trace_boosting() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let payment_code = r#"
+pub fn charge_card(amount_cents: u64) -> Result<(), &'static str> {
+    if amount_cents == 0 {
+        return Err("Amount cannot be zero");
+    }
+    Ok(())
+}
+"#;
+    std::fs::write(src_dir.join("payment.rs"), payment_code).unwrap();
+
+    let localizer = FaultLocalizer::new(root);
+    // Simulate a compiler diagnostic error trace referencing payment.rs:3
+    let query = "error[E0308]: mismatched types\n  --> src/payment.rs:3:5\n   |\n3 |     if amount_cents == 0 {";
+    let report = localizer
+        .localize(query, Some(3), Some(false), None)
+        .unwrap();
+
+    assert_eq!(report.stack_frames.len(), 1);
+    assert_eq!(report.stack_frames[0].file_path, "src/payment.rs");
+    assert_eq!(report.stack_frames[0].line_number, 3);
+
+    assert!(!report.hits.is_empty());
+    assert_eq!(report.hits[0].file_path, "src/payment.rs");
+    // Frame boost ensures high score (> 50)
+    assert!(report.hits[0].score >= 50.0);
+
+    let md = report.format_markdown();
+    assert!(md.contains("Detected Stack Trace / Diagnostic Frames:"));
+    assert!(md.contains("src/payment.rs:3:5"));
+}
+
+#[tokio::test]
+async fn test_fault_localizer_build_repair_slate() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let code = r#"
+pub struct Engine;
+
+impl Engine {
+    pub fn start_engine(&self) -> bool {
+        let is_running = true;
+        is_running
+    }
+}
+"#;
+    std::fs::write(src_dir.join("engine.rs"), code).unwrap();
+
+    let localizer = FaultLocalizer::new(root);
+    let slate = localizer
+        .build_repair_slate("src/engine.rs", "start_engine")
+        .unwrap();
+
+    assert!(slate.is_some());
+    let code_slate = slate.unwrap();
+    assert!(code_slate.contains("pub fn start_engine"));
+    assert!(code_slate.contains("let is_running = true;"));
+}
+
+#[tokio::test]
+async fn test_tool_registry_dispatch_repair_patch_success() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let code = r#"
+pub fn multiply(a: i32, b: i32) -> i32 {
+    a + b // Bug: should be a * b
+}
+"#;
+    std::fs::write(src_dir.join("math.rs"), code).unwrap();
+
+    let args = json!({
+        "path": "src/math.rs",
+        "search_block": "    a + b // Bug: should be a * b",
+        "replace_block": "    a * b",
+        "verification_cmd": "echo 'tests passed'"
+    });
+
+    let result =
+        ToolRegistry::dispatch(root, "call-repair-1", "repair_patch", &args, None, 1).await;
+    assert!(result.success);
+    assert!(result.output.contains("Surgical Repair Succeeded"));
+    assert!(result.output.contains("src/math.rs"));
+
+    let content = std::fs::read_to_string(src_dir.join("math.rs")).unwrap();
+    assert!(content.contains("a * b"));
+}
+
+#[tokio::test]
+async fn test_tool_registry_dispatch_repair_patch_rollback_on_failure() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+
+    let pristine_code = "pub fn stable() -> bool {\n    true\n}\n";
+    std::fs::write(src_dir.join("stable.rs"), pristine_code).unwrap();
+
+    let args = json!({
+        "path": "src/stable.rs",
+        "search_block": "    true",
+        "replace_block": "    false",
+        "verification_cmd": "sh -c 'exit 1'"
+    });
+
+    let result =
+        ToolRegistry::dispatch(root, "call-repair-2", "repair_patch", &args, None, 1).await;
+    // Tool returns success = true for the tool dispatch itself, but the formatted output documents the repair failure and rollback
+    assert!(result.output.contains("Surgical Repair Failed"));
+    assert!(result
+        .output
+        .contains("Automatically rolled back file to pristine pre-patch state"));
+
+    // File content MUST be preserved in its pristine pre-patch state
+    let content = std::fs::read_to_string(src_dir.join("stable.rs")).unwrap();
+    assert_eq!(content, pristine_code);
 }

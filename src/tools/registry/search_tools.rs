@@ -180,6 +180,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "include_callers": {
                         "type": "boolean",
                         "description": "Whether to query CodeGraph for caller symbols and related regression tests (default: true)"
+                    },
+                    "candidate_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of suspect file paths to prioritize or bias localization towards"
                     }
                 },
                 "required": ["query"]
@@ -376,9 +381,22 @@ pub fn dispatch(
             let query = require_str(args, "query", "locate_fault")?;
             let max_files = get_usize(args, "max_files");
             let include_callers = get_bool(args, "include_callers");
+            let candidate_hints =
+                args.get("candidate_files")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|val| val.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<String>>()
+                    });
 
             let localizer = crate::context::fault_localizer::FaultLocalizer::new(workspace_root);
-            let report = localizer.localize(query, max_files, include_callers)?;
+            let report = localizer.localize(
+                query,
+                max_files,
+                include_callers,
+                candidate_hints.as_deref(),
+            )?;
 
             Ok(report.format_markdown())
         })()),

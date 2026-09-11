@@ -1,6 +1,7 @@
 use crate::constants::{
-    DEFAULT_FAULT_LOCALIZE_MAX_FILES, FAULT_LOCALIZE_ENVELOPE_MARGIN,
-    FAULT_LOCALIZE_MAX_SLICE_LINES, FAULT_LOCALIZE_MAX_SYMBOLS_PER_FILE, MAX_FAULT_LOCALIZE_FILES,
+    DEFAULT_FAULT_LOCALIZE_MAX_FILES, FAULT_LOCALIZATION_CONTEXT_LINES,
+    FAULT_LOCALIZE_ENVELOPE_MARGIN, FAULT_LOCALIZE_MAX_SLICE_LINES,
+    FAULT_LOCALIZE_MAX_SYMBOLS_PER_FILE, MAX_FAULT_LOCALIZE_FILES,
 };
 use crate::context::graph::CodeGraph;
 use crate::context::hybrid::HybridIndex;
@@ -10,6 +11,15 @@ use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// A single parsed frame from an error stack trace or compiler diagnostic
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackTraceFrame {
+    pub file_path: String,
+    pub line_number: usize,
+    pub column: Option<usize>,
+    pub function_hint: Option<String>,
+}
 
 /// A single suspicious AST symbol or code region localized within a candidate file
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +49,7 @@ pub struct LocalizedFileHit {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FaultLocalizationReport {
     pub query: String,
+    pub stack_frames: Vec<StackTraceFrame>,
     pub hits: Vec<LocalizedFileHit>,
     pub total_files_scanned: usize,
 }
@@ -48,7 +59,23 @@ impl FaultLocalizationReport {
     pub fn format_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("### 🎯 Hierarchical Fault Localization Report\n\n");
-        out.push_str(&format!("**Query:** \"{}\"\n", self.query));
+        out.push_str(&format!("**Query:** \"{}\"\n\n", self.query));
+
+        if !self.stack_frames.is_empty() {
+            out.push_str("#### 🚨 Detected Stack Trace / Diagnostic Frames:\n");
+            for frame in &self.stack_frames {
+                let loc = match frame.column {
+                    Some(col) => format!("{}:{}:{}", frame.file_path, frame.line_number, col),
+                    None => format!("{}:{}", frame.file_path, frame.line_number),
+                };
+                if let Some(ref func) = frame.function_hint {
+                    out.push_str(&format!("- `{}` (in `{}`)\n", loc, func));
+                } else {
+                    out.push_str(&format!("- `{}`\n", loc));
+                }
+            }
+            out.push('\n');
+        }
 
         let status = if self.hits.is_empty() {
             "No strong candidate files found"
@@ -153,6 +180,127 @@ impl FaultLocalizer {
         }
     }
 
+    /// Extracts stack trace and compiler diagnostic frames across Rust, Python, JavaScript, TypeScript, and Go.
+    pub fn extract_trace_frames(text: &str) -> Vec<StackTraceFrame> {
+        let mut frames = Vec::new();
+
+        // 1. Rust/Cargo compiler diagnostic: "--> src/foo.rs:42:15" or "--> foo.rs:42"
+        static COMPILER_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        let compiler_re = COMPILER_RE.get_or_init(|| {
+            regex::Regex::new(r"-->\s+([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+):(\d+)(?::(\d+))?").ok()
+        });
+
+        // 2. Rust panic: "panicked at '...', src/foo.rs:42:15" or "panicked at src/foo.rs:42" or "at src/foo.rs:42"
+        static RUST_PANIC_RE: std::sync::OnceLock<Option<regex::Regex>> =
+            std::sync::OnceLock::new();
+        let rust_panic_re = RUST_PANIC_RE.get_or_init(|| {
+            regex::Regex::new(r"(?:panicked at.*?(?:,\s*|\s+)|(?:^|\s)at\s+)['`\x22]?([a-zA-Z0-9_\-\./\\]+\.rs):(\d+)(?::(\d+))?").ok()
+        });
+
+        // 3. Python traceback: File "foo/bar.py", line 42, in my_func
+        static PY_TRACE_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        let py_trace_re = PY_TRACE_RE.get_or_init(|| {
+            regex::Regex::new(
+                r#"File\s+["']([^"']+\.py)["'],\s+line\s+(\d+)(?:,\s+in\s+([a-zA-Z0-9_<>\.]+))?"#,
+            )
+            .ok()
+        });
+
+        // 4. JS/TS stack trace: at functionName (src/index.ts:15:3) or at src/index.ts:15:3
+        static JS_TRACE_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        let js_trace_re = JS_TRACE_RE.get_or_init(|| {
+            regex::Regex::new(r#"at\s+(?:([a-zA-Z0-9_$.<>]+)\s+\()?(?:file://)?([a-zA-Z0-9_\-\./\\]+\.(?:ts|tsx|js|jsx)):(\d+):(\d+)\)?"#).ok()
+        });
+
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(re) = compiler_re {
+                if let Some(caps) = re.captures(line) {
+                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
+                        if let Ok(line_num) = l.as_str().parse::<usize>() {
+                            let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
+                            frames.push(StackTraceFrame {
+                                file_path: f.as_str().replace('\\', "/"),
+                                line_number: line_num,
+                                column: col,
+                                function_hint: None,
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if let Some(re) = rust_panic_re {
+                if let Some(caps) = re.captures(line) {
+                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
+                        if let Ok(line_num) = l.as_str().parse::<usize>() {
+                            let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
+                            frames.push(StackTraceFrame {
+                                file_path: f.as_str().replace('\\', "/"),
+                                line_number: line_num,
+                                column: col,
+                                function_hint: None,
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if let Some(re) = py_trace_re {
+                if let Some(caps) = re.captures(line) {
+                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
+                        if let Ok(line_num) = l.as_str().parse::<usize>() {
+                            let func = caps.get(3).map(|s| s.as_str().to_string());
+                            frames.push(StackTraceFrame {
+                                file_path: f.as_str().replace('\\', "/"),
+                                line_number: line_num,
+                                column: None,
+                                function_hint: func,
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if let Some(re) = js_trace_re {
+                if let Some(caps) = re.captures(line) {
+                    if let (Some(f), Some(l)) = (caps.get(2), caps.get(3)) {
+                        if let Ok(line_num) = l.as_str().parse::<usize>() {
+                            let col = caps.get(4).and_then(|c| c.as_str().parse::<usize>().ok());
+                            let func = caps.get(1).map(|s| s.as_str().to_string());
+                            frames.push(StackTraceFrame {
+                                file_path: f.as_str().replace('\\', "/"),
+                                line_number: line_num,
+                                column: col,
+                                function_hint: func,
+                            });
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplicate frames preserving order
+        let mut unique = Vec::new();
+        for frame in frames {
+            if !unique.iter().any(|f: &StackTraceFrame| {
+                f.file_path == frame.file_path && f.line_number == frame.line_number
+            }) {
+                unique.push(frame);
+            }
+        }
+
+        unique
+    }
+
     /// Executes the 3-tier hierarchical fault localization funnel:
     /// 1. Repository-to-File Localization via Multi-Modal Hybrid Index (BM25 + Dense Vectors + PageRank)
     /// 2. File-to-Symbol Localization via Tree-sitter AST and Caller Blast Radius
@@ -162,11 +310,14 @@ impl FaultLocalizer {
         query: &str,
         max_files: Option<usize>,
         include_callers: Option<bool>,
+        candidate_hints: Option<&[String]>,
     ) -> Result<FaultLocalizationReport> {
         let max_files = max_files
             .unwrap_or(DEFAULT_FAULT_LOCALIZE_MAX_FILES)
             .clamp(1, MAX_FAULT_LOCALIZE_FILES);
         let include_callers = include_callers.unwrap_or(true);
+
+        let detected_frames = Self::extract_trace_frames(query);
 
         let query_tokens: Vec<String> = query
             .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -199,6 +350,21 @@ impl FaultLocalizer {
             entry.hit_lines.push((hit.start_line, hit.end_line));
         }
 
+        // Boost files extracted from stack traces
+        for frame in &detected_frames {
+            let rel = self.normalize_rel_path(&frame.file_path);
+            let full = self.workspace_root.join(&rel);
+            if full.is_file() {
+                let entry = file_map.entry(rel).or_insert(FileHitAccumulator {
+                    total_score: 0.0,
+                    max_pagerank: 0.1,
+                    hit_lines: Vec::new(),
+                });
+                entry.total_score += 50.0;
+                entry.hit_lines.push((frame.line_number, frame.line_number));
+            }
+        }
+
         // Direct path and filename hint matching (e.g. "src/session/store.rs" in query)
         for token in &query_tokens {
             if token.ends_with(".rs")
@@ -214,6 +380,24 @@ impl FaultLocalizer {
                         .and_modify(|e| e.total_score += 15.0)
                         .or_insert(FileHitAccumulator {
                             total_score: 15.0,
+                            max_pagerank: 0.05,
+                            hit_lines: Vec::new(),
+                        });
+                }
+            }
+        }
+
+        // Optional candidate hints provided by caller
+        if let Some(hints) = candidate_hints {
+            for hint in hints {
+                let rel = self.normalize_rel_path(hint);
+                let full = self.workspace_root.join(&rel);
+                if full.is_file() {
+                    file_map
+                        .entry(rel)
+                        .and_modify(|e| e.total_score += 30.0)
+                        .or_insert(FileHitAccumulator {
+                            total_score: 30.0,
                             max_pagerank: 0.05,
                             hit_lines: Vec::new(),
                         });
@@ -276,6 +460,7 @@ impl FaultLocalizer {
 
         Ok(FaultLocalizationReport {
             query: query.to_string(),
+            stack_frames: detected_frames,
             total_files_scanned: final_hits.len(),
             hits: final_hits,
         })
@@ -384,10 +569,10 @@ impl FaultLocalizer {
                     }
                 }
 
-                // Check intersection with search hit lines
+                // Check intersection with search hit lines or stack frames
                 for &(hl_start, hl_end) in hit_lines {
                     if sym.line_number <= hl_end && sym.end_line >= hl_start {
-                        score += 8.0;
+                        score += 35.0;
                     }
                 }
 
@@ -532,5 +717,99 @@ impl FaultLocalizer {
         }
 
         result
+    }
+
+    /// Extracts exact 1-indexed line envelope and raw code content around a symbol or range,
+    /// ready to be used as `search_block` in `repair_patch` or `patch_file`.
+    #[allow(dead_code)]
+    pub fn build_repair_slate(&self, file_path: &str, symbol_name: &str) -> Result<Option<String>> {
+        let abs_path = self.workspace_root.join(file_path);
+        if !abs_path.is_file() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&abs_path)?;
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
+
+        let mut repomap = RepoMapExtractor::new();
+        let symbols = repomap.extract_file_symbols(&abs_path).unwrap_or_default();
+
+        let target_symbol = symbols.iter().find(|s| s.name == symbol_name).or_else(|| {
+            symbols
+                .iter()
+                .find(|s| s.name.ends_with(symbol_name) || s.name.contains(symbol_name))
+        });
+
+        if let Some(sym) = target_symbol {
+            let start = sym
+                .line_number
+                .saturating_sub(FAULT_LOCALIZATION_CONTEXT_LINES)
+                .max(1);
+            let end = sym
+                .end_line
+                .saturating_add(FAULT_LOCALIZATION_CONTEXT_LINES)
+                .min(total_lines);
+
+            let mut slate = String::new();
+            for i in start..=end {
+                if i <= total_lines {
+                    slate.push_str(lines[i - 1]);
+                    slate.push('\n');
+                }
+            }
+            Ok(Some(slate))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_trace_frames_compiler_diagnostic() {
+        let text = "error[E0425]: cannot find function `process_record` in this scope\n  --> src/agent/runner.rs:42:15\n   |\n42 |     let res = process_record(data);";
+        let frames = FaultLocalizer::extract_trace_frames(text);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].file_path, "src/agent/runner.rs");
+        assert_eq!(frames[0].line_number, 42);
+        assert_eq!(frames[0].column, Some(15));
+    }
+
+    #[test]
+    fn test_extract_trace_frames_rust_panic() {
+        let text = "thread 'main' panicked at 'index out of bounds', src/tools/fs.rs:189:9";
+        let frames = FaultLocalizer::extract_trace_frames(text);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].file_path, "src/tools/fs.rs");
+        assert_eq!(frames[0].line_number, 189);
+        assert_eq!(frames[0].column, Some(9));
+    }
+
+    #[test]
+    fn test_extract_trace_frames_python_traceback() {
+        let text = "Traceback (most recent call last):\n  File \"app/server.py\", line 88, in handle_request\n    return run_query()\nTypeError: missing argument";
+        let frames = FaultLocalizer::extract_trace_frames(text);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].file_path, "app/server.py");
+        assert_eq!(frames[0].line_number, 88);
+        assert_eq!(frames[0].function_hint.as_deref(), Some("handle_request"));
+    }
+
+    #[test]
+    fn test_extract_trace_frames_js_ts_stack() {
+        let text = "Error: Connection refused\n    at Database.connect (src/db/client.ts:54:12)\n    at initServer (src/index.ts:19:5)";
+        let frames = FaultLocalizer::extract_trace_frames(text);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].file_path, "src/db/client.ts");
+        assert_eq!(frames[0].line_number, 54);
+        assert_eq!(frames[0].column, Some(12));
+        assert_eq!(frames[0].function_hint.as_deref(), Some("Database.connect"));
+        assert_eq!(frames[1].file_path, "src/index.ts");
+        assert_eq!(frames[1].line_number, 19);
+        assert_eq!(frames[1].column, Some(5));
+        assert_eq!(frames[1].function_hint.as_deref(), Some("initServer"));
     }
 }

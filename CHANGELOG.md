@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] — 2026-09-11
+
+### SWE-bench Fault Localization & Surgical Repair Engine (`locate_fault`, `repair_patch`)
+
+#### 💡 Ideas & Inspirations
+- **SWE-bench SOTA Diagnostic Funnel**: Leading benchmarks on SWE-bench (Agentless, SWE-agent, Moatless Tools) demonstrate that agents succeed most reliably when separating fault localization from code repair. Locating the exact file and AST symbol envelope before modifying code reduces token waste and hallucinations.
+- **Surgical Repair with Pre-Flight Verification & Automated Rollback**: Unchecked search-and-replace operations frequently introduce syntax errors or break existing regression tests, creating cascading confusion for the LLM. Providing a resilient repair engine that automatically snapshots pristine code, executes pre-flight tests (or scoped compiler checks), and automatically rolls back changes upon failure guarantees that no broken code is left on disk.
+
+#### 🚀 Features & Changes
+- **Multi-Language Stack Trace & Compiler Diagnostic Parser (`src/context/fault_localizer.rs`)**:
+  - Implemented `FaultLocalizer::extract_trace_frames` supporting Rust compiler diagnostics (`--> file:line:col`), Rust panics (`panicked at ...`), Python tracebacks (`File "...", line ...`), and JavaScript/TypeScript traces (`at func (file:line:col)`).
+  - Boosted candidate files matching trace frames by +50.0 points in Tier 1 retrieval and candidate symbols by +35.0 points in Tier 2 AST scoring.
+  - Implemented `FaultLocalizer::build_repair_slate` extracting exact 1-indexed line envelopes and raw code content around symbols with configurable context margin (`FAULT_LOCALIZATION_CONTEXT_LINES = 12`).
+- **Surgical Repair Engine (`src/tools/repair.rs`)**:
+  - Implemented `SurgicalRepairEngine::execute_surgical_repair` with atomic pre-flight snapshots, 5-tier resilient matching (`patch_file`), sandboxed verification execution, and automatic rollback on failure.
+  - Verification gates support explicit test commands (e.g. `cargo test -j 3`, `pytest`, `npm test`) with 60-second timeouts (`REPAIR_VERIFY_TIMEOUT_SECS`), Landlock sandboxing, and output limiters.
+  - Default fallbacks run `ScopedCompiler::run_scoped_check` (Rust `cargo check -j 3`, Python `py_compile`, TypeScript `tsc`), rolling back upon detected compile errors.
+- **Tool Registry & Concurrency Safety (`src/tools/registry/fs_tools.rs`, `src/tools/concurrency.rs`, `src/constants.rs`)**:
+  - Registered `repair_patch` tool in `fs_tools` with safety checkpoints and Transaction WAL integration.
+  - Added optional `candidate_files` bias support to `locate_fault` schema and dispatch in `search_tools`.
+  - Bumped `TOTAL_TOOL_COUNT` from 129 to 130 in `src/constants.rs`, with verified unit test validation.
+  - Classified `repair_patch` as `ToolSafetyLevel::Mutating` in `src/tools/concurrency.rs`.
+- **System Prompt & Autonomous Guidance (`src/agent/prompt.rs`)**:
+  - Added SWE-bench fault localization and surgical repair protocols in `STATIC_SYSTEM_PROMPT`.
+- **Integration Test Suite**:
+  - 9 passing integration tests in `tests/integration_fault_localizer.rs` verifying stack trace parsing, candidate boosting, repair slate extraction, tool dispatch, verification execution, and automatic rollback.
+
 ## [0.3.9] — 2026-09-10
 
 ### Live Server-Style Agent Log Streamer & Diagnostic Inspector (`minicode logs`)

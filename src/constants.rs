@@ -392,6 +392,16 @@ pub const RRF_WEIGHT_VECTOR: f64 = 1.0;
 /// Weight multiplier for PageRank architectural centrality in RRF fusion
 pub const RRF_WEIGHT_PAGERANK: f64 = 0.5;
 
+// === Fault Localization & Surgical Repair ===
+/// Default number of candidate fault locations returned by `locate_fault`
+pub const FAULT_LOCALIZATION_DEFAULT_TOP_N: usize = 3;
+/// Maximum number of candidate fault locations returned by `locate_fault`
+pub const FAULT_LOCALIZATION_MAX_TOP_N: usize = 10;
+/// Default timeout for surgical repair verification execution in seconds (60s)
+pub const REPAIR_VERIFY_TIMEOUT_SECS: u64 = 60;
+/// Maximum context lines returned per candidate fault location
+pub const FAULT_LOCALIZATION_CONTEXT_LINES: usize = 12;
+
 // === Sandbox Environment Whitelist & Blacklist ===
 /// Standard environment variables permitted through execution sandbox
 pub const WHITELIST_ENV_VARS: &[&str] = &[
@@ -784,7 +794,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 129;
+pub const TOTAL_TOOL_COUNT: usize = 130;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

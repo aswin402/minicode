@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 109 (v0.3.9) Live Server-Style Agent Log Streamer & Diagnostic Inspector | **Status:** ✅ COMPLETE (129 Tools)
+> **Current Phase:** Phase 110 (v0.3.10) SWE-bench Fault Localization & Surgical Repair Engine | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1678,4 +1678,12 @@
 - [x] 109.4: Implement `minicode logs` CLI subcommand in `src/main.rs` and `src/logging/cli.rs` supporting flags (`-f`, `-n`, `-l`/`--list`, `--json`, `--no-color`, `--raw`), wiring active session registration into `main.rs` and `agent/loop.rs`
 - [x] 109.5: Develop comprehensive integration test suite in `tests/integration_logs_streamer.rs` covering active registration, PID liveness, prefix matching, Hono formatting, JSON serialization, and live tailing
 - [x] 109.6: Verify with `cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, update `CHANGELOG.md`, bump version → `v0.3.9`, run `./localupdate.sh`, and commit
+ 
+### Phase 110: SWE-bench Fault Localization & Surgical Repair Engine (v0.3.10)
+- [x] 110.1: Implement `FaultLocalizer` in `src/context/fault_localizer.rs` with multi-language stack trace/error parsers, BM25 + PageRank candidate scoring, and Tree-sitter AST enclosing symbol isolation
+- [x] 110.2: Implement `SurgicalRepairEngine` in `src/tools/repair.rs` supporting resilient fuzzy patches, pre-flight verification gates (`cargo test`, `npm test`, `pytest`), and automated rollback on failure
+- [x] 110.3: Register `locate_fault` in `src/tools/registry/search_tools.rs` and `repair_patch` in `src/tools/registry/fs_tools.rs`, bump `TOTAL_TOOL_COUNT` (129 → 130), and classify concurrency safety levels in `src/tools/concurrency.rs`
+- [x] 110.4: Update agent system prompt in `src/agent/prompt.rs` with SWE-bench diagnostic localization and surgical repair workflow guidance
+- [x] 110.5: Develop comprehensive integration test suite in `tests/integration_fault_localizer.rs` covering stack trace parsing, candidate scoring, AST symbol enclosure, verification command execution, and automatic rollback on failure
+- [x] 110.6: Verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.10`, run `./localupdate.sh`, and commit
 
