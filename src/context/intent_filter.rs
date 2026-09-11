@@ -59,6 +59,8 @@ impl IntentClassifier {
             || lower.contains("callees")
             || lower.contains("code graph")
             || lower.contains("codegraph")
+            || lower.contains("code_explore")
+            || lower.contains("diff_impact")
             || lower.contains("dependency graph")
             || lower.contains("impact analysis")
         {
@@ -73,17 +75,24 @@ impl IntentClassifier {
             || lower.contains("hypotheses")
             || lower.contains("hypothesis")
             || lower.contains("delegate")
+            || lower.contains("fanout")
+            || lower.contains("scratchpad")
         {
             categories.insert(ToolCategory::Agent);
         }
 
         // 6. AST & Deep Search Intent
-        if lower.contains("ast ")
+        if lower.contains("ast")
             || lower.contains("syntax tree")
-            || lower.contains("lsp ")
+            || lower.contains("lsp")
             || lower.contains("goto definition")
             || lower.contains("find references")
             || lower.contains("hybrid search")
+            || lower.contains("hybrid_search")
+            || lower.contains("semantic search")
+            || lower.contains("semantic_search")
+            || lower.contains("locate_fault")
+            || lower.contains("fault")
         {
             categories.insert(ToolCategory::Search);
         }
