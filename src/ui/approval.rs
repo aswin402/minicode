@@ -125,7 +125,13 @@ impl ApprovalModalState {
                 let search_lines = search.lines().count();
                 let replace_lines = replace.lines().count();
                 let desc = format!("{} (+{}/-{} lines)", path, replace_lines, search_lines);
-                let diff = DiffViewer::render_patch_args(path, search, replace, theme, 6);
+                let diff = DiffViewer::render_patch_args(
+                    path,
+                    search,
+                    replace,
+                    theme,
+                    crate::constants::APPROVAL_DIFF_PREVIEW_LINES,
+                );
                 (desc, diff)
             }
             "write_file" => {
@@ -146,7 +152,12 @@ impl ApprovalModalState {
                 } else {
                     format!("{} ({} B)", path, content.len())
                 };
-                let diff = DiffViewer::render_diff("", content, theme, 6);
+                let diff = DiffViewer::render_diff(
+                    "",
+                    content,
+                    theme,
+                    crate::constants::APPROVAL_DIFF_PREVIEW_LINES,
+                );
                 (desc, diff)
             }
             _ => {

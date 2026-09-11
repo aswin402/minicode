@@ -63,8 +63,11 @@ impl IntentClassifier {
             || lower.contains("diff_impact")
             || lower.contains("dependency graph")
             || lower.contains("impact analysis")
+            || lower.contains("repo_map")
+            || lower.contains("repomap")
         {
             categories.insert(ToolCategory::Codegraph);
+            categories.insert(ToolCategory::Memory);
         }
 
         // 5. Multi-Agent & Swarm Intent
@@ -97,12 +100,26 @@ impl IntentClassifier {
             categories.insert(ToolCategory::Search);
         }
 
-        // 7. Wiki, Memory & Skill Forge Intent
+        // 7. Context, Memory, Architecture & Analysis Intent
         if lower.contains("wiki")
             || lower.contains("skill")
             || lower.contains("remember")
             || lower.contains("forget fact")
             || lower.contains("memory")
+            || lower.contains("plan")
+            || lower.contains("progress")
+            || lower.contains("repo_map")
+            || lower.contains("repomap")
+            || lower.contains("code map")
+            || lower.contains("skeleton")
+            || lower.contains("smell")
+            || lower.contains("code_smells")
+            || lower.contains("dead_code")
+            || lower.contains("dead code")
+            || lower.contains("invariant")
+            || lower.contains("coverage gap")
+            || lower.contains("prune")
+            || lower.contains("token budget")
         {
             categories.insert(ToolCategory::Memory);
         }

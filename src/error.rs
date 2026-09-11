@@ -138,6 +138,16 @@ pub enum ToolError {
     Rejected { reason: String },
 }
 
+impl ToolError {
+    /// Creates an `InvalidArguments` error with a formatted or literal reason
+    pub fn invalid_args(name: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self::InvalidArguments {
+            name: name.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ContextError {
     #[error("Tree-sitter parse error: {0}")]

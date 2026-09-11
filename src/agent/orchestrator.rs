@@ -53,7 +53,7 @@ impl MultiAgentOrchestrator {
             .as_ref()
             .map(|c| c.role.clone())
             .unwrap_or(SubagentRole::Researcher);
-        let timeout = timeout_secs.unwrap_or(120);
+        let timeout = timeout_secs.unwrap_or(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS);
 
         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
 

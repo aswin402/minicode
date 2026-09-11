@@ -95,6 +95,37 @@ pub fn opt_string_map(
     })
 }
 
+/// Extracts a mandatory array argument or returns `ToolError::InvalidArguments`
+#[allow(dead_code)]
+pub fn require_array<'a>(
+    args: &'a Value,
+    key: &str,
+    tool_name: &str,
+) -> Result<&'a Vec<Value>, ToolError> {
+    args.get(key).and_then(|v| v.as_array()).ok_or_else(|| {
+        ToolError::invalid_args(
+            tool_name,
+            format!("Missing or invalid array argument '{}'", key),
+        )
+    })
+}
+
+/// Extracts an optional `f64` parameter (accepts JSON number or float string)
+#[allow(dead_code)]
+pub fn opt_f64(args: &Value, key: &str, default: f64) -> f64 {
+    args.get(key)
+        .and_then(|v| {
+            if let Some(n) = v.as_f64() {
+                Some(n)
+            } else if let Some(s) = v.as_str() {
+                s.parse::<f64>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +159,11 @@ mod tests {
 
         let tags = opt_string_array(&args, "tags").unwrap();
         assert_eq!(tags, vec!["rust", "tui", "agent"]);
+
+        let arr = require_array(&args, "tags", "test").unwrap();
+        assert_eq!(arr.len(), 3);
+        assert!(require_array(&args, "missing", "test").is_err());
+
+        assert_eq!(opt_f64(&args, "missing", 1.5), 1.5);
     }
 }

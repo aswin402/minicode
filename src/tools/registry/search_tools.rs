@@ -409,14 +409,7 @@ pub fn dispatch(
             let query = require_str(args, "query", "locate_fault")?;
             let max_files = get_usize(args, "max_files");
             let include_callers = get_bool(args, "include_callers");
-            let candidate_hints =
-                args.get("candidate_files")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|val| val.as_str().map(|s| s.to_string()))
-                            .collect::<Vec<String>>()
-                    });
+            let candidate_hints = opt_string_array(args, "candidate_files");
 
             let localizer = crate::context::fault_localizer::FaultLocalizer::new(workspace_root);
             let report = localizer.localize(

@@ -716,6 +716,17 @@ pub const COMPLEXITY_MEDIUM_RISK_TERMS: &[&str] = &[
     "cache",
 ];
 
+/// File count threshold triggering high-complexity task score increase
+pub const COMPLEXITY_HIGH_FILE_COUNT_THRESHOLD: usize = 5;
+/// File count threshold triggering medium-complexity task score increase
+pub const COMPLEXITY_MEDIUM_FILE_COUNT_THRESHOLD: usize = 2;
+/// Heuristic token multiplier per predicted file in task estimation
+pub const COMPLEXITY_TOKENS_PER_FILE: usize = 1200;
+/// Base token overhead for task execution
+pub const COMPLEXITY_BASE_TOKENS: usize = 1500;
+/// Minimum floor for estimated task tokens
+pub const COMPLEXITY_MIN_ESTIMATED_TOKENS: usize = 2000;
+
 /// Transient memory half-life in seconds (1 hour)
 pub const MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS: f32 = 3600.0;
 /// Milestone memory half-life in seconds (7 days)
@@ -902,8 +913,14 @@ pub const MODAL_SEARCH_INPUT_HEIGHT: u16 = 3;
 pub const PTY_DRAWER_HEIGHT_PERCENT: u16 = 40;
 /// Percentage of screen height allocated to the subagent swarm activity drawer overlay
 pub const SUBAGENT_DRAWER_HEIGHT_PERCENT: u16 = 45;
+/// Default subagent task execution timeout in seconds
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 120;
 /// Width in columns for right-aligned token metrics and dollar spend in bottom status bar
 pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 36;
+/// Maximum lines of diff preview shown in interactive approval modal
+pub const APPROVAL_DIFF_PREVIEW_LINES: usize = 6;
+/// Default context lines shown around diff hunks
+pub const DIFF_CONTEXT_LINES: usize = 3;
 
 // === UI Animation ===
 /// Standard 10-frame braille spinner sequence for async tool/agent activity

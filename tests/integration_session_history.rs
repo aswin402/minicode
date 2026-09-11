@@ -1,10 +1,11 @@
 use minicode::agent::types::AgentEvent;
 use minicode::session::store::SessionStore;
+use tempfile::tempdir;
 
 #[tokio::test]
 async fn test_session_summary_analytics() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_history_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -71,8 +72,8 @@ async fn test_session_summary_analytics() {
 
 #[tokio::test]
 async fn test_session_forking_and_isolation() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_fork_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -107,14 +108,12 @@ async fn test_session_forking_and_isolation() {
     // Forked session has 2 events
     let updated_forked = store.load_session(&forked_id).unwrap();
     assert_eq!(updated_forked.len(), 2);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_session_export_markdown_transcript() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_export_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -157,7 +156,8 @@ async fn test_session_export_markdown_transcript() {
 
 #[tokio::test]
 async fn test_session_deletion() {
-    let temp_dir = std::env::temp_dir().join(format!("minicode_del_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -173,14 +173,12 @@ async fn test_session_deletion() {
     // Deleting again should return Ok(false)
     let deleted_again = store.delete_session(&session_id).unwrap();
     assert!(!deleted_again);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_utf8_safe_truncation_and_markdown_export() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_utf8_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -227,13 +225,12 @@ async fn test_utf8_safe_truncation_and_markdown_export() {
     let content = std::fs::read_to_string(&exported).unwrap();
     assert!(content.contains("Tool Execution Time"));
     assert!(content.contains("[truncated]"));
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_path_traversal_rejection() {
-    let temp_dir = std::env::temp_dir().join(format!("minicode_sec_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
 
     let malicious_ids = vec![
@@ -253,14 +250,12 @@ async fn test_path_traversal_rejection() {
             .export_markdown(bad_id, &temp_dir.join("out.md"))
             .is_err());
     }
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_corrupted_jsonl_resilience() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_corrupt_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -294,14 +289,12 @@ async fn test_corrupted_jsonl_resilience() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0], valid_event);
     assert_eq!(events[1], valid_event2);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_empty_session_summary() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_empty_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -313,14 +306,12 @@ async fn test_empty_session_summary() {
     assert_eq!(summary.total_duration_ms, 0);
     assert!(summary.tools_used.is_empty());
     assert!(summary.files_touched.is_empty());
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]
 async fn test_user_prompt_in_summary_and_export() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_prompt_test_{}", uuid::Uuid::new_v4()));
+    let temp_guard = tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
 
@@ -367,6 +358,4 @@ async fn test_user_prompt_in_summary_and_export() {
     assert!(md_content.contains("Refactor authentication module to support OAuth2"));
     assert!(md_content.contains("### 🎯 Turn 1"));
     assert!(md_content.contains("I will start by checking auth.rs"));
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }

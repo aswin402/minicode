@@ -90,9 +90,10 @@ impl TaskComplexityScorer {
         }
 
         // Scale with file count
-        if predicted_files.len() >= 5 {
+        if predicted_files.len() >= crate::constants::COMPLEXITY_HIGH_FILE_COUNT_THRESHOLD {
             raw_score += 3;
-        } else if predicted_files.len() >= 2 {
+        } else if predicted_files.len() >= crate::constants::COMPLEXITY_MEDIUM_FILE_COUNT_THRESHOLD
+        {
             raw_score += 1;
         }
 
@@ -106,7 +107,10 @@ impl TaskComplexityScorer {
         .to_string();
 
         let blast_radius = (predicted_files.len() * 2).max(1);
-        let estimated_tokens = (predicted_files.len() * 1200 + 1500).max(2000);
+        let estimated_tokens = (predicted_files.len()
+            * crate::constants::COMPLEXITY_TOKENS_PER_FILE
+            + crate::constants::COMPLEXITY_BASE_TOKENS)
+            .max(crate::constants::COMPLEXITY_MIN_ESTIMATED_TOKENS);
 
         // Subtask decomposition recommendations
         let mut subtask_recommendations = Vec::new();

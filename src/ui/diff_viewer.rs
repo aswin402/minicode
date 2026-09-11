@@ -17,7 +17,11 @@ impl DiffViewer {
         let diff = TextDiff::from_lines(old_text, new_text);
         let mut lines = Vec::new();
 
-        for (idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        for (idx, group) in diff
+            .grouped_ops(crate::constants::DIFF_CONTEXT_LINES)
+            .iter()
+            .enumerate()
+        {
             if idx > 0 {
                 lines.push(Line::from(vec![Span::styled(
                     "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈",
