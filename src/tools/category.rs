@@ -130,9 +130,9 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
     // 2. Exec (exec_cmd)
     core.extend(registry::exec_tools::get_schemas());
 
-    // 3. Search baseline (grep_search, locate_symbol)
+    // 3. Search baseline (grep_search, locate_symbol, file_search)
     for s in registry::search_tools::get_schemas() {
-        if s.name == "grep_search" || s.name == "locate_symbol" {
+        if s.name == "grep_search" || s.name == "locate_symbol" || s.name == "file_search" {
             core.push(s);
         }
     }

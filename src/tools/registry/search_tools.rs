@@ -30,6 +30,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "file_search".to_string(),
+            description: "Fast file finder locating files by glob pattern or name across workspace directory hierarchies respecting .gitignore.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "File name or glob pattern to match (e.g. '*.rs', 'view.rs', 'Cargo.toml')"
+                    },
+                    "subpath": {
+                        "type": "string",
+                        "description": "Optional subdirectory within workspace to scope the search (e.g. 'src/ui')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of file paths to return (default: 50)"
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolSchema {
             name: "locate_symbol".to_string(),
             description: "Instantly locate symbol declarations, signatures, and doc comments across the workspace without full grep scans.".to_string(),
             parameters: json!({
@@ -204,6 +226,12 @@ pub fn dispatch(
             let is_regex = opt_bool(args, "is_regex", false);
             let pattern = opt_str(args, "file_pattern");
             search::grep_search(workspace_root, query, is_regex, pattern)
+        })()),
+        "file_search" => Some((|| {
+            let pattern = require_str(args, "pattern", "file_search")?;
+            let subpath = opt_str(args, "subpath").or_else(|| opt_str(args, "path"));
+            let limit = opt_usize(args, "limit", 50);
+            search::file_search(workspace_root, pattern, subpath, Some(limit))
         })()),
         "locate_symbol" => Some((|| {
             let name = require_str(args, "name", "locate_symbol")?;

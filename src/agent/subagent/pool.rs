@@ -95,19 +95,43 @@ impl SubagentPool {
         id
     }
 
-    /// Spawns a subagent worker and executes it to completion synchronously
-    pub async fn run_subagent(
+    /// Spawns a subagent worker and executes it to completion synchronously with options
+    pub async fn run_subagent_with_options(
         &self,
         role: SubagentRole,
         prompt: &str,
         custom_config: Option<SubagentConfig>,
         provider: Arc<dyn Provider>,
+        isolate_worktree: bool,
     ) -> Result<SubagentResult> {
         let id = self.next_id(&role).await;
         let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role.clone()));
 
-        let worker =
-            SubagentWorker::new(id.clone(), prompt.to_string(), config, &self.workspace_root);
+        // Worktree isolation if requested
+        let effective_root = if isolate_worktree {
+            let worktree_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
+            match worktree_mgr.create_worktree(&id).await {
+                Ok(path) => path,
+                Err(e) => {
+                    tracing::warn!(
+                        subagent_id = %id,
+                        error = %e,
+                        "Failed to create worktree, falling back to main workspace"
+                    );
+                    self.workspace_root.clone()
+                }
+            }
+        } else {
+            self.workspace_root.clone()
+        };
+
+        let worker = SubagentWorker::new(id.clone(), prompt.to_string(), config, &effective_root);
+        {
+            let mut info_guard = worker.info.write().await;
+            info_guard.isolate_worktree = isolate_worktree;
+            info_guard.status_message = Some("Running".to_string());
+        }
+
         let info = Arc::clone(&worker.info);
         let cancel_flag = Arc::clone(&worker.cancel_flag);
 
@@ -116,7 +140,23 @@ impl SubagentPool {
             workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
         }
 
-        worker.run(provider).await
+        let mut res = worker.run(provider).await?;
+        if isolate_worktree {
+            res.worktree_branch = Some(format!("subagent/{}", id));
+        }
+        Ok(res)
+    }
+
+    /// Spawns a subagent worker and executes it to completion synchronously
+    pub async fn run_subagent(
+        &self,
+        role: SubagentRole,
+        prompt: &str,
+        custom_config: Option<SubagentConfig>,
+        provider: Arc<dyn Provider>,
+    ) -> Result<SubagentResult> {
+        self.run_subagent_with_options(role, prompt, custom_config, provider, false)
+            .await
     }
 
     /// Spawns an autonomous background subagent worker without blocking caller

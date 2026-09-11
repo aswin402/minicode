@@ -50,6 +50,7 @@ use crate::error::{MinicodeError, Result};
 use crate::git::worktree::WorktreeManager;
 
 /// Executes an autonomous subagent in an isolated Git Worktree using machine-readable NDJSON streaming.
+#[allow(dead_code)]
 pub struct SubAgent {
     pub task_id: String,
     pub workspace_root: PathBuf,
@@ -58,6 +59,7 @@ pub struct SubAgent {
     pub config: Option<SubagentConfig>,
 }
 
+#[allow(dead_code)]
 impl SubAgent {
     /// Creates a new SubAgent task runner.
     #[allow(dead_code)]

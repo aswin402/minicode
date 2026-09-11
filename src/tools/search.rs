@@ -147,6 +147,114 @@ pub fn grep_search(
     }
 }
 
+/// Fast file locator finding files by name or glob pattern respecting `.gitignore`.
+pub fn file_search(
+    workspace_root: &Path,
+    pattern: &str,
+    subpath: Option<&str>,
+    limit: Option<usize>,
+) -> Result<String> {
+    let max_results = limit.unwrap_or(50).min(200);
+
+    let search_dir = match subpath {
+        Some(sub) => {
+            let clean = sub.trim().trim_start_matches('/');
+            if clean.is_empty() {
+                workspace_root.to_path_buf()
+            } else {
+                let candidate = workspace_root.join(clean);
+                if !candidate.exists() {
+                    return Ok(format!("Search directory '{}' does not exist.", sub));
+                }
+                candidate
+            }
+        }
+        None => workspace_root.to_path_buf(),
+    };
+
+    let pat_lower = pattern.to_lowercase();
+    let is_glob = pattern.contains('*') || pattern.contains('?');
+
+    let file_regex: Option<Regex> = if is_glob {
+        let mut pattern_regex = String::from("(?i)^");
+        for c in pattern.chars() {
+            match c {
+                '*' => pattern_regex.push_str(".*"),
+                '?' => pattern_regex.push('.'),
+                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                    pattern_regex.push('\\');
+                    pattern_regex.push(c);
+                }
+                _ => pattern_regex.push(c),
+            }
+        }
+        pattern_regex.push('$');
+        Regex::new(&pattern_regex).ok()
+    } else {
+        None
+    };
+
+    let walker = WalkBuilder::new(&search_dir)
+        .hidden(true)
+        .parents(true)
+        .git_ignore(true)
+        .git_global(true)
+        .build();
+
+    let mut matches = Vec::new();
+
+    for result in walker {
+        if matches.len() >= max_results {
+            break;
+        }
+
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+
+        let path = entry.path();
+        let rel_path = path
+            .strip_prefix(workspace_root)
+            .unwrap_or(path)
+            .to_string_lossy();
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+
+        let matched = if let Some(ref reg) = file_regex {
+            reg.is_match(&file_name) || reg.is_match(&rel_path)
+        } else {
+            file_name.to_lowercase().contains(&pat_lower)
+                || rel_path.to_lowercase().contains(&pat_lower)
+        };
+
+        if matched {
+            matches.push(rel_path.to_string());
+        }
+    }
+
+    if matches.is_empty() {
+        Ok(format!("No files found matching pattern '{}'", pattern))
+    } else {
+        let count = matches.len();
+        let header = if count >= max_results {
+            format!(
+                "Found ≥{} files matching '{}' (capped):\n",
+                max_results, pattern
+            )
+        } else {
+            format!("Found {} file(s) matching '{}':\n", count, pattern)
+        };
+        Ok(format!("{}{}", header, matches.join("\n")))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +286,31 @@ mod tests {
         let long_query = "a".repeat(MAX_REGEX_QUERY_LEN + 1);
         let res = grep_search(&temp_dir, &long_query, false, None);
         assert!(res.is_err());
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_file_search() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_fsearch_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src/sub")).unwrap();
+
+        let f1 = temp_dir.join("src/main.rs");
+        let f2 = temp_dir.join("src/sub/view.rs");
+        let f3 = temp_dir.join("README.md");
+        File::create(&f1).unwrap();
+        File::create(&f2).unwrap();
+        File::create(&f3).unwrap();
+
+        let res = file_search(&temp_dir, "*.rs", None, None).unwrap();
+        assert!(res.contains("src/main.rs"));
+        assert!(res.contains("src/sub/view.rs"));
+        assert!(!res.contains("README.md"));
+
+        let res_sub = file_search(&temp_dir, "*.rs", Some("src/sub"), None).unwrap();
+        assert!(res_sub.contains("src/sub/view.rs"));
+        assert!(!res_sub.contains("src/main.rs"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

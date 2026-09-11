@@ -28,6 +28,7 @@ impl SubagentRole {
                 for t in &[
                     "read_file",
                     "grep_search",
+                    "file_search",
                     "locate_symbol",
                     "view_outline",
                     "fetch_or_browse",
@@ -41,6 +42,7 @@ impl SubagentRole {
                 for t in &[
                     "read_file",
                     "grep_search",
+                    "file_search",
                     "locate_symbol",
                     "view_outline",
                     "browser_snapshot",
@@ -54,6 +56,7 @@ impl SubagentRole {
                 for t in &[
                     "read_file",
                     "grep_search",
+                    "file_search",
                     "view_outline",
                     "exec_cmd",
                     "write_file",
@@ -63,7 +66,13 @@ impl SubagentRole {
             }
             SubagentRole::SecurityAuditor => {
                 // Security inspection
-                for t in &["read_file", "grep_search", "locate_symbol", "view_outline"] {
+                for t in &[
+                    "read_file",
+                    "grep_search",
+                    "file_search",
+                    "locate_symbol",
+                    "view_outline",
+                ] {
                     set.insert(t.to_string());
                 }
             }
@@ -74,6 +83,7 @@ impl SubagentRole {
                     "write_file",
                     "patch_file",
                     "grep_search",
+                    "file_search",
                     "locate_symbol",
                     "view_outline",
                     "fetch_or_browse",

@@ -1121,9 +1121,6 @@ pub async fn dispatch(
                 config.system_prompt_override = Some(sys_prompt.to_string());
             }
 
-            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-            let id = pool.next_id(&role).await;
-
             let isolate_worktree = args
                 .get("isolate_worktree")
                 .and_then(|v| v.as_bool())
@@ -1146,7 +1143,7 @@ pub async fn dispatch(
 
             let report = format!(
                 "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
-                id,
+                res.id,
                 role.badge(),
                 res.tokens_used,
                 if res.files_modified.is_empty() { "None (Read-Only)".to_string() } else { res.files_modified.join(", ") },

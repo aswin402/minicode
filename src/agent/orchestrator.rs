@@ -1,6 +1,6 @@
 use crate::agent::subagent::{
-    get_global_scratchpad, get_global_subagent_pool, SubAgent, SubAgentResult, SubagentConfig,
-    SubagentRole, SubagentTaskSpec,
+    get_global_scratchpad, get_global_subagent_pool, SubAgentResult, SubagentConfig, SubagentRole,
+    SubagentTaskSpec,
 };
 use crate::error::{MinicodeError, Result, ToolError};
 use crate::git::worktree::WorktreeManager;
@@ -47,12 +47,23 @@ impl MultiAgentOrchestrator {
         timeout_secs: Option<u64>,
         config: Option<crate::agent::subagent::SubagentConfig>,
     ) -> Result<SubAgentResult> {
-        let task_id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let pool = get_global_subagent_pool(workspace_root);
+        let provider = pool.get_or_create_provider().await;
+        let role = config
+            .as_ref()
+            .map(|c| c.role.clone())
+            .unwrap_or(SubagentRole::Researcher);
         let timeout = timeout_secs.unwrap_or(120);
 
-        let subagent =
-            SubAgent::with_config(workspace_root, &task_id, use_worktree, timeout, config);
-        subagent.run_task(task_prompt).await
+        let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
+
+        match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+            Ok(res) => res,
+            Err(_) => Err(MinicodeError::Channel(format!(
+                "Subagent task timed out after {} seconds",
+                timeout
+            ))),
+        }
     }
 
     /// Concurrently executes a batch of subagent tasks with optional Git Worktree isolation.
