@@ -143,13 +143,6 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/sessions",
     },
     CommandCatalogItem {
-        name: "/logs",
-        category: "History & Sessions",
-        shortcut: "",
-        description: "Stream live server-style agent logs (tail -f, -n 100, session IDs)",
-        example: "/logs | minicode logs -f",
-    },
-    CommandCatalogItem {
         name: "/copy",
         category: "Display & Aesthetics",
         shortcut: "",

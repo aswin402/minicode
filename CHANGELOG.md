@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI Subcommand & In-App Integration (`src/main.rs`, `src/logging/cli.rs`, `src/app/`)**:
   - Added `minicode logs [SESSION_ID] [-f] [-n <TAIL>] [-l] [--json] [--no-color] [--raw] [--filter <KEYWORD>]` to CLI and `--help`.
   - Added `minicode logs --list` displaying running agent processes with PID, workspace, and recent historical sessions.
-  - Added `/logs` palette command, slash command, and command catalog entry inside the TUI.
+  - Dedicated external terminal CLI command without cluttering the interactive TUI command palette.
   - Added self-awareness in agent system prompt (`src/agent/prompt.rs`) explaining how agents can inspect other agents' live logs.
 - **Test Suite**:
   - 8 new integration tests in `tests/integration_logs_streamer.rs` covering registration, PID liveness, purging, prefix resolution, plain & ANSI formatting, JSON serialization, and live tailing.
