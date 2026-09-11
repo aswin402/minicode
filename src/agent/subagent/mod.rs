@@ -108,7 +108,7 @@ impl SubAgent {
         let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("minicode"));
 
         let mut cmd = Command::new(current_exe);
-        cmd.args(["run", "--json-stream", "--yes", "--dir"])
+        cmd.args(["--json-stream", "--yes", "--dir"])
             .arg(&target_dir);
 
         if let Some(ref cfg) = self.config {
@@ -120,21 +120,21 @@ impl SubAgent {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
                 MinicodeError::Channel(format!("Failed to spawn subagent process: {}", e))
             })?;
 
-        // Write prompt to subagent stdin
+        // Write prompt to subagent stdin via StdinCommand protocol
         if let Some(mut stdin) = child.stdin.take() {
-            let mut prompt_json = serde_json::json!({
-                "command": "prompt",
-                "text": task_prompt
-            })
-            .to_string();
-            prompt_json.push('\n');
-            let _ = stdin.write_all(prompt_json.as_bytes()).await;
+            let cmd_obj = crate::agent::types::StdinCommand::UserInput {
+                text: task_prompt.to_string(),
+            };
+            if let Ok(mut prompt_json) = serde_json::to_string(&cmd_obj) {
+                prompt_json.push('\n');
+                let _ = stdin.write_all(prompt_json.as_bytes()).await;
+            }
         }
 
         let mut final_response = String::new();
@@ -174,6 +174,10 @@ impl SubAgent {
                             AgentEvent::Error { message, .. } => {
                                 tracing::error!(message = %message, "Subagent encountered error");
                                 success = false;
+                                if final_response.is_empty() {
+                                    final_response =
+                                        format!("Subagent execution error: {}", message);
+                                }
                             }
                             _ => {}
                         }
@@ -190,7 +194,16 @@ impl SubAgent {
             if timeout_res.is_err() {
                 tracing::warn!(task_id = %self.task_id, timeout_secs = self.timeout_secs, "Subagent process timed out");
                 success = false;
+                if final_response.is_empty() {
+                    final_response = "Subagent process timed out before completion.".to_string();
+                }
             }
+        }
+
+        if final_response.trim().is_empty() {
+            success = false;
+            final_response =
+                "Subagent process exited without producing a response summary.".to_string();
         }
 
         let _ = child.kill().await;
@@ -201,10 +214,16 @@ impl SubAgent {
             None
         };
 
+        let assigned_role = self
+            .config
+            .as_ref()
+            .map(|c| c.role.clone())
+            .unwrap_or_else(|| SubagentRole::Custom("worktree_worker".to_string()));
+
         Ok(SubagentResult {
             id: self.task_id.clone(),
             task_id: self.task_id.clone(),
-            role: SubagentRole::Custom("worktree_worker".to_string()),
+            role: assigned_role,
             success,
             final_summary: final_response,
             tokens_used,

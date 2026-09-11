@@ -4,7 +4,6 @@ use crate::agent::subagent::{
 };
 use crate::error::{MinicodeError, Result, ToolError};
 use crate::git::worktree::WorktreeManager;
-use futures::future::join_all;
 use std::path::Path;
 
 /// Result of an individual subagent fanout worker.
@@ -68,11 +67,11 @@ impl MultiAgentOrchestrator {
         }
 
         let pool = get_global_subagent_pool(workspace_root);
-        let mut handles = Vec::new();
+        let provider = pool.get_or_create_provider().await;
+        let mut worker_specs = Vec::new();
         let mut launched_descriptions = Vec::new();
 
         for task in tasks {
-            let task_id = pool.next_id(&task.role).await;
             let role = task.role.clone();
             let prompt = task.prompt.clone();
             let timeout = task.timeout_secs.unwrap_or(120);
@@ -89,6 +88,16 @@ impl MultiAgentOrchestrator {
                 config.model = Some(m);
             }
 
+            let task_id = pool
+                .spawn_background_worker(
+                    role.clone(),
+                    &prompt,
+                    Some(config),
+                    std::sync::Arc::clone(&provider),
+                    isolate_worktree,
+                )
+                .await?;
+
             launched_descriptions.push((
                 task_id.clone(),
                 role.badge().to_string(),
@@ -96,16 +105,7 @@ impl MultiAgentOrchestrator {
                 prompt.clone(),
             ));
 
-            let root = workspace_root.to_path_buf();
-            let subagent =
-                SubAgent::with_config(&root, &task_id, isolate_worktree, timeout, Some(config));
-
-            let handle = tokio::spawn(async move {
-                let res = subagent.run_task(&prompt).await;
-                (task_id, role, isolate_worktree, res)
-            });
-
-            handles.push(handle);
+            worker_specs.push((task_id, role, isolate_worktree, timeout));
         }
 
         if !wait_for_completion {
@@ -125,76 +125,95 @@ impl MultiAgentOrchestrator {
                     id, badge, mode, short_prompt
                 ));
             }
-            out.push_str("\nWorkers are running concurrently in background. Use 'manage_subagents' or 'scratchpad_list' to monitor progress.\n");
+            out.push_str("\nWorkers are running concurrently in background. Press `Ctrl+S` or run `/swarm` to monitor live telemetry in the Activity Drawer.\n");
             return Ok(out);
         }
 
         // Wait for all workers to complete
-        let results = join_all(handles).await;
         let scratchpad = get_global_scratchpad();
         let mut completed_results = Vec::new();
         let worktree_mgr = WorktreeManager::new(workspace_root);
 
-        for join_res in results {
-            match join_res {
-                Ok((id, role, isolate_worktree, run_res)) => match run_res {
-                    Ok(sub_res) => {
-                        // Publish findings to SharedScratchpad
-                        scratchpad.write_entry(
-                            &format!("subagent/{}", id),
-                            &format!("Findings from {} ({})", id, role.badge()),
-                            &sub_res.final_summary,
-                            &id,
-                        );
+        for (id, role, isolate_worktree, timeout_secs) in worker_specs {
+            let start = std::time::Instant::now();
+            let max_dur = std::time::Duration::from_secs(timeout_secs);
 
-                        let mut merged = false;
-                        if auto_merge
-                            && isolate_worktree
-                            && sub_res.success
-                            && !sub_res.files_modified.is_empty()
-                            && worktree_mgr.merge_worktree(&id).await.is_ok()
-                        {
-                            let _ = worktree_mgr.remove_worktree(&id).await;
-                            merged = true;
-                        }
-
-                        completed_results.push(FanoutWorkerOutcome {
-                            id,
-                            role: role.badge().to_string(),
-                            isolate_worktree,
-                            success: true,
-                            result: sub_res,
-                            merged,
-                            error: None,
-                        });
+            let mut final_info = None;
+            while start.elapsed() < max_dur {
+                if let Some(info) = pool.get_subagent(&id).await {
+                    if !matches!(
+                        info.state,
+                        crate::agent::subagent::types::SubagentState::Running
+                            | crate::agent::subagent::types::SubagentState::Idle
+                    ) {
+                        final_info = Some(info);
+                        break;
                     }
-                    Err(e) => {
-                        completed_results.push(FanoutWorkerOutcome {
-                            id: id.clone(),
-                            role: role.badge().to_string(),
-                            isolate_worktree,
-                            success: false,
-                            result: SubAgentResult {
-                                id: id.clone(),
-                                task_id: id,
-                                role,
-                                success: false,
-                                final_summary: format!("Execution failed: {}", e),
-                                tokens_used: 0,
-                                turns_executed: 0,
-                                files_inspected: Vec::new(),
-                                files_modified: Vec::new(),
-                                worktree_branch: None,
-                            },
-                            merged: false,
-                            error: Some(e.to_string()),
-                        });
-                    }
-                },
-                Err(join_err) => {
-                    tracing::error!("Subagent task panicked or was cancelled: {}", join_err);
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
+
+            let info = match final_info {
+                Some(i) => Some(i),
+                None => pool.get_subagent(&id).await,
+            };
+
+            let summary = scratchpad
+                .read_entry(&format!("subagent_{}", id))
+                .or_else(|| scratchpad.read_entry(&format!("subagent/{}", id)))
+                .map(|e| e.content)
+                .or_else(|| info.as_ref().and_then(|i| i.final_summary.clone()))
+                .unwrap_or_else(|| "Subagent completed without producing a summary.".to_string());
+
+            let success = info
+                .as_ref()
+                .map(|i| {
+                    matches!(
+                        i.state,
+                        crate::agent::subagent::types::SubagentState::Completed
+                    )
+                })
+                .unwrap_or(false);
+
+            let tokens_used = info.as_ref().map(|i| i.tokens_used).unwrap_or(0);
+            let turns_executed = info.as_ref().map(|i| i.turns_executed).unwrap_or(0);
+
+            let mut merged = false;
+            if auto_merge
+                && isolate_worktree
+                && success
+                && worktree_mgr.merge_worktree(&id).await.is_ok()
+            {
+                let _ = worktree_mgr.remove_worktree(&id).await;
+                merged = true;
+            }
+
+            let sub_res = SubAgentResult {
+                id: id.clone(),
+                task_id: id.clone(),
+                role: role.clone(),
+                success,
+                final_summary: summary.clone(),
+                tokens_used,
+                turns_executed,
+                files_inspected: Vec::new(),
+                files_modified: Vec::new(),
+                worktree_branch: if isolate_worktree {
+                    Some(format!("subagent/{}", id))
+                } else {
+                    None
+                },
+            };
+
+            completed_results.push(FanoutWorkerOutcome {
+                id: id.clone(),
+                role: role.badge().to_string(),
+                isolate_worktree,
+                success,
+                result: sub_res,
+                merged,
+                error: if success { None } else { Some(summary) },
+            });
         }
 
         Ok(Self::format_fanout_summary(&completed_results))
