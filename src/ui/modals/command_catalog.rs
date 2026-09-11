@@ -171,6 +171,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/terminal",
     },
     CommandCatalogItem {
+        name: "/swarm",
+        category: "Multi-Agent & Swarm",
+        shortcut: "Ctrl+S",
+        description: "Toggle interactive subagent swarm activity telemetry drawer",
+        example: "/swarm",
+    },
+    CommandCatalogItem {
         name: "/exit",
         category: "Discovery & Help",
         shortcut: "",

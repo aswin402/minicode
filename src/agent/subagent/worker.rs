@@ -60,236 +60,295 @@ impl SubagentWorker {
     }
 
     /// Executes the subagent loop and returns the final result
-    pub async fn run(&self, provider: Arc<dyn Provider>) -> Result<SubagentResult> {
-        let (prompt, role, id) = {
-            let info = self.info.read().await;
-            (info.prompt.clone(), info.role.clone(), info.id.clone())
-        };
-
-        tracing::info!(subagent_id = %id, role = ?role, "Starting subagent worker");
-
-        let system_prompt = self.build_system_prompt();
-        let mut messages = vec![
-            Message::system(system_prompt.clone()),
-            Message::user(prompt.clone()),
-        ];
-
-        // Filter tools to role's capability whitelist
-        let all_schemas = crate::tools::ToolRegistry::get_tool_schemas();
-        let filtered_tools: Vec<_> = all_schemas
-            .into_iter()
-            .filter(|schema| self.config.tool_whitelist.contains(&schema.name))
-            .collect();
-
-        let model_name = self
-            .config
-            .model
-            .clone()
-            .unwrap_or_else(|| provider.default_model().to_string());
-
-        let options = CompletionOptions {
-            model: model_name,
-            temperature: 0.2,
-            max_tokens: 4096,
-            system_instruction: Some(system_prompt),
-            thinking_budget: None,
-            reasoning_effort: None,
-        };
-
-        let mut files_inspected = Vec::new();
-        let mut files_modified = Vec::new();
-        let mut tokens_used = 0;
-        let mut turns_executed = 0;
-        let mut final_summary = String::new();
-        let mut success = true;
-
-        let bpe = tiktoken_rs::cl100k_base().ok();
-
-        while turns_executed < self.config.max_turns {
-            if self.cancel_flag.load(Ordering::SeqCst) {
-                let mut info = self.info.write().await;
-                info.state = SubagentState::Canceled;
-                return Ok(SubagentResult {
-                    id: id.clone(),
-                    task_id: id,
-                    role,
-                    success: false,
-                    final_summary: "Subagent execution canceled by user".to_string(),
-                    tokens_used,
-                    turns_executed,
-                    files_inspected,
-                    files_modified,
-                    worktree_branch: None,
-                });
-            }
-
-            turns_executed += 1;
-            {
-                let mut info = self.info.write().await;
-                info.turns_executed = turns_executed;
-            }
-
-            // Estimate prompt tokens
-            if let Some(ref tokenizer) = bpe {
-                let prompt_str: String = messages
-                    .iter()
-                    .map(|m| m.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                tokens_used += tokenizer.encode_with_special_tokens(&prompt_str).len();
-                let mut info = self.info.write().await;
-                info.tokens_used = tokens_used;
-            }
-
-            if tokens_used >= self.config.token_budget {
-                tracing::warn!(subagent_id = %id, tokens_used, "Subagent token budget exceeded");
-                final_summary.push_str("\n\n_[Notice: Token budget reached maximum limit]_");
-                break;
-            }
-
-            // Stream completions from provider
-            let mut stream = match provider
-                .stream_completion(&messages, &filtered_tools, &options)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(subagent_id = %id, error = ?e, "Subagent stream error");
-                    success = false;
-                    final_summary = format!("Model completion error: {}", e);
-                    break;
-                }
+    pub fn run<'a>(
+        &'a self,
+        provider: Arc<dyn Provider>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SubagentResult>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let (prompt, role, id) = {
+                let info = self.info.read().await;
+                (info.prompt.clone(), info.role.clone(), info.id.clone())
             };
 
-            let mut iteration_text = String::new();
-            let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+            tracing::info!(subagent_id = %id, role = ?role, "Starting subagent worker");
 
-            while let Some(chunk_res) = stream.next().await {
+            let system_prompt = self.build_system_prompt();
+            let mut messages = vec![
+                Message::system(system_prompt.clone()),
+                Message::user(prompt.clone()),
+            ];
+
+            // Filter tools to role's capability whitelist
+            let all_schemas = crate::tools::ToolRegistry::get_tool_schemas();
+            let filtered_tools: Vec<_> = all_schemas
+                .into_iter()
+                .filter(|schema| self.config.tool_whitelist.contains(&schema.name))
+                .collect();
+
+            let model_name = self
+                .config
+                .model
+                .clone()
+                .unwrap_or_else(|| provider.default_model().to_string());
+
+            let options = CompletionOptions {
+                model: model_name,
+                temperature: 0.2,
+                max_tokens: 4096,
+                system_instruction: Some(system_prompt),
+                thinking_budget: None,
+                reasoning_effort: None,
+            };
+
+            let mut files_inspected = Vec::new();
+            let mut files_modified = Vec::new();
+            let mut tokens_used = 0;
+            let mut turns_executed = 0;
+            let mut final_summary = String::new();
+            let mut success = true;
+
+            while turns_executed < self.config.max_turns {
                 if self.cancel_flag.load(Ordering::SeqCst) {
+                    let mut info = self.info.write().await;
+                    info.state = SubagentState::Canceled;
+                    info.current_tool = None;
+                    info.status_message = Some("Canceled by user".to_string());
+                    info.final_summary = Some("Subagent execution canceled by user".to_string());
+                    return Ok(SubagentResult {
+                        id: id.clone(),
+                        task_id: id,
+                        role,
+                        success: false,
+                        final_summary: "Subagent execution canceled by user".to_string(),
+                        tokens_used,
+                        turns_executed,
+                        files_inspected,
+                        files_modified,
+                        worktree_branch: None,
+                    });
+                }
+
+                turns_executed += 1;
+                {
+                    let mut info = self.info.write().await;
+                    info.turns_executed = turns_executed;
+                    info.current_tool = None;
+                    info.status_message = Some(format!(
+                        "Generating response (turn {}/{})",
+                        turns_executed, self.config.max_turns
+                    ));
+                }
+
+                // Estimate prompt tokens without holding tokenizer across await
+                let prompt_tokens = estimate_prompt_tokens(&messages);
+                tokens_used += prompt_tokens;
+                {
+                    let mut info = self.info.write().await;
+                    info.tokens_used = tokens_used;
+                }
+
+                if tokens_used >= self.config.token_budget {
+                    tracing::warn!(subagent_id = %id, tokens_used, "Subagent token budget exceeded");
+                    final_summary.push_str("\n\n_[Notice: Token budget reached maximum limit]_");
                     break;
                 }
 
-                match chunk_res {
-                    Ok(StreamChunk::Delta(delta)) => {
-                        iteration_text.push_str(&delta);
-                    }
-                    Ok(StreamChunk::ToolCallChunk(tc)) => {
-                        pending_tool_calls.push(tc);
-                    }
-                    Ok(StreamChunk::Usage {
-                        completion_tokens,
-                        prompt_tokens,
-                    }) => {
-                        tokens_used = prompt_tokens + completion_tokens;
-                    }
-                    Ok(StreamChunk::Done) => break,
+                // Stream completions from provider
+                let mut stream = match provider
+                    .stream_completion(&messages, &filtered_tools, &options)
+                    .await
+                {
+                    Ok(s) => s,
                     Err(e) => {
-                        tracing::warn!(subagent_id = %id, error = ?e, "Error chunk in subagent stream");
+                        tracing::error!(subagent_id = %id, error = ?e, "Subagent stream error");
+                        success = false;
+                        final_summary = format!("Model completion error: {}", e);
                         break;
                     }
+                };
+
+                let mut iteration_text = String::new();
+                let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+
+                while let Some(chunk_res) = stream.next().await {
+                    if self.cancel_flag.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    match chunk_res {
+                        Ok(StreamChunk::Delta(delta)) => {
+                            iteration_text.push_str(&delta);
+                        }
+                        Ok(StreamChunk::ToolCallChunk(tc)) => {
+                            pending_tool_calls.push(tc);
+                        }
+                        Ok(StreamChunk::Usage {
+                            completion_tokens,
+                            prompt_tokens,
+                        }) => {
+                            tokens_used = prompt_tokens + completion_tokens;
+                        }
+                        Ok(StreamChunk::Done) => break,
+                        Err(e) => {
+                            tracing::warn!(subagent_id = %id, error = ?e, "Error chunk in subagent stream");
+                            break;
+                        }
+                    }
                 }
-            }
 
-            final_summary = iteration_text.clone();
+                final_summary = iteration_text.clone();
 
-            if pending_tool_calls.is_empty() {
-                // Agent concluded with final response
-                break;
-            }
+                if pending_tool_calls.is_empty() {
+                    // Agent concluded with final response
+                    break;
+                }
 
-            // Record assistant tool calls
-            messages.push(Message::assistant_with_tools(
-                iteration_text,
-                pending_tool_calls.clone(),
-            ));
+                // Record assistant tool calls
+                messages.push(Message::assistant_with_tools(
+                    iteration_text,
+                    pending_tool_calls.clone(),
+                ));
 
-            // Execute each tool call
-            for tool_call in pending_tool_calls {
-                let tool_name = tool_call.name;
-                let args = tool_call.arguments;
-                let call_id = tool_call.id.clone();
+                // Execute each tool call
+                for tool_call in pending_tool_calls {
+                    let tool_name = tool_call.name;
+                    let args = tool_call.arguments;
+                    let call_id = tool_call.id.clone();
 
-                // Enforce Capability Whitelist
-                if !self.config.tool_whitelist.contains(&tool_name) {
-                    tracing::warn!(
-                        subagent_id = %id,
-                        tool = %tool_name,
-                        "Blocked tool execution outside whitelist"
-                    );
-                    let err_msg = format!(
+                    // Enforce Capability Whitelist
+                    if !self.config.tool_whitelist.contains(&tool_name) {
+                        tracing::warn!(
+                            subagent_id = %id,
+                            tool = %tool_name,
+                            "Blocked tool execution outside whitelist"
+                        );
+                        let err_msg = format!(
                         "Error: Tool '{}' is strictly prohibited for subagent role '{}'. Allowed tools: {:?}",
                         tool_name,
                         role.badge(),
                         self.config.tool_whitelist
                     );
-                    messages.push(Message::tool_result(call_id, tool_name, err_msg));
-                    continue;
-                }
+                        messages.push(Message::tool_result(call_id, tool_name, err_msg));
+                        continue;
+                    }
 
-                // Track file operations
-                if let Some(path_val) = args.get("path").or_else(|| args.get("file_path")) {
-                    if let Some(p) = path_val.as_str() {
-                        if tool_name == "write_file" || tool_name == "patch_file" {
-                            if !files_modified.contains(&p.to_string()) {
-                                files_modified.push(p.to_string());
+                    // Track file operations
+                    if let Some(path_val) = args.get("path").or_else(|| args.get("file_path")) {
+                        if let Some(p) = path_val.as_str() {
+                            if tool_name == "write_file" || tool_name == "patch_file" {
+                                if !files_modified.contains(&p.to_string()) {
+                                    files_modified.push(p.to_string());
+                                }
+                            } else if !files_inspected.contains(&p.to_string()) {
+                                files_inspected.push(p.to_string());
                             }
-                        } else if !files_inspected.contains(&p.to_string()) {
-                            files_inspected.push(p.to_string());
                         }
                     }
+
+                    // Update live tool telemetry
+                    {
+                        let mut info = self.info.write().await;
+                        info.current_tool = Some(tool_name.clone());
+                        info.status_message = Some(format!("Executing `{}`", tool_name));
+                    }
+
+                    // Execute tool via ToolRegistry
+                    let tool_res = crate::tools::ToolRegistry::dispatch(
+                        &self.workspace_root,
+                        &call_id,
+                        &tool_name,
+                        &args,
+                        None,
+                        turns_executed,
+                    )
+                    .await;
+
+                    // Reset tool telemetry after execution
+                    {
+                        let mut info = self.info.write().await;
+                        info.current_tool = None;
+                        info.status_message = Some(format!("Completed `{}`", tool_name));
+                    }
+
+                    messages.push(Message::tool_result(call_id, tool_name, tool_res.output));
                 }
-
-                // Execute tool via ToolRegistry
-                let tool_res = crate::tools::ToolRegistry::dispatch(
-                    &self.workspace_root,
-                    &call_id,
-                    &tool_name,
-                    &args,
-                    None,
-                    turns_executed,
-                )
-                .await;
-
-                messages.push(Message::tool_result(call_id, tool_name, tool_res.output));
             }
-        }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
 
-        {
-            let mut info = self.info.write().await;
-            info.state = if success {
-                SubagentState::Completed
-            } else {
-                SubagentState::Failed(final_summary.clone())
-            };
-            info.finished_at_secs = Some(now);
-            info.tokens_used = tokens_used;
-            info.turns_executed = turns_executed;
-        }
+            {
+                let mut info = self.info.write().await;
+                info.state = if success {
+                    SubagentState::Completed
+                } else {
+                    SubagentState::Failed(final_summary.clone())
+                };
+                info.finished_at_secs = Some(now);
+                info.tokens_used = tokens_used;
+                info.turns_executed = turns_executed;
+                info.current_tool = None;
+                info.status_message = Some(if success {
+                    "Completed".to_string()
+                } else {
+                    "Failed".to_string()
+                });
+                info.final_summary = Some(final_summary.clone());
+            }
 
-        tracing::info!(
-            subagent_id = %id,
-            turns = turns_executed,
-            tokens = tokens_used,
-            success,
-            "Subagent worker finished"
-        );
+            // Auto-deposit subagent findings into shared scratchpad
+            let scratchpad = crate::agent::subagent::get_global_scratchpad();
+            let report_title = format!("Subagent {} ({}) Report", id, role.badge());
+            scratchpad.write_entry(
+                &format!("subagent_{}", id),
+                &report_title,
+                &final_summary,
+                &id,
+            );
+            scratchpad.write_entry(
+                &format!("subagent/{}", id),
+                &report_title,
+                &final_summary,
+                &id,
+            );
+            let _ = scratchpad.save_to_disk(&self.workspace_root);
 
-        Ok(SubagentResult {
-            id: id.clone(),
-            task_id: id,
-            role,
-            success,
-            final_summary,
-            tokens_used,
-            turns_executed,
-            files_inspected,
-            files_modified,
-            worktree_branch: None,
+            tracing::info!(
+                subagent_id = %id,
+                turns = turns_executed,
+                tokens = tokens_used,
+                success,
+                "Subagent worker finished"
+            );
+
+            Ok(SubagentResult {
+                id: id.clone(),
+                task_id: id,
+                role,
+                success,
+                final_summary,
+                tokens_used,
+                turns_executed,
+                files_inspected,
+                files_modified,
+                worktree_branch: None,
+            })
         })
+    }
+}
+
+fn estimate_prompt_tokens(messages: &[Message]) -> usize {
+    let prompt_str: String = messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Ok(bpe) = tiktoken_rs::cl100k_base() {
+        bpe.encode_with_special_tokens(&prompt_str).len()
+    } else {
+        prompt_str.len() / 4
     }
 }

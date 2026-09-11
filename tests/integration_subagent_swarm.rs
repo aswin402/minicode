@@ -305,3 +305,167 @@ async fn test_worktree_manager_isolation_lifecycle() {
     mgr.remove_worktree(worker_id).await.unwrap();
     assert!(!worktree_path.exists());
 }
+
+#[test]
+fn test_subagent_drawer_navigation_and_state() {
+    use minicode::ui::SubagentDrawer;
+
+    let mut drawer = SubagentDrawer::new();
+    assert!(!drawer.is_open);
+    assert_eq!(drawer.selected_index, 0);
+    assert!(!drawer.inspect_mode);
+
+    // Toggle open
+    drawer.toggle();
+    assert!(drawer.is_open);
+
+    // Toggle inspect mode
+    drawer.toggle_inspect();
+    assert!(drawer.inspect_mode);
+    drawer.toggle_inspect();
+    assert!(!drawer.inspect_mode);
+
+    // Navigation with 3 items
+    drawer.next(3);
+    assert_eq!(drawer.selected_index, 1);
+    drawer.next(3);
+    assert_eq!(drawer.selected_index, 2);
+    drawer.next(3); // wrap around
+    assert_eq!(drawer.selected_index, 0);
+
+    drawer.previous(3); // wrap backward
+    assert_eq!(drawer.selected_index, 2);
+    drawer.previous(3);
+    assert_eq!(drawer.selected_index, 1);
+
+    // Empty list navigation
+    drawer.next(0);
+    assert_eq!(drawer.selected_index, 0);
+    drawer.previous(0);
+    assert_eq!(drawer.selected_index, 0);
+
+    // Close
+    drawer.close();
+    assert!(!drawer.is_open);
+    assert!(!drawer.inspect_mode);
+}
+
+#[test]
+fn test_subagent_info_telemetry_fields() {
+    use minicode::agent::subagent::SubagentInfo;
+
+    let mut info = SubagentInfo::new(
+        "worker-42".to_string(),
+        SubagentRole::CodeReviewer,
+        "Review git diff".to_string(),
+    );
+    assert_eq!(info.id, "worker-42");
+    assert_eq!(info.role, SubagentRole::CodeReviewer);
+    assert!(info.current_tool.is_none());
+    assert_eq!(info.status_message.as_deref(), Some("Initialized"));
+    assert!(!info.isolate_worktree);
+    assert!(info.final_summary.is_none());
+
+    // Update telemetry
+    info.current_tool = Some("patch_file".to_string());
+    info.status_message = Some("Executing `patch_file`".to_string());
+    info.isolate_worktree = true;
+    info.final_summary = Some("Patched successfully".to_string());
+
+    // Serialize & deserialize roundtrip
+    let json_val = serde_json::to_value(&info).unwrap();
+    let deserialized: SubagentInfo = serde_json::from_value(json_val).unwrap();
+    assert_eq!(deserialized.id, "worker-42");
+    assert_eq!(deserialized.current_tool.as_deref(), Some("patch_file"));
+    assert_eq!(
+        deserialized.status_message.as_deref(),
+        Some("Executing `patch_file`")
+    );
+    assert!(deserialized.isolate_worktree);
+    assert_eq!(
+        deserialized.final_summary.as_deref(),
+        Some("Patched successfully")
+    );
+}
+
+#[tokio::test]
+async fn test_dispatch_subagent_tool_and_manage_await() {
+    let temp = tempdir().unwrap();
+    let root = temp.path();
+
+    // 1. Dispatch a background researcher subagent
+    let dispatch_args = json!({
+        "role": "researcher",
+        "prompt": "Find all usages of SubagentDrawer",
+        "isolate_worktree": false,
+        "token_budget": 5000,
+        "max_turns": 2
+    });
+
+    let res = ToolRegistry::dispatch(
+        root,
+        "call_dispatch_1",
+        "dispatch_subagent",
+        &dispatch_args,
+        None,
+        1,
+    )
+    .await;
+
+    assert!(res.success);
+    assert!(res
+        .output
+        .contains("Background subagent spawned successfully"));
+    assert!(res.output.contains("Worker ID"));
+    assert!(res.output.contains("Researcher"));
+    assert!(res.output.contains("Ctrl+S"));
+
+    // Extract worker ID from output
+    let worker_id_line = res
+        .output
+        .lines()
+        .find(|l| l.contains("Worker ID"))
+        .unwrap_or_default();
+    let id_start = worker_id_line.find('`').unwrap_or(0) + 1;
+    let id_end = worker_id_line.rfind('`').unwrap_or(worker_id_line.len());
+    let worker_id = &worker_id_line[id_start..id_end];
+
+    // 2. Query intermediate status via manage_subagents
+    let status_args = json!({
+        "action": "status",
+        "subagent_id": worker_id
+    });
+
+    let status_res = ToolRegistry::dispatch(
+        root,
+        "call_status_1",
+        "manage_subagents",
+        &status_args,
+        None,
+        2,
+    )
+    .await;
+
+    assert!(status_res.success);
+    assert!(status_res.output.contains(worker_id));
+
+    // 3. Await completion with short timeout
+    let await_args = json!({
+        "action": "await",
+        "subagent_id": worker_id,
+        "timeout_secs": 2
+    });
+
+    let await_res = ToolRegistry::dispatch(
+        root,
+        "call_await_1",
+        "manage_subagents",
+        &await_args,
+        None,
+        3,
+    )
+    .await;
+
+    assert!(await_res.success);
+    assert!(await_res.output.contains(worker_id));
+}

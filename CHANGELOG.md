@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] — 2026-09-11
+
+### Background Subagent Swarm with TUI Activity Drawer (`dispatch_subagent`)
+
+#### 💡 Ideas & Inspirations
+- **Non-Blocking Background Orchestration**: Real-world software engineering workflows often require concurrent long-running tasks (e.g. static audits, deep research, test execution, security scans) running concurrently without blocking the primary agent conversation loop.
+- **TUI Activity Telemetry Drawer**: Having a collapsible, bottom-docked activity drawer (`Ctrl+S` or `/swarm`) gives users complete live visibility into active workers, showing real-time tools being dispatched, token consumption, elapsed time, and structured reports.
+- **Automatic Report Depositing to Shared Scratchpad**: When background workers finish, their findings are automatically cataloged into `SharedScratchpad` (`subagent_<id>` and `subagent/<id>`), enabling the primary agent to query intermediate status or await final outcomes via `manage_subagents(action="status" | "await" | "list")`.
+
+#### 🚀 Features & Changes
+- **Non-Blocking Tool Dispatch (`dispatch_subagent`) (`src/tools/registry/agent_tools.rs`)**:
+  - Registered `dispatch_subagent` tool schema accepting `role` (`researcher`, `code_reviewer`, `test_engineer`, `security_auditor`, `custom`), `prompt`, `isolate_worktree`, `model`, `token_budget`, `max_turns`, and `system_prompt`.
+  - Spawns background worker immediately and returns assigned worker ID (`<role>-<N>`), isolation status, and live telemetry instructions.
+  - Added `"await"` action to `manage_subagents` with configurable `timeout_secs` for graceful worker synchronization.
+- **Live Telemetry & Worktree Isolation Tracking (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`)**:
+  - Extended `SubagentInfo` with `current_tool`, `status_message`, `isolate_worktree`, and `final_summary`.
+  - Instrumented `SubagentWorker::run` with live telemetry updates before and after tool dispatches.
+  - Automatically writes structured reports into `SharedScratchpad` and persists to `.minicode/scratchpad.json` upon completion or failure.
+- **Interactive TUI Subagent Activity Drawer (`src/ui/subagent_drawer.rs`, `src/app/mod.rs`)**:
+  - Implemented 45% height overlay drawer at the bottom of the viewport toggled via `Ctrl+S` or command `/swarm`.
+  - 2-column split view: Left worker card list with status badges (`Running`, `Completed`, `Failed`, `Canceled`), live tool pills, and token counts; Right detail inspector pane showing complete system/user prompts, telemetry timings, and final summary reports.
+  - Keyboard navigation (`j`/`Down`, `k`/`Up`, `Enter` inspect toggle, `x` cancel selected worker, `a` cancel all, `Esc`/`Ctrl+S` close drawer).
+- **Tool Registry & Concurrency Safety (`src/constants.rs`, `src/tools/concurrency.rs`)**:
+  - Bumped `TOTAL_TOOL_COUNT` from 130 to 131 in `src/constants.rs` with automated schema count validation passing.
+  - Added `SUBAGENT_DRAWER_HEIGHT_PERCENT = 45`.
+  - Classified `dispatch_subagent` as `ToolSafetyLevel::Mutating` in `src/tools/concurrency.rs`.
+- **Command Palette & Catalog Integration (`src/ui/input.rs`, `src/app/commands.rs`, `src/ui/modals/command_catalog.rs`)**:
+  - Registered `/swarm`, `/subagents`, `/workers` in palette commands and command catalog under `CommandCategory::Intelligence`.
+
 ## [0.3.10] — 2026-09-11
 
 ### SWE-bench Fault Localization & Surgical Repair Engine (`locate_fault`, `repair_patch`)

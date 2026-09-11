@@ -794,7 +794,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 130;
+pub const TOTAL_TOOL_COUNT: usize = 131;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -900,6 +900,8 @@ pub const MODAL_SPLIT_SECONDARY_PERCENT: u16 = 58;
 pub const MODAL_SEARCH_INPUT_HEIGHT: u16 = 3;
 /// Percentage of screen height allocated to the terminal drawer overlay
 pub const PTY_DRAWER_HEIGHT_PERCENT: u16 = 40;
+/// Percentage of screen height allocated to the subagent swarm activity drawer overlay
+pub const SUBAGENT_DRAWER_HEIGHT_PERCENT: u16 = 45;
 /// Width in columns for right-aligned token metrics and dollar spend in bottom status bar
 pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 36;
 

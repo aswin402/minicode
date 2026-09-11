@@ -11,6 +11,7 @@ pub mod modals;
 pub mod pty_drawer;
 pub mod selection;
 pub mod status;
+pub mod subagent_drawer;
 pub mod theme;
 pub mod view;
 pub mod welcome;
@@ -32,6 +33,8 @@ pub use markdown::MarkdownRenderer;
 pub use modal::ModalState;
 pub use pty_drawer::PtyDrawer;
 pub use status::{StatusContext, StatusWidgets};
+#[allow(unused_imports)]
+pub use subagent_drawer::SubagentDrawer;
 pub use theme::Theme;
 pub use view::{TimelineContext, TimelineView};
 pub use welcome::{render_welcome_screen, WelcomeContext};

@@ -819,6 +819,9 @@ impl<'a> App<'a> {
                             "/terminal" => {
                                 self.pty_drawer.toggle();
                             }
+                            "/subagents" | "/swarm" | "/workers" => {
+                                self.subagent_drawer.toggle();
+                            }
                             "/streaming" => {
                                 self.modal =
                                     ModalState::new_streaming_select(self.config.agent.streaming);

@@ -47,6 +47,7 @@ pub struct App<'a> {
     timeline: TimelineView,
     input_dock: InputDock<'a>,
     pty_drawer: crate::ui::PtyDrawer,
+    subagent_drawer: crate::ui::SubagentDrawer,
     modal: ModalState,
     model_fetcher: ModelFetcher,
     is_working: bool,
@@ -79,6 +80,7 @@ impl<'a> App<'a> {
             timeline: TimelineView::new(),
             input_dock: InputDock::new(),
             pty_drawer: crate::ui::PtyDrawer::new(),
+            subagent_drawer: crate::ui::SubagentDrawer::new(),
             modal: initial_modal,
             model_fetcher: ModelFetcher::new(),
             is_working: false,
@@ -357,6 +359,12 @@ impl<'a> App<'a> {
                 if self.pty_drawer.is_open {
                     self.pty_drawer.render(frame, frame.area(), &self.theme);
                 }
+
+                // Render Subagent Swarm Activity Drawer if active
+                if self.subagent_drawer.is_open {
+                    self.subagent_drawer
+                        .render(frame, frame.area(), &self.theme);
+                }
             })?;
 
             tokio::select! {
@@ -521,32 +529,42 @@ impl<'a> App<'a> {
                             Event::Mouse(mouse_event) => {
                                 match mouse_event.kind {
                                     MouseEventKind::ScrollUp => {
-                                        if self.pty_drawer.is_open {
+                                        if self.subagent_drawer.is_open {
+                                            let count = crate::agent::subagent::try_get_global_subagent_pool()
+                                                .map(|p| p.snapshot_subagents().len())
+                                                .unwrap_or(0);
+                                            self.subagent_drawer.previous(count);
+                                        } else if self.pty_drawer.is_open {
                                             self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(crate::constants::SCROLL_LINES_NORMAL as usize);
                                         } else {
                                             self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
                                     MouseEventKind::ScrollDown => {
-                                        if self.pty_drawer.is_open {
+                                        if self.subagent_drawer.is_open {
+                                            let count = crate::agent::subagent::try_get_global_subagent_pool()
+                                                .map(|p| p.snapshot_subagents().len())
+                                                .unwrap_or(0);
+                                            self.subagent_drawer.next(count);
+                                        } else if self.pty_drawer.is_open {
                                             self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(crate::constants::SCROLL_LINES_NORMAL as usize);
                                         } else {
                                             self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
                                     MouseEventKind::Down(MouseButton::Left) => {
-                                        if !self.pty_drawer.is_open && !self.modal.is_active() {
+                                        if !self.pty_drawer.is_open && !self.subagent_drawer.is_open && !self.modal.is_active() {
                                             self.timeline.handle_mouse_down(mouse_event.column, mouse_event.row);
                                         }
                                     }
                                     MouseEventKind::Drag(MouseButton::Left) => {
-                                        if !self.pty_drawer.is_open && !self.modal.is_active() {
+                                        if !self.pty_drawer.is_open && !self.subagent_drawer.is_open && !self.modal.is_active() {
                                             self.timeline.handle_mouse_drag(mouse_event.column, mouse_event.row);
                                         }
                                     }
                                     MouseEventKind::Up(MouseButton::Left) => {
                                         let selected_text =
-                                            (!self.pty_drawer.is_open && !self.modal.is_active())
+                                            (!self.pty_drawer.is_open && !self.subagent_drawer.is_open && !self.modal.is_active())
                                                 .then(|| {
                                                     self.timeline.handle_mouse_up(mouse_event.column, mouse_event.row)
                                                 })
@@ -576,6 +594,12 @@ impl<'a> App<'a> {
                                 // Ctrl+T toggles embedded PTY terminal drawer
                                 if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     self.pty_drawer.toggle();
+                                    continue;
+                                }
+
+                                // Ctrl+S toggles Subagent Swarm Activity Drawer
+                                if key_event.code == KeyCode::Char('s') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.subagent_drawer.toggle();
                                     continue;
                                 }
 
@@ -699,6 +723,44 @@ impl<'a> App<'a> {
                                         }
                                         KeyCode::Char(c) => {
                                             self.pty_drawer.handle_char(c);
+                                        }
+                                        _ => {}
+                                    }
+                                    continue;
+                                }
+
+                                // When Subagent Activity Drawer is open, route navigation and worker management
+                                if self.subagent_drawer.is_open {
+                                    let pool = crate::agent::subagent::try_get_global_subagent_pool();
+                                    let worker_count = pool.map(|p| p.snapshot_subagents().len()).unwrap_or(0);
+
+                                    match key_event.code {
+                                        KeyCode::Esc => {
+                                            self.subagent_drawer.close();
+                                        }
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            self.subagent_drawer.previous(worker_count);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            self.subagent_drawer.next(worker_count);
+                                        }
+                                        KeyCode::Enter => {
+                                            self.subagent_drawer.toggle_inspect();
+                                        }
+                                        KeyCode::Char('x') => {
+                                            if let Some(p) = pool {
+                                                let workers = p.snapshot_subagents();
+                                                if let Some(target) = workers.get(self.subagent_drawer.selected_index) {
+                                                    let _ = p.kill_subagent(&target.id).await;
+                                                    self.timeline.add_status(format!("⊘ Terminated subagent worker `{}`", target.id));
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Char('a') => {
+                                            if let Some(p) = pool {
+                                                p.kill_all().await;
+                                                self.timeline.add_status("⊘ Terminated all running subagent workers".to_string());
+                                            }
                                         }
                                         _ => {}
                                     }

@@ -286,6 +286,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("ctrl+t"),
     },
     PaletteCommand {
+        slash_name: "/swarm",
+        title: "Subagent Swarm Drawer",
+        description: "Toggle interactive subagent swarm activity telemetry drawer",
+        category: CommandCategory::Intelligence,
+        shortcut: Some("ctrl+s"),
+    },
+    PaletteCommand {
         slash_name: "/stack",
         title: "Scaffold Stack",
         description: "Interactive onpkg multi-runtime stack wizard",

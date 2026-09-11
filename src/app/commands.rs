@@ -33,6 +33,11 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/subagents" || prompt == "/swarm" || prompt == "/workers" {
+            self.subagent_drawer.toggle();
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/copy" || prompt.starts_with("/copy ") {
             let copy_all = prompt.contains("all");
             let text_to_copy = if copy_all {

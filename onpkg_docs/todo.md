@@ -1687,3 +1687,12 @@
 - [x] 110.5: Develop comprehensive integration test suite in `tests/integration_fault_localizer.rs` covering stack trace parsing, candidate scoring, AST symbol enclosure, verification command execution, and automatic rollback on failure
 - [x] 110.6: Verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.10`, run `./localupdate.sh`, and commit
 
+### Phase 111: Background Subagent Swarm with TUI Activity Drawer (v0.3.11)
+- [x] 111.1: Extend `SubagentInfo` telemetry in `src/agent/subagent/types.rs` (`current_tool`, `status_message`, `isolate_worktree`, `final_summary`) and update `SubagentWorker` in `src/agent/subagent/worker.rs` with live tool execution tracking and automatic `SharedScratchpad` report deposits
+- [x] 111.2: Implement background supervisor methods in `src/agent/subagent/pool.rs` (`spawn_background_worker`, zero-lock `snapshot_subagents()`, provider management, and telemetry table formatting)
+- [x] 111.3: Design and implement interactive TUI `SubagentDrawer` in `src/ui/subagent_drawer.rs` with two-column layout, status cards, active tool indicators, detail inspector, and keyboard navigation (`j/k`, `Enter`, `x`, `a`, `Esc`)
+- [x] 111.4: Wire `SubagentDrawer` into `App` in `src/app/mod.rs` and `src/app/commands.rs` with `Ctrl+S` keybinding and `/subagents`, `/swarm`, `/workers` palette commands
+- [x] 111.5: Register `dispatch_subagent` tool schema & handler, add `"await"` action to `manage_subagents` in `src/tools/registry/agent_tools.rs`, bump `TOTAL_TOOL_COUNT` (130 → 131) in `src/constants.rs`, and classify safety level in `src/tools/concurrency.rs`
+- [x] 111.6: Develop comprehensive integration test suite in `tests/integration_subagent_swarm.rs`, verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.11`, run `./localupdate.sh`, and commit
+
+

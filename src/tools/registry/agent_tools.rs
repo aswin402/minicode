@@ -402,6 +402,45 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "dispatch_subagent".to_string(),
+            description: "Dispatch an autonomous background subagent worker (Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped task concurrently in the background without blocking the primary agent. Returns immediately with the assigned worker ID and live tracking status.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "role": {
+                        "type": "string",
+                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+                        "description": "Specialized role preset defining the tool capability whitelist and system prompt"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Clear and detailed task instructions for the subagent worker"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model override for the subagent worker"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Maximum token budget for the subagent task (default: 50,000)"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Maximum tool execution turns before finalizing"
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "Optional custom system prompt override"
+                    },
+                    "isolate_worktree": {
+                        "type": "boolean",
+                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for mutating roles (test_engineer, custom)."
+                    }
+                },
+                "required": ["role", "prompt"]
+            }),
+        },
+        ToolSchema {
             name: "send_message".to_string(),
             description: "Send a follow-up instruction or message to an active subagent in the swarm pool.".to_string(),
             parameters: json!({
@@ -421,18 +460,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "manage_subagents".to_string(),
-            description: "Inspect, list, monitor, or terminate active subagent workers in the swarm pool.".to_string(),
+            description: "Inspect, list, monitor, await completion, or terminate active subagent workers in the swarm pool.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "kill", "kill_all"],
-                        "description": "Management action: 'list' all subagents, get 'status' of specific subagent, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "await", "kill", "kill_all"],
+                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
-                        "description": "Required when action is 'status' or 'kill'"
+                        "description": "Identifier of the target subagent (required for 'status', 'kill', and 'await')"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait when action is 'await' (default: 60)"
                     }
                 },
                 "required": ["action"]
@@ -1112,6 +1155,81 @@ pub async fn dispatch(
 
             Ok(report)
         }.await),
+        "dispatch_subagent" => Some(async {
+            let role_str = args.get("role").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "dispatch_subagent".to_string(),
+                    reason: "Missing required argument 'role'".to_string(),
+                }
+            })?;
+            let prompt = args.get("prompt").and_then(|v| v.as_str()).ok_or_else(|| {
+                ToolError::InvalidArguments {
+                    name: "dispatch_subagent".to_string(),
+                    reason: "Missing required argument 'prompt'".to_string(),
+                }
+            })?;
+
+            let role = match role_str.to_lowercase().as_str() {
+                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
+                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
+                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
+                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
+            };
+
+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
+            if let Some(model) = args.get("model").and_then(|v| v.as_str()) {
+                config.model = Some(model.to_string());
+            }
+            if let Some(budget) = parse_u64_param(args.get("token_budget")) {
+                config.token_budget = budget as usize;
+            }
+            if let Some(max_t) = parse_u64_param(args.get("max_turns")) {
+                config.max_turns = max_t as usize;
+            }
+            if let Some(sys_prompt) = args.get("system_prompt").and_then(|v| v.as_str()) {
+                config.system_prompt_override = Some(sys_prompt.to_string());
+            }
+
+            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+            let isolate_worktree = args
+                .get("isolate_worktree")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(!matches!(
+                    role,
+                    crate::agent::subagent::SubagentRole::Researcher
+                        | crate::agent::subagent::SubagentRole::CodeReviewer
+                        | crate::agent::subagent::SubagentRole::SecurityAuditor
+                ));
+
+            let provider = pool.get_or_create_provider().await;
+            let id = pool
+                .spawn_background_worker(role.clone(), prompt, Some(config), provider, isolate_worktree)
+                .await?;
+
+            let isolation_label = if isolate_worktree {
+                format!("Dedicated Git Worktree (`subagent/{}`)", id)
+            } else {
+                "Shared Read-Only Context".to_string()
+            };
+
+            let out = format!(
+                "✔ Background subagent spawned successfully!\n\
+                 • **Worker ID**: `{}`\n\
+                 • **Role**: {}\n\
+                 • **Isolation Mode**: {}\n\
+                 • **Status**: ◉ Running in background\n\
+                 • **Live Telemetry**: Press `Ctrl+S` in TUI or run `/swarm` to open the Activity Drawer.\n\
+                 • **Await Completion**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")` when ready to inspect results, or `manage_subagents(action=\"status\", subagent_id=\"{}\")` for intermediate updates.",
+                id,
+                role.badge(),
+                isolation_label,
+                id,
+                id
+            );
+
+            Ok(out)
+        }.await),
         "send_message" => Some(async {
             let subagent_id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
                 ToolError::InvalidArguments {
@@ -1170,6 +1288,67 @@ pub async fn dispatch(
                         Ok(format!("ℹ No subagent found with ID '{}'", id))
                     }
                 }
+                "await" => {
+                    let id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                        ToolError::InvalidArguments {
+                            name: "manage_subagents".to_string(),
+                            reason: "Missing required argument 'subagent_id' for await action".to_string(),
+                        }
+                    })?;
+                    let timeout_secs = parse_u64_param(args.get("timeout_secs")).unwrap_or(60);
+                    let start = std::time::Instant::now();
+                    let max_dur = std::time::Duration::from_secs(timeout_secs);
+
+                    let mut final_info = None;
+                    while start.elapsed() < max_dur {
+                        if let Some(info) = pool.get_subagent(id).await {
+                            if !matches!(info.state, crate::agent::subagent::types::SubagentState::Running | crate::agent::subagent::types::SubagentState::Idle) {
+                                final_info = Some(info);
+                                break;
+                            }
+                        } else {
+                            return Ok(format!("ℹ No subagent found with ID '{}'", id));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+
+                    if let Some(info) = final_info {
+                        let scratchpad = crate::agent::subagent::get_global_scratchpad();
+                        let scratchpad_content = scratchpad
+                            .read_entry(&format!("subagent_{}", id))
+                            .or_else(|| scratchpad.read_entry(&format!("subagent/{}", id)))
+                            .map(|e| e.content)
+                            .or(info.final_summary.clone())
+                            .unwrap_or_else(|| "No output report recorded.".to_string());
+
+                        Ok(format!(
+                            "✔ Subagent `{}` has finished execution (State: {:?})!\n\
+                             • **Role**: {}\n\
+                             • **Turns Executed**: {}\n\
+                             • **Tokens Used**: {}\n\
+                             • **Isolation**: {}\n\n\
+                             ### Findings & Outcome Summary\n\
+                             {}",
+                            info.id,
+                            info.state,
+                            info.role.badge(),
+                            info.turns_executed,
+                            info.tokens_used,
+                            if info.isolate_worktree { "Git Worktree" } else { "Read-Only / Main" },
+                            scratchpad_content
+                        ))
+                    } else {
+                        let current_info = pool.get_subagent(id).await;
+                        let detail = current_info
+                            .as_ref()
+                            .and_then(|i| i.status_message.clone())
+                            .unwrap_or_else(|| "Running".to_string());
+                        Ok(format!(
+                            "⏳ Subagent `{}` is still executing after {}s timeout.\n• Current Status: {}\n• Use 'manage_subagents(action=\"await\", subagent_id=\"{}\")' to continue waiting, or press Ctrl+S to monitor live telemetry in the TUI drawer.",
+                            id, timeout_secs, detail, id
+                        ))
+                    }
+                }
                 "kill" => {
                     let id = args.get("subagent_id").and_then(|v| v.as_str()).ok_or_else(|| {
                         ToolError::InvalidArguments {
@@ -1186,7 +1365,7 @@ pub async fn dispatch(
                 }
                 other => Err(ToolError::InvalidArguments {
                     name: "manage_subagents".to_string(),
-                    reason: format!("Unknown action '{}'. Valid actions: list, status, kill, kill_all", other),
+                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, kill, kill_all", other),
                 }.into()),
             }
         }.await),

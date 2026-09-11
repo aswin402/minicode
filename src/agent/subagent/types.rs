@@ -196,6 +196,14 @@ pub struct SubagentInfo {
     pub turns_executed: usize,
     pub started_at_secs: u64,
     pub finished_at_secs: Option<u64>,
+    #[serde(default)]
+    pub current_tool: Option<String>,
+    #[serde(default)]
+    pub status_message: Option<String>,
+    #[serde(default)]
+    pub isolate_worktree: bool,
+    #[serde(default)]
+    pub final_summary: Option<String>,
 }
 
 impl SubagentInfo {
@@ -214,6 +222,10 @@ impl SubagentInfo {
             turns_executed: 0,
             started_at_secs: now,
             finished_at_secs: None,
+            current_tool: None,
+            status_message: Some("Initialized".to_string()),
+            isolate_worktree: false,
+            final_summary: None,
         }
     }
 }
