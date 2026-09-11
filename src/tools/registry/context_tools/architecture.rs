@@ -213,7 +213,7 @@ pub async fn dispatch(
         "test_coverage_gaps" => Some((|| {
             let target_file = param::opt_str(args, "target_file");
             let untested_only = param::opt_bool(args, "untested_only", false);
-            let min_risk = args.get("min_risk").and_then(|v| v.as_f64());
+            let min_risk = param::get_f64(args, "min_risk");
 
             let mut graph = crate::context::graph::CodeGraph::new();
             let _ = graph.build_graph(workspace_root);

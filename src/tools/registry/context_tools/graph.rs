@@ -1,7 +1,6 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::{Result, ToolError};
 use crate::tools::param;
-use crate::tools::parse_u64_param;
 use serde_json::json;
 use std::path::Path;
 
@@ -239,18 +238,8 @@ pub async fn dispatch(
 
             match action {
                 "extract_function" => {
-                    let start_line = parse_u64_param(args.get("start_line"))
-                        .map(|v| v as usize)
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "ast_refactor".to_string(),
-                            reason: "Missing 'start_line'".to_string(),
-                        })?;
-                    let end_line = parse_u64_param(args.get("end_line"))
-                        .map(|v| v as usize)
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "ast_refactor".to_string(),
-                            reason: "Missing 'end_line'".to_string(),
-                        })?;
+                    let start_line = param::require_usize(args, "start_line", "ast_refactor")?;
+                    let end_line = param::require_usize(args, "end_line", "ast_refactor")?;
                     let new_fn_name =
                         param::opt_str(args, "new_name").unwrap_or("extracted_helper");
                     let params = param::opt_str(args, "params").unwrap_or("");

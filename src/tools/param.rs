@@ -53,6 +53,15 @@ pub fn opt_usize(args: &Value, key: &str, default: usize) -> usize {
     get_usize(args, key).unwrap_or(default)
 }
 
+/// Extracts a mandatory `usize` parameter or returns `ToolError::InvalidArguments`
+#[allow(dead_code)]
+pub fn require_usize(args: &Value, key: &str, tool_name: &str) -> Result<usize, ToolError> {
+    get_usize(args, key).ok_or_else(|| ToolError::InvalidArguments {
+        name: tool_name.to_string(),
+        reason: format!("Missing required argument '{}'", key),
+    })
+}
+
 /// Extracts an optional `u64` parameter using permissive parsing
 #[allow(dead_code)]
 pub fn opt_u64(args: &Value, key: &str) -> Option<u64> {
@@ -112,18 +121,22 @@ pub fn require_array<'a>(
 
 /// Extracts an optional `f64` parameter (accepts JSON number or float string)
 #[allow(dead_code)]
+pub fn get_f64(args: &Value, key: &str) -> Option<f64> {
+    args.get(key).and_then(|v| {
+        if let Some(n) = v.as_f64() {
+            Some(n)
+        } else if let Some(s) = v.as_str() {
+            s.parse::<f64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Extracts an optional `f64` parameter, falling back to default
+#[allow(dead_code)]
 pub fn opt_f64(args: &Value, key: &str, default: f64) -> f64 {
-    args.get(key)
-        .and_then(|v| {
-            if let Some(n) = v.as_f64() {
-                Some(n)
-            } else if let Some(s) = v.as_str() {
-                s.parse::<f64>().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(default)
+    get_f64(args, key).unwrap_or(default)
 }
 
 #[cfg(test)]

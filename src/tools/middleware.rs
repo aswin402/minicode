@@ -188,7 +188,7 @@ impl ToolMiddleware for DiffMiddleware {
             return result;
         }
 
-        let file_path = match ctx.args.get("path").and_then(|v| v.as_str()) {
+        let file_path = match crate::tools::param::opt_str(ctx.args, "path") {
             Some(p) => p,
             None => return result,
         };

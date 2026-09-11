@@ -2,7 +2,8 @@ use crate::agent::provider::ToolSchema;
 use crate::context::explorer::CodeExploreEngine;
 use crate::context::graph::CodeGraph;
 use crate::context::layers::LayerClassifier;
-use crate::error::{Result, ToolError};
+use crate::error::Result;
+use crate::tools::param;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::Path;
@@ -64,23 +65,14 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "code_explore" => {
-            let query = match args.get("query").and_then(|v| v.as_str()) {
-                Some(q) => q,
-                None => {
-                    return Some(Err(ToolError::InvalidArguments {
-                        name: "code_explore".to_string(),
-                        reason: "Missing required 'query' argument".to_string(),
-                    }
-                    .into()));
-                }
+            let query = match param::require_str(args, "query", "code_explore") {
+                Ok(q) => q,
+                Err(e) => return Some(Err(e.into())),
             };
 
-            let symbol = args.get("symbol").and_then(|v| v.as_str());
-            let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-            let include_source = args
-                .get("include_source")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let symbol = param::opt_str(args, "symbol");
+            let max_depth = param::opt_usize(args, "max_depth", 2);
+            let include_source = param::opt_bool(args, "include_source", true);
 
             let mut graph = CodeGraph::new();
             if let Err(e) = graph.build_graph(workspace_root) {
@@ -100,17 +92,8 @@ pub async fn dispatch(
             }
         }
         "diff_impact" => {
-            let staged_only = args
-                .get("staged_only")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            let explicit_files: Option<Vec<String>> =
-                args.get("files").and_then(|v| v.as_array()).map(|arr| {
-                    arr.iter()
-                        .filter_map(|s| s.as_str().map(|str_val| str_val.to_string()))
-                        .collect()
-                });
+            let staged_only = param::opt_bool(args, "staged_only", false);
+            let explicit_files = param::opt_string_array(args, "files");
 
             let modified_files = if let Some(files) = explicit_files {
                 files
