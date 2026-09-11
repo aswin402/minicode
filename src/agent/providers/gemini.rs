@@ -354,7 +354,7 @@ impl Provider for GeminiProvider {
                                 .get("retry-after")
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(|s| s.trim().parse::<u64>().ok())
-                                .or(Some(5));
+                                .or(Some(crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS));
                             yield Err(ProviderError::RateLimited {
                                 retry_after_secs: retry_after,
                             }

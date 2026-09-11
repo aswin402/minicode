@@ -47,7 +47,7 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn openai(api_key: impl Into<String>) -> Self {
-        let base_url = std::env::var("OPENAI_BASE_URL")
+        let base_url = std::env::var(crate::constants::ENV_OPENAI_BASE_URL)
             .unwrap_or_else(|_| crate::constants::OPENAI_DEFAULT_BASE_URL.to_string());
         Self::new(
             "openai",
@@ -209,9 +209,9 @@ impl OpenAiCompatibleProvider {
                     });
                 }
             } else if model.starts_with("o1") || model.starts_with("o3") {
-                let effort = if budget <= 4096 {
+                let effort = if budget <= crate::constants::OPENAI_REASONING_LOW_MAX_TOKENS {
                     "low"
-                } else if budget <= 16000 {
+                } else if budget <= crate::constants::OPENAI_REASONING_MEDIUM_MAX_TOKENS {
                     "medium"
                 } else {
                     "high"
@@ -263,7 +263,7 @@ impl Provider for OpenAiCompatibleProvider {
         if self.provider_name == "openrouter" {
             req_builder = req_builder
                 .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
-                .header("X-Title", "minicode");
+                .header("X-Title", crate::constants::APP_NAME);
         }
 
         let request = req_builder.json(&request_body);
@@ -405,7 +405,7 @@ impl Provider for OpenAiCompatibleProvider {
                                 .get("retry-after")
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(|s| s.trim().parse::<u64>().ok())
-                                .or(Some(5));
+                                .or(Some(crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS));
                             yield Err(ProviderError::RateLimited {
                                 retry_after_secs: retry_after,
                             }

@@ -53,13 +53,13 @@ pub fn create_provider_with_base_url(
             "groq",
             api_key,
             custom_base_url.unwrap_or(crate::constants::GROQ_BASE_URL),
-            "llama-3.3-70b-versatile",
+            crate::constants::GROQ_DEFAULT_MODEL,
         ))),
         "together" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "together",
             api_key,
             custom_base_url.unwrap_or(crate::constants::TOGETHER_BASE_URL),
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            crate::constants::TOGETHER_DEFAULT_MODEL,
         ))),
         "minimax" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "minimax",
@@ -89,7 +89,7 @@ pub fn create_provider_with_base_url(
                 api_key
             },
             custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL),
-            "qwen2.5-coder",
+            crate::constants::OLLAMA_DEFAULT_MODEL,
         ))),
         "lmstudio" | "lm-studio" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "lmstudio",
@@ -105,7 +105,7 @@ pub fn create_provider_with_base_url(
             "vllm",
             if api_key.is_empty() { "none" } else { api_key },
             custom_base_url.unwrap_or(crate::constants::VLLM_DEFAULT_BASE_URL),
-            "default",
+            crate::constants::VLLM_DEFAULT_MODEL,
         ))),
         "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
             Ok(Box::new(OpenAiCompatibleProvider::new(

@@ -477,7 +477,7 @@ impl ModelFetcher {
             .client
             .get(crate::constants::OPENROUTER_MODELS_URL)
             .header("HTTP-Referer", crate::constants::PROJECT_REPO_URL)
-            .header("X-Title", "minicode");
+            .header("X-Title", crate::constants::APP_NAME);
 
         if !api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", api_key));

@@ -4,6 +4,8 @@
 // === Directory & File Names ===
 /// Name of global configuration directory (~/.config/minicode)
 pub const CONFIG_DIR_NAME: &str = "minicode";
+/// Application binary and package name
+pub const APP_NAME: &str = "minicode";
 /// Name of workspace-local hidden configuration directory (.minicode)
 pub const WORKSPACE_DIR_NAME: &str = ".minicode";
 /// Standard configuration file name (config.toml)
@@ -573,6 +575,26 @@ pub const MAX_THINKING_BUDGET_TOKENS: usize = 64_000;
 pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
 /// Mistral default model used when config omits one
 pub const MISTRAL_DEFAULT_MODEL: &str = "codestral-latest";
+/// Groq default model used when config omits one
+pub const GROQ_DEFAULT_MODEL: &str = "llama-3.3-70b-versatile";
+/// Together AI default model used when config omits one
+pub const TOGETHER_DEFAULT_MODEL: &str = "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+/// Ollama default model used when config omits one
+pub const OLLAMA_DEFAULT_MODEL: &str = "qwen2.5-coder";
+/// vLLM default model used when config omits one
+pub const VLLM_DEFAULT_MODEL: &str = "default";
+
+/// Default fallback retry delay in seconds when 429 response omits retry-after
+pub const PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS: u64 = 5;
+/// Additional token headroom above thinking budget required by Anthropic
+pub const ANTHROPIC_THINKING_HEADROOM_TOKENS: usize = 4096;
+/// Initial dummy user message used when conversation history starts with assistant
+pub const ANTHROPIC_INIT_USER_PROMPT: &str = "Begin conversation.";
+/// OpenAI reasoning effort token budget thresholds
+pub const OPENAI_REASONING_LOW_MAX_TOKENS: usize = 4096;
+pub const OPENAI_REASONING_MEDIUM_MAX_TOKENS: usize = 16_000;
+/// Environment variable name for custom OpenAI API base URL override
+pub const ENV_OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
 
 // === Context, Search & Channel Tuning ===
 /// Weight factor for prefix token match in BM25 scoring

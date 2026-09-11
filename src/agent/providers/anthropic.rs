@@ -185,7 +185,7 @@ impl AnthropicProvider {
                     0,
                     serde_json::json!({
                         "role": "user",
-                        "content": "Begin conversation."
+                        "content": crate::constants::ANTHROPIC_INIT_USER_PROMPT
                     }),
                 );
             }
@@ -238,7 +238,7 @@ impl AnthropicProvider {
         // Anthropic requires max_tokens > thinking.budget_tokens
         let max_tokens = if let Some(budget) = thinking_budget {
             if options.max_tokens <= budget {
-                budget + 4096
+                budget + crate::constants::ANTHROPIC_THINKING_HEADROOM_TOKENS
             } else {
                 options.max_tokens
             }
@@ -512,7 +512,7 @@ impl Provider for AnthropicProvider {
                                 .get("retry-after")
                                 .and_then(|v| v.to_str().ok())
                                 .and_then(|s| s.trim().parse::<u64>().ok())
-                                .or(Some(5));
+                                .or(Some(crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS));
                             yield Err(ProviderError::RateLimited {
                                 retry_after_secs: retry_after,
                             }.into());
