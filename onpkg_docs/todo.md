@@ -1703,5 +1703,37 @@
 - [x] 112.5: Add `AgentEvent::AntiThrashTripped` event variant to `src/agent/types.rs`, handle in `src/app/mod.rs` (hydrate and live event loop), and format in `src/logging/formatter.rs`
 - [x] 112.6: Develop comprehensive integration test suite in `tests/integration_anti_thrash.rs`, verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.12`, run `./localupdate.sh`, and commit
 
+### Phase 113: Universal Parameter Resilience, Type Coercion & Schema Harmonization (v0.3.13)
+- [ ] 113.1: Implement universal parameter extraction helpers in `src/tools/param.rs` (`require_path`, `opt_path`, `require_command`, `opt_command`, `require_query`, `opt_query`, `require_search_block`, `require_replace_block`, `opt_limit`) supporting all standard aliases (`file`, `cmd`, `search`, etc.)
+- [ ] 113.2: Implement resilient boolean coercion (`"true"`, `"false"`, `"1"`, `"0"`, `"yes"`, `"no"`) and array coercion (coercing single string `"file.rs"` into `vec!["file.rs"]`) in `src/tools/param.rs`
+- [ ] 113.3: Migrate tool registries (`fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `context_tools.rs`, `git_tools.rs`) to use the new tolerant parameter helpers and append `"additionalProperties": false`
+- [ ] 113.4: Fix parameter schema inconsistencies: make `status` explicit in `update_progress` (remove silent `"Completed"` fallback), and align `lsp_goto_definition` / `lsp_find_references` schema requirements with implementation
+- [ ] 113.5: Write comprehensive unit tests in `src/tools/param.rs` and integration tests in `tests/integration_param_resilience.rs`
+- [ ] 113.6: Verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.13`, run `./localupdate.sh`, and commit
+
+### Phase 114: Truthful Execution Telemetry, Fault Localization & Circuit Breaker Accuracy (v0.3.14)
+- [ ] 114.1: Fix `ToolResult.success` in `src/tools/exec.rs` to return `success: false` when command exits with non-zero status
+- [ ] 114.2: Fix `repair_patch` in `src/tools/registry/fs_tools.rs` to return `success: false` when verification fails and rollback is triggered
+- [ ] 114.3: Ensure `src/agent/stuck_detector.rs` correctly registers failing command executions and rolled-back patches without falsely clearing failure streaks
+- [ ] 114.4: Standardize tool failure messages across all registries to the actionable "What - Where - Why - Next" diagnostic contract
+- [ ] 114.5: Auto-wire `FaultLocalizer` in `src/tools/exec.rs` to parse panics and stack traces, suggesting exact `read_file` line ranges for probable fault sites
+- [ ] 114.6: Write comprehensive integration tests in `tests/integration_execution_telemetry.rs`, verify quality gates (`cargo check -j 1`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.14`, and commit
+
+### Phase 115: Unbroken Smart Donut Truncation & Diagnostic Pipeline (v0.3.15)
+- [ ] 115.1: Unify truncation into a single authority by replacing uncoordinated generic filters in `RtkFilter` and `compactor.rs` with `SmartDonutTruncator`
+- [ ] 115.2: Configure `SmartDonutTruncator` to always scan the middle slice for compiler errors (`error[E...]`, `FAILED`, `panic`, `TS...`) before omitting lines
+- [ ] 115.3: Save full uncompressed command stdout+stderr to `.minicode/logs/last_exec.log` when output exceeds threshold, appending actionable recovery notice
+- [ ] 115.4: Standardize file view formatting in `src/tools/fs.rs` to `{:>4} | {}` (pipe gutter) with default 200-line pagination window
+- [ ] 115.5: Decouple TUI display output (`MINICODE_DIFF_BLOCK`) from LLM conversation context in `ToolResult`
+- [ ] 115.6: Write comprehensive integration tests in `tests/integration_donut_pipeline.rs`, verify quality gates, bump version → `v0.3.15`, and commit
+
+### Phase 116: High-Signal System Instructions, Few-Shot Cues & Recency Inversion (v0.3.16)
+- [ ] 116.1: Invert message turn assembly in `src/agent/loop.rs` to place `<workspace_context>` before the user prompt, ensuring `<user_request>` is the final recency token
+- [ ] 116.2: Clean `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`: remove ghost tools, remove human CLI slash commands, remove internal Rust struct leakage, and add concrete `patch_file` few-shot examples
+- [ ] 116.3: Strip `<thought>...</thought>` blocks and stale `<workspace_context>` snapshots from older conversation history in `self.messages`
+- [ ] 116.4: Remove the hard `messages.len() <= 6` block in `AutoCompactor` and configure realistic context limits for Ollama/local models in `src/agent/models.rs`
+- [ ] 116.5: Write comprehensive integration tests in `tests/integration_prompt_ergonomics.rs`, verify quality gates, bump version → `v0.3.16`, and commit
+
+
 
 
