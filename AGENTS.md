@@ -9,11 +9,11 @@
 - **Primary Domain:** Fast, Minimalist TUI + CLI AI Coding Agent
 
 ## Essential Commands
-- **Check Compilation:** `cargo check`
+- **Check Compilation:** `cargo check -j 1`
 - **Run Development:** `cargo run`
-- **Run Tests:** `cargo test`
-- **Build Release Binary:** `cargo build --release`
-- **Lint:** `cargo clippy -- -D warnings`
+- **Run Tests:** `cargo test -j 1`
+- **Build Release Binary:** `cargo build --release -j 2`
+- **Lint:** `cargo clippy -j 1 -- -D warnings`
 - **Format:** `cargo fmt --check` (auto-fix: `cargo fmt`)
 
 ## Architecture & Code Conventions
