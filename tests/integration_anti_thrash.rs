@@ -241,3 +241,94 @@ async fn test_agent_loop_circuit_breaker_trip_and_early_exit() {
         "TurnEnd status should be 'circuit_tripped'"
     );
 }
+
+#[tokio::test]
+async fn test_multi_call_turn_preserves_messages_invariant_on_trip() {
+    let dir = tempdir().expect("tempdir");
+    let ws_path = dir.path().to_path_buf();
+
+    // Scripted mock provider responses:
+    // Turn emits two tool calls in the same assistant turn: [call_trip_1 (patch_file), call_unreached_2 (patch_file)]
+    // call_trip_1 trips the circuit breaker after repeated failures.
+    // Both call_trip_1 and call_unreached_2 must have tool results recorded in turn_tool_results!
+    let responses = vec![
+        MockResponse::with_tool_call(
+            "call_setup_1",
+            "patch_file",
+            json!({"path": "file.rs", "search_block": "s1", "replace_block": "r1"}),
+        ),
+        MockResponse::with_tool_call(
+            "call_setup_2",
+            "patch_file",
+            json!({"path": "file.rs", "search_block": "s2", "replace_block": "r2"}),
+        ),
+        MockResponse::with_tool_call(
+            "call_setup_3",
+            "patch_file",
+            json!({"path": "file.rs", "search_block": "s3", "replace_block": "r3"}),
+        ),
+        // In iteration 4, assistant emits 2 tool calls together
+        MockResponse {
+            text: String::new(),
+            tool_calls: vec![
+                minicode::agent::types::ToolCall {
+                    id: "call_trip_1".to_string(),
+                    name: "patch_file".to_string(),
+                    arguments: json!({"path": "file.rs", "search_block": "s4", "replace_block": "r4"}),
+                },
+                minicode::agent::types::ToolCall {
+                    id: "call_unreached_2".to_string(),
+                    name: "patch_file".to_string(),
+                    arguments: json!({"path": "file.rs", "search_block": "s5", "replace_block": "r5"}),
+                },
+            ],
+            prompt_tokens: 120,
+            completion_tokens: 30,
+        },
+    ];
+
+    let provider = Box::new(MockProvider::new(responses));
+    let mut config = Config::default();
+    config.git.auto_commit = false;
+    config.agent.auto_approve = true;
+
+    let mut agent = AgentLoop::new(&ws_path, config, provider);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
+    let event_collector = tokio::spawn(async move {
+        let mut events = Vec::new();
+        while let Some(ev) = event_rx.recv().await {
+            events.push(ev);
+        }
+        events
+    });
+
+    let turn = agent
+        .execute_turn("Test multi-call invariant on trip", event_tx, None)
+        .await
+        .expect("turn completes");
+
+    let _events = event_collector.await.expect("collector join");
+
+    // Verify that call_trip_1 AND call_unreached_2 BOTH have tool results in turn.tool_results!
+    assert_eq!(
+        turn.tool_results.len(),
+        5,
+        "All tool calls including unreached call must have corresponding tool results"
+    );
+    let unreached_res = turn
+        .tool_results
+        .iter()
+        .find(|r| r.tool_id == "call_unreached_2");
+    assert!(
+        unreached_res.is_some(),
+        "call_unreached_2 must have a resolved tool result"
+    );
+    assert!(
+        unreached_res
+            .unwrap()
+            .output
+            .contains("aborted due to circuit breaker trip"),
+        "Unreached tool call output must state it was aborted due to circuit breaker trip"
+    );
+}

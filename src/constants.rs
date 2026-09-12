@@ -223,6 +223,14 @@ pub const ANTI_THRASH_COLLAPSE_THRESHOLD: usize = 4;
 /// Number of consecutive ignored warnings on the same pattern before hard breaker trip
 pub const ANTI_THRASH_HARD_TRIP_LIMIT: usize = 2;
 
+// === Turn Status Constants ===
+/// Turn completion status reported when a turn finishes normally
+pub const TURN_STATUS_COMPLETE: &str = "complete";
+/// Turn completion status reported when a turn was cancelled by user or timeout
+pub const TURN_STATUS_CANCELLED: &str = "cancelled";
+/// Turn completion status reported when the anti-thrashing circuit breaker tripped
+pub const TURN_STATUS_CIRCUIT_TRIPPED: &str = "circuit_tripped";
+
 // === Smart Donut Truncator (Phase 88) ===
 /// Total line threshold before Smart Donut truncation activates
 pub const DONUT_THRESHOLD_LINES: usize = 300;

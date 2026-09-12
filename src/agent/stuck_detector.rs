@@ -21,6 +21,13 @@ pub struct ToolCallFingerprint {
     pub success: bool,
 }
 
+impl ToolCallFingerprint {
+    /// Returns true if this fingerprint matches another tool call's action (tool name + arguments)
+    pub fn matches_action(&self, other: &Self) -> bool {
+        self.tool_name == other.tool_name && self.args_hash == other.args_hash
+    }
+}
+
 /// Category of algorithmic loop or thrashing detected during ReAct execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopType {
@@ -300,10 +307,11 @@ impl StuckDetector {
             self.history.pop_front();
         }
 
-        // Successful execution clears failure streaks for target files and execution collapse
+        // Successful execution clears failure streaks for target files, collapse, and repeated failures
         if success {
-            self.warning_counts
-                .retain(|k, _| !k.starts_with("file:") && !k.starts_with("collapse"));
+            self.warning_counts.retain(|k, _| {
+                !k.starts_with("file:") && !k.starts_with("collapse") && !k.ends_with(":true")
+            });
         }
 
         let loop_type = match self.detect_loop() {
@@ -431,13 +439,16 @@ impl StuckDetector {
             let a = &self.history[len - 2];
             let b = &self.history[len - 1];
 
-            // Ensure A and B are distinct and matching period 2
-            if (a.tool_name != b.tool_name || a.args_hash != b.args_hash)
-                && &self.history[len - 4] == a
-                && &self.history[len - 3] == b
+            // Ensure A and B are distinct actions and matching period 2
+            if !a.matches_action(b)
+                && self.history[len - 4].matches_action(a)
+                && self.history[len - 3].matches_action(b)
             {
                 let mut cycles = 2;
-                if len >= 6 && &self.history[len - 6] == a && &self.history[len - 5] == b {
+                if len >= 6
+                    && self.history[len - 6].matches_action(a)
+                    && self.history[len - 5].matches_action(b)
+                {
                     cycles = 3;
                 }
                 if cycles >= STUCK_OSCILLATION_MIN_CYCLES {
@@ -456,21 +467,29 @@ impl StuckDetector {
             let b = &self.history[len - 2];
             let c = &self.history[len - 1];
 
-            // Ensure distinct items and matching period 3
-            if a != b
-                && b != c
-                && a != c
-                && &self.history[len - 6] == a
-                && &self.history[len - 5] == b
-                && &self.history[len - 4] == c
+            // Ensure distinct actions and matching period 3
+            if !a.matches_action(b)
+                && !b.matches_action(c)
+                && !a.matches_action(c)
+                && self.history[len - 6].matches_action(a)
+                && self.history[len - 5].matches_action(b)
+                && self.history[len - 4].matches_action(c)
             {
+                let mut cycles = 2;
+                if len >= 9
+                    && self.history[len - 9].matches_action(a)
+                    && self.history[len - 8].matches_action(b)
+                    && self.history[len - 7].matches_action(c)
+                {
+                    cycles = 3;
+                }
                 return Some(LoopType::TriangularOscillation {
                     pattern: vec![
                         a.tool_name.clone(),
                         b.tool_name.clone(),
                         c.tool_name.clone(),
                     ],
-                    cycles: 2,
+                    cycles,
                 });
             }
         }

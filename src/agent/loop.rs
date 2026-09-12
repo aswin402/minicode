@@ -5,7 +5,8 @@ use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn}
 use crate::config::Config;
 use crate::constants::{
     CONTEXT_MIN_PRESERVED_MESSAGES, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS,
-    FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS,
+    FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS, TURN_STATUS_CANCELLED,
+    TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -711,7 +712,8 @@ impl AgentLoop {
                     pending_tool_calls.clone(),
                 ));
 
-                let stages = crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls);
+                let stages =
+                    crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls.clone());
 
                 for stage in stages {
                     // Check cancellation before each stage execution
@@ -849,9 +851,6 @@ impl AgentLoop {
                                 ));
 
                                 turn_tool_results.push(tool_result);
-                                if circuit_tripped {
-                                    break;
-                                }
                             }
 
                             if circuit_tripped {
@@ -1166,6 +1165,23 @@ impl AgentLoop {
                 }
 
                 if was_cancelled || circuit_tripped {
+                    // Guarantee that every tool call in pending_tool_calls has a corresponding tool result in self.messages
+                    for call in &pending_tool_calls {
+                        if !turn_tool_results.iter().any(|r| r.tool_id == call.id) {
+                            Self::emit_rejected_tool_result(
+                                self,
+                                &event_sender,
+                                turn_id,
+                                call,
+                                if circuit_tripped {
+                                    "aborted due to circuit breaker trip"
+                                } else {
+                                    "cancelled before dispatch"
+                                },
+                                &mut turn_tool_results,
+                            );
+                        }
+                    }
                     break;
                 }
             } else {
@@ -1307,11 +1323,11 @@ impl AgentLoop {
         let end_event = AgentEvent::TurnEnd {
             turn_id,
             status: if was_cancelled {
-                "cancelled"
+                TURN_STATUS_CANCELLED
             } else if circuit_tripped {
-                "circuit_tripped"
+                TURN_STATUS_CIRCUIT_TRIPPED
             } else {
-                "complete"
+                TURN_STATUS_COMPLETE
             }
             .to_string(),
             total_tokens_used: turn_tokens_used,

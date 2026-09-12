@@ -234,9 +234,9 @@ fn chunk_text(content: &str) -> Vec<String> {
         let cut = slice
             .rfind("\n\n")
             .map(|i| i + 2)
-            .or_else(|| slice.rfind(". "))
+            .or_else(|| slice.rfind(". ").map(|i| i + 2))
             .unwrap_or(slice.len());
-        let cut = if start + cut >= content.len() {
+        let cut = if start + cut >= content.len() || cut == 0 {
             slice.len()
         } else {
             cut
@@ -250,6 +250,10 @@ fn chunk_text(content: &str) -> Vec<String> {
             break;
         }
         let advance = cut_end.saturating_sub(start);
+        if advance == 0 {
+            start = content.ceil_char_boundary(start.saturating_add(1));
+            continue;
+        }
         let overlap = CHUNK_OVERLAP.min(advance);
         let next_start = cut_end.saturating_sub(overlap);
         if next_start <= start {

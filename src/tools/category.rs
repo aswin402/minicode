@@ -125,14 +125,18 @@ pub fn activate_tools_schema() -> ToolSchema {
 pub fn get_core_schemas() -> Vec<ToolSchema> {
     let mut core = Vec::with_capacity(10);
     // 1. Files (read_file, patch_file, write_file)
-    core.extend(registry::fs_tools::get_schemas());
+    for s in registry::fs_tools::get_schemas() {
+        if s.name == "read_file" || s.name == "patch_file" || s.name == "write_file" {
+            core.push(s);
+        }
+    }
 
     // 2. Exec (exec_cmd)
     core.extend(registry::exec_tools::get_schemas());
 
-    // 3. Search baseline (grep_search, locate_symbol, file_search)
+    // 3. Search baseline (grep_search, locate_symbol)
     for s in registry::search_tools::get_schemas() {
-        if s.name == "grep_search" || s.name == "locate_symbol" || s.name == "file_search" {
+        if s.name == "grep_search" || s.name == "locate_symbol" {
             core.push(s);
         }
     }
