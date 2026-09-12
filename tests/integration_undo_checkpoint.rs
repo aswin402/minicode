@@ -5,20 +5,11 @@ use minicode::ui::Theme;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::fs;
-use std::path::PathBuf;
-
-fn create_temp_workspace() -> PathBuf {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "minicode_integration_undo_{}",
-        uuid::Uuid::new_v4()
-    ));
-    fs::create_dir_all(&temp_dir).unwrap();
-    temp_dir
-}
 
 #[tokio::test]
 async fn test_multi_turn_checkpoint_creation_and_rollback() {
-    let ws = create_temp_workspace();
+    let ws_guard = tempfile::tempdir().unwrap();
+    let ws = ws_guard.path().to_path_buf();
     let mgr = BackupManager::new(&ws);
 
     let file_a = ws.join("service.rs");

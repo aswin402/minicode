@@ -688,11 +688,7 @@ impl<'a> InputDock<'a> {
 
         let view_height = inner_area.height as usize;
         let cursor_row = self.textarea.cursor().0;
-        let scroll_row = if cursor_row >= view_height {
-            cursor_row.saturating_sub(view_height.saturating_sub(1))
-        } else {
-            0
-        };
+        let scroll_row = crate::ui::layout_utils::compute_scroll_offset(cursor_row, view_height);
 
         let mut prefix_lines = Vec::with_capacity(view_height.max(1));
         for i in 0..view_height.max(1) {

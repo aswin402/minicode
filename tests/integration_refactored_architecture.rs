@@ -105,9 +105,8 @@ fn test_modularized_modals_instantiation() {
 
 #[test]
 fn test_session_store_atomic_append_round_trip() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("minicode_arch_test_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&temp_dir).unwrap();
+    let temp_guard = tempfile::tempdir().unwrap();
+    let temp_dir = temp_guard.path().to_path_buf();
 
     let store = SessionStore::with_dir(temp_dir.clone());
     let session_id = store.create_session(&temp_dir).unwrap();
@@ -128,6 +127,4 @@ fn test_session_store_atomic_append_round_trip() {
     // Verify loaded with appended event
     let loaded_again = store.load_session(&session_id).unwrap();
     assert_eq!(loaded_again.len(), 1);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
 }

@@ -5,16 +5,6 @@ use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 use ratatui::Terminal;
 use std::fs;
-use std::path::PathBuf;
-
-fn create_temp_workspace() -> PathBuf {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "minicode_integration_theme_{}",
-        uuid::Uuid::new_v4()
-    ));
-    fs::create_dir_all(&temp_dir).unwrap();
-    temp_dir
-}
 
 #[test]
 fn test_all_theme_palettes_and_detection() {
@@ -84,7 +74,8 @@ fn test_theme_modal_rendering() {
 
 #[test]
 fn test_config_save_theme_persistence() {
-    let ws = create_temp_workspace();
+    let ws_guard = tempfile::tempdir().unwrap();
+    let ws = ws_guard.path();
     let minicode_dir = ws.join(".minicode");
     fs::create_dir_all(&minicode_dir).unwrap();
 
@@ -92,15 +83,13 @@ fn test_config_save_theme_persistence() {
     config.ui.theme = "tokyo-night".to_string();
 
     // Save configuration to workspace .minicode/config.toml
-    config.save(Some(&ws)).unwrap();
+    config.save(Some(ws)).unwrap();
 
     // Verify file written
     let config_file = minicode_dir.join("config.toml");
     assert!(config_file.exists());
 
     // Load configuration back and verify persistence
-    let loaded = Config::load(Some(&ws), None).unwrap();
+    let loaded = Config::load(Some(ws), None).unwrap();
     assert_eq!(loaded.ui.theme, "tokyo-night");
-
-    let _ = fs::remove_dir_all(&ws);
 }
