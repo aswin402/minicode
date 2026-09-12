@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] — 2026-09-12
+
+### Infinite Loop Detection & Anti-Thrashing Circuit Breaker (Phase 112)
+
+#### 💡 Ideas & Inspirations
+- **Autonomous Runaway Loop Mitigation**: In multi-turn autonomous coding agents, models can fall into repetitive failure traps: thrashing edits on the same file with different syntax, encountering cascading tool errors across different commands (execution collapse), or oscillating between alternating files/tools.
+- **Graduated Two-Tier Intervention (Warning → Hard Trip)**: A soft warning is first injected into the tool output with explicit prescriptive guidance (e.g. step back, read full file, form a new hypothesis). If the agent persists in repetitive failures on the same pattern, a hard circuit-breaker trip immediately halts the ReAct loop to conserve tokens and prevent workspace damage.
+
+#### 🚀 Features & Changes
+- **Multi-Pattern Thrash Detector (`src/agent/stuck_detector.rs`)**:
+  - Implemented `LoopType` classification: `ConsecutiveRepetition`, `FileTargetThrashing`, `ExecutionCollapse`, `PingPongOscillation`, and `TriangularOscillation`.
+  - Added target file extraction across multiple argument formats (`path`, `file_path`, `target_file`, `file`).
+  - Added `BreakerAction` state machine (`Pass`, `Warning`, `Trip`).
+- **Centralized Anti-Thrashing Constants (`src/constants.rs`)**:
+  - `ANTI_THRASH_FILE_FAILURE_THRESHOLD = 3`
+  - `ANTI_THRASH_COLLAPSE_THRESHOLD = 4`
+  - `ANTI_THRASH_HARD_TRIP_LIMIT = 2`
+- **Agent Loop Trip Wiring & Early Exit (`src/agent/loop.rs`)**:
+  - Wired circuit breaker into parallel and sequential tool dispatch loops.
+  - Automatically breaks the ReAct while loop when hard trip triggers, skipping post-turn verification barrier and auto-healing to prevent re-entering a broken loop.
+  - Emits `AgentEvent::AntiThrashTripped` and reports `TurnEnd` status as `"circuit_tripped"`.
+- **UI & Logging Integration (`src/agent/types.rs`, `src/app/mod.rs`, `src/logging/formatter.rs`)**:
+  - Added `AgentEvent::AntiThrashTripped` event variant with full telemetry (`turn_id`, `pattern`, `target`, `failures`, `intervention`).
+  - Rendered warning banners in timeline during interactive TUI execution and session hydration.
+  - Formatted colored log line and structured JSON output for headless stream.
+- **Comprehensive Integration Suite (`tests/integration_anti_thrash.rs`)**:
+  - Unit and integration tests covering file target thrashing, execution collapse, ping-pong/triangular oscillation, event serde, and end-to-end agent loop trip and early halt.
+
 ## [0.3.11] — 2026-09-11
 
 ### Background Subagent Swarm with TUI Activity Drawer (`dispatch_subagent`)

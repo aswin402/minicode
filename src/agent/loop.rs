@@ -1,5 +1,6 @@
 use crate::agent::prompt::PromptBuilder;
 use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
+use crate::agent::stuck_detector::BreakerAction;
 use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
@@ -393,6 +394,7 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut was_cancelled = false;
+        let mut circuit_tripped = false;
 
         let options = CompletionOptions {
             model: self.config.provider.model.clone(),
@@ -778,18 +780,49 @@ impl AgentLoop {
                                         &tool_result.output,
                                     );
 
-                                // === Algorithmic Stuck Detector & Loop Breaker ===
-                                if let Some(intervention) = self.stuck_detector.record_and_check(
+                                // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
+                                match self.stuck_detector.check(
                                     &tool_call.name,
                                     &tool_call.arguments,
                                     tool_result.success,
                                 ) {
-                                    tracing::warn!(
-                                        tool = %tool_call.name,
-                                        "Stuck detector triggered circuit breaker intervention"
-                                    );
-                                    tool_result.output.push_str("\n\n");
-                                    tool_result.output.push_str(&intervention);
+                                    BreakerAction::Pass => {}
+                                    BreakerAction::Warning(intervention) => {
+                                        tracing::warn!(
+                                            tool = %tool_call.name,
+                                            "Anti-thrashing stuck detector warning injected"
+                                        );
+                                        tool_result.output.push_str("\n\n");
+                                        tool_result.output.push_str(&intervention);
+                                    }
+                                    BreakerAction::Trip { reason, loop_type } => {
+                                        tracing::error!(
+                                            tool = %tool_call.name,
+                                            pattern = %loop_type.pattern_name(),
+                                            "Anti-thrashing circuit breaker TRIPPED: runaway loop halted"
+                                        );
+                                        tool_result.output.push_str("\n\n");
+                                        tool_result.output.push_str(&reason);
+                                        circuit_tripped = true;
+
+                                        let trip_event = AgentEvent::AntiThrashTripped {
+                                            turn_id,
+                                            pattern: loop_type.pattern_name().to_string(),
+                                            target: loop_type.target_file(),
+                                            failures: loop_type.failures(),
+                                            intervention: reason,
+                                        };
+                                        if let Err(e) = self
+                                            .session_store
+                                            .append_event(&self.session_id, &trip_event)
+                                        {
+                                            tracing::warn!(
+                                                "Failed to persist AntiThrashTripped event: {}",
+                                                e
+                                            );
+                                        }
+                                        let _ = event_sender.send(trip_event);
+                                    }
                                 }
 
                                 let res_event = AgentEvent::ToolResult {
@@ -816,6 +849,13 @@ impl AgentLoop {
                                 ));
 
                                 turn_tool_results.push(tool_result);
+                                if circuit_tripped {
+                                    break;
+                                }
+                            }
+
+                            if circuit_tripped {
+                                break;
                             }
                         }
                         crate::agent::speculative::ExecutionStage::Sequential(tool_call) => {
@@ -1022,18 +1062,49 @@ impl AgentLoop {
                                     &tool_result.output,
                                 );
 
-                            // === Algorithmic Stuck Detector & Loop Breaker ===
-                            if let Some(intervention) = self.stuck_detector.record_and_check(
+                            // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
+                            match self.stuck_detector.check(
                                 &tool_call.name,
                                 &tool_call.arguments,
                                 tool_result.success,
                             ) {
-                                tracing::warn!(
-                                    tool = %tool_call.name,
-                                    "Stuck detector triggered circuit breaker intervention"
-                                );
-                                tool_result.output.push_str("\n\n");
-                                tool_result.output.push_str(&intervention);
+                                BreakerAction::Pass => {}
+                                BreakerAction::Warning(intervention) => {
+                                    tracing::warn!(
+                                        tool = %tool_call.name,
+                                        "Anti-thrashing stuck detector warning injected"
+                                    );
+                                    tool_result.output.push_str("\n\n");
+                                    tool_result.output.push_str(&intervention);
+                                }
+                                BreakerAction::Trip { reason, loop_type } => {
+                                    tracing::error!(
+                                        tool = %tool_call.name,
+                                        pattern = %loop_type.pattern_name(),
+                                        "Anti-thrashing circuit breaker TRIPPED: runaway loop halted"
+                                    );
+                                    tool_result.output.push_str("\n\n");
+                                    tool_result.output.push_str(&reason);
+                                    circuit_tripped = true;
+
+                                    let trip_event = AgentEvent::AntiThrashTripped {
+                                        turn_id,
+                                        pattern: loop_type.pattern_name().to_string(),
+                                        target: loop_type.target_file(),
+                                        failures: loop_type.failures(),
+                                        intervention: reason,
+                                    };
+                                    if let Err(e) = self
+                                        .session_store
+                                        .append_event(&self.session_id, &trip_event)
+                                    {
+                                        tracing::warn!(
+                                            "Failed to persist AntiThrashTripped event: {}",
+                                            e
+                                        );
+                                    }
+                                    let _ = event_sender.send(trip_event);
+                                }
                             }
 
                             // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
@@ -1087,20 +1158,24 @@ impl AgentLoop {
                             ));
 
                             turn_tool_results.push(tool_result);
+                            if circuit_tripped {
+                                break;
+                            }
                         }
                     }
                 }
 
-                if was_cancelled {
+                if was_cancelled || circuit_tripped {
                     break;
                 }
             } else {
-                if was_cancelled {
+                if was_cancelled || circuit_tripped {
                     break;
                 }
 
                 // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===
                 if !turn_files_modified.is_empty()
+                    && !circuit_tripped
                     && heal_attempts < crate::constants::VERIFICATION_MAX_ATTEMPTS
                 {
                     let report = crate::agent::verification_barrier::VerificationBarrier::verify(
@@ -1184,7 +1259,11 @@ impl AgentLoop {
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
         // Autonomous Git Auto-Commit if files were modified during this turn
-        if !turn_files_modified.is_empty() && self.config.git.auto_commit && !was_cancelled {
+        if !turn_files_modified.is_empty()
+            && self.config.git.auto_commit
+            && !was_cancelled
+            && !circuit_tripped
+        {
             let git = crate::git::GitService::new(self.workspace_root.clone());
             if git.is_git_repo().await {
                 let commit_svc = crate::git::GitCommitService::new(&git)
@@ -1229,6 +1308,8 @@ impl AgentLoop {
             turn_id,
             status: if was_cancelled {
                 "cancelled"
+            } else if circuit_tripped {
+                "circuit_tripped"
             } else {
                 "complete"
             }
@@ -1244,7 +1325,7 @@ impl AgentLoop {
         }
         event_sender.send(end_event)?;
 
-        if !was_cancelled {
+        if !was_cancelled && !circuit_tripped {
             // Sync turn learnings & facts into Progressive Multi-Tier Memory
             let mut prog_mem =
                 crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);

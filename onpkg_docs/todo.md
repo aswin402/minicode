@@ -1695,4 +1695,13 @@
 - [x] 111.5: Register `dispatch_subagent` tool schema & handler, add `"await"` action to `manage_subagents` in `src/tools/registry/agent_tools.rs`, bump `TOTAL_TOOL_COUNT` (130 → 131) in `src/constants.rs`, and classify safety level in `src/tools/concurrency.rs`
 - [x] 111.6: Develop comprehensive integration test suite in `tests/integration_subagent_swarm.rs`, verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.11`, run `./localupdate.sh`, and commit
 
+### Phase 112: Infinite Loop Detection & Anti-Thrashing Circuit Breaker (v0.3.12)
+- [x] 112.1: Enhance `src/agent/stuck_detector.rs` with multi-pattern thrash detection (`LoopType`): exact repetition, file target thrashing (consecutive modification failures on the same file), execution collapse (global consecutive tool failures), and cyclic oscillation (ping-pong and triangular)
+- [x] 112.2: Implement prescriptive `BreakerAction` state machine (`Pass`, `Warning(String)`, `Trip { reason, loop_type }`) with hard trip transitions when warnings on a pattern are ignored
+- [x] 112.3: Centralize threshold constants in `src/constants.rs` (`ANTI_THRASH_FILE_FAILURE_THRESHOLD = 3`, `ANTI_THRASH_COLLAPSE_THRESHOLD = 4`, `ANTI_THRASH_HARD_TRIP_LIMIT = 2`)
+- [x] 112.4: Wire circuit breaker into `src/agent/loop.rs` for parallel and sequential tool dispatch, breaking execution early, skipping auto-healing/verification when tripped, and marking turn status as `"circuit_tripped"`
+- [x] 112.5: Add `AgentEvent::AntiThrashTripped` event variant to `src/agent/types.rs`, handle in `src/app/mod.rs` (hydrate and live event loop), and format in `src/logging/formatter.rs`
+- [x] 112.6: Develop comprehensive integration test suite in `tests/integration_anti_thrash.rs`, verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.12`, run `./localupdate.sh`, and commit
+
+
 

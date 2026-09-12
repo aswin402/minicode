@@ -233,6 +233,15 @@ pub enum AgentEvent {
         savings_percent: usize,
     },
 
+    #[serde(rename = "anti_thrash_tripped")]
+    AntiThrashTripped {
+        turn_id: usize,
+        pattern: String,
+        target: Option<String>,
+        failures: usize,
+        intervention: String,
+    },
+
     #[serde(rename = "command_list")]
     CommandList { commands: Vec<CommandDescription> },
 }
@@ -300,6 +309,21 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"event\":\"turn_start\""));
         assert!(json.contains("\"model\":\"gemini-2.5-pro\""));
+    }
+
+    #[test]
+    fn test_anti_thrash_tripped_serialization() {
+        let event = AgentEvent::AntiThrashTripped {
+            turn_id: 2,
+            pattern: "file_target_thrashing".to_string(),
+            target: Some("src/main.rs".to_string()),
+            failures: 3,
+            intervention: "Halt".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"anti_thrash_tripped\""));
+        assert!(json.contains("\"pattern\":\"file_target_thrashing\""));
+        assert!(json.contains("\"target\":\"src/main.rs\""));
     }
 
     #[test]

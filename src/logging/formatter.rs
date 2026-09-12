@@ -345,6 +345,32 @@ impl HonoLogFormatter {
                 ))
             }
 
+            AgentEvent::AntiThrashTripped {
+                turn_id,
+                pattern,
+                target,
+                failures,
+                ..
+            } => {
+                let time = current_time_str();
+                let target_str = target
+                    .as_deref()
+                    .map(|t| format!(" target={}", t))
+                    .unwrap_or_default();
+                Some(format!(
+                    "{}{}  {} {}{}  #{} Tripped: {} ({} failures){}",
+                    dim,
+                    time,
+                    arrow_out_err,
+                    badge_err,
+                    reset,
+                    turn_id,
+                    pattern,
+                    failures,
+                    target_str
+                ))
+            }
+
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
@@ -476,6 +502,17 @@ impl HonoLogFormatter {
             AgentEvent::IntentRouted {
                 turn_id, intent, ..
             } => ("intent_routed", *turn_id, 200, intent.clone()),
+            AgentEvent::AntiThrashTripped {
+                turn_id,
+                pattern,
+                failures,
+                ..
+            } => (
+                "anti_thrash_tripped",
+                Some(*turn_id),
+                500,
+                format!("{} ({} failures)", pattern, failures),
+            ),
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
             | AgentEvent::CommandList { .. } => return None,

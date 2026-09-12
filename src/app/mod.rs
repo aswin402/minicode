@@ -156,6 +156,12 @@ impl<'a> App<'a> {
                 AgentEvent::Error { message, .. } => {
                     self.timeline.add_status(format!("Error: {}", message));
                 }
+                AgentEvent::AntiThrashTripped { intervention, .. } => {
+                    self.timeline.add_status(format!(
+                        "⚠️ Anti-Thrashing Breaker: Halting loop\n{}",
+                        intervention
+                    ));
+                }
                 _ => {}
             }
         }
@@ -518,6 +524,9 @@ impl<'a> App<'a> {
                                     self.work_start = None;
                                     self.cancel_token = None;
                                 }
+                            }
+                            AgentEvent::AntiThrashTripped { intervention, .. } => {
+                                self.timeline.add_status(format!("⚠️ Anti-Thrashing Breaker: Halting loop\n{}", intervention));
                             }
                             _ => {}
                         }

@@ -207,7 +207,7 @@ pub const WEB_TIMEOUT_SECS: u64 = 15;
 /// Maximum response body bytes retained from web pages
 pub const WEB_MAX_BODY_BYTES: usize = 40 * 1024;
 
-// === Stuck Detector & Loop Breaker ===
+// === Stuck Detector & Anti-Thrashing Circuit Breaker ===
 /// Number of consecutive identical tool calls before circuit breaker triggers
 pub const STUCK_CONSECUTIVE_TOOL_CALL_THRESHOLD: usize = 3;
 /// Number of consecutive identical failing tool calls before circuit breaker triggers
@@ -216,6 +216,12 @@ pub const STUCK_CONSECUTIVE_FAILURE_THRESHOLD: usize = 2;
 pub const STUCK_MAX_HISTORY_ENTRIES: usize = 16;
 /// Minimum oscillation cycles before alternating ping-pong loop is flagged
 pub const STUCK_OSCILLATION_MIN_CYCLES: usize = 2;
+/// Number of consecutive failures on the same file target before file-thrashing warning
+pub const ANTI_THRASH_FILE_FAILURE_THRESHOLD: usize = 3;
+/// Number of consecutive global tool failures before execution collapse warning
+pub const ANTI_THRASH_COLLAPSE_THRESHOLD: usize = 4;
+/// Number of consecutive ignored warnings on the same pattern before hard breaker trip
+pub const ANTI_THRASH_HARD_TRIP_LIMIT: usize = 2;
 
 // === Smart Donut Truncator (Phase 88) ===
 /// Total line threshold before Smart Donut truncation activates
