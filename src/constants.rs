@@ -543,6 +543,24 @@ pub const DEFAULT_LOCAL_MODEL_NAME: &str = "local-model";
 /// Default fallback model name for custom providers
 pub const DEFAULT_FALLBACK_MODEL_NAME: &str = "default-model";
 
+/// Supported LLM providers selectable in the TUI provider picker
+pub const SUPPORTED_PROVIDERS: &[&str] = &[
+    "anthropic",
+    "openrouter",
+    "gemini",
+    "openai",
+    "deepseek",
+    "groq",
+    "minimax",
+    "z.ai",
+    "together",
+    "mistral",
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "localhost",
+];
+
 /// Default provider name
 pub const DEFAULT_PROVIDER: &str = "gemini";
 /// Default Gemini model

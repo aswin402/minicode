@@ -8,9 +8,11 @@ pub mod common;
 pub mod exit_confirm;
 pub mod git_diff;
 pub mod help;
+pub mod model_select;
 pub mod provider_select;
 pub mod session_browser;
 pub mod stack_select;
+pub mod streaming_select;
 pub mod theme_select;
 pub mod undo_checkpoint;
 pub mod workspace_analysis;
@@ -157,22 +159,10 @@ impl ModalState {
     }
 
     pub fn new_provider_select() -> Self {
-        let providers = vec![
-            "anthropic".to_string(),
-            "openrouter".to_string(),
-            "gemini".to_string(),
-            "openai".to_string(),
-            "deepseek".to_string(),
-            "groq".to_string(),
-            "minimax".to_string(),
-            "z.ai".to_string(),
-            "together".to_string(),
-            "mistral".to_string(),
-            "ollama".to_string(),
-            "lmstudio".to_string(),
-            "vllm".to_string(),
-            "localhost".to_string(),
-        ];
+        let providers = crate::constants::SUPPORTED_PROVIDERS
+            .iter()
+            .map(|&p| p.to_string())
+            .collect();
         ModalState::ProviderSelect {
             providers,
             selected_index: 0,
@@ -519,7 +509,7 @@ impl ModalState {
                 filter,
                 loading,
             } => {
-                provider_select::render_model_select(
+                model_select::render_model_select(
                     frame,
                     area,
                     theme,
@@ -581,7 +571,7 @@ impl ModalState {
                 selected_index,
                 current_streaming,
             } => {
-                theme_select::render_streaming_select(
+                streaming_select::render_streaming_select(
                     frame,
                     area,
                     theme,
@@ -855,6 +845,71 @@ mod tests {
         };
 
         let modal = ModalState::new_architecture_audit(report);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_provider_select_render() {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let modal = ModalState::new_provider_select();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_model_select_render() {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let models = vec![
+            crate::agent::models::ModelInfo {
+                id: "gemini-2.5-pro".to_string(),
+                name: "Gemini 2.5 Pro".to_string(),
+                description: None,
+                context_length: Some(1_000_000),
+                is_free: false,
+            },
+            crate::agent::models::ModelInfo {
+                id: "gemini-2.5-flash".to_string(),
+                name: "Gemini 2.5 Flash".to_string(),
+                description: None,
+                context_length: Some(1_000_000),
+                is_free: true,
+            },
+        ];
+
+        let modal = ModalState::new_model_select("gemini".to_string(), models);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_streaming_select_render() {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let modal = ModalState::StreamingSelect {
+            selected_index: 0,
+            current_streaming: true,
+        };
         terminal
             .draw(|f| {
                 let area = f.area();
