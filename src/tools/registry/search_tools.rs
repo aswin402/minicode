@@ -222,20 +222,25 @@ pub fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "grep_search" => Some((|| {
-            let query = require_str(args, "query", "grep_search")?;
+            let query = require_query(args, "grep_search")?;
             let is_regex = opt_bool(args, "is_regex", false);
-            let pattern = opt_str(args, "file_pattern");
+            let pattern = opt_str(args, "file_pattern")
+                .or_else(|| opt_str(args, "glob"))
+                .or_else(|| opt_path(args));
             search::grep_search(workspace_root, query, is_regex, pattern)
         })()),
         "file_search" => Some((|| {
-            let pattern = require_str(args, "pattern", "file_search")?;
-            let subpath = opt_str(args, "subpath").or_else(|| opt_str(args, "path"));
-            let limit = opt_usize(args, "limit", 50);
+            let pattern =
+                get_str_with_aliases(args, &["pattern", "query", "search", "name", "file"])
+                    .ok_or_else(|| require_str(args, "pattern", "file_search").unwrap_err())?;
+            let subpath = opt_str(args, "subpath").or_else(|| opt_path(args));
+            let limit = opt_limit(args, 50);
             search::file_search(workspace_root, pattern, subpath, Some(limit))
         })()),
         "locate_symbol" => Some((|| {
-            let name = require_str(args, "name", "locate_symbol")?;
-            let limit = opt_usize(args, "limit", crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT);
+            let name = get_str_with_aliases(args, &["name", "symbol", "symbol_name", "query"])
+                .ok_or_else(|| require_str(args, "name", "locate_symbol").unwrap_err())?;
+            let limit = opt_limit(args, crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT);
             let mut index = crate::context::index::SymbolIndex::new();
             index.build_index(workspace_root)?;
             let matches = if name.contains(' ') {
@@ -251,8 +256,8 @@ pub fn dispatch(
             Ok(index.format_matches(&matches, workspace_root))
         })()),
         "hybrid_search" => Some((|| {
-            let query = require_str(args, "query", "hybrid_search")?;
-            let limit = opt_usize(args, "limit", 5);
+            let query = require_query(args, "hybrid_search")?;
+            let limit = opt_limit(args, 5);
             let include_symbols = opt_bool(args, "include_symbols", true);
 
             let mut index = crate::context::hybrid::HybridIndex::new();
@@ -264,8 +269,8 @@ pub fn dispatch(
             ))
         })()),
         "semantic_search" => Some((|| {
-            let query = require_str(args, "query", "semantic_search")?;
-            let limit = opt_usize(args, "limit", 5);
+            let query = require_query(args, "semantic_search")?;
+            let limit = opt_limit(args, 5);
 
             let mut index = crate::context::semantic::SemanticIndex::new();
             let _ = index.build_index(workspace_root)?;
@@ -297,8 +302,8 @@ pub fn dispatch(
             }
         })()),
         "search_symbols_semantic" => Some((|| {
-            let query = require_str(args, "query", "search_symbols_semantic")?;
-            let limit = opt_usize(args, "limit", 5);
+            let query = require_query(args, "search_symbols_semantic")?;
+            let limit = opt_limit(args, 5);
 
             let mut index = crate::context::semantic::SemanticIndex::new();
             let _ = index.build_index(workspace_root)?;
@@ -335,7 +340,7 @@ pub fn dispatch(
             }
         })()),
         "ast_query" => Some((|| {
-            let file_path = require_str(args, "file_path", "ast_query")?;
+            let file_path = require_path(args, "ast_query")?;
             let node_kind = opt_str(args, "node_kind");
             let name_filter = opt_str(args, "name_filter");
 
@@ -371,8 +376,11 @@ pub fn dispatch(
             }
         })()),
         "ast_extract_symbol" => Some((|| {
-            let file_path = require_str(args, "file_path", "ast_extract_symbol")?;
-            let symbol_name = require_str(args, "symbol_name", "ast_extract_symbol")?;
+            let file_path = require_path(args, "ast_extract_symbol")?;
+            let symbol_name = get_str_with_aliases(args, &["symbol_name", "symbol", "name"])
+                .ok_or_else(|| {
+                    require_str(args, "symbol_name", "ast_extract_symbol").unwrap_err()
+                })?;
 
             let node = crate::context::ast_transform::AstTransformer::extract_symbol(
                 workspace_root,
@@ -394,7 +402,7 @@ pub fn dispatch(
             Ok(report)
         })()),
         "ast_diff" => Some((|| {
-            let file_path = require_str(args, "file_path", "ast_diff")?;
+            let file_path = require_path(args, "ast_diff")?;
             let new_content = opt_str(args, "new_content");
 
             let report = crate::context::ast_diff::AstDiffEngine::diff_file(
@@ -406,16 +414,16 @@ pub fn dispatch(
             Ok(report.format_markdown())
         })()),
         "locate_fault" => Some((|| {
-            let query = require_str(args, "query", "locate_fault")?;
-            let max_files = get_usize(args, "max_files");
-            let include_callers = get_bool(args, "include_callers");
+            let query = require_query(args, "locate_fault")?;
+            let max_files = opt_limit(args, 3);
+            let include_callers = opt_bool(args, "include_callers", true);
             let candidate_hints = opt_string_array(args, "candidate_files");
 
             let localizer = crate::context::fault_localizer::FaultLocalizer::new(workspace_root);
             let report = localizer.localize(
                 query,
-                max_files,
-                include_callers,
+                Some(max_files),
+                Some(include_callers),
                 candidate_hints.as_deref(),
             )?;
 

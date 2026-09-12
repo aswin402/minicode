@@ -74,7 +74,7 @@ pub async fn dispatch(
     match tool_name {
         "exec_cmd" => Some(
             async {
-                let cmd = require_str(args, "command", "exec_cmd")?;
+                let cmd = require_command(args, "exec_cmd")?;
                 let timeout = opt_u64(args, "timeout_secs");
                 exec::exec_cmd(workspace_root, cmd, timeout).await
             }
@@ -82,7 +82,7 @@ pub async fn dispatch(
         ),
         "sandbox_exec" => Some(
             async {
-                let cmd = require_str(args, "command", "sandbox_exec")?;
+                let cmd = require_command(args, "sandbox_exec")?;
                 let mut policy = crate::sandbox::SandboxPolicy::default();
                 if let Some(net) = get_bool(args, "allow_network") {
                     policy.allow_network = net;

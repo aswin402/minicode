@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13] — 2026-09-13
+
+### Universal Parameter Resilience, Type Coercion & Schema Harmonization (Phase 113)
+
+#### 💡 Ideas & Inspirations
+- **Universal Model Resilience**: Coding agents must empower any model—from 1.5B/3B Small Language Models (SLMs) like Qwen 2.5 Coder to 100B/1T frontier LLMs—without fracturing the toolset into artificial "lite" vs "full" tiers.
+- **Tolerant Parameter Parsing (Postel's Law)**: Small models frequently output common argument aliases (`cmd` for `command`, `file` or `file_path` for `path`, `old_string`/`new_string` for search/replace, `pattern` for `query`) or coerce types into string forms (`"is_regex": "false"`, `"candidate_files": "foo.rs"`). Minicode should accept all valid semantic representations without crashing or rejecting turns.
+
+#### 🚀 Features & Changes
+- **Universal Parameter Helpers (`src/tools/param.rs`)**:
+  - Implemented `require_path`, `opt_path`, `require_command`, `opt_command`, `require_query`, `opt_query`, `require_search_block`, `require_replace_block`, `opt_limit`.
+  - Added multi-alias resolution tables: `PATH_ALIASES` (`path`, `file_path`, `file`, `target_file`, `filepath`, `filename`), `COMMAND_ALIASES` (`command`, `cmd`, `script`, `exec`, `run`), `SEARCH_BLOCK_ALIASES` (`search_block`, `search`, `old_string`, `old_code`, `find`), `REPLACE_BLOCK_ALIASES` (`replace_block`, `replace`, `new_string`, `new_code`), `QUERY_ALIASES` (`query`, `pattern`, `search`, `text`), `LIMIT_ALIASES` (`limit`, `count`, `max_results`, `max_items`, `max_files`, `n`).
+  - Implemented permissive boolean coercion in `get_bool` (`true`, `false`, `1`, `0`, `"true"`, `"false"`, `"1"`, `"0"`, `"yes"`, `"no"`, `"on"`, `"off"`).
+  - Implemented flexible array coercion in `opt_string_array` (accepts native JSON arrays, comma-delimited strings, or single strings).
+- **Tool Registries Migration**:
+  - Migrated `fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `context_tools/lsp.rs`, `context_tools/memory.rs`, `git_tools.rs`, `explore_tools.rs`, and `onpkg_tools.rs` to tolerant helpers.
+- **Schema & Dispatch Consistency**:
+  - Fixed schema in `lsp_goto_definition` and `lsp_find_references` to require only `path`, since `line` and `character` default to 1.
+  - Made `status` explicitly required in `update_progress` schema and dispatch (accepting `status`, `state`, `progress` aliases), eliminating silent unintended `"Completed"` fallback.
+  - Hardened `WorkingMemory::update_progress` and `append_finding` to automatically create parent directories.
+- **Integration Test Suite (`tests/integration_param_resilience.rs`)**:
+  - 7 comprehensive integration tests verifying path aliases, string/patch aliases, command aliases, search/regex coercion, progress status requirements, LSP defaults, and single-string array coercion.
+
 ## [0.3.12] — 2026-09-12
 
 ### Infinite Loop Detection & Anti-Thrashing Circuit Breaker (Phase 112)

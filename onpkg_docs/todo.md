@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 110 (v0.3.10) SWE-bench Fault Localization & Surgical Repair Engine | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 113 (v0.3.13) Universal Parameter Resilience & Schema Harmonization | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1704,12 +1704,12 @@
 - [x] 112.6: Develop comprehensive integration test suite in `tests/integration_anti_thrash.rs`, verify quality gates (`cargo check -j 3`, `cargo clippy -j 3 -- -D warnings`, `cargo fmt --check`, targeted tests), update `CHANGELOG.md`, bump version → `v0.3.12`, run `./localupdate.sh`, and commit
 
 ### Phase 113: Universal Parameter Resilience, Type Coercion & Schema Harmonization (v0.3.13)
-- [ ] 113.1: Implement universal parameter extraction helpers in `src/tools/param.rs` (`require_path`, `opt_path`, `require_command`, `opt_command`, `require_query`, `opt_query`, `require_search_block`, `require_replace_block`, `opt_limit`) supporting all standard aliases (`file`, `cmd`, `search`, etc.)
-- [ ] 113.2: Implement resilient boolean coercion (`"true"`, `"false"`, `"1"`, `"0"`, `"yes"`, `"no"`) and array coercion (coercing single string `"file.rs"` into `vec!["file.rs"]`) in `src/tools/param.rs`
-- [ ] 113.3: Migrate tool registries (`fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `context_tools.rs`, `git_tools.rs`) to use the new tolerant parameter helpers and append `"additionalProperties": false`
-- [ ] 113.4: Fix parameter schema inconsistencies: make `status` explicit in `update_progress` (remove silent `"Completed"` fallback), and align `lsp_goto_definition` / `lsp_find_references` schema requirements with implementation
-- [ ] 113.5: Write comprehensive unit tests in `src/tools/param.rs` and integration tests in `tests/integration_param_resilience.rs`
-- [ ] 113.6: Verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.13`, run `./localupdate.sh`, and commit
+- [x] 113.1: Implement universal parameter extraction helpers in `src/tools/param.rs` (`require_path`, `opt_path`, `require_command`, `opt_command`, `require_query`, `opt_query`, `require_search_block`, `require_replace_block`, `opt_limit`) supporting all standard aliases (`file`, `cmd`, `search`, etc.)
+- [x] 113.2: Implement resilient boolean coercion (`"true"`, `"false"`, `"1"`, `"0"`, `"yes"`, `"no"`) and array coercion (coercing single string `"file.rs"` into `vec!["file.rs"]`) in `src/tools/param.rs`
+- [x] 113.3: Migrate tool registries (`fs_tools.rs`, `exec_tools.rs`, `search_tools.rs`, `context_tools.rs`, `git_tools.rs`, `explore_tools.rs`, `onpkg_tools.rs`) to use the new tolerant parameter helpers
+- [x] 113.4: Fix parameter schema inconsistencies: make `status` explicit in `update_progress` (remove silent `"Completed"` fallback), and align `lsp_goto_definition` / `lsp_find_references` schema requirements with implementation
+- [x] 113.5: Write comprehensive unit tests in `src/tools/param.rs` and integration tests in `tests/integration_param_resilience.rs`
+- [x] 113.6: Verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.13`, run `./localupdate.sh`, and commit
 
 ### Phase 114: Truthful Execution Telemetry, Fault Localization & Circuit Breaker Accuracy (v0.3.14)
 - [ ] 114.1: Fix `ToolResult.success` in `src/tools/exec.rs` to return `success: false` when command exits with non-zero status

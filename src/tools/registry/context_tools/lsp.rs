@@ -38,7 +38,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "Column character offset (1-indexed) of the symbol"
                     }
                 },
-                "required": ["path", "line", "character"]
+                "required": ["path"]
             }),
         },
         ToolSchema {
@@ -60,7 +60,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "Column character offset (1-indexed)"
                     }
                 },
-                "required": ["path", "line", "character"]
+                "required": ["path"]
             }),
         },
     ]
@@ -80,7 +80,7 @@ pub async fn dispatch(
             }
         }),
         "lsp_goto_definition" => Some({
-            let path = match param::require_str(args, "path", "lsp_goto_definition") {
+            let path = match param::require_path(args, "lsp_goto_definition") {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e.into())),
             };
@@ -126,7 +126,7 @@ pub async fn dispatch(
             }
         }),
         "lsp_find_references" => Some({
-            let path = match param::require_str(args, "path", "lsp_find_references") {
+            let path = match param::require_path(args, "lsp_find_references") {
                 Ok(p) => p,
                 Err(e) => return Some(Err(e.into())),
             };

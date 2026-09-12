@@ -384,7 +384,8 @@ pub async fn dispatch(
                     return Ok("ℹ Workspace is not a git repository".to_string());
                 }
                 let staged_only = param::opt_bool(args, "staged_only", false);
-                let paths = param::opt_string_array(args, "paths");
+                let paths = param::opt_string_array(args, "paths")
+                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
                 let diff_output = git.diff(staged_only, paths.as_deref()).await?;
                 if diff_output.trim().is_empty() {
                     Ok("ℹ No changes detected".to_string())
@@ -396,8 +397,10 @@ pub async fn dispatch(
         ),
         "git_commit" => Some(
             async {
-                let message = param::require_str(args, "message", "git_commit")?;
-                let paths = param::opt_string_array(args, "paths");
+                let message = param::get_str_with_aliases(args, &["message", "msg", "commit_message"])
+                    .ok_or_else(|| param::require_str(args, "message", "git_commit").unwrap_err())?;
+                let paths = param::opt_string_array(args, "paths")
+                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
@@ -418,7 +421,7 @@ pub async fn dispatch(
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
                 }
-                let count = param::opt_usize(args, "count", crate::constants::GIT_LOG_DEFAULT_COUNT);
+                let count = param::opt_limit(args, crate::constants::GIT_LOG_DEFAULT_COUNT);
                 let log = git.log(count).await?;
                 if log.trim().is_empty() {
                     Ok("ℹ No commit history found".to_string())
@@ -452,10 +455,7 @@ pub async fn dispatch(
         ),
         "git_review" => Some(
             async {
-                let staged_only = args
-                    .get("staged_only")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let staged_only = param::opt_bool(args, "staged_only", false);
                 let report =
                     crate::git::GitReviewer::review_workspace(workspace_root, staged_only).await?;
                 Ok(crate::git::GitReviewer::format_report(&report))
@@ -575,7 +575,7 @@ pub async fn dispatch(
         ),
         "resolve_git_conflicts" => Some(
             async {
-                let file_path = param::opt_str(args, "file_path");
+                let file_path = param::opt_path(args);
                 let strategy_str = param::opt_str(args, "strategy").unwrap_or("auto");
                 let stage = param::opt_bool(args, "stage", true);
 
@@ -596,7 +596,8 @@ pub async fn dispatch(
             async {
                 let action = param::opt_str(args, "action").unwrap_or("synthesize");
                 let task_hint = param::opt_str(args, "task_hint");
-                let paths = param::opt_string_array(args, "paths");
+                let paths = param::opt_string_array(args, "paths")
+                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
 
                 let report = crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(
                     workspace_root,

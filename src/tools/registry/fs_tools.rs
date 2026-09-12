@@ -191,14 +191,14 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "read_file" => Some((|| {
-            let path = param::require_str(args, "path", "read_file")?;
+            let path = param::require_path(args, "read_file")?;
             let start_line =
                 param::opt_u64(args, "start_line").and_then(|v| usize::try_from(v).ok());
             let end_line = param::opt_u64(args, "end_line").and_then(|v| usize::try_from(v).ok());
             fs::read_file(workspace_root, path, start_line, end_line)
         })()),
         "write_file" => Some((|| {
-            let path = param::require_str(args, "path", "write_file")?;
+            let path = param::require_path(args, "write_file")?;
             let content = param::require_str(args, "content", "write_file")?;
 
             let validated_path =
@@ -229,9 +229,9 @@ pub async fn dispatch(
             res
         })()),
         "patch_file" => Some((|| {
-            let path = param::require_str(args, "path", "patch_file")?;
-            let search = param::require_str(args, "search_block", "patch_file")?;
-            let replace = param::require_str(args, "replace_block", "patch_file")?;
+            let path = param::require_path(args, "patch_file")?;
+            let search = param::require_search_block(args, "patch_file")?;
+            let replace = param::require_replace_block(args, "patch_file")?;
 
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
@@ -261,10 +261,10 @@ pub async fn dispatch(
             res
         })()),
         "repair_patch" => Some(async {
-            let path = param::require_str(args, "path", "repair_patch")?;
-            let search = param::require_str(args, "search_block", "repair_patch")?;
-            let replace = param::require_str(args, "replace_block", "repair_patch")?;
-            let verification_cmd = param::opt_str(args, "verification_cmd");
+            let path = param::require_path(args, "repair_patch")?;
+            let search = param::require_search_block(args, "repair_patch")?;
+            let replace = param::require_replace_block(args, "repair_patch")?;
+            let verification_cmd = param::opt_command(args).or_else(|| param::opt_str(args, "verification_cmd"));
 
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
@@ -303,8 +303,12 @@ pub async fn dispatch(
             Ok(result.format_markdown())
         }.await),
         "ast_replace_node" => Some((|| {
-            let path = param::require_str(args, "path", "ast_replace_node")?;
-            let symbol = param::require_str(args, "symbol", "ast_replace_node")?;
+            let path = param::require_path(args, "ast_replace_node")?;
+            let symbol = param::get_str_with_aliases(args, &["symbol", "symbol_name", "name", "target_symbol"])
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "ast_replace_node".to_string(),
+                    reason: "Missing required symbol argument (accepted: 'symbol', 'symbol_name', 'name')".to_string(),
+                })?;
             let replacement = param::require_str(args, "replacement_code", "ast_replace_node")?;
             let kind = param::opt_str(args, "kind");
 

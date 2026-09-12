@@ -121,7 +121,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "The status (e.g. 'Completed', 'In Progress', 'Blocked')"
                     }
                 },
-                "required": ["step"]
+                "required": ["step", "status"]
             }),
         },
         ToolSchema {
@@ -257,7 +257,10 @@ pub async fn dispatch(
         })()),
         "update_progress" => Some((|| {
             let step = param::require_str(args, "step", "update_progress")?;
-            let status = param::opt_str(args, "status").unwrap_or("Completed");
+            let status = param::get_str_with_aliases(args, &["status", "state", "progress"])
+                .ok_or_else(|| {
+                    param::require_str(args, "status", "update_progress").unwrap_err()
+                })?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.update_progress(step, status)
                 .map(|_| format!("✔ Updated step '{}' status to '{}'", step, status))

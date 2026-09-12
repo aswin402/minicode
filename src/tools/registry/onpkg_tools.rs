@@ -111,15 +111,23 @@ pub async fn dispatch(
         ),
         "onpkg_stack_show" => Some(
             async {
-                let stack_name = require_str(args, "stack_name", "onpkg_stack_show")?;
+                let stack_name =
+                    get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
+                        .ok_or_else(|| {
+                            require_str(args, "stack_name", "onpkg_stack_show").unwrap_err()
+                        })?;
                 crate::tools::onpkg::OnpkgService::show_stack(workspace_root, stack_name).await
             }
             .await,
         ),
         "onpkg_stack_add" => Some(
             async {
-                let stack_name = require_str(args, "stack_name", "onpkg_stack_add")?;
-                let target_dir = opt_str(args, "target_dir");
+                let stack_name =
+                    get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
+                        .ok_or_else(|| {
+                            require_str(args, "stack_name", "onpkg_stack_add").unwrap_err()
+                        })?;
+                let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
                 crate::tools::onpkg::OnpkgService::add_stack(
                     workspace_root,
@@ -136,7 +144,10 @@ pub async fn dispatch(
         ),
         "onpkg_skill_install" => Some(
             async {
-                let skill_name = require_str(args, "skill_name", "onpkg_skill_install")?;
+                let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
+                    .ok_or_else(|| {
+                        require_str(args, "skill_name", "onpkg_skill_install").unwrap_err()
+                    })?;
                 crate::tools::onpkg::OnpkgService::install_skill(workspace_root, skill_name).await
             }
             .await,

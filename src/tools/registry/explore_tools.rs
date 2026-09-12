@@ -65,12 +65,12 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "code_explore" => {
-            let query = match param::require_str(args, "query", "code_explore") {
+            let query = match param::require_query(args, "code_explore") {
                 Ok(q) => q,
                 Err(e) => return Some(Err(e.into())),
             };
 
-            let symbol = param::opt_str(args, "symbol");
+            let symbol = param::get_str_with_aliases(args, &["symbol", "name", "target"]);
             let max_depth = param::opt_usize(args, "max_depth", 2);
             let include_source = param::opt_bool(args, "include_source", true);
 
@@ -93,7 +93,8 @@ pub async fn dispatch(
         }
         "diff_impact" => {
             let staged_only = param::opt_bool(args, "staged_only", false);
-            let explicit_files = param::opt_string_array(args, "files");
+            let explicit_files = param::opt_string_array(args, "files")
+                .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
 
             let modified_files = if let Some(files) = explicit_files {
                 files

@@ -109,6 +109,9 @@ impl WorkingMemory {
 
     /// Appends a new architectural finding or observation
     pub fn append_finding(&self, finding: &str) -> Result<()> {
+        let dir = self.plan_dir();
+        fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
+
         let path = self.findings_path();
         let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
         let entry = format!("\n### [{}] Observation\n{}\n", timestamp, finding);
@@ -127,6 +130,9 @@ impl WorkingMemory {
 
     /// Updates the progress status of a task step
     pub fn update_progress(&self, step: &str, status: &str) -> Result<()> {
+        let dir = self.plan_dir();
+        fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
+
         let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
         let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, step);
 
