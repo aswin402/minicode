@@ -776,11 +776,14 @@ impl AgentLoop {
                                     None,
                                 );
 
-                                // === Smart Donut Truncator (Phase 88) ===
+                                // === Smart Donut Truncator (Phase 88, 115) ===
+                                let ctx_limit = self.compactor.model_token_limit();
                                 tool_result.output =
-                                    crate::context::donut::SmartDonutTruncator::truncate(
+                                    crate::context::donut::SmartDonutTruncator::truncate_for_context(
                                         &tool_result.output,
-                                    );
+                                        ctx_limit,
+                                    )
+                                    .content;
 
                                 // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
                                 match self.stuck_detector.check(
@@ -832,7 +835,7 @@ impl AgentLoop {
                                     tool_id: tool_result.tool_id.clone(),
                                     tool: tool_result.tool_name.clone(),
                                     success: tool_result.success,
-                                    output: tool_result.output.clone(),
+                                    output: tool_result.display_output().to_string(),
                                     duration_ms: tool_result.duration_ms,
                                 };
                                 if let Err(e) = self
@@ -1003,6 +1006,7 @@ impl AgentLoop {
                                             tool_name,
                                             success: true,
                                             output,
+                                            display_output: String::new(),
                                             duration_ms,
                                         },
                                         Err(e) => crate::agent::types::ToolResult {
@@ -1010,6 +1014,7 @@ impl AgentLoop {
                                             tool_name,
                                             success: false,
                                             output: format!("MCP tool error: {}", e),
+                                            display_output: String::new(),
                                             duration_ms,
                                         },
                                     }
@@ -1055,11 +1060,14 @@ impl AgentLoop {
                                 file_before.as_deref(),
                             );
 
-                            // === Smart Donut Truncator (Phase 88) ===
+                            // === Smart Donut Truncator (Phase 88, 115) ===
+                            let ctx_limit = self.compactor.model_token_limit();
                             tool_result.output =
-                                crate::context::donut::SmartDonutTruncator::truncate(
+                                crate::context::donut::SmartDonutTruncator::truncate_for_context(
                                     &tool_result.output,
-                                );
+                                    ctx_limit,
+                                )
+                                .content;
 
                             // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
                             match self.stuck_detector.check(
@@ -1138,7 +1146,7 @@ impl AgentLoop {
                                 tool_id: tool_result.tool_id.clone(),
                                 tool: tool_result.tool_name.clone(),
                                 success: tool_result.success,
-                                output: tool_result.output.clone(),
+                                output: tool_result.display_output().to_string(),
                                 duration_ms: tool_result.duration_ms,
                             };
                             if let Err(e) = self
@@ -1440,6 +1448,7 @@ impl AgentLoop {
             tool_name: tool_call.name.clone(),
             success: false,
             output: output.clone(),
+            display_output: String::new(),
             duration_ms: 0,
         };
         let res_event = AgentEvent::ToolResult {

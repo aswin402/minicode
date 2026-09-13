@@ -76,6 +76,7 @@ impl ToolRegistry {
                 tool_name: tool_name.to_string(),
                 success: true,
                 output,
+                display_output: String::new(),
                 duration_ms,
             },
             Err(err) => ToolResult {
@@ -83,6 +84,7 @@ impl ToolRegistry {
                 tool_name: tool_name.to_string(),
                 success: false,
                 output: format!("Error executing {}: {}", tool_name, err),
+                display_output: String::new(),
                 duration_ms,
             },
         }

@@ -231,29 +231,49 @@ pub const TURN_STATUS_CANCELLED: &str = "cancelled";
 /// Turn completion status reported when the anti-thrashing circuit breaker tripped
 pub const TURN_STATUS_CIRCUIT_TRIPPED: &str = "circuit_tripped";
 
-// === Smart Donut Truncator (Phase 88) ===
-/// Total line threshold before Smart Donut truncation activates
-pub const DONUT_THRESHOLD_LINES: usize = 300;
-/// Number of initial lines preserved from the start of tool output
-pub const DONUT_HEAD_LINES: usize = 100;
-/// Number of trailing lines preserved from the end of tool output
-pub const DONUT_TAIL_LINES: usize = 200;
-/// Maximum error and diagnostic lines extracted from the omitted middle donut section
-pub const DONUT_MAX_ERROR_LINES: usize = 60;
+// === Smart Donut Truncator (Phase 88, 115) ===
+/// Standard line threshold before Smart Donut truncation activates (for standard/small context)
+pub const DONUT_STANDARD_THRESHOLD_LINES: usize = 120;
+/// Number of initial lines preserved from the start of tool output in standard mode
+pub const DONUT_STANDARD_HEAD_LINES: usize = 30;
+/// Number of trailing lines preserved from the end of tool output in standard mode
+pub const DONUT_STANDARD_TAIL_LINES: usize = 50;
+/// Maximum error and diagnostic lines extracted from the omitted middle donut section in standard mode
+pub const DONUT_STANDARD_MAX_ERROR_LINES: usize = 40;
+
+/// Extended line threshold before Smart Donut truncation activates (for 128k+ extended context)
+pub const DONUT_EXTENDED_THRESHOLD_LINES: usize = 300;
+/// Number of initial lines preserved from the start of tool output in extended mode
+pub const DONUT_EXTENDED_HEAD_LINES: usize = 100;
+/// Number of trailing lines preserved from the end of tool output in extended mode
+pub const DONUT_EXTENDED_TAIL_LINES: usize = 200;
+/// Maximum error and diagnostic lines extracted from the omitted middle donut section in extended mode
+pub const DONUT_EXTENDED_MAX_ERROR_LINES: usize = 60;
+
+/// Default threshold (alias to standard threshold for conservative context window preservation)
+pub const DONUT_THRESHOLD_LINES: usize = DONUT_STANDARD_THRESHOLD_LINES;
+pub const DONUT_HEAD_LINES: usize = DONUT_STANDARD_HEAD_LINES;
+pub const DONUT_TAIL_LINES: usize = DONUT_STANDARD_TAIL_LINES;
+pub const DONUT_MAX_ERROR_LINES: usize = DONUT_STANDARD_MAX_ERROR_LINES;
+
 /// Maximum character length allowed for any single line before in-line truncation
-pub const DONUT_MAX_LINE_CHARS: usize = 2000;
+pub const DONUT_MAX_LINE_CHARS: usize = 300;
 /// Error keywords and signatures searched inside the omitted middle section
 pub const DONUT_ERROR_CUES: &[&str] = &[
     "error:",
     "error[",
+    "error[e",
     "failed:",
+    "failed",
     "failure:",
+    "failure",
     "fatal:",
     "panic:",
     "panicked at",
     "exception:",
     "traceback (most recent call last):",
     "assertionerror",
+    "assertion failed",
     "undefined reference",
     "cannot find",
     "no such file",
@@ -265,6 +285,9 @@ pub const DONUT_ERROR_CUES: &[&str] = &[
     "critical:",
     "segmentation fault",
     "aborted",
+    "mismatched types",
+    "ts(",
+    "error ts",
 ];
 
 // === Context Budget Bar (Phase 88) ===

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 114 (v0.3.14) Truthful Execution Telemetry & Circuit Breaker Accuracy | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 115 (v0.3.15) Unbroken Smart Donut Truncation & Diagnostic Pipeline | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1720,12 +1720,12 @@
 - [x] 114.6: Write comprehensive integration tests in `tests/integration_execution_telemetry.rs`, verify quality gates (`cargo check -j 1`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.14`, and commit
 
 ### Phase 115: Unbroken Smart Donut Truncation & Diagnostic Pipeline (v0.3.15)
-- [ ] 115.1: Unify truncation into a single authority by replacing uncoordinated generic filters in `RtkFilter` and `compactor.rs` with `SmartDonutTruncator`
-- [ ] 115.2: Configure `SmartDonutTruncator` to always scan the middle slice for compiler errors (`error[E...]`, `FAILED`, `panic`, `TS...`) before omitting lines
-- [ ] 115.3: Save full uncompressed command stdout+stderr to `.minicode/logs/last_exec.log` when output exceeds threshold, appending actionable recovery notice
-- [ ] 115.4: Standardize file view formatting in `src/tools/fs.rs` to `{:>4} | {}` (pipe gutter) with default 200-line pagination window
-- [ ] 115.5: Decouple TUI display output (`MINICODE_DIFF_BLOCK`) from LLM conversation context in `ToolResult`
-- [ ] 115.6: Write comprehensive integration tests in `tests/integration_donut_pipeline.rs`, verify quality gates, bump version → `v0.3.15`, and commit
+- [x] 115.1: Unify truncation into a single authority by replacing uncoordinated generic filters in `RtkFilter` and `compactor.rs` with `SmartDonutTruncator`
+- [x] 115.2: Configure `SmartDonutTruncator` to always scan the middle slice for compiler errors (`error[E...]`, `FAILED`, `panic`, `TS...`) before omitting lines
+- [x] 115.3: Save full uncompressed command stdout+stderr to `.minicode/logs/last_exec.log` when output exceeds threshold, appending actionable recovery notice
+- [x] 115.4: Standardize file view formatting in `src/tools/fs.rs` to `{:>4} | {}` (pipe gutter) with default 200-line pagination window
+- [x] 115.5: Decouple TUI display output (`MINICODE_DIFF_BLOCK`) from LLM conversation context in `ToolResult`
+- [x] 115.6: Write comprehensive integration tests in `tests/integration_donut_pipeline.rs`, verify quality gates, bump version → `v0.3.15`, and commit
 
 ### Phase 116: High-Signal System Instructions, Few-Shot Cues & Recency Inversion (v0.3.16)
 - [ ] 116.1: Invert message turn assembly in `src/agent/loop.rs` to place `<workspace_context>` before the user prompt, ensuring `<user_request>` is the final recency token

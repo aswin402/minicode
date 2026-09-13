@@ -91,7 +91,20 @@ pub struct ToolResult {
     pub tool_name: String,
     pub success: bool,
     pub output: String,
+    #[serde(default)]
+    pub display_output: String,
     pub duration_ms: u64,
+}
+
+impl ToolResult {
+    /// Returns display_output if non-empty, otherwise falls back to standard output
+    pub fn display_output(&self) -> &str {
+        if self.display_output.is_empty() {
+            &self.output
+        } else {
+            &self.display_output
+        }
+    }
 }
 
 /// A user's decision on a pending tool-approval request.

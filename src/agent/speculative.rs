@@ -182,6 +182,7 @@ impl SpeculativeExecutor {
                                 tool_name: call_name,
                                 success: false,
                                 output: format!("Speculative task join error: {}", join_err),
+                                display_output: String::new(),
                                 duration_ms: 0,
                             },
                         ),
@@ -233,6 +234,7 @@ impl SpeculativeExecutor {
                         tool_name: fallback_name,
                         success: false,
                         output: format!("Parallel execution task panicked: {}", join_err),
+                        display_output: String::new(),
                         duration_ms: 0,
                     });
                 }

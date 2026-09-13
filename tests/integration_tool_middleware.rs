@@ -19,6 +19,7 @@ fn make_result(output: &str, success: bool, duration_ms: u64) -> ToolResult {
         tool_name: "test_tool".into(),
         success,
         output: output.to_string(),
+        display_output: String::new(),
         duration_ms,
     }
 }

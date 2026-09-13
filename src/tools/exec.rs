@@ -134,8 +134,35 @@ pub async fn exec_cmd(
         .code()
         .unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
     let exit_code = status.code();
+
+    // Preserve full execution output on disk if output exceeds threshold (Phase 115)
+    let total_lines = combined.lines().count();
+    let is_truncated = total_lines > crate::constants::DONUT_STANDARD_THRESHOLD_LINES
+        || combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES;
+
+    let log_notice = if is_truncated {
+        let logs_dir = workspace_root.join(".minicode").join("logs");
+        if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+            tracing::debug!("Could not create .minicode/logs: {}", e);
+        }
+        let log_file = logs_dir.join("last_exec.log");
+        if let Err(e) = std::fs::write(&log_file, &combined) {
+            tracing::debug!("Could not write last_exec.log: {}", e);
+        }
+        format!(
+            "\n[... Truncated: Full {} lines saved to .minicode/logs/last_exec.log. Use read_file with start_line/end_line to inspect specific lines ...]",
+            total_lines
+        )
+    } else {
+        String::new()
+    };
+
     let rtk_res = super::rtk_filter::RtkFilter::filter(command_str, &combined, exit_code);
-    let compacted = super::compactor::compact_tool_output(command_str, &rtk_res.content, exit_code);
+    let mut compacted =
+        super::compactor::compact_tool_output(command_str, &rtk_res.content, exit_code);
+    if !log_notice.is_empty() && !compacted.contains("last_exec.log") {
+        compacted.push_str(&log_notice);
+    }
 
     if !status.success() {
         let frames = crate::context::search::fault_localizer::FaultLocalizer::extract_trace_frames(

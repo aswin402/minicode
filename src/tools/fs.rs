@@ -30,8 +30,16 @@ pub fn read_file(
         return Ok(String::new());
     }
 
+    // Default window clamping: if no bounds provided and total lines > 250, default to 1..=200
+    let is_unbounded = start_line.is_none() && end_line.is_none();
+    let clamped_window = is_unbounded && total_lines > 250;
+
     let start = start_line.unwrap_or(1).max(1);
-    let end = end_line.unwrap_or(total_lines).min(total_lines);
+    let end = if clamped_window {
+        200
+    } else {
+        end_line.unwrap_or(total_lines).min(total_lines)
+    };
 
     if start > total_lines {
         return Err(ToolError::InvalidArguments {
@@ -58,8 +66,15 @@ pub fn read_file(
     let mut output = String::new();
     for line_idx in start..=end {
         if line_idx - 1 < total_lines {
-            output.push_str(&format!("{}: {}\n", line_idx, lines[line_idx - 1]));
+            output.push_str(&format!("{:>4} | {}\n", line_idx, lines[line_idx - 1]));
         }
+    }
+
+    if clamped_window {
+        output.push_str(&format!(
+            "\n[... File has {} lines. Showing lines 1-200. Call read_file with start_line=201 to view next chunk ...]",
+            total_lines
+        ));
     }
 
     Ok(output)
@@ -603,7 +618,7 @@ fn find_nearest_match(original: &str, search: &str) -> NearestMatchDiagnostic {
     let snippet = orig_lines[best_idx..end_idx]
         .iter()
         .enumerate()
-        .map(|(offset, line)| format!("{}: {}", best_idx + offset + 1, line))
+        .map(|(offset, line)| format!("{:>4} | {}", best_idx + offset + 1, line))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -630,9 +645,9 @@ mod tests {
         write_file(&temp_dir, rel_path, content).unwrap();
 
         let read_back = read_file(&temp_dir, rel_path, Some(2), Some(3)).unwrap();
-        assert!(read_back.contains("2: line 2"));
-        assert!(read_back.contains("3: line 3"));
-        assert!(!read_back.contains("1: line 1"));
+        assert!(read_back.contains("   2 | line 2"));
+        assert!(read_back.contains("   3 | line 3"));
+        assert!(!read_back.contains("line 1"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

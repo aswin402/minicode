@@ -29,12 +29,14 @@ pub struct SmartDonutTruncator;
 
 impl SmartDonutTruncator {
     /// Truncates a tool output string using standard default constants.
+    #[allow(dead_code)]
     #[must_use]
     pub fn truncate(input: &str) -> String {
         Self::truncate_with_result(input).content
     }
 
     /// Truncates a tool output string using standard default constants, returning structured metadata.
+    #[allow(dead_code)]
     #[must_use]
     pub fn truncate_with_result(input: &str) -> DonutTruncationResult {
         Self::truncate_custom(
@@ -44,6 +46,28 @@ impl SmartDonutTruncator {
             DONUT_TAIL_LINES,
             DONUT_MAX_ERROR_LINES,
         )
+    }
+
+    /// Truncates a tool output string dynamically based on context window size.
+    #[must_use]
+    pub fn truncate_for_context(input: &str, context_window: usize) -> DonutTruncationResult {
+        if context_window >= 128_000 {
+            Self::truncate_custom(
+                input,
+                crate::constants::DONUT_EXTENDED_THRESHOLD_LINES,
+                crate::constants::DONUT_EXTENDED_HEAD_LINES,
+                crate::constants::DONUT_EXTENDED_TAIL_LINES,
+                crate::constants::DONUT_EXTENDED_MAX_ERROR_LINES,
+            )
+        } else {
+            Self::truncate_custom(
+                input,
+                crate::constants::DONUT_STANDARD_THRESHOLD_LINES,
+                crate::constants::DONUT_STANDARD_HEAD_LINES,
+                crate::constants::DONUT_STANDARD_TAIL_LINES,
+                crate::constants::DONUT_STANDARD_MAX_ERROR_LINES,
+            )
+        }
     }
 
     /// Custom configurable Smart Donut truncation.
@@ -266,7 +290,10 @@ mod tests {
     fn test_clamp_line_width_safe_unicode() {
         let wide_line = "🦀".repeat(3000);
         let clamped = SmartDonutTruncator::clamp_line_width(&wide_line);
-        assert!(clamped.contains("[... line clamped at 2000 chars ...]"));
-        assert!(clamped.chars().count() > 2000);
+        assert!(clamped.contains(&format!(
+            "[... line clamped at {} chars ...]",
+            DONUT_MAX_LINE_CHARS
+        )));
+        assert!(clamped.chars().count() > DONUT_MAX_LINE_CHARS);
     }
 }

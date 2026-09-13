@@ -216,14 +216,17 @@ impl ToolMiddleware for DiffMiddleware {
                     return result;
                 }
                 let diff_text = crate::tools::diff::format_diff_plain(&diff_lines, file_path);
-                let output = format!("{}{}\n{}", DIFF_MARKER, diff_text, result.output);
+                let display_output = format!("{}{}\n{}", DIFF_MARKER, diff_text, result.output);
                 tracing::debug!(
                     tool = ctx.tool_name,
                     file = file_path,
                     "DiffMiddleware: attached new-file diff ({} diff lines)",
                     diff_lines.len()
                 );
-                return ToolResult { output, ..result };
+                return ToolResult {
+                    display_output,
+                    ..result
+                };
             }
         };
 
@@ -234,14 +237,17 @@ impl ToolMiddleware for DiffMiddleware {
         }
 
         let diff_text = crate::tools::diff::format_diff_plain(&diff_lines, file_path);
-        let output = format!("{}{}\n{}", DIFF_MARKER, diff_text, result.output);
+        let display_output = format!("{}{}\n{}", DIFF_MARKER, diff_text, result.output);
         tracing::debug!(
             tool = ctx.tool_name,
             file = file_path,
             "DiffMiddleware: attached diff ({} diff lines)",
             diff_lines.len()
         );
-        ToolResult { output, ..result }
+        ToolResult {
+            display_output,
+            ..result
+        }
     }
 }
 
@@ -258,6 +264,7 @@ mod tests {
             tool_name: "test_tool".into(),
             success,
             output: output.to_string(),
+            display_output: String::new(),
             duration_ms: 42,
         }
     }

@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.15] — 2026-09-13
+
+### Unbroken Smart Donut Truncation & Diagnostic Pipeline (Phase 115)
+
+#### 💡 Ideas & Inspirations
+- **Single Authority for Truncation**: When generic command filters naively truncate logs to head + tail before error extraction, critical compiler diagnostics (which often appear in the middle 20-80 lines of a build log) are silently deleted. Delegating all generic truncation to `SmartDonutTruncator` ensures error cues are never discarded.
+- **Persistent Full Execution Audit**: Truncating output to save context tokens should never permanently destroy information. Saving the complete, raw stdout and stderr to `.minicode/logs/last_exec.log` on oversized commands gives models and developers an explicit audit trail with pagination recovery notices.
+- **SWE-bench Standardized Gutter Formatting**: Adopting `{:>4} | {}` pipe gutters for `read_file` prevents syntax collisions with YAML and language-level colons, and clamps unbounded reads over 250 lines to 200 lines with explicit pagination guidance.
+- **TUI Presentation Decoupling**: Separating `output` (for LLM context) and `display_output` (containing `MINICODE_DIFF_BLOCK` and terminal styling) eliminates prompt clutter, prevents models from reading their own UI control markers, and saves significant context tokens.
+
+#### 🚀 Features & Changes
+- **Smart Donut Middle-Error Extraction (`src/context/budget/donut.rs`, `src/constants.rs`)**:
+  - Configured middle error patterns scanning for `error[E...]`, `FAILED`, `panic`, `TS...`, `syntaxerror`, `exception`, and `-->`.
+  - Added line-width clamping at `DONUT_MAX_LINE_CHARS = 300` characters to prevent single-line minified blob bloat.
+  - Standardized threshold constants: `DONUT_STANDARD_THRESHOLD_LINES = 120` and `DONUT_EXTENDED_THRESHOLD_LINES = 300`.
+- **Disk-Preserved Full Logs (`src/tools/exec.rs`)**:
+  - Oversized command outputs exceeding `DONUT_STANDARD_THRESHOLD_LINES` are written directly to `.minicode/logs/last_exec.log`.
+  - Appends actionable recovery notices to LLM context directing models to `read_file` specific slices if needed.
+- **SWE-Agent Pipe Gutter & Unbounded Window Clamping (`src/tools/fs.rs`, `src/tools/registry/fs_tools.rs`)**:
+  - Updated `read_file` to output `{:>4} | {}` line format.
+  - Added default window clamping: unbounded reads on files > 250 lines show lines 1–200 with actionable next-chunk pagination guidance.
+- **LLM Context & TUI Display Decoupling (`src/agent/types.rs`, `src/tools/middleware.rs`, `src/agent/loop.rs`)**:
+  - Added `display_output` to `ToolResult`.
+  - `DiffMiddleware` populates `display_output` with `DIFF_MARKER` while preserving pristine clean text in `output`.
+  - `AgentEvent::ToolResult` receives `display_output()`, while `self.messages` receives clean `output`.
+- **Integration Test Suite (`tests/integration_donut_pipeline.rs`)**:
+  - 7 comprehensive tests validating middle compiler error retention, generic RTK filter delegation, line width clamping, pipe gutter formatting, 200-line pagination window, disk log creation, and diff display decoupling.
+
 ## [0.3.14] — 2026-09-13
 
 ### Truthful Execution Telemetry, Fault Localization & Circuit Breaker Accuracy (Phase 114)

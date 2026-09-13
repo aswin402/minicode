@@ -58,7 +58,7 @@ impl RtkFilter {
         {
             Self::filter_jest(&clean, exit_code)
         } else {
-            Self::filter_generic(&clean, 40)
+            Self::filter_generic(&clean, crate::constants::DONUT_STANDARD_THRESHOLD_LINES)
         };
 
         let filt_lines = filtered.lines().count();
@@ -222,29 +222,19 @@ impl RtkFilter {
         }
     }
 
-    /// Generic head + tail truncation preserving up to max_lines
+    /// Generic head + tail truncation via SmartDonutTruncator preserving critical error/diagnostic lines
     pub fn filter_generic(output: &str, max_lines: usize) -> String {
-        let lines: Vec<&str> = output.lines().collect();
-        if lines.len() <= max_lines {
-            return output.to_string();
-        }
-
-        let head_count = max_lines / 2;
-        let tail_count = max_lines / 2;
-        let omitted = lines.len() - (head_count + tail_count);
-
-        let mut res: Vec<String> = Vec::new();
-        for l in &lines[..head_count] {
-            res.push(l.to_string());
-        }
-        res.push(format!(
-            "\n[... RTK Filter: {} lines omitted to conserve context ...]\n",
-            omitted
-        ));
-        for l in &lines[lines.len() - tail_count..] {
-            res.push(l.to_string());
-        }
-        res.join("\n")
+        let head = max_lines.saturating_mul(3) / 10;
+        let tail = max_lines.saturating_mul(5) / 10;
+        let max_errors = max_lines.saturating_mul(3) / 10;
+        crate::context::budget::donut::SmartDonutTruncator::truncate_custom(
+            output,
+            max_lines,
+            head.max(10),
+            tail.max(15),
+            max_errors.max(10),
+        )
+        .content
     }
 }
 

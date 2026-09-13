@@ -79,6 +79,7 @@ fn test_diff_middleware_skips_non_file_tool() {
         tool_name: "exec_cmd".into(),
         success: true,
         output: "output".into(),
+        display_output: String::new(),
         duration_ms: 1,
     };
     let ctx = ToolContext {
@@ -100,6 +101,7 @@ fn test_diff_middleware_skips_failed_tool() {
         tool_name: "write_file".into(),
         success: false,
         output: "error occurred".into(),
+        display_output: String::new(),
         duration_ms: 1,
     };
     let ctx = ToolContext {
@@ -110,7 +112,7 @@ fn test_diff_middleware_skips_failed_tool() {
     };
     let out = mw.after(&ctx, result.clone());
     // No diff should be attached to failed tool result
-    assert!(!out.output.contains(DIFF_MARKER));
+    assert!(!out.display_output.contains(DIFF_MARKER));
     assert_eq!(out.output, result.output);
 }
 
@@ -129,6 +131,7 @@ fn test_diff_middleware_attaches_diff_for_write_file() {
         tool_name: "write_file".into(),
         success: true,
         output: "written 32 bytes".into(),
+        display_output: String::new(),
         duration_ms: 5,
     };
     let ctx = ToolContext {
@@ -140,10 +143,17 @@ fn test_diff_middleware_attaches_diff_for_write_file() {
     let mw = DiffMiddleware;
     let out = mw.after(&ctx, result);
     assert!(
-        out.output.starts_with(DIFF_MARKER),
-        "expected DIFF_MARKER prefix"
+        out.display_output.starts_with(DIFF_MARKER),
+        "expected DIFF_MARKER prefix in display_output"
     );
-    assert!(out.output.contains("helper"), "expected new line in diff");
+    assert!(
+        out.display_output.contains("helper"),
+        "expected new line in diff"
+    );
+    assert_eq!(
+        out.output, "written 32 bytes",
+        "clean output preserved for LLM context"
+    );
 
     drop(tmp_file);
 }
@@ -162,6 +172,7 @@ fn test_diff_middleware_no_diff_when_no_changes() {
         tool_name: "write_file".into(),
         success: true,
         output: "written".into(),
+        display_output: String::new(),
         duration_ms: 1,
     };
     let ctx = ToolContext {
@@ -173,7 +184,7 @@ fn test_diff_middleware_no_diff_when_no_changes() {
     let mw = DiffMiddleware;
     let out = mw.after(&ctx, result.clone());
     // No diff block — content unchanged
-    assert!(!out.output.starts_with(DIFF_MARKER));
+    assert!(!out.display_output.starts_with(DIFF_MARKER));
     assert_eq!(out.output, result.output);
 
     drop(tmp_file);
@@ -190,6 +201,7 @@ fn test_pipeline_run_signature_accepts_file_before() {
         tool_name: "exec_cmd".into(),
         success: true,
         output: "clean output".into(),
+        display_output: String::new(),
         duration_ms: 10,
     };
     // Pass Some("old content") — should not affect non-file-modifying tool
@@ -212,6 +224,7 @@ fn test_pipeline_run_none_file_before_is_valid() {
         tool_name: "grep_search".into(),
         success: true,
         output: "3 matches".into(),
+        display_output: String::new(),
         duration_ms: 2,
     };
     let out = pipeline.run(result, "grep_search", Path::new("."), &args, None);

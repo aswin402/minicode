@@ -370,30 +370,16 @@ fn compact_npm(output: &str, exit_code: Option<i32>) -> String {
     compact_generic(output)
 }
 
-/// Generic fallback: keeps head + tail lines if output exceeds threshold.
+/// Generic fallback: delegates to SmartDonutTruncator as the unified authority.
 fn compact_generic(output: &str) -> String {
-    let lines: Vec<&str> = output.lines().collect();
-    if lines.len() <= GENERIC_COMPACT_THRESHOLD {
-        return output.to_string();
-    }
-
-    let head: Vec<&str> = lines.iter().take(GENERIC_HEAD_LINES).copied().collect();
-    let tail: Vec<&str> = lines
-        .iter()
-        .skip(lines.len().saturating_sub(GENERIC_TAIL_LINES))
-        .copied()
-        .collect();
-
-    let omitted_count = lines
-        .len()
-        .saturating_sub(GENERIC_HEAD_LINES + GENERIC_TAIL_LINES);
-
-    format!(
-        "{}\n\n... [{} lines omitted for brevity] ...\n\n{}",
-        head.join("\n"),
-        omitted_count,
-        tail.join("\n")
+    crate::context::budget::donut::SmartDonutTruncator::truncate_custom(
+        output,
+        GENERIC_COMPACT_THRESHOLD,
+        GENERIC_HEAD_LINES,
+        GENERIC_TAIL_LINES,
+        crate::constants::DONUT_STANDARD_MAX_ERROR_LINES,
     )
+    .content
 }
 
 #[cfg(test)]

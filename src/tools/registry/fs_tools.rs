@@ -10,7 +10,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "read_file".to_string(),
-            description: "Read the contents of a file in the workspace within an optional 1-indexed line range.".to_string(),
+            description: "Read the contents of a file in the workspace within an optional 1-indexed line range. Output format is 'line | code'. For files exceeding 250 lines without specified bounds, the first 200 lines are returned with a pagination notice.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
