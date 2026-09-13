@@ -1,6 +1,4 @@
-use crate::constants::{
-    BUDGET_PRESSURE_HIGH_THRESHOLD, BUDGET_PRESSURE_MODERATE_THRESHOLD, BUDGET_PROGRESS_BAR_WIDTH,
-};
+use crate::constants::{BUDGET_PRESSURE_HIGH_THRESHOLD, BUDGET_PRESSURE_MODERATE_THRESHOLD};
 use serde::{Deserialize, Serialize};
 
 /// Dynamic token context budget and headroom tracker for active model sessions.
@@ -38,6 +36,7 @@ impl ContextBudget {
     }
 
     /// Renders an intuitive visual progress bar using block characters (e.g. `[████░░░░░░░░░░░░░░░░]`).
+    #[allow(dead_code)]
     #[must_use]
     pub fn render_progress_bar(&self, width: usize) -> String {
         if width == 0 {
@@ -77,18 +76,16 @@ impl ContextBudget {
     #[must_use]
     pub fn to_prompt_block(&self) -> String {
         let pct = self.percentage();
-        let bar = self.render_progress_bar(BUDGET_PROGRESS_BAR_WIDTH);
         let headroom = self.headroom_tokens();
         let advice_msg = self.advice();
 
         format!(
-            "  <context_budget used=\"{}\" limit=\"{}\" pct=\"{:.1}%\" headroom=\"{}\" cumulative=\"{}\">\n    {} {:.1}% ({}/{} tokens) | Headroom: {} tokens | Session Total: {}\n    Note: {}\n  </context_budget>\n",
+            "  <context_budget used=\"{}\" limit=\"{}\" pct=\"{:.1}%\" headroom=\"{}\" cumulative=\"{}\">\n    {:.1}% ({}/{} tokens) | Headroom: {} tokens | Session Total: {}\n    Note: {}\n  </context_budget>\n",
             self.used_tokens,
             self.max_tokens,
             pct,
             headroom,
             self.cumulative_session_tokens,
-            bar,
             pct,
             self.used_tokens,
             self.max_tokens,

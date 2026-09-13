@@ -271,6 +271,13 @@ impl AgentLoop {
         let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
 
+        // Sanitize past user messages by stripping stale <workspace_context> snapshots
+        for msg in &mut self.messages {
+            if msg.role == crate::agent::types::Role::User {
+                msg.content = crate::agent::prompt::sanitize_past_user_message(&msg.content);
+            }
+        }
+
         // 2. Build Tri-Zone context:
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
         let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
@@ -301,7 +308,15 @@ impl AgentLoop {
             Some(&context_budget),
         );
 
-        let prompt_with_context = format!("{}{}", user_prompt, recency_block);
+        let prompt_with_context = if recency_block.trim().is_empty() {
+            format!("<user_request>\n{}\n</user_request>", user_prompt.trim())
+        } else {
+            format!(
+                "{}\n\n<user_request>\n{}\n</user_request>",
+                recency_block.trim(),
+                user_prompt.trim()
+            )
+        };
         self.messages.push(Message::user(prompt_with_context));
 
         if let Some(metrics) = compaction_metrics {
@@ -707,8 +722,9 @@ impl AgentLoop {
 
             // If assistant produced tool calls, execute them and continue ReAct loop
             if !pending_tool_calls.is_empty() {
+                let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
                 self.messages.push(Message::assistant_with_tools(
-                    iteration_text,
+                    clean_text,
                     pending_tool_calls.clone(),
                 ));
 
@@ -1228,7 +1244,9 @@ impl AgentLoop {
                         };
                         let _ = event_sender.send(status_event);
 
-                        self.messages.push(Message::assistant(iteration_text));
+                        let clean_text =
+                            crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                        self.messages.push(Message::assistant(clean_text));
                         self.messages.push(Message::user(error_feedback));
                         continue;
                     }
@@ -1259,7 +1277,9 @@ impl AgentLoop {
                             };
                             let _ = event_sender.send(status_event);
 
-                            self.messages.push(Message::assistant(iteration_text));
+                            let clean_text =
+                                crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                            self.messages.push(Message::assistant(clean_text));
                             self.messages.push(Message::user(error_feedback));
                             continue;
                         }
@@ -1267,7 +1287,8 @@ impl AgentLoop {
                 }
 
                 // No more tool calls and workspace compiles cleanly; assistant finished turn
-                self.messages.push(Message::assistant(iteration_text));
+                let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                self.messages.push(Message::assistant(clean_text));
                 break;
             }
         }

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 115 (v0.3.15) Unbroken Smart Donut Truncation & Diagnostic Pipeline | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 116 (v0.3.16) High-Signal Instructions, Few-Shot Cues & Recency Inversion | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1728,11 +1728,11 @@
 - [x] 115.6: Write comprehensive integration tests in `tests/integration_donut_pipeline.rs`, verify quality gates, bump version → `v0.3.15`, and commit
 
 ### Phase 116: High-Signal System Instructions, Few-Shot Cues & Recency Inversion (v0.3.16)
-- [ ] 116.1: Invert message turn assembly in `src/agent/loop.rs` to place `<workspace_context>` before the user prompt, ensuring `<user_request>` is the final recency token
-- [ ] 116.2: Clean `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`: remove ghost tools, remove human CLI slash commands, remove internal Rust struct leakage, and add concrete `patch_file` few-shot examples
-- [ ] 116.3: Strip `<thought>...</thought>` blocks and stale `<workspace_context>` snapshots from older conversation history in `self.messages`
-- [ ] 116.4: Remove the hard `messages.len() <= 6` block in `AutoCompactor` and configure realistic context limits for Ollama/local models in `src/agent/models.rs`
-- [ ] 116.5: Write comprehensive integration tests in `tests/integration_prompt_ergonomics.rs`, verify quality gates, bump version → `v0.3.16`, and commit
+- [x] 116.1: Invert message turn assembly in `src/agent/loop.rs` to place `<workspace_context>` before the user prompt, ensuring `<user_request>` is the final recency token
+- [x] 116.2: Clean `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`: remove ghost tools, remove human CLI slash commands, remove internal Rust struct leakage, and add concrete `patch_file` few-shot examples
+- [x] 116.3: Strip `<thought>...</thought>` blocks and stale `<workspace_context>` snapshots from older conversation history in `self.messages`
+- [x] 116.4: Remove the hard `messages.len() <= 6` block in `AutoCompactor` and configure realistic context limits for Ollama/local models in `src/agent/models.rs`
+- [x] 116.5: Write comprehensive integration tests in `tests/integration_prompt_ergonomics.rs`, verify quality gates, bump version → `v0.3.16`, and commit
 
 
 

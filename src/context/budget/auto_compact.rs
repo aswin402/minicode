@@ -406,13 +406,23 @@ impl AutoCompactor {
         let tier2_threshold = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
         let tier3_threshold = (limit as f64 * self.compaction_config.tier3_ratio) as usize;
 
-        // Invariant: Never compact if token count is safely below Tier 1 or message count is tiny
-        if initial_tokens <= tier1_threshold || messages.len() <= COMPACT_PRESERVE_RECENT_MESSAGES {
+        // Invariant: Never compact if token count is safely below Tier 1 or message count cannot be partitioned
+        if initial_tokens <= tier1_threshold || messages.len() <= 2 {
             return None;
         }
 
-        let preserve_count = COMPACT_PRESERVE_RECENT_MESSAGES.min(messages.len());
-        let cutoff = messages.len().saturating_sub(preserve_count);
+        // Scale preserve_count dynamically:
+        // For short conversations (<= 6 messages) under pressure, preserve at most the 2 most recent messages;
+        // for standard/longer conversations, preserve COMPACT_PRESERVE_RECENT_MESSAGES (6).
+        let preserve_count = if messages.len() <= COMPACT_PRESERVE_RECENT_MESSAGES {
+            2.min(messages.len().saturating_sub(2).max(1))
+        } else {
+            COMPACT_PRESERVE_RECENT_MESSAGES
+        };
+        let cutoff = messages.len().saturating_sub(preserve_count.max(1));
+        if cutoff == 0 {
+            return None;
+        }
 
         tracing::info!(
             initial_tokens = initial_tokens,

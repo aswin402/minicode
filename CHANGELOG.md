@@ -5,6 +5,36 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.16] — 2026-09-13
+
+### High-Signal Instructions, Few-Shot Cues & Recency Inversion (Phase 116)
+
+#### 💡 Ideas & Inspirations
+- **Recency-Inverted Turn Assembly**: Transformer self-attention exhibits a strong U-shaped positional curve, allocating maximum attention to prompt prefixes and suffixes. Placing `<workspace_context>` before the user's prompt ensures that `<user_request>` is the final token at the generation frontier, anchoring LLM attention directly onto the immediate instruction.
+- **High-Signal System Prompt Alignment**: Complex meta-tools (`execute_dag`, `repair_diagnostics`, `audit_architecture`, `hybrid_retrieve`) and human CLI slash commands (`/plan`, `/stack`, `/arch`) in the static prompt actively mislead small and frontier models alike into trying to invoke non-standard tools or chat commands instead of standard primitives (`read_file`, `patch_file`, `exec_cmd`, `write_file`). Removing ghost tools, eliminating internal Rust struct leakage (`Result<T, MinicodeError>`), and providing a concrete 3-line `patch_file` few-shot demonstration dramatically elevates instruction-following fidelity.
+- **Conversation History Sanitization**: Retaining multi-thousand-character `<workspace_context>` snapshots and `<thought>...</thought>` blocks across multiple turns in `self.messages` clutters attention and consumes massive token budgets. Sanitizing older turns to strip stale snapshots and thought tags keeps conversation history pristine and focused.
+- **Dynamic Context Sizing & Compactor Unblocking**: Clamping default context windows for Ollama and local models (`:1.5b`, `:3b`, `:7b`, `:8b`) to 8k/16k tokens prevents runaway context growth, while removing the rigid `messages.len() <= 6` block enables `AutoCompactor` to engage whenever token pressure exceeds threshold.
+
+#### 🚀 Features & Changes
+- **Recency-Inverted Turn Assembly (`src/agent/loop.rs`)**:
+  - Assembles turns with `<workspace_context>` first and `<user_request>` at the tail.
+  - Ensures the user prompt is the final token block directly preceding assistant generation.
+- **High-Signal System Prompt & Few-Shot Guidance (`src/agent/prompt.rs`)**:
+  - Cleaned `STATIC_SYSTEM_PROMPT` of ghost tools (`execute_dag`, `repair_diagnostics`, `audit_architecture`, `hybrid_retrieve`, `sandbox_exec`, `begin_transaction`).
+  - Removed human CLI slash commands from the prompt.
+  - Removed internal Rust struct leakage (`Result<T, MinicodeError>`), replacing with idiomatic cross-language error handling rules.
+  - Added concrete, positive 3-line few-shot demonstration for `patch_file`.
+- **History Sanitization & Thought Stripping (`src/agent/prompt.rs`, `src/agent/loop.rs`)**:
+  - Implemented `strip_thought_blocks` stripping `<thought>`, `<think>`, `<thinking>`, `<reasoning>`, and unclosed tags before saving assistant responses to `self.messages`.
+  - Implemented `sanitize_past_user_message` stripping stale `<workspace_context>` snapshots and unwrapping `<user_request>` from historical user turns.
+- **Token Budget Prompt Cleanup (`src/context/budget/budget.rs`)**:
+  - Removed Unicode block progress characters (`█`, `░`) from `ContextBudget::to_prompt_block()` to eliminate token waste in XML prompts.
+- **Local Model Sizing & Compactor Unblocking (`src/agent/models.rs`, `src/context/budget/auto_compact.rs`)**:
+  - Clamped Ollama and local on-device models to 8,192 tokens (or 16,384 for 7B/8B/14B) in `get_model_context_limit`.
+  - Removed hard `messages.len() <= 6` block in `AutoCompactor`, allowing compaction to engage on short conversations under token pressure while preserving recent turns.
+- **Integration Test Suite (`tests/integration_prompt_ergonomics.rs`)**:
+  - 7 comprehensive tests validating thought stripping, user message sanitization, recency inversion layout, prompt few-shot cues, absence of ghost tools/slash commands, no-unicode budget blocks, local context sizing, and compactor unblocking.
+
 ## [0.3.15] — 2026-09-13
 
 ### Unbroken Smart Donut Truncation & Diagnostic Pipeline (Phase 115)

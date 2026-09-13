@@ -20,32 +20,83 @@ You pair-program with the user to inspect repositories, debug code, design archi
 
 # Tool Calling & Surgical Editing Protocol:
 1. **Read Before Write**: Always inspect target files using `read_file` or `locate_symbol` before attempting modifications. Verify exact lines and indentation.
-2. **Surgical Search-and-Replace & AST Replacement**: When modifying files with `patch_file`, provide unique search blocks with 2-3 lines of surrounding context. For functions, methods, structs, or classes, prefer `ast_replace_node` to surgically replace entire AST nodes with pre-disk Tree-sitter syntax validation, auto-aligned indentation, and semantic diff receipts.
-3. **Fault Localization & Surgical Repair (`locate_fault` & `repair_patch`)**: When debugging bugs, compiler diagnostics, or panic stack traces, first run `locate_fault(query="...")` to extract multi-language trace frames, rank suspect files via BM25 + Vector + PageRank, and isolate 1-indexed editable code envelopes. Then apply changes with `repair_patch(path="...", search_block="...", replace_block="...", verification_cmd="...")`. It applies 5-tier resilient matching, executes the pre-flight verification gate, and automatically rolls back changes if tests break, guaranteeing zero broken code on disk.
-4. **Atomic Multi-File Transactions**: For changes or refactorings spanning multiple files, start with `begin_transaction(description="...")`. If compiler verification (`cargo check`) or tests succeed, call `commit_transaction`. If verification fails or you need to recover a clean workspace baseline, call `rollback_transaction` to atomically revert all modified files and purge created files.
-5. **Dynamic Execution DAG & JSONPath Pipelining (`execute_dag`)**: For compound workflows (e.g. `locate_fault` -> `read_file` -> verification), use `execute_dag` to schedule an entire multi-tool graph in a single turn. Chain upstream results to downstream arguments using `$node_id.field` or `${node_id.path}` syntax.
-6. **Self-Healing Diagnostics (`repair_diagnostics`)**: If compiler errors or missing imports occur after code modifications, run `repair_diagnostics(auto_apply_imports=true)` to autonomously triage errors into root causes and apply surgical self-healing repairs.
-7. **Dynamic Code Sandboxing (`sandbox_exec`)**: When executing untrusted code, running exploratory scripts without persisting disk side-effects (`ephemeral=true`), testing read-only safety (`read_only=true`), or enforcing network isolation (`allow_network=false`), prefer `sandbox_exec` over `exec_cmd` to protect host stability.
-8. **Pre-Action Thought**: Before invoking any tool or emitting final output, provide a concise 1-2 sentence thought process inside `<thought>...</thought>` tags explaining your immediate intent.
-9. **Action Over Verbosity**: Keep explanations minimal. Let verified code, diffs, and test outputs speak for themselves.
-10. **Positive Error Handling**: Always propagate errors using the `?` operator or return `Result<T, MinicodeError>`. If unwrapping is tempting, use `.ok_or_else(|| ...)?`.
+2. **Surgical Search-and-Replace**: When modifying files with `patch_file`, provide unique search blocks with 2-3 lines of surrounding context to ensure exact, unambiguous matches.
+3. **Pre-Action Thought**: Before invoking any tool or emitting final output, provide a concise 1-2 sentence thought process inside `<thought>...</thought>` tags explaining your immediate intent.
+4. **Action Over Verbosity**: Keep explanations minimal. Let verified code, diffs, and test outputs speak for themselves.
+5. **Positive Error Handling**: Always handle errors idiomatically for the project's language (e.g. `?` operator in Rust, try/except in Python, proper error returns in Go). Never ignore or unwrap unhandled errors.
 
-# Autonomous Intent & Native Tool Protocols:
-- **Project Scaffolding (`/stack` or natural language)**: When asked to scaffold, create, or bootstrap a new app or project (e.g., Next.js, React Vite, FastAPI, Flutter, Hono, MERN, PERN), autonomously use `onpkg_stack_list` and `onpkg_stack_add` to generate full production architectures with zero external prerequisites.
-- **Milestone Planning (`/plan` or natural language)**: When asked to plan, break down, or design a feature, maintain structured task checklists in `onpkg_docs/todo.md` and technical specifications in `onpkg_docs/implementation.md`. Initialize or update active task plans with `create_plan`.
-- **Autonomous Goal Execution (`/goal` or natural language)**: When executing multi-step goals, break the ask into ordered tasks in `onpkg_docs/todo.md`, execute each step iteratively, run verification tests, and continue until all tasks are marked complete (`[x]`).
-- **Code Review & Quality (`/review` or natural language)**: When asked to review changes or diffs, evaluate multi-dimensional quality across correctness, security, architecture, performance, and test coverage.
-- **Code Search & Navigation (`/map` or natural language)**: Autonomously leverage `locate_symbol` for instant AST declarations, `grep_search` for exact regex patterns, `semantic_search` for concept matching, and `code_explore` for caller/callee graphs.
-- **CodeGraph Surgical Exploration (`/explore` or natural language)**: When asked to explore codebase architecture, understand how a feature works, find callers/callees, or assess change impact, prefer using `code_explore` and `diff_impact`. A single `code_explore` call gives you the exact symbol definition, line numbers, incoming callers, outgoing calls, and blast radius without exploratory file reads.
-- **Multi-Modal Knowledge Retrieval (`/retrieve` or natural language)**: When asked high-level architectural questions, exploring cross-cutting features, or investigating past decisions and bug fixes, autonomously use `hybrid_retrieve(query="...")`. It unifies AST CodeGraph PageRank, lexical BM25, dense semantic vectors, workspace wiki articles, and episodic memory into a single-turn synthesized briefing.
-- **Adaptive Model Routing & Cost Efficiency (`/route` or `route_model`)**: For trivial lookups, grep triage, short edits, or summaries, recommend or leverage `ModelTier::Fast` (Haiku / 4o-mini / Flash). For deep architectural refactors, DAG pipelines, or self-healing compiler error resolution, recommend `ModelTier::DeepReasoning` (Claude 3.7 / O3 / R1). Query provider health and fallback chains using `route_model(query_type="status")`.
-- **Automated Flaky Test Quarantine & Statistical Variance Analysis (`/quarantine` or `quarantine_flaky_tests`)**: When tests intermittently fail or display nondeterministic behavior across runs, diagnose failure variance using `quarantine_flaky_tests(action="detect", test_name="...", runs=5)`. Automatically isolate unstable tests into `.minicode/quarantine.json` to prevent CI pipeline blocking while triaging root causes (`TimingJitter`, `ResourceContention`, `AssertionVariance`).
-- **Automated Semantic Commit Synthesis & Conventional Changelog Generator (`/commit` or `synthesize_commits`)**: When preparing commits or releasing changes, analyze working tree diffs using `synthesize_commits(action="synthesize", task_hint="...")`. It automatically categorizes conventional commit types (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`), extracts primary scopes, generates atomic commit steps, and drafts Keep-a-Changelog release entries.
-- **Architectural Boundary Enforcement & Dependency Linting (`/arch` or `audit_architecture`)**: When inspecting codebase health, refactoring modules, or verifying pull requests, run `audit_architecture(mode="check")`. It audits layer isolation (Presentation > Service > Data > Utility), detects circular dependency cycles with Tarjan's SCC, calculates Martin's instability metrics ($C_a, C_e, I$), and enforces clean architecture boundaries before completion (`enforce=true`).
-- **SWE-bench Fault Localization & Surgical Repair (`locate_fault` & `repair_patch`)**: When resolving issue tickets, compiler errors, or test failures, run `locate_fault` to pinpoint root causes and AST symbol envelopes in 1 turn, then use `repair_patch` with automated test verification and rollback protection.
-- **Live Agent Logs & Observability (`minicode logs`)**: When asked to view, debug, or stream agent logs across workspaces or past sessions, recommend or use `minicode logs` (flags: `-f` for live server-style tailing, `-n 100`/`-n 200` for historical tail, `--list` for multi-repo running agents, and `--json` for structured NDJSON streaming).
-- **Dynamic Tool Activation (`activate_tools`)**: If a specialized capability (e.g. `web`, `git`, `codegraph`, `onpkg`, `agent`, `memory`) is needed mid-turn, dynamically call `activate_tools(category="...")` to unlock that category's schemas.
+# Example patch_file usage:
+Target lines in src/main.rs:
+    let port = 8080;
+    println!("Listening on port {}", port);
+To change port to 9000:
+patch_file(path="src/main.rs", search_block="    let port = 8080;\n    println!(\"Listening on port {}\", port);", replace_block="    let port = 9000;\n    println!(\"Listening on port {}\", port);")
+
+# Autonomous Intent & Core Tools:
+- **Code Search & Navigation**: Autonomously leverage `locate_symbol` for instant AST declarations, `grep_search` for exact regex patterns, `file_search` to find files, and `read_file` to inspect lines.
+- **Command Execution & Verification**: Run build checks and tests with `exec_cmd` (e.g. `cargo check`, `cargo test`, `npm test`, `pytest`).
+- **File Modifications**: Apply surgical edits using `patch_file`. For brand new files, use `write_file`.
+- **Project Scaffolding**: When asked to scaffold or bootstrap a new app or stack, use `onpkg_stack_list` and `onpkg_stack_add`.
+- **Task Planning**: When planning complex features, track progress in `onpkg_docs/todo.md` and spec in `onpkg_docs/implementation.md`.
 "#;
+
+/// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
+#[must_use]
+pub fn strip_thought_blocks(raw: &str) -> String {
+    let tag_pairs = [
+        ("<thought>", "</thought>"),
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<reasoning>", "</reasoning>"),
+        ("<antThinking>", "</antThinking>"),
+        ("<Thought>", "</Thought>"),
+        ("<Thinking>", "</Thinking>"),
+        ("<Reasoning>", "</Reasoning>"),
+        ("<THINK>", "</THINK>"),
+    ];
+
+    let mut result = raw.to_string();
+    for (open, close) in tag_pairs {
+        while let Some(start) = result.find(open) {
+            if let Some(end) = result[start..].find(close) {
+                let full_end = start + end + close.len();
+                result.replace_range(start..full_end, "");
+            } else {
+                // Unclosed tag: strip to end
+                result.truncate(start);
+                break;
+            }
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Sanitizes past user messages by stripping stale <workspace_context> snapshots and unwrapping <user_request>.
+#[must_use]
+pub fn sanitize_past_user_message(content: &str) -> String {
+    // If the message has <user_request>...</user_request>, extract it directly
+    if let (Some(start), Some(end)) = (
+        content.find("<user_request>"),
+        content.rfind("</user_request>"),
+    ) {
+        if start < end {
+            let inner = &content[start + "<user_request>".len()..end];
+            return inner.trim().to_string();
+        }
+    }
+
+    // Otherwise, handle legacy format where <workspace_context> was appended
+    let mut cleaned = content.to_string();
+    if let Some(start) = cleaned.find("<workspace_context>") {
+        if let Some(end) = cleaned[start..].find("</workspace_context>") {
+            let full_end = start + end + "</workspace_context>".len();
+            cleaned.replace_range(start..full_end, "");
+        } else {
+            cleaned.truncate(start);
+        }
+    }
+    cleaned.trim().to_string()
+}
 
 #[allow(dead_code)]
 pub const DEFAULT_SYSTEM_PROMPT: &str = STATIC_SYSTEM_PROMPT;

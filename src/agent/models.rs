@@ -91,6 +91,23 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("mistral-large")
     {
         200_000
+    } else if lower.contains("ollama")
+        || lower.contains("localhost")
+        || lower.contains("localai")
+        || lower.contains("lmstudio")
+        || lower.contains("jan")
+        || lower.contains(":0.5b")
+        || lower.contains(":1.5b")
+        || lower.contains(":3b")
+        || lower.contains(":7b")
+        || lower.contains(":8b")
+        || lower.contains(":14b")
+    {
+        if lower.contains(":7b") || lower.contains(":8b") || lower.contains(":14b") {
+            16_384
+        } else {
+            8_192
+        }
     } else if lower.contains("gpt-4o")
         || lower.contains("gpt-4.1")
         || lower.contains("o1")

@@ -9,10 +9,11 @@ fn test_model_aware_context_limits() {
     assert_eq!(get_model_context_limit("claude-3-7-sonnet"), 200_000);
     assert_eq!(get_model_context_limit("gpt-4o"), 128_000);
     assert_eq!(get_model_context_limit("liquid/lfm-2.5-2.6b:free"), 65_536);
-    assert_eq!(
-        get_model_context_limit("cohere/north-mini-code:free"),
-        65_536
+    assert!(
+        get_model_context_limit("cohere/north-mini-code:free") >= 65_536,
+        "Cohere North model should resolve to at least 65k (or cached provider limit)"
     );
+    assert_eq!(get_model_context_limit("cohere/north-code"), 65_536);
     assert_eq!(get_model_context_limit("google/gemma-2-9b"), 8_192);
 }
 
