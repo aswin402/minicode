@@ -218,6 +218,10 @@ fn test_model_context_limit_ollama_and_local() {
     assert_eq!(get_model_context_limit("llama3.1:8b"), 16_384);
     assert_eq!(get_model_context_limit("qwen2.5-coder:14b"), 16_384);
 
+    // Large local models (32B -> 32k, 70B -> 64k)
+    assert_eq!(get_model_context_limit("ollama/qwen2.5-coder:32b"), 32_768);
+    assert_eq!(get_model_context_limit("ollama/llama3.3:70b"), 65_536);
+
     // Frontier cloud models retain standard large limits
     assert_eq!(get_model_context_limit("gpt-4o"), 128_000);
     assert_eq!(get_model_context_limit("claude-3-5-sonnet"), 200_000);

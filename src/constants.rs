@@ -108,6 +108,24 @@ pub const CONTEXT_MIN_PRESERVED_MESSAGES: usize = 4;
 /// Signal-killed exit code fallback when OS doesn't provide one
 pub const SIGNAL_KILLED_EXIT_CODE: i32 = -1;
 
+// === Model Context Window Tiers ===
+/// 2M token context window limit (e.g. Gemini 1.5 Pro)
+pub const CONTEXT_WINDOW_2M: usize = 2_000_000;
+/// 1M token context window limit (e.g. Gemini 2.0 / 1.5 Flash)
+pub const CONTEXT_WINDOW_1M: usize = 1_000_000;
+/// 200k token context window limit (e.g. Claude 3.5 / 3.7 Sonnet)
+pub const CONTEXT_WINDOW_200K: usize = 200_000;
+/// 128k token context window limit (e.g. GPT-4o, DeepSeek-V3, Qwen-2.5, LLaMA-3.3)
+pub const CONTEXT_WINDOW_128K: usize = 128_000;
+/// 64k token context window limit (e.g. local 70B/72B models, Qwen local, Mistral Medium)
+pub const CONTEXT_WINDOW_64K: usize = 65_536;
+/// 32k token context window limit (e.g. local 32B models)
+pub const CONTEXT_WINDOW_32K: usize = 32_768;
+/// 16k token context window limit (e.g. local 7B/8B/14B models)
+pub const CONTEXT_WINDOW_16K: usize = 16_384;
+/// 8k token context window limit (e.g. local small language models 0.5B-3B)
+pub const CONTEXT_WINDOW_8K: usize = 8_192;
+
 // === MCP Protocol ===
 /// Standard JSON-RPC protocol version string
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -188,6 +206,10 @@ pub const MAX_SEARCH_RESULTS: usize = 50;
 pub const MAX_REGEX_QUERY_LEN: usize = 1024;
 /// Maximum milliseconds allowed for scoped auto-compiler / linter checks
 pub const AUTO_LINT_TIMEOUT_MS: u64 = 4000;
+/// Default line count threshold above which unbounded `read_file` clamps to default window
+pub const READ_FILE_UNBOUNDED_THRESHOLD: usize = 250;
+/// Default number of lines returned when `read_file` clamps an unbounded request
+pub const READ_FILE_DEFAULT_WINDOW: usize = 200;
 /// Maximum number of diagnostic error snippets injected into tool output
 pub const MAX_COMPILER_DIAGNOSTICS: usize = 3;
 /// Maximum output lines for each compiler diagnostic snippet

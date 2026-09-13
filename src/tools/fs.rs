@@ -30,13 +30,14 @@ pub fn read_file(
         return Ok(String::new());
     }
 
-    // Default window clamping: if no bounds provided and total lines > 250, default to 1..=200
+    // Default window clamping: if no bounds provided and total lines exceed threshold, clamp window
     let is_unbounded = start_line.is_none() && end_line.is_none();
-    let clamped_window = is_unbounded && total_lines > 250;
+    let clamped_window =
+        is_unbounded && total_lines > crate::constants::READ_FILE_UNBOUNDED_THRESHOLD;
 
     let start = start_line.unwrap_or(1).max(1);
     let end = if clamped_window {
-        200
+        crate::constants::READ_FILE_DEFAULT_WINDOW
     } else {
         end_line.unwrap_or(total_lines).min(total_lines)
     };
@@ -72,8 +73,10 @@ pub fn read_file(
 
     if clamped_window {
         output.push_str(&format!(
-            "\n[... File has {} lines. Showing lines 1-200. Call read_file with start_line=201 to view next chunk ...]",
-            total_lines
+            "\n[... File has {} lines. Showing lines 1-{}. Call read_file with start_line={} to view next chunk ...]",
+            total_lines,
+            crate::constants::READ_FILE_DEFAULT_WINDOW,
+            crate::constants::READ_FILE_DEFAULT_WINDOW + 1
         ));
     }
 

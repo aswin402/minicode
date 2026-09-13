@@ -75,13 +75,13 @@ pub fn get_model_context_limit(model: &str) -> usize {
 
     let lower = model.to_lowercase();
     if lower.contains("gemini-1.5-pro") || lower.contains("2m") {
-        2_000_000
+        crate::constants::CONTEXT_WINDOW_2M
     } else if lower.contains("gemini-2")
         || lower.contains("gemini-1.5")
         || lower.contains("1m")
         || lower.contains("minimax-text-01")
     {
-        1_000_000
+        crate::constants::CONTEXT_WINDOW_1M
     } else if lower.contains("claude-3-7")
         || lower.contains("claude-3-5")
         || lower.contains("claude-3")
@@ -90,7 +90,7 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("codestral")
         || lower.contains("mistral-large")
     {
-        200_000
+        crate::constants::CONTEXT_WINDOW_200K
     } else if lower.contains("ollama")
         || lower.contains("localhost")
         || lower.contains("localai")
@@ -102,11 +102,28 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains(":7b")
         || lower.contains(":8b")
         || lower.contains(":14b")
+        || lower.contains(":32b")
+        || lower.contains(":34b")
+        || lower.contains(":70b")
+        || lower.contains(":72b")
+        || lower.contains(":405b")
     {
-        if lower.contains(":7b") || lower.contains(":8b") || lower.contains(":14b") {
-            16_384
+        if lower.contains(":70b") || lower.contains(":72b") || lower.contains(":405b") {
+            crate::constants::CONTEXT_WINDOW_64K
+        } else if lower.contains(":32b") || lower.contains(":34b") {
+            crate::constants::CONTEXT_WINDOW_32K
+        } else if lower.contains(":7b") || lower.contains(":8b") || lower.contains(":14b") {
+            crate::constants::CONTEXT_WINDOW_16K
+        } else if lower.contains(":0.5b") || lower.contains(":1.5b") || lower.contains(":3b") {
+            crate::constants::CONTEXT_WINDOW_8K
+        } else if lower.contains("qwen-2.5")
+            || lower.contains("qwen2.5")
+            || lower.contains("llama-3.3")
+            || lower.contains("llama-3.1")
+        {
+            crate::constants::CONTEXT_WINDOW_32K
         } else {
-            8_192
+            crate::constants::CONTEXT_WINDOW_8K
         }
     } else if lower.contains("gpt-4o")
         || lower.contains("gpt-4.1")
@@ -123,17 +140,17 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("llama-3.2")
         || lower.contains("llama-3.3")
     {
-        128_000
+        crate::constants::CONTEXT_WINDOW_128K
     } else if lower.contains("qwen")
         || lower.contains("liquid")
         || lower.contains("lfm")
         || lower.contains("north")
     {
-        65_536
+        crate::constants::CONTEXT_WINDOW_64K
     } else if lower.contains("gemma") || lower.contains("llama-3") {
-        8_192
+        crate::constants::CONTEXT_WINDOW_8K
     } else {
-        128_000
+        crate::constants::CONTEXT_WINDOW_128K
     }
 }
 
@@ -742,6 +759,14 @@ mod tests {
         assert_eq!(
             get_model_context_limit("completely-unknown-custom-model"),
             128_000
+        );
+        assert_eq!(
+            get_model_context_limit("ollama/qwen2.5-coder:32b"),
+            crate::constants::CONTEXT_WINDOW_32K
+        );
+        assert_eq!(
+            get_model_context_limit("ollama/llama3.3:70b"),
+            crate::constants::CONTEXT_WINDOW_64K
         );
     }
 }
