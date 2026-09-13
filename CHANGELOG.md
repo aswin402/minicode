@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.14] — 2026-09-13
+
+### Truthful Execution Telemetry, Fault Localization & Circuit Breaker Accuracy (Phase 114)
+
+#### 💡 Ideas & Inspirations
+- **Truthful Execution Telemetry**: Returning `Ok` on non-zero exit codes or failed patch verification creates an architectural "success inversion", fooling the agent and circuit breaker into believing broken commands succeeded and falsely clearing failure streaks.
+- **Auto-Wired Fault Localization**: When commands fail with panics, compiler errors, or tracebacks, the agent shouldn't have to guess where to look. Embedding precise, 1-indexed fault envelopes directly into the failure telemetry gives small models (1.5B/3B) and frontier LLMs instant, unambiguous grounding.
+
+#### 🚀 Features & Changes
+- **Truthful Non-Zero Exit Telemetry (`src/tools/exec.rs`, `src/tools/registry/exec_tools.rs`)**:
+  - `exec_cmd` and `sandbox_exec` now return `Err(ToolError::CommandExec)` when the child process exits with a non-zero exit status, ensuring `ToolResult.success = false`.
+  - Automatically parses compiler errors (`--> src/foo.rs:42:15`), Rust panics, Python tracebacks, and JS/TS stack traces via `FaultLocalizer::extract_trace_frames`.
+  - Injects actionable `📍 Probable Fault Sites` with exact suggested `read_file` line ranges (`start_line`, `end_line`) into the error telemetry.
+- **Truthful Verification & Rollback Telemetry (`src/tools/registry/fs_tools.rs`)**:
+  - `repair_patch` now returns `Err(ToolError::PatchFailed)` when verification commands fail and changes are rolled back, preserving failure streaks in the stuck detector.
+- **Universal Path-Alias Stuck Detection (`src/agent/stuck_detector.rs`)**:
+  - `extract_target_file` now checks all `PATH_ALIASES` (`path`, `file_path`, `file`, `target_file`, `filepath`, `filename`), catching multi-turn thrashing even when models alternate between argument aliases.
+- **Integration Test Suite (`tests/integration_execution_telemetry.rs`)**:
+  - 5 comprehensive tests verifying non-zero exit telemetry, FaultLocalizer hint injection, repair_patch rollback, stuck detector consecutive failure tracking, and file target thrashing across argument aliases.
+
 ## [0.3.13] — 2026-09-13
 
 ### Universal Parameter Resilience, Type Coercion & Schema Harmonization (Phase 113)

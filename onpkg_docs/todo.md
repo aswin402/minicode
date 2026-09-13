@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 113 (v0.3.13) Universal Parameter Resilience & Schema Harmonization | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 114 (v0.3.14) Truthful Execution Telemetry & Circuit Breaker Accuracy | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1712,12 +1712,12 @@
 - [x] 113.6: Verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.13`, run `./localupdate.sh`, and commit
 
 ### Phase 114: Truthful Execution Telemetry, Fault Localization & Circuit Breaker Accuracy (v0.3.14)
-- [ ] 114.1: Fix `ToolResult.success` in `src/tools/exec.rs` to return `success: false` when command exits with non-zero status
-- [ ] 114.2: Fix `repair_patch` in `src/tools/registry/fs_tools.rs` to return `success: false` when verification fails and rollback is triggered
-- [ ] 114.3: Ensure `src/agent/stuck_detector.rs` correctly registers failing command executions and rolled-back patches without falsely clearing failure streaks
-- [ ] 114.4: Standardize tool failure messages across all registries to the actionable "What - Where - Why - Next" diagnostic contract
-- [ ] 114.5: Auto-wire `FaultLocalizer` in `src/tools/exec.rs` to parse panics and stack traces, suggesting exact `read_file` line ranges for probable fault sites
-- [ ] 114.6: Write comprehensive integration tests in `tests/integration_execution_telemetry.rs`, verify quality gates (`cargo check -j 1`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.14`, and commit
+- [x] 114.1: Fix `ToolResult.success` in `src/tools/exec.rs` to return `success: false` when command exits with non-zero status
+- [x] 114.2: Fix `repair_patch` in `src/tools/registry/fs_tools.rs` to return `success: false` when verification fails and rollback is triggered
+- [x] 114.3: Ensure `src/agent/stuck_detector.rs` correctly registers failing command executions and rolled-back patches without falsely clearing failure streaks
+- [x] 114.4: Standardize tool failure messages across all registries to the actionable "What - Where - Why - Next" diagnostic contract
+- [x] 114.5: Auto-wire `FaultLocalizer` in `src/tools/exec.rs` to parse panics and stack traces, suggesting exact `read_file` line ranges for probable fault sites
+- [x] 114.6: Write comprehensive integration tests in `tests/integration_execution_telemetry.rs`, verify quality gates (`cargo check -j 1`, `cargo test -j 1`), update `CHANGELOG.md`, bump version → `v0.3.14`, and commit
 
 ### Phase 115: Unbroken Smart Donut Truncation & Diagnostic Pipeline (v0.3.15)
 - [ ] 115.1: Unify truncation into a single authority by replacing uncoordinated generic filters in `RtkFilter` and `compactor.rs` with `SmartDonutTruncator`

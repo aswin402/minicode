@@ -138,9 +138,38 @@ pub async fn exec_cmd(
     let compacted = super::compactor::compact_tool_output(command_str, &rtk_res.content, exit_code);
 
     if !status.success() {
-        return Ok(format!(
-            "Command exited with non-zero status ({status_code}):\n{compacted}"
-        ));
+        let frames = crate::context::search::fault_localizer::FaultLocalizer::extract_trace_frames(
+            &combined,
+        );
+        let mut fault_hint = String::new();
+        if !frames.is_empty() {
+            fault_hint.push_str("\n\n[Where] 📍 Probable Fault Sites:\n");
+            let mut seen_locations = std::collections::HashSet::new();
+            for frame in frames.iter().take(4) {
+                let key = (frame.file_path.clone(), frame.line_number);
+                if seen_locations.insert(key) {
+                    let start_suggest = frame.line_number.saturating_sub(10).max(1);
+                    let end_suggest = frame.line_number + 15;
+                    fault_hint.push_str(&format!(
+                        "  • `{}:{}` -> Suggested action: `read_file(path: \"{}\", start_line: {}, end_line: {})`\n",
+                        frame.file_path, frame.line_number, frame.file_path, start_suggest, end_suggest
+                    ));
+                }
+            }
+            fault_hint.push_str("\n[Suggested Next Action]\nInspect the failing code envelopes at the fault sites above and apply surgical repairs using `patch_file`.");
+        }
+
+        let out_body = if compacted.trim().is_empty() {
+            "(No output captured on stdout/stderr)".to_string()
+        } else {
+            compacted
+        };
+
+        return Err(ToolError::CommandExec(format!(
+            "Command exited with non-zero status ({status_code}):\n{}{}",
+            out_body, fault_hint
+        ))
+        .into());
     }
 
     if compacted.trim().is_empty() {
@@ -168,5 +197,21 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let res = exec_cmd(&temp_dir, "sleep 3", Some(1)).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_exec_nonzero_exit_returns_err_with_fault_sites() {
+        let temp_dir = std::env::temp_dir();
+        let out = exec_cmd(
+            &temp_dir,
+            "echo 'error[E0425]: cannot find value `foo` in this scope\n  --> src/main.rs:42:15'; exit 1",
+            Some(5),
+        )
+        .await;
+        assert!(out.is_err());
+        let err_msg = out.unwrap_err().to_string();
+        assert!(err_msg.contains("non-zero status (1)"));
+        assert!(err_msg.contains("Probable Fault Sites"));
+        assert!(err_msg.contains("src/main.rs:42"));
     }
 }

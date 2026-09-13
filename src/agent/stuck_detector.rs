@@ -268,7 +268,7 @@ impl StuckDetector {
 
     /// Extracts a target file path from tool arguments if present.
     pub fn extract_target_file(args: &Value) -> Option<String> {
-        for key in &["path", "file_path", "target_file", "file"] {
+        for key in crate::tools::param::PATH_ALIASES {
             if let Some(s) = args.get(*key).and_then(|v| v.as_str()) {
                 if !s.is_empty() {
                     return Some(s.to_string());

@@ -104,7 +104,14 @@ pub async fn dispatch(
                 }
 
                 let res = crate::sandbox::run_sandboxed(workspace_root, cmd, &policy).await?;
-                Ok(crate::sandbox::format_sandbox_result(&res))
+                if res.success {
+                    Ok(crate::sandbox::format_sandbox_result(&res))
+                } else {
+                    Err(crate::error::ToolError::CommandExec(
+                        crate::sandbox::format_sandbox_result(&res),
+                    )
+                    .into())
+                }
             }
             .await,
         ),

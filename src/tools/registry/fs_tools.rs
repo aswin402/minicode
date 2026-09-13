@@ -298,9 +298,17 @@ pub async fn dispatch(
                     workspace_root,
                     &validated_path,
                 );
+                Ok(result.format_markdown())
+            } else {
+                Err(crate::error::ToolError::PatchFailed {
+                    path: path.to_string(),
+                    reason: format!(
+                        "Verification failed; changes automatically rolled back.\n\n{}",
+                        result.format_markdown()
+                    ),
+                }
+                .into())
             }
-
-            Ok(result.format_markdown())
         }.await),
         "ast_replace_node" => Some((|| {
             let path = param::require_path(args, "ast_replace_node")?;
