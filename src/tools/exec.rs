@@ -5,11 +5,67 @@ use crate::sandbox::landlock::apply_landlock_sandbox;
 use std::path::Path;
 use std::time::Duration;
 
-/// Executes a shell command inside the sandboxed workspace environment.
+/// Resolves the context window token limit for tool execution.
+/// First checks the global active context limit, then environment variables, then workspace configuration.
+pub fn resolve_context_window(workspace_root: &Path) -> usize {
+    let active = crate::context::budget::donut::get_active_context_limit();
+    if active > 0 {
+        return active;
+    }
+
+    if let Ok(val) = std::env::var("MINICODE_CONTEXT_WINDOW") {
+        if let Ok(parsed) = val.parse::<usize>() {
+            return parsed;
+        }
+    }
+
+    if let Ok(model) = std::env::var("MINICODE_MODEL") {
+        return crate::agent::models::get_model_context_limit(&model);
+    }
+
+    // Check workspace-local config.toml if it exists
+    let local_cfg = workspace_root
+        .join(crate::constants::WORKSPACE_DIR_NAME)
+        .join(crate::constants::CONFIG_FILE_NAME);
+    if local_cfg.exists() {
+        if let Ok(content) = std::fs::read_to_string(&local_cfg) {
+            if let Ok(val) = toml::from_str::<serde_json::Value>(&content) {
+                if let Some(ctx) = val
+                    .get("provider")
+                    .and_then(|p| p.get("context_window"))
+                    .and_then(|c| c.as_u64())
+                {
+                    return ctx as usize;
+                }
+                if let Some(model) = val
+                    .get("provider")
+                    .and_then(|p| p.get("model"))
+                    .and_then(|m| m.as_str())
+                {
+                    return crate::agent::models::get_model_context_limit(model);
+                }
+            }
+        }
+    }
+
+    0
+}
+
+/// Executes a shell command inside the sandboxed workspace environment using active context window limit.
 pub async fn exec_cmd(
     workspace_root: &Path,
     command_str: &str,
     timeout_secs: Option<u64>,
+) -> Result<String> {
+    exec_cmd_with_context(workspace_root, command_str, timeout_secs, None).await
+}
+
+/// Executes a shell command with an optional explicit context window limit.
+pub async fn exec_cmd_with_context(
+    workspace_root: &Path,
+    command_str: &str,
+    timeout_secs: Option<u64>,
+    explicit_context: Option<usize>,
 ) -> Result<String> {
     let timeout =
         Duration::from_secs(timeout_secs.unwrap_or(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS));
@@ -135,10 +191,17 @@ pub async fn exec_cmd(
         .unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
     let exit_code = status.code();
 
-    // Preserve full execution output on disk if output exceeds threshold (Phase 115)
+    // Preserve full execution output on disk if output exceeds threshold (Phase 115, Phase 117)
+    let context_window = explicit_context.unwrap_or_else(|| resolve_context_window(workspace_root));
+    let line_threshold = if context_window >= crate::constants::CONTEXT_WINDOW_128K {
+        crate::constants::DONUT_EXTENDED_THRESHOLD_LINES
+    } else {
+        crate::constants::DONUT_STANDARD_THRESHOLD_LINES
+    };
+
     let total_lines = combined.lines().count();
-    let is_truncated = total_lines > crate::constants::DONUT_STANDARD_THRESHOLD_LINES
-        || combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES;
+    let is_truncated =
+        total_lines > line_threshold || combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES;
 
     let log_notice = if is_truncated {
         let logs_dir = workspace_root.join(".minicode").join("logs");
@@ -157,9 +220,18 @@ pub async fn exec_cmd(
         String::new()
     };
 
-    let rtk_res = super::rtk_filter::RtkFilter::filter(command_str, &combined, exit_code);
-    let mut compacted =
-        super::compactor::compact_tool_output(command_str, &rtk_res.content, exit_code);
+    let rtk_res = super::rtk_filter::RtkFilter::filter_for_context(
+        command_str,
+        &combined,
+        exit_code,
+        context_window,
+    );
+    let mut compacted = super::compactor::compact_tool_output_for_context(
+        command_str,
+        &rtk_res.content,
+        exit_code,
+        context_window,
+    );
     if !log_notice.is_empty() && !compacted.contains("last_exec.log") {
         compacted.push_str(&log_notice);
     }

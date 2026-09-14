@@ -30,8 +30,19 @@ pub struct FilterResult {
 }
 
 impl RtkFilter {
-    /// Intercepts and condenses command output based on command type
+    /// Intercepts and condenses command output based on command type, using active context window.
     pub fn filter(command: &str, output: &str, exit_code: Option<i32>) -> FilterResult {
+        let context_window = crate::context::donut::get_active_context_limit();
+        Self::filter_for_context(command, output, exit_code, context_window)
+    }
+
+    /// Intercepts and condenses command output using a specific context window limit.
+    pub fn filter_for_context(
+        command: &str,
+        output: &str,
+        exit_code: Option<i32>,
+        context_window: usize,
+    ) -> FilterResult {
         let clean = strip_ansi(output);
         let orig_lines = clean.lines().count();
 
@@ -57,6 +68,8 @@ impl RtkFilter {
             || cmd_lower.contains("jest")
         {
             Self::filter_jest(&clean, exit_code)
+        } else if context_window > 0 {
+            Self::filter_generic_for_context(&clean, context_window)
         } else {
             Self::filter_generic(&clean, crate::constants::DONUT_STANDARD_THRESHOLD_LINES)
         };
@@ -233,6 +246,15 @@ impl RtkFilter {
             head.max(10),
             tail.max(15),
             max_errors.max(10),
+        )
+        .content
+    }
+
+    /// Generic truncation via SmartDonutTruncator dynamically scaling to model context window
+    pub fn filter_generic_for_context(output: &str, context_window: usize) -> String {
+        crate::context::budget::donut::SmartDonutTruncator::truncate_for_context(
+            output,
+            context_window,
         )
         .content
     }

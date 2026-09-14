@@ -1,7 +1,26 @@
 use crate::constants::{
-    DONUT_ERROR_CUES, DONUT_HEAD_LINES, DONUT_MAX_ERROR_LINES, DONUT_MAX_LINE_CHARS,
-    DONUT_TAIL_LINES, DONUT_THRESHOLD_LINES,
+    CONTEXT_WINDOW_128K, DONUT_ERROR_CUES, DONUT_HEAD_LINES, DONUT_MAX_ERROR_LINES,
+    DONUT_MAX_LINE_CHARS, DONUT_TAIL_LINES, DONUT_THRESHOLD_LINES,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static ACTIVE_CONTEXT_LIMIT: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets the current active model context window limit globally for tool execution and compaction.
+pub fn set_active_context_limit(limit: usize) {
+    ACTIVE_CONTEXT_LIMIT.store(limit, Ordering::Relaxed);
+}
+
+/// Returns the current active model context window limit in tokens (or 0 if unset).
+pub fn get_active_context_limit() -> usize {
+    ACTIVE_CONTEXT_LIMIT.load(Ordering::Relaxed)
+}
+
+/// Returns true if the active context window is large enough for extended truncation (>= 128k tokens).
+#[allow(dead_code)]
+pub fn is_extended_context() -> bool {
+    get_active_context_limit() >= CONTEXT_WINDOW_128K
+}
 
 /// Result metadata from Smart Donut Truncation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,30 +47,35 @@ pub struct DonutTruncationResult {
 pub struct SmartDonutTruncator;
 
 impl SmartDonutTruncator {
-    /// Truncates a tool output string using standard default constants.
+    /// Truncates a tool output string using standard default constants or active context limit.
     #[allow(dead_code)]
     #[must_use]
     pub fn truncate(input: &str) -> String {
         Self::truncate_with_result(input).content
     }
 
-    /// Truncates a tool output string using standard default constants, returning structured metadata.
+    /// Truncates a tool output string using active context limit or standard constants, returning structured metadata.
     #[allow(dead_code)]
     #[must_use]
     pub fn truncate_with_result(input: &str) -> DonutTruncationResult {
-        Self::truncate_custom(
-            input,
-            DONUT_THRESHOLD_LINES,
-            DONUT_HEAD_LINES,
-            DONUT_TAIL_LINES,
-            DONUT_MAX_ERROR_LINES,
-        )
+        let active = get_active_context_limit();
+        if active > 0 {
+            Self::truncate_for_context(input, active)
+        } else {
+            Self::truncate_custom(
+                input,
+                DONUT_THRESHOLD_LINES,
+                DONUT_HEAD_LINES,
+                DONUT_TAIL_LINES,
+                DONUT_MAX_ERROR_LINES,
+            )
+        }
     }
 
     /// Truncates a tool output string dynamically based on context window size.
     #[must_use]
     pub fn truncate_for_context(input: &str, context_window: usize) -> DonutTruncationResult {
-        if context_window >= 128_000 {
+        if context_window >= CONTEXT_WINDOW_128K {
             Self::truncate_custom(
                 input,
                 crate::constants::DONUT_EXTENDED_THRESHOLD_LINES,

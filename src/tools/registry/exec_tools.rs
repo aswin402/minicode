@@ -76,7 +76,8 @@ pub async fn dispatch(
             async {
                 let cmd = require_command(args, "exec_cmd")?;
                 let timeout = opt_u64(args, "timeout_secs");
-                exec::exec_cmd(workspace_root, cmd, timeout).await
+                let explicit_ctx = opt_u64(args, "context_window").map(|c| c as usize);
+                exec::exec_cmd_with_context(workspace_root, cmd, timeout, explicit_ctx).await
             }
             .await,
         ),

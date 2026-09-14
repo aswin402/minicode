@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 116 (v0.3.16) High-Signal Instructions, Few-Shot Cues & Recency Inversion | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 117 (v0.3.17) Dynamic Context-Aware Donut Scaling & Unified Compaction Architecture | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1733,6 +1733,15 @@
 - [x] 116.3: Strip `<thought>...</thought>` blocks and stale `<workspace_context>` snapshots from older conversation history in `self.messages`
 - [x] 116.4: Remove the hard `messages.len() <= 6` block in `AutoCompactor` and configure realistic context limits for Ollama/local models in `src/agent/models.rs`
 - [x] 116.5: Write comprehensive integration tests in `tests/integration_prompt_ergonomics.rs`, verify quality gates, bump version → `v0.3.16`, and commit
+ 
+### Phase 117: Dynamic Context-Aware Donut Scaling & Unified Compaction Architecture (v0.3.17)
+- [x] 117.1: Implement global atomic context window tracking (`ACTIVE_CONTEXT_LIMIT`, `set_active_context_limit`, `get_active_context_limit`, `is_extended_context`) and context-scaled `SmartDonutTruncator::truncate_for_context` in `src/context/budget/donut.rs`
+- [x] 117.2: Eliminate stale 50-line choke in `src/tools/compactor.rs` and unify generic truncation under `SmartDonutTruncator`, scaling git diff folding up to 300 lines on extended context windows
+- [x] 117.3: Implement context-aware execution scaling in `src/tools/exec.rs` with `resolve_context_window` checking active limit, environment variables, and workspace config (300 lines for $\ge$ 128k vs 120 lines for standard models)
+- [x] 117.4: Synchronize model context limit across application lifecycle (`App::new`, `main`, `AgentLoop::new`, and turn execution)
+- [x] 117.5: Eliminate duplicate `ToolCall` event emissions in `src/agent/loop.rs` that were polluting TUI timelines, session tapes, and `--json-stream`
+- [x] 117.6: Fix AST/symbol candidate fusion and deterministic sorting in `src/context/search/hybrid.rs`
+- [x] 117.7: Develop integration test suite in `tests/integration_context_aware_donut.rs`, verify all 379 library tests and 98 integration test binaries, update `CHANGELOG.md`, bump version → `v0.3.17`, and commit
 
 
 

@@ -168,7 +168,7 @@ pub fn calculate_discount(amount: f64, rate: f64) -> f64 {
     assert!(!bad_result.success);
     assert!(bad_result
         .output
-        .contains("Missing required argument 'query'"));
+        .contains("Missing required query argument"));
 }
 
 #[tokio::test]

@@ -42,7 +42,7 @@ fn test_approval_modal_options_and_navigation() {
     let mut modal =
         ApprovalModalState::from_tool_call(1, "call_patch_1", "patch_file", &args, &theme);
 
-    assert_eq!(modal.target_description, "Patch file: src/main.rs");
+    assert_eq!(modal.target_description, "src/main.rs (+1/-1 lines)");
     assert_eq!(modal.selected_index, 0);
 
     // Navigate through all options
@@ -60,10 +60,10 @@ fn test_approval_modal_options_and_navigation() {
     // Verify option labels
     let options = ApprovalOption::all();
     assert_eq!(options.len(), 4);
-    assert!(options[0].label().contains("Accept"));
+    assert!(options[0].label().contains("Approve"));
     assert!(options[1].label().contains("Reject"));
     assert!(options[2].label().contains("Allow for this Session"));
-    assert!(options[3].label().contains("Type Feedback"));
+    assert!(options[3].label().contains("Feedback"));
 }
 
 #[test]

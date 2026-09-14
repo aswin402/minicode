@@ -1,4 +1,5 @@
 use minicode::agent::prompt::PromptBuilder;
+use minicode::constants::{DONUT_HEAD_LINES, DONUT_MAX_LINE_CHARS, DONUT_TAIL_LINES};
 use minicode::context::budget::ContextBudget;
 use minicode::context::compressor::ContextCompressor;
 use minicode::context::donut::SmartDonutTruncator;
@@ -69,7 +70,7 @@ fn test_context_budget_recency_context_injection() {
 #[test]
 fn test_smart_donut_under_threshold_untouched() {
     let mut lines = Vec::new();
-    for i in 1..=150 {
+    for i in 1..=80 {
         lines.push(format!("Cargo test stdout line {}", i));
     }
     let input = lines.join("\n");
@@ -91,19 +92,29 @@ fn test_smart_donut_truncation_structure_and_bounds() {
     let res = SmartDonutTruncator::truncate_with_result(&input);
     assert!(res.was_truncated);
     assert_eq!(res.original_lines, 500);
-    // Head = 100, Tail = 200, Omitted = 500 - (100 + 200) = 200 lines
-    assert_eq!(res.omitted_lines, 200);
+    let expected_omitted = 500 - (DONUT_HEAD_LINES + DONUT_TAIL_LINES);
+    assert_eq!(res.omitted_lines, expected_omitted);
     assert_eq!(res.extracted_error_count, 0);
 
     // Verify head lines are preserved
     assert!(res.content.starts_with("Build stream info line 1"));
-    assert!(res.content.contains("Build stream info line 100"));
+    assert!(res
+        .content
+        .contains(&format!("Build stream info line {}", DONUT_HEAD_LINES)));
 
     // Verify middle omission banner
-    assert!(res.content.contains("[... Smart Donut Truncation: Omitted 200 lines (lines 101 to 300) — zero errors detected in omitted section ...]"));
+    assert!(res.content.contains(&format!(
+        "[... Smart Donut Truncation: Omitted {} lines (lines {} to {}) — zero errors detected in omitted section ...]",
+        expected_omitted,
+        DONUT_HEAD_LINES + 1,
+        500 - DONUT_TAIL_LINES
+    )));
 
     // Verify tail lines are preserved
-    assert!(res.content.contains("Build stream info line 301"));
+    assert!(res.content.contains(&format!(
+        "Build stream info line {}",
+        500 - DONUT_TAIL_LINES + 1
+    )));
     assert!(res.content.ends_with("Build stream info line 500"));
 }
 
@@ -126,7 +137,8 @@ fn test_smart_donut_extracts_critical_middle_errors_with_location_pointers() {
     let res = SmartDonutTruncator::truncate_with_result(&input);
     assert!(res.was_truncated);
     assert_eq!(res.original_lines, 600);
-    assert_eq!(res.omitted_lines, 300); // 600 - (100 + 200)
+    let expected_omitted = 600 - (DONUT_HEAD_LINES + DONUT_TAIL_LINES);
+    assert_eq!(res.omitted_lines, expected_omitted);
     assert!(res.extracted_error_count >= 3);
 
     // Verify exact line numbers and error text in omitted middle section
@@ -148,8 +160,11 @@ fn test_smart_donut_wide_character_clamping_safe_unicode() {
     let long_emoji_string = "🚀🔥✨".repeat(1500); // 4500 emojis = 18,000 bytes
     let clamped = SmartDonutTruncator::clamp_line_width(&long_emoji_string);
 
-    assert!(clamped.contains("[... line clamped at 2000 chars ...]"));
-    assert!(clamped.chars().count() > 2000);
+    assert!(clamped.contains(&format!(
+        "[... line clamped at {} chars ...]",
+        DONUT_MAX_LINE_CHARS
+    )));
+    assert!(clamped.chars().count() > DONUT_MAX_LINE_CHARS);
 }
 
 #[test]

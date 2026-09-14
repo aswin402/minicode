@@ -115,20 +115,31 @@ pub fn detect_strategy(command: &str) -> CompactStrategy {
     }
 }
 
-/// Main entrypoint: strips ANSI escape sequences and applies exit-code-aware compaction.
+/// Main entrypoint: strips ANSI escape sequences and applies exit-code-aware compaction using active context limit.
 pub fn compact_tool_output(command: &str, raw_output: &str, exit_code: Option<i32>) -> String {
+    let context_window = crate::context::donut::get_active_context_limit();
+    compact_tool_output_for_context(command, raw_output, exit_code, context_window)
+}
+
+/// Main entrypoint with explicit context window limit.
+pub fn compact_tool_output_for_context(
+    command: &str,
+    raw_output: &str,
+    exit_code: Option<i32>,
+    context_window: usize,
+) -> String {
     let clean = strip_ansi_codes(raw_output);
     let strategy = detect_strategy(command);
 
     match strategy {
-        CompactStrategy::CargoCheck => compact_cargo_check(&clean, exit_code),
-        CompactStrategy::CargoTest => compact_cargo_test(&clean, exit_code),
-        CompactStrategy::GitDiff => compact_git_diff(&clean),
+        CompactStrategy::CargoCheck => compact_cargo_check(&clean, exit_code, context_window),
+        CompactStrategy::CargoTest => compact_cargo_test(&clean, exit_code, context_window),
+        CompactStrategy::GitDiff => compact_git_diff(&clean, context_window),
         CompactStrategy::GitLog => compact_git_log(&clean),
-        CompactStrategy::Npm => compact_npm(&clean, exit_code),
-        CompactStrategy::Pytest => compact_pytest(&clean, exit_code),
-        CompactStrategy::GoTest => compact_go_test(&clean, exit_code),
-        CompactStrategy::Generic => compact_generic(&clean),
+        CompactStrategy::Npm => compact_npm(&clean, exit_code, context_window),
+        CompactStrategy::Pytest => compact_pytest(&clean, exit_code, context_window),
+        CompactStrategy::GoTest => compact_go_test(&clean, exit_code, context_window),
+        CompactStrategy::Generic => compact_generic(&clean, context_window),
     }
 }
 
@@ -151,7 +162,7 @@ pub fn calculate_compaction_stats(raw: &str, compacted: &str) -> CompactionStats
 }
 
 /// Compacts `cargo check`, `cargo build`, `cargo clippy` output.
-fn compact_cargo_check(output: &str, exit_code: Option<i32>) -> String {
+fn compact_cargo_check(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success =
         exit_code == Some(0) && !output.contains("error:") && !output.contains("error[");
 
@@ -181,14 +192,14 @@ fn compact_cargo_check(output: &str, exit_code: Option<i32>) -> String {
     }
 
     if relevant_lines.is_empty() {
-        compact_generic(output)
+        compact_generic(output, context_window)
     } else {
         relevant_lines.join("\n")
     }
 }
 
 /// Compacts `cargo test` output.
-fn compact_cargo_test(output: &str, exit_code: Option<i32>) -> String {
+fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0)
         && !output.contains("test result: FAILED")
         && !output.contains("FAILED");
@@ -228,12 +239,12 @@ fn compact_cargo_test(output: &str, exit_code: Option<i32>) -> String {
     if !failure_lines.is_empty() {
         failure_lines.join("\n")
     } else {
-        compact_generic(output)
+        compact_generic(output, context_window)
     }
 }
 
 /// Compacts `pytest` / `unittest` Python output.
-fn compact_pytest(output: &str, exit_code: Option<i32>) -> String {
+fn compact_pytest(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0)
         && (output.contains("passed") || output.contains("OK"))
         && !output.contains("FAILED")
@@ -272,12 +283,12 @@ fn compact_pytest(output: &str, exit_code: Option<i32>) -> String {
     if !relevant.is_empty() {
         relevant.join("\n")
     } else {
-        compact_generic(output)
+        compact_generic(output, context_window)
     }
 }
 
 /// Compacts `go test` output.
-fn compact_go_test(output: &str, exit_code: Option<i32>) -> String {
+fn compact_go_test(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0) && !output.contains("FAIL");
 
     if is_success {
@@ -308,14 +319,20 @@ fn compact_go_test(output: &str, exit_code: Option<i32>) -> String {
     if !failure_lines.is_empty() {
         failure_lines.join("\n")
     } else {
-        compact_generic(output)
+        compact_generic(output, context_window)
     }
 }
 
 /// Compacts `git diff` / `git show` output with fast hunk folding.
-fn compact_git_diff(output: &str) -> String {
+fn compact_git_diff(output: &str, context_window: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
-    if lines.len() <= GIT_DIFF_COMPACT_THRESHOLD {
+    let threshold = if context_window >= crate::constants::CONTEXT_WINDOW_128K {
+        crate::constants::DONUT_EXTENDED_THRESHOLD_LINES
+    } else {
+        GIT_DIFF_COMPACT_THRESHOLD
+    };
+
+    if lines.len() <= threshold {
         return output.to_string();
     }
 
@@ -354,7 +371,7 @@ fn compact_git_log(output: &str) -> String {
 }
 
 /// Compacts npm/yarn/pnpm/bun output.
-fn compact_npm(output: &str, exit_code: Option<i32>) -> String {
+fn compact_npm(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0);
     if is_success {
         for line in output.lines().rev() {
@@ -367,19 +384,27 @@ fn compact_npm(output: &str, exit_code: Option<i32>) -> String {
             }
         }
     }
-    compact_generic(output)
+    compact_generic(output, context_window)
 }
 
 /// Generic fallback: delegates to SmartDonutTruncator as the unified authority.
-fn compact_generic(output: &str) -> String {
-    crate::context::budget::donut::SmartDonutTruncator::truncate_custom(
-        output,
-        GENERIC_COMPACT_THRESHOLD,
-        GENERIC_HEAD_LINES,
-        GENERIC_TAIL_LINES,
-        crate::constants::DONUT_STANDARD_MAX_ERROR_LINES,
-    )
-    .content
+fn compact_generic(output: &str, context_window: usize) -> String {
+    if context_window > 0 {
+        crate::context::budget::donut::SmartDonutTruncator::truncate_for_context(
+            output,
+            context_window,
+        )
+        .content
+    } else {
+        crate::context::budget::donut::SmartDonutTruncator::truncate_custom(
+            output,
+            GENERIC_COMPACT_THRESHOLD,
+            GENERIC_HEAD_LINES,
+            GENERIC_TAIL_LINES,
+            crate::constants::DONUT_STANDARD_MAX_ERROR_LINES,
+        )
+        .content
+    }
 }
 
 #[cfg(test)]

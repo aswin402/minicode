@@ -72,6 +72,8 @@ impl AgentLoop {
         let compactor = crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
             .unwrap_or_else(|_| crate::context::auto_compact::AutoCompactor::default_safe());
 
+        crate::context::budget::donut::set_active_context_limit(compactor.model_token_limit());
+
         let speculative_executor = crate::agent::speculative::SpeculativeExecutor::new(
             workspace_root.to_path_buf(),
             config.agent.max_parallel_tools,
@@ -262,6 +264,10 @@ impl AgentLoop {
 
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
+
+        // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
+        let model_token_limit = self.compactor.model_token_limit();
+        crate::context::budget::donut::set_active_context_limit(model_token_limit);
 
         if turn_id == 1 {
             self.compactor.set_working_context(user_prompt);
@@ -753,17 +759,6 @@ impl AgentLoop {
                                 }
                             }
 
-                            // Notify UI of active tool activity
-                            if let Some(first_call) = parallel_calls.first() {
-                                let call_event = AgentEvent::ToolCall {
-                                    turn_id,
-                                    tool_id: first_call.id.clone(),
-                                    tool: first_call.name.clone(),
-                                    args: first_call.arguments.clone(),
-                                };
-                                let _ = event_sender.send(call_event);
-                            }
-
                             let parallel_fut = self
                                 .speculative_executor
                                 .execute_parallel_stage(&parallel_calls, turn_id);
@@ -992,15 +987,6 @@ impl AgentLoop {
                                 } else {
                                     None
                                 };
-
-                            // Emit ToolCall event so UI immediately displays active activity during execution
-                            let call_event = AgentEvent::ToolCall {
-                                turn_id,
-                                tool_id: tool_call.id.clone(),
-                                tool: tool_call.name.clone(),
-                                args: tool_call.arguments.clone(),
-                            };
-                            let _ = event_sender.send(call_event);
 
                             // Execute tool (MCP vs Built-in)
                             let is_mcp = tool_call.name.starts_with(MCP_TOOL_PREFIX);

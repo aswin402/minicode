@@ -139,5 +139,8 @@ fn test_stack_select_modal_state_and_filter() {
 fn test_system_prompt_autonomous_protocols() {
     assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_stack_add"));
     assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_docs/todo.md"));
-    assert!(DEFAULT_SYSTEM_PROMPT.contains("semantic_search"));
+    assert!(
+        DEFAULT_SYSTEM_PROMPT.contains("locate_symbol")
+            || DEFAULT_SYSTEM_PROMPT.contains("grep_search")
+    );
 }

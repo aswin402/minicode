@@ -103,118 +103,161 @@ impl HybridIndex {
             pagerank_score: f64,
         }
 
-        let mut candidate_map: HashMap<(String, usize, usize), Candidate> = HashMap::new();
+        let mut candidates: Vec<Candidate> = Vec::new();
+
+        let find_match = |candidates: &[Candidate],
+                          file_path: &str,
+                          start_line: usize,
+                          end_line: usize,
+                          sym_name: Option<&str>|
+         -> Option<usize> {
+            candidates.iter().position(|c| {
+                if c.file_path != file_path {
+                    return false;
+                }
+                if let (Some(s1), Some(s2)) = (c.symbol_name.as_deref(), sym_name) {
+                    if s1 == s2 {
+                        return true;
+                    }
+                }
+                !(c.end_line < start_line || end_line < c.start_line)
+            })
+        };
 
         // Index Lexical Hits
         for (rank, lex) in lexical_matches.into_iter().enumerate() {
-            let key = (
-                lex.file_path.display().to_string(),
-                lex.line_number,
-                lex.line_number + 10,
-            );
+            let file_path = lex.file_path.display().to_string();
+            let start_line = lex.line_number;
+            let end_line = lex.line_number + 10;
+            let sym_name = Some(lex.name.as_str());
+
             let pr = self
                 .pagerank_map
                 .get(&lex.name)
-                .or_else(|| self.pagerank_map.get(&key.0))
+                .or_else(|| self.pagerank_map.get(&file_path))
                 .copied()
                 .unwrap_or(0.0);
 
-            candidate_map
-                .entry(key.clone())
-                .and_modify(|c| {
-                    if c.lexical_rank.is_none() {
-                        c.lexical_rank = Some(rank + 1);
-                    }
-                })
-                .or_insert_with(|| Candidate {
-                    file_path: key.0.clone(),
-                    start_line: lex.line_number,
-                    end_line: lex.line_number + 10,
-                    snippet: lex.signature.clone(),
-                    symbol_name: Some(lex.name.clone()),
-                    symbol_kind: Some(lex.kind.clone()),
+            if let Some(idx) = find_match(&candidates, &file_path, start_line, end_line, sym_name) {
+                let c = &mut candidates[idx];
+                if c.lexical_rank.is_none() {
+                    c.lexical_rank = Some(rank + 1);
+                }
+                if c.symbol_name.is_none() {
+                    c.symbol_name = Some(lex.name);
+                    c.symbol_kind = Some(lex.kind);
+                }
+                if c.pagerank_score == 0.0 {
+                    c.pagerank_score = pr;
+                }
+            } else {
+                candidates.push(Candidate {
+                    file_path,
+                    start_line,
+                    end_line,
+                    snippet: lex.signature,
+                    symbol_name: Some(lex.name),
+                    symbol_kind: Some(lex.kind),
                     lexical_rank: Some(rank + 1),
                     vector_rank: None,
                     pagerank_score: pr,
                 });
+            }
         }
 
         // Index Vector Chunk Hits
         for (rank, vec_hit) in vector_matches.into_iter().enumerate() {
-            let key = (
-                vec_hit.file_path.clone(),
-                vec_hit.start_line,
-                vec_hit.end_line,
-            );
-            let pr = vec_hit
-                .symbol_name
-                .as_ref()
+            let file_path = vec_hit.file_path;
+            let start_line = vec_hit.start_line;
+            let end_line = vec_hit.end_line;
+            let sym_name = vec_hit.symbol_name.as_deref();
+
+            let pr = sym_name
                 .and_then(|name| self.pagerank_map.get(name))
-                .or_else(|| self.pagerank_map.get(&key.0))
+                .or_else(|| self.pagerank_map.get(&file_path))
                 .copied()
                 .unwrap_or(0.0);
 
-            candidate_map
-                .entry(key.clone())
-                .and_modify(|c| {
-                    if c.vector_rank.is_none() {
-                        c.vector_rank = Some(rank + 1);
-                    }
-                    if c.snippet.is_empty() {
-                        c.snippet = vec_hit.snippet.clone();
-                    }
-                })
-                .or_insert_with(|| Candidate {
-                    file_path: key.0.clone(),
-                    start_line: vec_hit.start_line,
-                    end_line: vec_hit.end_line,
-                    snippet: vec_hit.snippet.clone(),
-                    symbol_name: vec_hit.symbol_name.clone(),
-                    symbol_kind: vec_hit.symbol_kind.clone(),
+            if let Some(idx) = find_match(&candidates, &file_path, start_line, end_line, sym_name) {
+                let c = &mut candidates[idx];
+                if c.vector_rank.is_none() {
+                    c.vector_rank = Some(rank + 1);
+                }
+                if c.snippet.is_empty() {
+                    c.snippet = vec_hit.snippet;
+                }
+                if c.symbol_name.is_none() && vec_hit.symbol_name.is_some() {
+                    c.symbol_name = vec_hit.symbol_name;
+                    c.symbol_kind = vec_hit.symbol_kind;
+                }
+                if c.pagerank_score == 0.0 {
+                    c.pagerank_score = pr;
+                }
+                c.start_line = c.start_line.min(start_line);
+                c.end_line = c.end_line.max(end_line);
+            } else {
+                candidates.push(Candidate {
+                    file_path,
+                    start_line,
+                    end_line,
+                    snippet: vec_hit.snippet,
+                    symbol_name: vec_hit.symbol_name,
+                    symbol_kind: vec_hit.symbol_kind,
                     lexical_rank: None,
                     vector_rank: Some(rank + 1),
                     pagerank_score: pr,
                 });
+            }
         }
 
         // Index Symbol Vector Hits
         for (rank, sym_hit) in symbol_vector_matches.into_iter().enumerate() {
-            let key = (
-                sym_hit.file_path.clone(),
-                sym_hit.start_line,
-                sym_hit.end_line,
-            );
-            let pr = sym_hit
-                .symbol_name
-                .as_ref()
+            let file_path = sym_hit.file_path;
+            let start_line = sym_hit.start_line;
+            let end_line = sym_hit.end_line;
+            let sym_name = sym_hit.symbol_name.as_deref();
+
+            let pr = sym_name
                 .and_then(|name| self.pagerank_map.get(name))
-                .or_else(|| self.pagerank_map.get(&key.0))
+                .or_else(|| self.pagerank_map.get(&file_path))
                 .copied()
                 .unwrap_or(0.0);
 
-            candidate_map
-                .entry(key.clone())
-                .and_modify(|c| {
-                    if c.vector_rank.is_none() || c.vector_rank.unwrap_or(usize::MAX) > rank + 1 {
-                        c.vector_rank = Some(rank + 1);
-                    }
-                })
-                .or_insert_with(|| Candidate {
-                    file_path: key.0.clone(),
-                    start_line: sym_hit.start_line,
-                    end_line: sym_hit.end_line,
-                    snippet: sym_hit.snippet.clone(),
-                    symbol_name: sym_hit.symbol_name.clone(),
-                    symbol_kind: sym_hit.symbol_kind.clone(),
+            if let Some(idx) = find_match(&candidates, &file_path, start_line, end_line, sym_name) {
+                let c = &mut candidates[idx];
+                if c.vector_rank.is_none() || c.vector_rank.unwrap_or(usize::MAX) > rank + 1 {
+                    c.vector_rank = Some(rank + 1);
+                }
+                if c.snippet.is_empty() {
+                    c.snippet = sym_hit.snippet;
+                }
+                if c.symbol_name.is_none() && sym_hit.symbol_name.is_some() {
+                    c.symbol_name = sym_hit.symbol_name;
+                    c.symbol_kind = sym_hit.symbol_kind;
+                }
+                if c.pagerank_score == 0.0 {
+                    c.pagerank_score = pr;
+                }
+                c.start_line = c.start_line.min(start_line);
+                c.end_line = c.end_line.max(end_line);
+            } else {
+                candidates.push(Candidate {
+                    file_path,
+                    start_line,
+                    end_line,
+                    snippet: sym_hit.snippet,
+                    symbol_name: sym_hit.symbol_name,
+                    symbol_kind: sym_hit.symbol_kind,
                     lexical_rank: None,
                     vector_rank: Some(rank + 1),
                     pagerank_score: pr,
                 });
+            }
         }
 
         // 4. Compute RRF Scores
-        let mut results: Vec<HybridHit> = candidate_map
-            .into_values()
+        let mut results: Vec<HybridHit> = candidates
+            .into_iter()
             .map(|c| {
                 let mut rrf_score = 0.0;
                 let mut sources = Vec::new();
@@ -254,6 +297,9 @@ impl HybridIndex {
             b.combined_score
                 .partial_cmp(&a.combined_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.file_path.cmp(&b.file_path))
+                .then_with(|| a.start_line.cmp(&b.start_line))
+                .then_with(|| a.symbol_name.cmp(&b.symbol_name))
         });
 
         results.truncate(limit);

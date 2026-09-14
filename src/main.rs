@@ -348,6 +348,13 @@ async fn main() -> anyhow::Result<()> {
         config.logging.level = "debug".to_string();
     }
 
+    // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
+    let active_limit = config
+        .provider
+        .context_window
+        .unwrap_or_else(|| crate::agent::models::get_model_context_limit(&config.provider.model));
+    crate::context::budget::donut::set_active_context_limit(active_limit);
+
     // 4. Initialize logging subsystem
     let _log_guard = logging::init_logging(None, &config.logging.level, false)?;
     tracing::info!(

@@ -5,6 +5,39 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.17] — 2026-09-14
+
+### Dynamic Context-Aware Donut Scaling & Unified Compaction Architecture (Phase 117)
+
+#### 💡 Ideas & Inspirations
+- **Context-Aware Dynamic Truncation**: Modern frontier models (Claude 3.5 Sonnet, Gemini 2.0 / 1.5 Pro, GPT-4o) boast 128k to 2M token context windows, rendering static 50-line or 120-line tool truncation unnecessarily harsh. Conversely, local SLMs (8k–64k) rapidly degrade if thousands of lines flood context. Dynamically adjusting truncation budgets (300 preserved lines for $\ge$ 128k context vs 120 lines for standard/local models) optimizes reasoning fidelity for large models while protecting memory bounds on smaller architectures.
+- **Unified Truncation Authority**: Eliminating legacy ad-hoc truncation logic (such as the 50-line choke in `compactor.rs`) and centralizing all generic output filtering through `SmartDonutTruncator` guarantees error-scanning, structured omission notices, and full log preservation across the entire tool execution pipeline.
+- **Clean Event Streams & Replay Determinism**: Emitting duplicate `ToolCall` events during tool execution introduced timeline widget ghosting, duplicate NDJSON streaming events, and replay verification failures. Removing duplicate events restores clean 1:1 parity across model actions, UI state, and session tapes.
+- **Multi-Modal AST & Vector Candidate Fusion**: In hybrid search, fusing BM25 lexical matches and dense AST vector matches for the same symbol/file prevents duplicate candidates and elevates composite relevance scores via Reciprocal Rank Fusion (RRF).
+
+#### 🚀 Features & Changes
+- **Dynamic Context-Aware Smart Donut Truncation (`src/context/budget/donut.rs`)**:
+  - Added global atomic context window tracking: `ACTIVE_CONTEXT_LIMIT`, `set_active_context_limit`, `get_active_context_limit`, and `is_extended_context`.
+  - Implemented `SmartDonutTruncator::truncate_for_context` adjusting threshold to 300 lines (100 head / 200 tail) for $\ge$ 128k context windows, and 120 lines (30 head / 50 tail) for standard models.
+  - Automatically routes default `truncate_with_result` calls through active context limits.
+- **Unified Tool Compactor (`src/tools/compactor.rs`, `src/tools/rtk_filter.rs`)**:
+  - Replaced stale 50-line generic compact threshold with context-aware `SmartDonutTruncator::truncate_for_context`.
+  - Scaled `git diff` folding threshold to preserve up to 300 diff lines without folding under extended context windows.
+  - Added `RtkFilter::filter_for_context` and `RtkFilter::filter_generic_for_context`.
+- **Context-Aware Tool Execution (`src/tools/exec.rs`, `src/tools/registry/exec_tools.rs`)**:
+  - Added `resolve_context_window` inspecting global atomic limit, `MINICODE_CONTEXT_WINDOW`, `MINICODE_MODEL`, and workspace config.
+  - Implemented `exec_cmd_with_context` dynamically scaling threshold (300 lines for extended vs 120 lines for standard) and persisting oversized outputs to `.minicode/logs/last_exec.log`.
+  - Exposed optional `context_window` parameter in `exec_tools` registry.
+- **Application Lifecycle Synchronization (`src/app/mod.rs`, `src/main.rs`, `src/agent/loop.rs`)**:
+  - Synchronized active context limit at application startup, turn initialization, and agent loop creation.
+- **Tool Event Stream Deduplication (`src/agent/loop.rs`)**:
+  - Removed redundant `AgentEvent::ToolCall` emissions prior to tool execution that duplicated events already emitted during stream consumption.
+- **Hybrid Search Candidate Fusion & Deterministic Ranking (`src/context/search/hybrid.rs`)**:
+  - Implemented fuzzy AST candidate matching by symbol name and overlapping line bounds across lexical BM25 and dense vector search results.
+  - Added multi-key deterministic tie-breaker sorting (`combined_score` -> `file_path` -> `start_line` -> `symbol_name`).
+- **Comprehensive Integration Test Suite (`tests/integration_context_aware_donut.rs`)**:
+  - 6 integration tests verifying 250-line preservation without truncation on extended context, 8k SLM truncation with log file generation, explicit context overrides, RTK filter scaling, git diff compaction scaling, and 300+ line extended middle error extraction.
+
 ## [0.3.16] — 2026-09-13
 
 ### High-Signal Instructions, Few-Shot Cues & Recency Inversion (Phase 116)

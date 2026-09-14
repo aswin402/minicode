@@ -66,6 +66,11 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(workspace_root: &Path, config: Config) -> Self {
         let theme = Theme::detect(&config.ui.theme);
+        let active_limit = config.provider.context_window.unwrap_or_else(|| {
+            crate::agent::models::get_model_context_limit(&config.provider.model)
+        });
+        crate::context::budget::donut::set_active_context_limit(active_limit);
+
         let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
         let initial_modal = if !graph_file.exists() && !config.ui.plain {
             ModalState::new_workspace_analysis(workspace_root)
