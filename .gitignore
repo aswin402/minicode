@@ -26,4 +26,5 @@ localupdate.sh
 # Local runtime DBs & fastembed cache
 memory.db*
 .fastembed_cache/
+test_playground/
 

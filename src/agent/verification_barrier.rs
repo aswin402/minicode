@@ -419,17 +419,56 @@ impl VerificationBarrier {
             return false;
         }
 
-        // Patterns for OpenAI, GitHub, Google, AWS, and private keys
-        if line.contains("sk-") && line.len() > 30 {
+        // 1. Private key blocks
+        if line.contains("BEGIN PRIVATE KEY") || line.contains("BEGIN RSA PRIVATE KEY") {
             return true;
         }
-        if line.contains("ghp_") && line.len() > 25 {
+
+        // Helper: checks if prefix starts on a token boundary and is followed by high-entropy key characters
+        let has_token_prefix = |target: &str, prefix: &str, min_secret_tail_len: usize| -> bool {
+            let bytes = target.as_bytes();
+            let prefix_bytes = prefix.as_bytes();
+            let mut search_idx = 0;
+
+            while let Some(pos) = target[search_idx..].find(prefix) {
+                let abs_pos = search_idx + pos;
+                search_idx = abs_pos + prefix_bytes.len();
+
+                // Character preceding prefix must NOT be alphanumeric or underscore
+                // (e.g. rejects "task-", "flask-", "subtask-")
+                if abs_pos > 0 {
+                    let prev_byte = bytes[abs_pos - 1];
+                    if prev_byte.is_ascii_alphanumeric() || prev_byte == b'_' {
+                        continue;
+                    }
+                }
+
+                // Check remaining tail after prefix: must be at least min_secret_tail_len alphanumeric/dash chars
+                let tail = &target[abs_pos + prefix_bytes.len()..];
+                let tail_chars_count = tail
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                    .count();
+
+                if tail_chars_count >= min_secret_tail_len {
+                    return true;
+                }
+            }
+            false
+        };
+
+        // OpenAI / Anthropic / MiniMax keys: "sk-" followed by 20+ key chars on token boundary
+        if has_token_prefix(line, "sk-", 20) {
             return true;
         }
-        if line.contains("AIzaSy") && line.len() > 30 {
+
+        // GitHub Personal Access Tokens: "ghp_" followed by 20+ key chars on token boundary
+        if has_token_prefix(line, "ghp_", 20) {
             return true;
         }
-        if line.contains("BEGIN PRIVATE KEY") {
+
+        // Google API Keys: "AIzaSy" followed by 25+ key chars on token boundary
+        if has_token_prefix(line, "AIzaSy", 25) {
             return true;
         }
 
@@ -517,6 +556,32 @@ mod tests {
                 assert!(reason.contains("secret or API key"));
             }
             _ => panic!("Expected Gate 4 to fail on sk- API key"),
+        }
+    }
+
+    #[test]
+    fn test_gate4_ignores_benign_subwords_like_task() {
+        let temp = tempdir().unwrap();
+        let src_dir = temp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let file_path = src_dir.join("index.html");
+        std::fs::write(
+            &file_path,
+            "<form id=\"taskForm\" class=\"task-form\" data-action=\"task-card-action\">\n  <button class=\"task-submit-btn\">Save Task</button>\n</form>\n",
+        )
+        .unwrap();
+
+        let status = VerificationBarrier::check_gate4_diff_sanity(
+            temp.path(),
+            &["src/index.html".to_string()],
+        );
+
+        match status {
+            GateStatus::Passed => {}
+            _ => panic!(
+                "Expected Gate 4 to pass for benign task-form strings, got: {:?}",
+                status
+            ),
         }
     }
 
