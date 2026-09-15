@@ -19,6 +19,16 @@ pub struct CodeChunk {
     pub symbol_name: Option<String>,
     #[serde(default)]
     pub symbol_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_vector: Option<crate::context::search::quantize::BinaryVector128>,
+}
+
+impl CodeChunk {
+    pub fn get_binary_vector(&self) -> crate::context::search::quantize::BinaryVector128 {
+        self.binary_vector.unwrap_or_else(|| {
+            crate::context::search::quantize::BinaryVector128::from_f32_slice(&self.vector)
+        })
+    }
 }
 
 /// A search result from semantic code search.
@@ -176,8 +186,61 @@ impl SemanticIndex {
         Ok(indexed_count)
     }
 
+    /// Fast 2-stage search: stage 1 screens candidate chunks using SIMD/hardware popcount on 16-byte
+    /// binary vectors; stage 2 calculates exact cosine similarity on the top candidates.
+    pub fn search_fast(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
+        if self.chunks.is_empty() {
+            return Vec::new();
+        }
+
+        let query_vec = Self::embed(query);
+        let query_bin =
+            crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
+
+        // Stage 1: Fast popcount hamming distance screening
+        let candidate_pool_size = (limit * 4).clamp(32, self.chunks.len());
+        let mut candidates: Vec<(u32, &CodeChunk)> = self
+            .chunks
+            .iter()
+            .map(|c| (c.get_binary_vector().hamming_distance(&query_bin), c))
+            .collect();
+
+        candidates.sort_by_key(|c| c.0);
+
+        // Stage 2: Dense cosine similarity scoring on top candidates
+        let mut scored: Vec<(f32, &CodeChunk)> = candidates
+            .into_iter()
+            .take(candidate_pool_size)
+            .map(|(_, chunk)| {
+                let score = Self::cosine_similarity(&query_vec, &chunk.vector);
+                (score, chunk)
+            })
+            .filter(|(score, _)| *score > 0.05)
+            .collect();
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        scored
+            .into_iter()
+            .take(limit)
+            .map(|(score, chunk)| SemanticSearchResult {
+                file_path: chunk.file_path.clone(),
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
+                similarity_score: score,
+                snippet: chunk.content.clone(),
+                symbol_name: chunk.symbol_name.clone(),
+                symbol_kind: chunk.symbol_kind.clone(),
+            })
+            .collect()
+    }
+
     /// Searches the indexed codebase for chunks semantically matching the query.
     pub fn search(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
+        if self.chunks.len() > 64 {
+            return self.search_fast(query, limit);
+        }
+
         let query_vec = Self::embed(query);
         let mut scored: Vec<(f32, &CodeChunk)> = self
             .chunks
@@ -307,6 +370,8 @@ pub fn chunk_source_code_ast(
                 );
                 let vector = SemanticIndex::embed(&boost_text);
 
+                let binary_vector =
+                    crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
                 chunks.push(CodeChunk {
                     file_path: file_path.to_string(),
                     start_line: start + 1,
@@ -315,6 +380,7 @@ pub fn chunk_source_code_ast(
                     vector,
                     symbol_name: Some(sym.name),
                     symbol_kind: Some(sym.kind),
+                    binary_vector: Some(binary_vector),
                 });
             }
             return chunks;
@@ -342,6 +408,8 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
         let chunk_lines = &lines[start..end];
         let chunk_text = chunk_lines.join("\n");
         let vector = SemanticIndex::embed(&chunk_text);
+        let binary_vector =
+            crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
 
         chunks.push(CodeChunk {
             file_path: file_path.to_string(),
@@ -351,6 +419,7 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
             vector,
             symbol_name: None,
             symbol_kind: None,
+            binary_vector: Some(binary_vector),
         });
 
         if end == lines.len() {

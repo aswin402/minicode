@@ -252,6 +252,7 @@ impl HonoLogFormatter {
                 status,
                 total_tokens_used,
                 files_modified,
+                ..
             } => {
                 let time = current_time_str();
                 let is_ok = status == "complete" || status == "success";

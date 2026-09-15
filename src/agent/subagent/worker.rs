@@ -186,6 +186,7 @@ impl SubagentWorker {
                         Ok(StreamChunk::Usage {
                             completion_tokens,
                             prompt_tokens,
+                            ..
                         }) => {
                             tokens_used = prompt_tokens + completion_tokens;
                         }

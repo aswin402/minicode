@@ -56,6 +56,7 @@ pub struct App<'a> {
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     last_user_prompt: Option<String>,
     last_turn_tokens: usize,
+    last_turn_cached_tokens: usize,
     total_cost_usd: f64,
     /// Handle to the agent's in-flight approval requests.
     approvals: crate::agent::types::ApprovalRegistry,
@@ -94,6 +95,7 @@ impl<'a> App<'a> {
             cancel_token: None,
             last_user_prompt: None,
             last_turn_tokens: 0,
+            last_turn_cached_tokens: 0,
             total_cost_usd: 0.0,
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             should_exit: false,
@@ -350,6 +352,7 @@ impl<'a> App<'a> {
                         max_context,
                         show_cost: self.config.ui.show_cost,
                         session_cost_usd: self.total_cost_usd,
+                        cached_tokens: self.last_turn_cached_tokens,
                     };
 
                     StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
@@ -440,11 +443,14 @@ impl<'a> App<'a> {
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }
                             AgentEvent::TurnEnd {
-                                total_tokens_used, ..
+                                total_tokens_used,
+                                cached_prompt_tokens,
+                                ..
                             } => {
                                 if total_tokens_used > 0 {
                                     self.last_turn_tokens = total_tokens_used;
                                 }
+                                self.last_turn_cached_tokens = cached_prompt_tokens;
                                 let prompt_toks = (total_tokens_used * 3) / 4;
                                 let comp_toks = total_tokens_used / 4;
                                 let turn_cost =
@@ -966,6 +972,7 @@ mod tests {
                 status: "complete".to_string(),
                 total_tokens_used: 1580,
                 files_modified: vec![],
+                cached_prompt_tokens: 0,
             },
         ];
 

@@ -125,6 +125,16 @@ impl AgentLoop {
         &self.session_id
     }
 
+    #[allow(dead_code)]
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    #[allow(dead_code)]
+    pub fn messages_mut(&mut self) -> &mut Vec<Message> {
+        &mut self.messages
+    }
+
     /// Returns the total cumulative tokens consumed across all turns in this session.
     #[allow(dead_code)]
     #[must_use]
@@ -187,6 +197,7 @@ impl AgentLoop {
                 Ok(StreamChunk::Usage {
                     prompt_tokens,
                     completion_tokens,
+                    cached_prompt_tokens: _,
                 }) => {
                     last_prompt_tokens = prompt_tokens;
                     cumulative_completion_tokens += completion_tokens;
@@ -277,13 +288,6 @@ impl AgentLoop {
         let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
 
-        // Sanitize past user messages by stripping stale <workspace_context> snapshots
-        for msg in &mut self.messages {
-            if msg.role == crate::agent::types::Role::User {
-                msg.content = crate::agent::prompt::sanitize_past_user_message(&msg.content);
-            }
-        }
-
         // 2. Build Tri-Zone context:
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
         let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
@@ -369,6 +373,7 @@ impl AgentLoop {
         }
         let mcp_tools = self.mcp_client.get_tool_schemas().await;
         tools.extend(mcp_tools.clone());
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
 
         let now_ts = chrono::Utc::now().to_rfc3339();
 
@@ -409,6 +414,7 @@ impl AgentLoop {
         let mut turn_tool_calls = Vec::new();
         let mut turn_tool_results = Vec::new();
         let mut last_prompt_tokens: usize = 0;
+        let mut last_cached_prompt_tokens: usize = 0;
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
 
@@ -574,9 +580,11 @@ impl AgentLoop {
                             Some(Ok(StreamChunk::Usage {
                                 prompt_tokens,
                                 completion_tokens,
+                                cached_prompt_tokens,
                             })) => {
                                 last_prompt_tokens = prompt_tokens;
                                 cumulative_completion_tokens += completion_tokens;
+                                last_cached_prompt_tokens = cached_prompt_tokens;
                             }
                             Some(Ok(StreamChunk::Done)) => {
                                 break;
@@ -857,11 +865,19 @@ impl AgentLoop {
                                 }
                                 event_sender.send(res_event)?;
 
-                                // Append tool result message for LLM context
+                                // Append tool result message for LLM context with smart JSON crushing
+                                let output_for_llm = if let Some((crushed, _)) =
+                                    crate::context::budget::json_crusher::JsonCrusher::crush(
+                                        &tool_result.output,
+                                    ) {
+                                    crushed
+                                } else {
+                                    tool_result.output.clone()
+                                };
                                 self.messages.push(Message::tool_result(
                                     tool_call.id,
                                     tool_call.name,
-                                    tool_result.output.clone(),
+                                    output_for_llm,
                                 ));
 
                                 turn_tool_results.push(tool_result);
@@ -1159,11 +1175,19 @@ impl AgentLoop {
                             }
                             event_sender.send(res_event)?;
 
-                            // Append tool result message for LLM context
+                            // Append tool result message for LLM context with smart JSON crushing
+                            let output_for_llm = if let Some((crushed, _)) =
+                                crate::context::budget::json_crusher::JsonCrusher::crush(
+                                    &tool_result.output,
+                                ) {
+                                crushed
+                            } else {
+                                tool_result.output.clone()
+                            };
                             self.messages.push(Message::tool_result(
                                 tool_call.id,
                                 tool_call.name,
-                                tool_result.output.clone(),
+                                output_for_llm,
                             ));
 
                             turn_tool_results.push(tool_result);
@@ -1335,6 +1359,15 @@ impl AgentLoop {
                 }
             }
         }
+        if last_cached_prompt_tokens > 0 {
+            tracing::info!(
+                turn_id,
+                turn_tokens_used,
+                cached_prompt_tokens = last_cached_prompt_tokens,
+                "Turn completed with prompt cache hits"
+            );
+        }
+
         let end_event = AgentEvent::TurnEnd {
             turn_id,
             status: if was_cancelled {
@@ -1347,6 +1380,7 @@ impl AgentLoop {
             .to_string(),
             total_tokens_used: turn_tokens_used,
             files_modified: turn_files_modified.clone(),
+            cached_prompt_tokens: last_cached_prompt_tokens,
         };
         if let Err(e) = self
             .session_store

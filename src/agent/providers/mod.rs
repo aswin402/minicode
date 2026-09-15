@@ -90,6 +90,7 @@ pub enum StreamChunk {
     Usage {
         prompt_tokens: usize,
         completion_tokens: usize,
+        cached_prompt_tokens: usize,
     },
     Done,
 }
@@ -166,6 +167,7 @@ mod tests {
                 ]),
                 tool_call_id: None,
                 tool_name: None,
+                reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -173,6 +175,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
                 tool_name: Some("read_file".to_string()),
+                reasoning_content: None,
             },
             Message {
                 role: Role::Tool,
@@ -180,6 +183,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("call_2".to_string()),
                 tool_name: Some("read_file".to_string()),
+                reasoning_content: None,
             },
         ];
 

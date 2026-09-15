@@ -132,6 +132,7 @@ impl CoreMemory {
     }
 
     /// Formats the memory as an in-context XML `<core_memory>` prompt block (~150-250 tokens)
+    #[allow(dead_code)]
     pub fn to_prompt_block(&self) -> String {
         if self.global_entries.is_empty() && self.local_entries.is_empty() {
             return String::new();
@@ -198,25 +199,45 @@ impl CoreMemory {
             }
         }
 
+        // Synchronize with unified ProgressiveMemory
+        let mut prog =
+            crate::context::memory::progressive_memory::ProgressiveMemory::load(workspace_root);
+        if is_global {
+            prog.add_l3_preference(key, value, "core_memory");
+        } else {
+            prog.add_l2_fact(key, value, "core_memory", 1.0);
+        }
+        if let Err(e) = prog.save(workspace_root) {
+            tracing::warn!(error = %e, "Failed to sync memory into progressive memory");
+        }
+
         Ok(())
     }
 
     /// Updates an existing memory fact/preference in either local or global store
     pub fn update(&mut self, workspace_root: &Path, key: &str, new_value: &str) -> Result<bool> {
         let now = Utc::now().to_rfc3339();
+        let mut updated = false;
         if let Some(entry) = self.local_entries.iter_mut().find(|e| e.key == key) {
             entry.value = new_value.to_string();
             entry.updated_at = now;
             self.save_local(workspace_root)?;
-            return Ok(true);
-        }
-        if let Some(entry) = self.global_entries.iter_mut().find(|e| e.key == key) {
+            updated = true;
+        } else if let Some(entry) = self.global_entries.iter_mut().find(|e| e.key == key) {
             entry.value = new_value.to_string();
             entry.updated_at = now;
             self.save_global()?;
-            return Ok(true);
+            updated = true;
         }
-        Ok(false)
+
+        if updated {
+            let mut prog =
+                crate::context::memory::progressive_memory::ProgressiveMemory::load(workspace_root);
+            prog.update_fact(key, new_value);
+            let _ = prog.save(workspace_root);
+        }
+
+        Ok(updated)
     }
 
     /// Removes a memory entry by key from local and/or global memory
@@ -235,7 +256,15 @@ impl CoreMemory {
             self.save_global()?;
         }
 
-        Ok(removed_local || removed_global)
+        let removed = removed_local || removed_global;
+        if removed {
+            let mut prog =
+                crate::context::memory::progressive_memory::ProgressiveMemory::load(workspace_root);
+            prog.forget_fact(key);
+            let _ = prog.save(workspace_root);
+        }
+
+        Ok(removed)
     }
 
     /// Lists all active memories formatted for user inspection

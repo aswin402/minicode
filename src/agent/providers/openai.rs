@@ -280,6 +280,7 @@ impl Provider for OpenAiCompatibleProvider {
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new(); // (id, name, args_json)
             let mut in_reasoning_mode = false;
+            let mut accumulated_content = String::new();
 
             while let Some(event_res) = event_source.next().await {
                 match event_res {
@@ -310,6 +311,15 @@ impl Provider for OpenAiCompatibleProvider {
                                     arguments: parsed_args,
                                 }));
                             }
+
+                            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags if no structured tool calls were emitted
+                            if accumulated_content.contains("<tool_call>") {
+                                let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
+                                for tc in inline_calls {
+                                    yield Ok(StreamChunk::ToolCallChunk(tc));
+                                }
+                            }
+
                             yield Ok(StreamChunk::Done);
                             break;
                         }
@@ -336,6 +346,7 @@ impl Provider for OpenAiCompatibleProvider {
                                             // 2. Text Delta
                                             if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
                                                 if !content.is_empty() {
+                                                    accumulated_content.push_str(content);
                                                     if in_reasoning_mode {
                                                         in_reasoning_mode = false;
                                                         yield Ok(StreamChunk::Delta("</thought>".to_string()));
@@ -380,8 +391,13 @@ impl Provider for OpenAiCompatibleProvider {
                                 if let Some(usage) = val.get("usage") {
                                     let prompt_tokens = usage.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
                                     let completion_tokens = usage.get("completion_tokens").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    if prompt_tokens > 0 || completion_tokens > 0 {
-                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens });
+                                    let cached_prompt_tokens = usage
+                                        .get("prompt_tokens_details")
+                                        .and_then(|d| d.get("cached_tokens"))
+                                        .and_then(|t| t.as_u64())
+                                        .unwrap_or(0) as usize;
+                                    if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
                                     } else {
                                         tracing::debug!(
                                             provider = provider_name.clone(),
@@ -457,8 +473,53 @@ impl Provider for OpenAiCompatibleProvider {
                     arguments: parsed_args,
                 }));
             }
+
+            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags if stream ended without explicit [DONE]
+            if accumulated_content.contains("<tool_call>") {
+                let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
+                for tc in inline_calls {
+                    yield Ok(StreamChunk::ToolCallChunk(tc));
+                }
+            }
         };
 
         Ok(Box::pin(stream))
     }
+}
+
+/// Extracts inline `<tool_call>{"name": ..., "arguments": ...}</tool_call>` tags from model output.
+/// Used for local Hermes, Qwen, and Ollama models that omit SSE delta.tool_calls.
+pub fn extract_inline_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
+    let mut cleaned = text.to_string();
+    let mut tool_calls = Vec::new();
+
+    while let Some(start) = cleaned.find("<tool_call>") {
+        let tag_len = "<tool_call>".len();
+        if let Some(end) = cleaned[start + tag_len..].find("</tool_call>") {
+            let json_str = cleaned[start + tag_len..start + tag_len + end].trim();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                let name = val
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = val
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                if !name.is_empty() {
+                    tool_calls.push(ToolCall {
+                        id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+                        name,
+                        arguments,
+                    });
+                }
+            }
+            cleaned.replace_range(start..start + tag_len + end + "</tool_call>".len(), "");
+        } else {
+            break;
+        }
+    }
+
+    (cleaned, tool_calls)
 }

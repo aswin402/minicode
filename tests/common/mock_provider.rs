@@ -99,6 +99,7 @@ impl Provider for MockProvider {
         chunks.push(Ok(StreamChunk::Usage {
             prompt_tokens: response.prompt_tokens,
             completion_tokens: response.completion_tokens,
+            cached_prompt_tokens: 0,
         }));
         chunks.push(Ok(StreamChunk::Done));
 

@@ -4,6 +4,7 @@ pub mod hybrid;
 pub mod index;
 pub mod intent_filter;
 pub mod okf;
+pub mod quantize;
 pub mod recall;
 pub mod reranker;
 pub mod semantic;

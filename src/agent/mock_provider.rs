@@ -46,6 +46,7 @@ impl MockProvider {
         chunks.push(StreamChunk::Usage {
             prompt_tokens: 150,
             completion_tokens: 50,
+            cached_prompt_tokens: 0,
         });
         chunks.push(StreamChunk::Done);
 

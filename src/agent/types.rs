@@ -19,6 +19,8 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -30,6 +32,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -40,6 +43,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -50,6 +54,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -60,6 +65,7 @@ impl Message {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             tool_name: None,
+            reasoning_content: None,
         }
     }
 
@@ -74,7 +80,14 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
+            reasoning_content: None,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_reasoning(mut self, reasoning: impl Into<String>) -> Self {
+        self.reasoning_content = Some(reasoning.into());
+        self
     }
 }
 
@@ -206,6 +219,8 @@ pub enum AgentEvent {
         status: String,
         total_tokens_used: usize,
         files_modified: Vec<String>,
+        #[serde(default)]
+        cached_prompt_tokens: usize,
     },
 
     #[serde(rename = "error")]

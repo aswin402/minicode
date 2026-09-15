@@ -191,16 +191,47 @@ impl AnthropicProvider {
             }
         }
 
+        // Inject ephemeral cache breakpoint on penultimate user turn if multiple turns exist
+        if anthropic_messages.len() >= 3 {
+            for msg in anthropic_messages.iter_mut().rev().skip(1) {
+                if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                    if let Some(text) = msg
+                        .get("content")
+                        .and_then(|c| c.as_str())
+                        .map(str::to_string)
+                    {
+                        msg["content"] = serde_json::json!([
+                            {
+                                "type": "text",
+                                "text": text,
+                                "cache_control": {
+                                    "type": "ephemeral"
+                                }
+                            }
+                        ]);
+                    } else if let Some(arr) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+                    {
+                        if let Some(last_block) = arr.last_mut() {
+                            last_block["cache_control"] = serde_json::json!({
+                                "type": "ephemeral"
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
         anthropic_messages
     }
 
-    /// Formats tools into Anthropic tool specification
+    /// Formats tools into Anthropic tool specification with prompt caching on the last tool
     pub fn format_tools(tools: &[ToolSchema]) -> Option<Vec<serde_json::Value>> {
         if tools.is_empty() {
             return None;
         }
 
-        let formatted: Vec<serde_json::Value> = tools
+        let mut formatted: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 serde_json::json!({
@@ -210,6 +241,13 @@ impl AnthropicProvider {
                 })
             })
             .collect();
+
+        // Inject cache_control on the final tool schema for prompt caching
+        if let Some(last_tool) = formatted.last_mut() {
+            last_tool["cache_control"] = serde_json::json!({
+                "type": "ephemeral"
+            });
+        }
 
         Some(formatted)
     }
@@ -254,7 +292,15 @@ impl AnthropicProvider {
         });
 
         if let Some(sys) = system_prompt {
-            body["system"] = serde_json::Value::String(sys);
+            body["system"] = serde_json::json!([
+                {
+                    "type": "text",
+                    "text": sys,
+                    "cache_control": {
+                        "type": "ephemeral"
+                    }
+                }
+            ]);
         }
 
         if let Some(tools_payload) = Self::format_tools(tools) {
@@ -282,6 +328,7 @@ impl AnthropicProvider {
         tool_accumulator: &mut std::collections::BTreeMap<usize, (String, String, String)>,
         prompt_tokens: &mut usize,
         completion_tokens: &mut usize,
+        cached_prompt_tokens: &mut usize,
         in_thinking_mode: &mut bool,
     ) -> Vec<StreamChunk> {
         let mut chunks = Vec::new();
@@ -295,6 +342,10 @@ impl AnthropicProvider {
                 if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
                     *prompt_tokens = usage
                         .get("input_tokens")
+                        .and_then(|u| u.as_u64())
+                        .unwrap_or(0) as usize;
+                    *cached_prompt_tokens = usage
+                        .get("cache_read_input_tokens")
                         .and_then(|u| u.as_u64())
                         .unwrap_or(0) as usize;
                 }
@@ -397,10 +448,11 @@ impl AnthropicProvider {
                     *in_thinking_mode = false;
                     chunks.push(StreamChunk::Delta("</thought>".to_string()));
                 }
-                if *prompt_tokens > 0 || *completion_tokens > 0 {
+                if *prompt_tokens > 0 || *completion_tokens > 0 || *cached_prompt_tokens > 0 {
                     chunks.push(StreamChunk::Usage {
                         prompt_tokens: *prompt_tokens,
                         completion_tokens: *completion_tokens,
+                        cached_prompt_tokens: *cached_prompt_tokens,
                     });
                 }
                 chunks.push(StreamChunk::Done);
@@ -450,6 +502,7 @@ impl Provider for AnthropicProvider {
             let mut event_source = event_source;
             let mut prompt_tokens = 0usize;
             let mut completion_tokens = 0usize;
+            let mut cached_prompt_tokens = 0usize;
             let mut in_thinking_mode = false;
             let mut tool_calls_accumulator: std::collections::BTreeMap<usize, (String, String, String)> =
                 std::collections::BTreeMap::new();
@@ -487,6 +540,7 @@ impl Provider for AnthropicProvider {
                             &mut tool_calls_accumulator,
                             &mut prompt_tokens,
                             &mut completion_tokens,
+                            &mut cached_prompt_tokens,
                             &mut in_thinking_mode,
                         );
 

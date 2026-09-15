@@ -149,6 +149,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "wiki_search"
         | "get_next_task"
         | "hybrid_retrieve"
+        | "retrieve_observation"
         | "route_model" => ToolSafetyLevel::ReadOnly,
 
         // Memory & Context Mutations

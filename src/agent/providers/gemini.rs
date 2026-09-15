@@ -329,8 +329,9 @@ impl Provider for GeminiProvider {
                                 if let Some(usage) = val.get("usageMetadata") {
                                     let prompt_tokens = usage.get("promptTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
                                     let completion_tokens = usage.get("candidatesTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    if prompt_tokens > 0 || completion_tokens > 0 {
-                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens });
+                                    let cached_prompt_tokens = usage.get("cachedContentTokenCount").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
+                                    if prompt_tokens > 0 || completion_tokens > 0 || cached_prompt_tokens > 0 {
+                                        yield Ok(StreamChunk::Usage { prompt_tokens, completion_tokens, cached_prompt_tokens });
                                     } else {
                                         tracing::debug!(
                                             provider = "gemini",

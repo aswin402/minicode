@@ -22,6 +22,7 @@ pub struct StatusContext<'a> {
     pub max_context: usize,
     pub show_cost: bool,
     pub session_cost_usd: f64,
+    pub cached_tokens: usize,
 }
 
 pub struct StatusWidgets;
@@ -193,6 +194,26 @@ impl StatusWidgets {
             right_spans.push(Span::styled("• ", Style::default().fg(ctx.theme.muted)));
         }
 
+        if ctx.cached_tokens > 0 {
+            let hit_pct = if ctx.used_tokens > 0 {
+                ((ctx.cached_tokens as f64 / ctx.used_tokens as f64) * 100.0).clamp(0.0, 100.0)
+                    as usize
+            } else {
+                100
+            };
+            right_spans.push(Span::styled(
+                format!(
+                    "⚡ KV:{}% ({}) ",
+                    hit_pct,
+                    Self::format_tokens(ctx.cached_tokens)
+                ),
+                Style::default()
+                    .fg(ctx.theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            right_spans.push(Span::styled("• ", Style::default().fg(ctx.theme.muted)));
+        }
+
         right_spans.extend(vec![
             Span::styled(
                 used_str,
@@ -258,6 +279,7 @@ mod tests {
             max_context: 128000,
             show_cost: false,
             session_cost_usd: 0.042,
+            cached_tokens: 1200,
         };
         assert!(!ctx_without_cost.show_cost);
 

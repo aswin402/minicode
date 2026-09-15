@@ -55,7 +55,11 @@ fn test_anthropic_thinking_budget_request_serialization() {
     assert_eq!(body["temperature"], 1.0);
 
     // System prompt combined
-    let sys = body["system"].as_str().unwrap();
+    let sys = if let Some(s) = body["system"].as_str() {
+        s.to_string()
+    } else {
+        body["system"][0]["text"].as_str().unwrap().to_string()
+    };
     assert!(sys.contains("Always write safe code."));
     assert!(sys.contains("You are an expert systems engineer."));
 
@@ -194,6 +198,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
     let mut tool_accumulator = BTreeMap::new();
     let mut prompt_tokens = 0usize;
     let mut completion_tokens = 0usize;
+    let mut cached_prompt_tokens = 0usize;
     let mut in_thinking_mode = false;
 
     // 1. message_start with prompt usage
@@ -212,6 +217,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert!(chunks.is_empty());
@@ -229,6 +235,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(chunks, vec![StreamChunk::Delta("<thought>".to_string())]);
@@ -248,6 +255,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(
@@ -268,6 +276,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(
@@ -291,6 +300,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
 
@@ -309,6 +319,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
 
@@ -323,6 +334,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(tool_chunks.len(), 1);
@@ -347,6 +359,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(completion_tokens, 128);
@@ -359,6 +372,7 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         &mut tool_accumulator,
         &mut prompt_tokens,
         &mut completion_tokens,
+        &mut cached_prompt_tokens,
         &mut in_thinking_mode,
     );
     assert_eq!(stop_chunks.len(), 2);
@@ -366,7 +380,8 @@ fn test_anthropic_sse_event_parsing_and_thought_blocks() {
         stop_chunks[0],
         StreamChunk::Usage {
             prompt_tokens: 320,
-            completion_tokens: 128
+            completion_tokens: 128,
+            cached_prompt_tokens: 0,
         }
     );
     assert_eq!(stop_chunks[1], StreamChunk::Done);

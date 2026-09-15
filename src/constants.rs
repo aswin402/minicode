@@ -904,7 +904,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 132;
+pub const TOTAL_TOOL_COUNT: usize = 133;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1014,8 +1014,8 @@ pub const PTY_DRAWER_HEIGHT_PERCENT: u16 = 40;
 pub const SUBAGENT_DRAWER_HEIGHT_PERCENT: u16 = 45;
 /// Default subagent task execution timeout in seconds
 pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 120;
-/// Width in columns for right-aligned token metrics and dollar spend in bottom status bar
-pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 36;
+/// Width in columns for right-aligned token metrics, KV cache stats, and dollar spend in bottom status bar
+pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 48;
 /// Maximum lines of diff preview shown in interactive approval modal
 pub const APPROVAL_DIFF_PREVIEW_LINES: usize = 6;
 /// Default context lines shown around diff hunks

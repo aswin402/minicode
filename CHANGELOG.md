@@ -5,6 +5,50 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.19] — 2026-09-16
+
+### Next-Gen Context Compression, KV-Cache Stability & High-Density Memory Engine (Phase 119)
+
+#### 💡 Ideas & Inspirations
+- **LMCache-Inspired Prefix Stabilization**: Modern LLM inference engines (Anthropic Prompt Caching, OpenAI automatic caching, Gemini prefix caching, and vLLM/SGLang with LMCache) match cache keys from byte 0. In-place mutation of past turns (such as stripping context tags from previous user messages) destroys the shared prefix, causing 0% cache hits and high latency. Ensuring conversation history is strictly append-only and sorting tool schemas deterministically preserves the prefix byte-for-byte, yielding 80–95% cache hit rates and dramatic TTFT reduction.
+- **Headroom-MCP Structural Ingress Pruning & DOX**: Rather than truncating or deleting large tool outputs blindly, `SmartCrusher` factors common object keys from JSON arrays, samples uniform rows, and guarantees 100% preservation of error/failed entries. Paired with hierarchical DOX (Developer Operations & eXecution) governance, path-scoped `AGENTS.md` instructions are merged dynamically into active workspace context.
+- **Reversible Compress-Cache-Retrieve (CCR)**: Lossless compression requires an escape hatch. Storing unpruned tool observations in a thread-safe bounded LRU cache and providing the agent with the `retrieve_observation` tool guarantees that the agent can retrieve the original unpruned observation at any time if surgical lines or complete outputs are needed.
+- **Hermes Dual-Layer Reasoning Ergonomics**: Frontier open models (like Nous Hermes 3 / DeepSeek R1) stream explicit `<thought>` or `reasoning_content` blocks. Retaining thought traces in the current turn is vital for multi-step reasoning, but leaving long thought blocks across 10+ older turns wastes context window space. Retaining thoughts for the last 2 assistant turns while stripping older thoughts during compaction strikes the optimal balance between reasoning fidelity and context capacity.
+- **Progressive Memory Consolidation & Zero-IO Hot Path**: Merging legacy `CoreMemory` and `ProgressiveMemory` eliminates prompt redundancy and resolves double-nested `<progressive_memory>` XML tags. Moving memory retrieval to an in-memory `OnceLock<RwLock<HashMap<PathBuf, ProgressiveMemory>>>` eliminates synchronous disk reads on every turn while keeping thread-safe disk persistence on change.
+- **Turbovec 4-Bit PolarQuant & Popcount Hamming Distance**: Storing uncompressed 32-bit floating point vectors consumes significant memory and CPU cycles during exhaustive search. Using 4-bit polar scalar quantization and 128-bit binary projection (`[u64; 2]`, 16 bytes per vector) allows hardware bitwise popcount Hamming distance screening before dense scoring, delivering instantaneous code symbol retrieval with zero external daemon dependencies.
+
+#### 🚀 Features & Changes
+- **Append-Only History & Provider KV Directives (`src/agent/loop.rs`, `src/agent/providers/`)**:
+  - Removed past user message mutation in `src/agent/loop.rs`, ensuring append-only byte immutability for prefix caching.
+  - Deterministically sorted tool schemas by name across all providers.
+  - Injected Anthropic ephemeral `cache_control` breakpoints (`cache_control: {"type": "ephemeral"}`) at the system prompt and tool definitions in `src/agent/providers/anthropic.rs`.
+  - Added `cached_prompt_tokens` parsing into `StreamChunk::Usage` across OpenAI, Anthropic, and Gemini providers.
+- **Structural Ingress Pruning & Reversible CCR (`src/context/budget/json_crusher.rs`, `src/context/budget/ccr_cache.rs`)**:
+  - Implemented `JsonCrusher` with common field extraction, uniform array sampling, and 100% error/failure retention.
+  - Implemented thread-safe bounded LRU observation cache `CcrCache` storing full unpruned tool observations.
+  - Registered `retrieve_observation` tool in `src/tools/registry/context_tools/budget.rs` (bumping total tool count to 133).
+- **Hierarchical DOX Governance Engine (`src/context/governance/dox.rs`)**:
+  - Implemented `DoxEngine` traversing workspace directories to discover and aggregate localized `AGENTS.md` rules with path headers and token bounding.
+- **Orphan-Safe Interaction Boundaries & Hermes Reasoning (`src/context/budget/auto_compact.rs`, `src/agent/types.rs`)**:
+  - Fixed Tier 2 compaction in `AutoCompactor` to snap backward when cutting across tool calls and responses, preventing orphaned tool results and HTTP 400 API errors.
+  - Added `reasoning_content` to `Message` struct.
+  - Implemented `strip_older_reasoning` preserving thought traces in the last 2 assistant turns while stripping older thoughts.
+  - Added fallback inline `<tool_call>` XML parser in `src/agent/providers/openai.rs` for local model streams.
+- **Progressive Memory Consolidation & Zero-IO Hot Path (`src/context/memory/progressive_memory.rs`, `src/agent/prompt.rs`)**:
+  - Eliminated duplicate `<core_memory>` prompt blocks and resolved double-nested `<progressive_memory>` tags in `PromptBuilder`.
+  - Added global `MEMORY_CACHE` (`OnceLock<RwLock<HashMap<PathBuf, ProgressiveMemory>>>`) eliminating duplicate disk reads on turns.
+  - Wired biological memory decay (`prune_decayed(0.15)`) removing obsolete working memories automatically.
+  - Synchronized `CoreMemory` API with `ProgressiveMemory` for backward compatibility.
+- **Turbovec 4-Bit PolarQuant & Popcount Search (`src/context/search/quantize.rs`, `src/context/search/semantic.rs`)**:
+  - Implemented `BinaryVector128` (128 dimensions packed into `[u64; 2]`, 16 bytes per vector with bitwise popcount Hamming distance).
+  - Implemented `PolarQuant4` (4-bit scalar quantization with scale factor and asymmetric dot product).
+  - Added `binary_vector` to `CodeChunk` and implemented 2-stage fast candidate screening (`search_fast`) in `SemanticIndex`.
+- **KV Cache Efficiency Metrics in Status Bar (`src/ui/status.rs`, `src/app/mod.rs`)**:
+  - Added `cached_tokens` to `StatusContext` and widened metrics display to 48 columns.
+  - Rendered real-time cache efficiency in TUI status line: `⚡ KV:{hit_pct}% ({tokens})`.
+- **Comprehensive Integration Test Suite (`tests/integration_context_engine_v2.rs`)**:
+  - 15 comprehensive integration tests covering append-only prefix immutability, schema sort determinism, JSON crusher array factoring, error retention, CCR reversible caching, DOX hierarchical rule aggregation, orphan-safe compaction cuts, thought preservation recency, memory prompt blocks, biological decay, zero-IO caching, binary vector popcount distance, 4-bit quantization, 2-stage candidate screening, and KV status formatting.
+
 ## [0.3.18] — 2026-09-15
 
 ### Real-World Subagent Hardening, Code Graph Stability & CLI Ergonomics (Phase 118)

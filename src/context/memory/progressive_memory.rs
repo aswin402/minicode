@@ -1,13 +1,22 @@
 use crate::constants::{
     CONFIG_DIR_NAME, GLOBAL_PROGRESSIVE_MEMORY_FILE, MAX_PROGRESSIVE_TIER_ENTRIES,
-    PROGRESSIVE_MEMORY_FILE, WORKSPACE_DIR_NAME,
+    MEMORY_DECAY_MILESTONE_HALF_LIFE_SECS, MEMORY_DECAY_STABILITY_STEP,
+    MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS, PROGRESSIVE_MEMORY_FILE, WORKSPACE_DIR_NAME,
 };
+use crate::context::memory::decay::MemoryScope;
 use crate::error::{ContextError, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+
+static MEMORY_CACHE: OnceLock<RwLock<HashMap<PathBuf, ProgressiveMemory>>> = OnceLock::new();
+
+fn get_memory_cache() -> &'static RwLock<HashMap<PathBuf, ProgressiveMemory>> {
+    MEMORY_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
 
 /// The 4 structural tiers of progressive memory
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -48,6 +57,8 @@ pub struct ProgressiveMemoryEntry {
     pub updated_at: String,
     pub access_count: usize,
     pub last_accessed: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<MemoryScope>,
 }
 
 impl ProgressiveMemoryEntry {
@@ -59,6 +70,12 @@ impl ProgressiveMemoryEntry {
         source: impl Into<String>,
     ) -> Self {
         let now = Utc::now().to_rfc3339();
+        let default_scope = match tier {
+            MemoryTier::L3GlobalPreference => MemoryScope::Permanent,
+            MemoryTier::L2ProjectFact => MemoryScope::Milestone,
+            MemoryTier::L1SessionAnchor => MemoryScope::Milestone,
+            MemoryTier::L0Working => MemoryScope::Transient,
+        };
         Self {
             id: format!("mem-{}", uuid::Uuid::new_v4().simple()),
             tier,
@@ -70,7 +87,43 @@ impl ProgressiveMemoryEntry {
             updated_at: now.clone(),
             access_count: 1,
             last_accessed: now,
+            scope: Some(default_scope),
         }
+    }
+
+    /// Calculates current biological retention strength (0.0 to 1.0)
+    pub fn calculate_retention(&self, current_time_secs: u64) -> f32 {
+        let scope = self.scope.unwrap_or(match self.tier {
+            MemoryTier::L3GlobalPreference => MemoryScope::Permanent,
+            MemoryTier::L2ProjectFact => MemoryScope::Milestone,
+            MemoryTier::L1SessionAnchor => MemoryScope::Milestone,
+            MemoryTier::L0Working => MemoryScope::Transient,
+        });
+
+        if scope == MemoryScope::Permanent {
+            return 1.0;
+        }
+
+        let last_accessed_secs = chrono::DateTime::parse_from_rfc3339(&self.last_accessed)
+            .map(|dt| dt.timestamp() as u64)
+            .unwrap_or(current_time_secs);
+
+        let elapsed_secs = current_time_secs.saturating_sub(last_accessed_secs) as f32;
+        let stability_factor = 1.0 + (self.access_count as f32 * MEMORY_DECAY_STABILITY_STEP);
+
+        let half_life_secs = match scope {
+            MemoryScope::Permanent => f32::MAX,
+            MemoryScope::Milestone => MEMORY_DECAY_MILESTONE_HALF_LIFE_SECS,
+            MemoryScope::Transient => MEMORY_DECAY_TRANSIENT_HALF_LIFE_SECS,
+        };
+
+        let effective_half_life = half_life_secs * stability_factor;
+        let exponent = -std::f32::consts::LN_2 * (elapsed_secs / effective_half_life);
+        exponent.exp().clamp(0.0, 1.0)
+    }
+
+    pub fn is_active(&self, current_time_secs: u64, threshold: f32) -> bool {
+        self.calculate_retention(current_time_secs) >= threshold
     }
 }
 
@@ -104,8 +157,24 @@ impl ProgressiveMemory {
         dirs::config_dir().map(|d| d.join(CONFIG_DIR_NAME).join(GLOBAL_PROGRESSIVE_MEMORY_FILE))
     }
 
-    /// Loads progressive memory from local workspace and global config directories
+    /// Invalidates the in-memory cache for a given workspace root.
+    #[allow(dead_code)]
+    pub fn invalidate_cache(workspace_root: &Path) {
+        let cache = get_memory_cache();
+        if let Ok(mut guard) = cache.write() {
+            guard.remove(workspace_root);
+        }
+    }
+
+    /// Loads progressive memory from cache or disk (local workspace and global config directories).
     pub fn load(workspace_root: &Path) -> Self {
+        let cache = get_memory_cache();
+        if let Ok(guard) = cache.read() {
+            if let Some(cached) = guard.get(workspace_root) {
+                return cached.clone();
+            }
+        }
+
         let mut memory = Self::new();
 
         // 1. Load Local Project Facts (L2) and Session Anchors (L1)
@@ -126,11 +195,22 @@ impl ProgressiveMemory {
             }
         }
 
+        // Cache in memory for zero-IO subsequent reads
+        if let Ok(mut guard) = cache.write() {
+            guard.insert(workspace_root.to_path_buf(), memory.clone());
+        }
+
         memory
     }
 
     /// Persists local (L1 + L2) memory to workspace and global (L3) memory to config directory
     pub fn save(&self, workspace_root: &Path) -> Result<()> {
+        // Update in-memory cache first
+        let cache = get_memory_cache();
+        if let Ok(mut guard) = cache.write() {
+            guard.insert(workspace_root.to_path_buf(), self.clone());
+        }
+
         // Save Local Memory (L1 + L2)
         let local_file = Self::local_path(workspace_root);
         if let Some(parent) = local_file.parent() {
@@ -270,6 +350,53 @@ impl ProgressiveMemory {
 
         let entry = ProgressiveMemoryEntry::new(MemoryTier::L3GlobalPreference, k, v, 1.0, source);
         self.l3_global_preferences.push(entry);
+    }
+
+    /// Prunes decayed facts from L1 and L2 whose retention is below `threshold` (e.g. 0.15).
+    pub fn prune_decayed(&mut self, threshold: f32) {
+        let now = chrono::Utc::now().timestamp() as u64;
+        self.l1_session_anchors
+            .retain(|a| a.is_active(now, threshold));
+        self.l2_project_facts
+            .retain(|f| f.is_active(now, threshold));
+    }
+
+    /// Deletes a fact by key across project facts and global preferences.
+    pub fn forget_fact(&mut self, key: &str) -> bool {
+        let before_l2 = self.l2_project_facts.len();
+        self.l2_project_facts.retain(|f| f.key != key);
+        let removed_l2 = self.l2_project_facts.len() < before_l2;
+
+        let before_l3 = self.l3_global_preferences.len();
+        self.l3_global_preferences.retain(|p| p.key != key);
+        let removed_l3 = self.l3_global_preferences.len() < before_l3;
+
+        removed_l2 || removed_l3
+    }
+
+    /// Updates an existing fact's value across project facts and global preferences.
+    pub fn update_fact(&mut self, key: &str, new_value: &str) -> bool {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut updated = false;
+        for f in &mut self.l2_project_facts {
+            if f.key == key {
+                f.value = new_value.to_string();
+                f.updated_at = now.clone();
+                f.last_accessed = now.clone();
+                f.access_count += 1;
+                updated = true;
+            }
+        }
+        for p in &mut self.l3_global_preferences {
+            if p.key == key {
+                p.value = new_value.to_string();
+                p.updated_at = now.clone();
+                p.last_accessed = now.clone();
+                p.access_count += 1;
+                updated = true;
+            }
+        }
+        updated
     }
 
     /// Automatically extracts facts, guidelines, and tool preferences from text/compaction

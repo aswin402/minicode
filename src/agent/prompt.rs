@@ -72,6 +72,7 @@ pub fn strip_thought_blocks(raw: &str) -> String {
 }
 
 /// Sanitizes past user messages by stripping stale <workspace_context> snapshots and unwrapping <user_request>.
+#[allow(dead_code)]
 #[must_use]
 pub fn sanitize_past_user_message(content: &str) -> String {
     // If the message has <user_request>...</user_request>, extract it directly
@@ -216,6 +217,17 @@ impl PromptBuilder {
                 recency.push_str(&format!("    <file path=\"{}\" />\n", path));
             }
             recency.push_str("  </active_working_set>\n");
+
+            // Scoped DOX Developer Rules (hierarchical AGENTS.md for active working set)
+            let scoped_rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules(
+                workspace_dir,
+                active_working_set,
+            );
+            if !scoped_rules.is_empty() {
+                recency.push_str("  <scoped_developer_rules>\n");
+                recency.push_str(scoped_rules.trim());
+                recency.push_str("\n  </scoped_developer_rules>\n");
+            }
         }
 
         // Active Workspace Transaction (if one is open)
@@ -240,22 +252,25 @@ impl PromptBuilder {
         }
 
         // 4. Progressive 4-Tier Memory (<progressive_memory>)
-        let prog_memory =
+        let mut prog_memory =
             crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
+        // Sync any legacy CoreMemory entries into ProgressiveMemory
+        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
+        for g in &core_memory.global_entries {
+            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
+        }
+        for l in &core_memory.local_entries {
+            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
+        }
+        // Apply biological decay retention filter
+        prog_memory.prune_decayed(0.15);
+
         let prog_block = prog_memory.to_prompt_block();
         if !prog_block.is_empty() {
-            recency.push_str("  <progressive_memory>\n");
+            // Note: prog_block already wraps itself in <progressive_memory> tags
+            recency.push_str("  ");
             recency.push_str(prog_block.trim());
-            recency.push_str("\n  </progressive_memory>\n");
-        }
-
-        // 5. 2-Tier Core Memory (<core_memory>)
-        let memory = crate::context::memory::CoreMemory::load(workspace_dir);
-        let memory_block = memory.to_prompt_block();
-        if !memory_block.is_empty() {
-            recency.push_str("  <core_memory>\n");
-            recency.push_str(memory_block.trim());
-            recency.push_str("\n  </core_memory>\n");
+            recency.push('\n');
         }
 
         // 6. Active Working Memory (<working_memory>)
@@ -289,21 +304,21 @@ impl PromptBuilder {
         let mut prompt = Self::build_static_system_prompt(workspace_dir, custom_instructions);
 
         // Inject Progressive 4-Tier Memory (<progressive_memory>)
-        let prog_memory =
+        let mut prog_memory =
             crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
+        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
+        for g in &core_memory.global_entries {
+            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
+        }
+        for l in &core_memory.local_entries {
+            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
+        }
+        prog_memory.prune_decayed(0.15);
+
         let prog_block = prog_memory.to_prompt_block();
         if !prog_block.is_empty() {
             prompt.push_str("\n# Progressive Multi-Tier Memory:\n");
             prompt.push_str(&prog_block);
-            prompt.push('\n');
-        }
-
-        // Inject 2-Tier Core Memory (<core_memory>)
-        let memory = crate::context::memory::CoreMemory::load(workspace_dir);
-        let memory_block = memory.to_prompt_block();
-        if !memory_block.is_empty() {
-            prompt.push_str("\n# Persistent Memory:\n");
-            prompt.push_str(&memory_block);
             prompt.push('\n');
         }
 

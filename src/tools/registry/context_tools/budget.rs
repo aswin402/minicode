@@ -87,6 +87,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "retrieve_observation".to_string(),
+            description: "Losslessly retrieves a crushed or truncated tool observation from the in-memory CCR cache using its ccr_xxxx ID, with optional line offset and limit.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "The CCR identifier (e.g. 'ccr_01a2b3c4d5') embedded in the truncated observation"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Optional 0-indexed line offset to start reading from (default: 0)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional maximum number of lines to retrieve"
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
     ]
 }
 
@@ -213,6 +235,22 @@ pub async fn dispatch(
 
                     Ok(out)
                 }
+            }
+        }.await),
+        "retrieve_observation" => Some(async move {
+            let id = param::require_str(args, "id", "retrieve_observation")?;
+            let offset = param::opt_u64(args, "offset").map(|v| v as usize);
+            let limit = param::opt_u64(args, "limit").map(|v| v as usize);
+
+            match crate::context::budget::ccr_cache::CcrCache::retrieve(id, offset, limit) {
+                Some(content) => Ok(format!(
+                    "Observation retrieved successfully [ID: {}]\n---\n{}",
+                    id, content
+                )),
+                None => Err(ToolError::InvalidArguments {
+                    name: "retrieve_observation".to_string(),
+                    reason: format!("Observation ID '{}' not found or expired from CCR cache.", id),
+                }.into()),
             }
         }.await),
         _ => None,

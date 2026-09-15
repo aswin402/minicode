@@ -1752,6 +1752,20 @@
 - [x] 118.6: Validate turn-level undo checkpointing (`.minicode/backups/`) and session continuity (`minicode history`, `--continue-session`)
 - [x] 118.7: Verify quality gates (`cargo check -j 1`, `cargo test --bin minicode -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update `CHANGELOG.md`, bump version → `v0.3.18`, run `./localupdate.sh`, and commit
 
+### Phase 119: Next-Gen Context Compression, KV-Cache Stability & High-Density Memory Engine (v0.3.19)
+- [x] 119.1: Stabilize KV-cache prefix in `src/agent/loop.rs` by removing in-place mutation of past user messages, making conversation history strictly append-only, and deterministically sorting tool schemas
+- [x] 119.2: Inject Anthropic prompt caching breakpoints (`cache_control: {"type": "ephemeral"}`) in `src/agent/providers/anthropic.rs` and parse cached token metrics across OpenAI/Anthropic providers into `StreamChunk::Usage`
+- [x] 119.3: Implement `SmartCrusher` structural JSON array compression in `src/context/budget/json_crusher.rs` with constant field factoring, Kneedle sampling, and error preservation (60–95% token savings)
+- [x] 119.4: Implement Reversible Compress-Cache-Retrieve (CCR) in `src/context/budget/ccr_cache.rs` and register `retrieve_observation` tool in `src/tools/registry/context_tools.rs` for lossless observation recovery
+- [x] 119.5: Implement hierarchical DOX scoping in `src/context/governance/dox.rs` traversing workspace paths and aggregating localized `AGENTS.md` rules
+- [x] 119.6: Fix Tier 2 compaction in `src/context/budget/auto_compact.rs` with orphan-safe interaction boundary alignment, eliminating HTTP 400 errors from split tool calls
+- [x] 119.7: Implement Hermes dual-layer reasoning persistence: add `reasoning_content` to `Message`, strip thoughts from turns older than 2 turns during compaction, and add fallback XML `<tool_call>` stream parser in `openai.rs`
+- [x] 119.8: Consolidate `CoreMemory` into `ProgressiveMemory`, fix double-nested XML in `src/agent/prompt.rs`, add in-memory caching to eliminate synchronous disk I/O, and wire biological decay in `src/context/memory/decay.rs`
+- [x] 119.9: Implement 4-bit Polarized Quantization in `src/context/search/quantize.rs` (16 bytes per 128 dimensions with SIMD popcount) and upgrade `SemanticIndex` in `src/context/search/semantic.rs`
+- [x] 119.10: Render KV cache efficiency and TTFT metrics in Ratatui TUI status line (`src/ui/status.rs`)
+- [x] 119.11: Develop comprehensive integration test suite in `tests/integration_context_engine_v2.rs`, verify quality gates (`cargo check -j 1`, `cargo test --bin minicode -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update `CHANGELOG.md`, bump version → `v0.3.19`, run `./localupdate.sh`, and commit
+
+
 
 
 

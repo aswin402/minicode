@@ -393,6 +393,42 @@ impl AutoCompactor {
         }
     }
 
+    /// Strips XML thinking tags (`<thought>...</thought>` or `<think>...</think>`) from a content string.
+    pub fn strip_thought_tags(content: &str) -> String {
+        let mut res = content.to_string();
+        for (open_tag, close_tag) in [("<thought>", "</thought>"), ("<think>", "</think>")] {
+            while let Some(start) = res.find(open_tag) {
+                if let Some(end) = res[start..].find(close_tag) {
+                    let end_pos = start + end + close_tag.len();
+                    res.replace_range(start..end_pos, "");
+                } else {
+                    res.replace_range(start.., "");
+                    break;
+                }
+            }
+        }
+        res.trim().to_string()
+    }
+
+    /// Strips bulky thought/reasoning blocks from older assistant turns,
+    /// preserving thought metadata only on the most recent 2 assistant messages.
+    /// This prevents O(N^2) context bloat while respecting model provider reasoning continuity.
+    pub fn strip_older_reasoning(messages: &mut [Message]) {
+        let mut assistant_seen = 0;
+        for msg in messages.iter_mut().rev() {
+            if msg.role == Role::Assistant {
+                if assistant_seen < 2 {
+                    assistant_seen += 1;
+                } else {
+                    msg.reasoning_content = None;
+                    if msg.content.contains("<thought>") || msg.content.contains("<think>") {
+                        msg.content = Self::strip_thought_tags(&msg.content);
+                    }
+                }
+            }
+        }
+    }
+
     /// Main compaction entrypoint: applies progressive 4-tier compaction if message history grows large.
     pub fn compact(
         &mut self,
@@ -419,7 +455,22 @@ impl AutoCompactor {
         } else {
             COMPACT_PRESERVE_RECENT_MESSAGES
         };
-        let cutoff = messages.len().saturating_sub(preserve_count.max(1));
+        let mut cutoff = messages.len().saturating_sub(preserve_count.max(1));
+
+        // Snap cutoff backward to guarantee orphan-safe interaction boundaries:
+        // 1. A recent slice must never begin with Role::Tool
+        // 2. An assistant message with tool calls must never be separated from its tool results
+        while cutoff > 0 {
+            if messages[cutoff].role == Role::Tool
+                || (messages[cutoff].role == Role::Assistant
+                    && messages[cutoff].tool_calls.is_some())
+            {
+                cutoff -= 1;
+            } else {
+                break;
+            }
+        }
+
         if cutoff == 0 {
             return None;
         }
@@ -432,6 +483,9 @@ impl AutoCompactor {
             tier3_threshold = tier3_threshold,
             "AutoCompactor: evaluating progressive context compaction"
         );
+
+        // Strip older reasoning blocks to eliminate O(N^2) thought bloat
+        Self::strip_older_reasoning(messages);
 
         // --- TIER 1: Observation Masking on older tool messages ---
         for msg in messages.iter_mut().take(cutoff) {
@@ -477,6 +531,7 @@ impl AutoCompactor {
             messages.clear();
             messages.push(summary_msg);
             messages.extend(recent_slice);
+            Self::strip_older_reasoning(messages);
 
             let tokens_after_tier2 = self.compressor.count_messages_tokens(messages);
             if tokens_after_tier2 <= tier3_threshold {
