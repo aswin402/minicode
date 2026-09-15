@@ -246,9 +246,9 @@ enum StackCommands {
         /// Name of the stack to scaffold
         name: String,
 
-        /// Target subdirectory to create
-        #[arg(short = 'd', long)]
-        dir: Option<String>,
+        /// Target destination directory or subdirectory (defaults to workspace)
+        #[arg(short = 'o', long = "dest", alias = "target")]
+        dest: Option<PathBuf>,
 
         /// Skip post-scaffold package manager installation
         #[arg(long)]
@@ -280,6 +280,9 @@ async fn main() -> anyhow::Result<()> {
     let workspace_dir = cli
         .dir
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    if !workspace_dir.exists() {
+        let _ = std::fs::create_dir_all(&workspace_dir);
+    }
     let workspace_canonical = std::fs::canonicalize(&workspace_dir).unwrap_or(workspace_dir);
 
     // 2. Dispatch early commands (configure, logs) immediately before file logger initialization
@@ -508,7 +511,7 @@ async fn handle_stack_cli(
                     );
                     println!("    \x1b[38;2;140;140;150m{}\x1b[0m", s.description);
                 }
-                println!("\n💡 Run `minicode stack add <name> [--dir <path>]` to scaffold.\n");
+                println!("\n💡 Run `minicode stack add <name> [--dest <path>]` to scaffold.\n");
             }
         }
         Some(StackCommands::Show { name }) => {
@@ -547,13 +550,13 @@ async fn handle_stack_cli(
         }
         Some(StackCommands::Add {
             name,
-            dir,
+            dest,
             no_install,
         }) => {
             let res = tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
                 workspace,
                 &name,
-                dir.as_deref(),
+                dest.as_deref().and_then(|p| p.to_str()),
                 no_install,
             )
             .await?;
