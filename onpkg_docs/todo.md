@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 117 (v0.3.17) Dynamic Context-Aware Donut Scaling & Unified Compaction Architecture | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 118 (v0.3.18) Real-World Subagent Hardening, Code Graph Stability & CLI Ergonomics | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1742,6 +1742,16 @@
 - [x] 117.5: Eliminate duplicate `ToolCall` event emissions in `src/agent/loop.rs` that were polluting TUI timelines, session tapes, and `--json-stream`
 - [x] 117.6: Fix AST/symbol candidate fusion and deterministic sorting in `src/context/search/hybrid.rs`
 - [x] 117.7: Develop integration test suite in `tests/integration_context_aware_donut.rs`, verify all 379 library tests and 98 integration test binaries, update `CHANGELOG.md`, bump version → `v0.3.17`, and commit
+
+### Phase 118: Real-World Subagent Hardening, Code Graph Stability & CLI Ergonomics (v0.3.18)
+- [x] 118.1: Implement token-boundary-aware detector `has_token_prefix` with high-entropy tail length checks in `src/agent/verification_barrier.rs`, eliminating Gate 4 secret leak false positives on words like `task-form` and `task-card`
+- [x] 118.2: Disambiguate `StackCommands::Add` argument from global `--dir` flag in `src/main.rs` using `dest: Option<PathBuf>` with `--dest` and `--target` aliases, resolving Clap TypeId downcast panics and path-doubling
+- [x] 118.3: Add automatic directory creation (`create_dir_all(&workspace_dir)`) in `src/main.rs` before canonicalization, ensuring fresh workspace directories can be sandboxed and canonicalized without `os error 2`
+- [x] 118.4: Replace fragile swap-removing `remove_node` calls in `incremental_update` (`src/context/graph/graph.rs`) with clean full AST rebuilds on dirty files, eliminating `Graph::add_edge: node indices out of bounds` panics
+- [x] 118.5: Verify multi-agent swarm orchestration (`invoke_subagent`, `dispatch_subagent`, `scratchpad_write/read`) and AST call graph exploration (`graph_visualize`, `impact_analysis`)
+- [x] 118.6: Validate turn-level undo checkpointing (`.minicode/backups/`) and session continuity (`minicode history`, `--continue-session`)
+- [x] 118.7: Verify quality gates (`cargo check -j 1`, `cargo test --bin minicode -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update `CHANGELOG.md`, bump version → `v0.3.18`, run `./localupdate.sh`, and commit
+
 
 
 

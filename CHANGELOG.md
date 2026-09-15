@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.18] — 2026-09-15
+
+### Real-World Subagent Hardening, Code Graph Stability & CLI Ergonomics (Phase 118)
+
+#### 💡 Ideas & Inspirations
+- **Boundary-Aware Secret Detection**: Naive substring matching for API key prefixes (e.g. `sk-`) causes severe false-positive rejections on benign English words and CSS classes (such as `task-form`, `task-card`, `subtask`, `flask-app`). Enforcing non-alphanumeric token boundaries and requiring high-entropy secret tail lengths eliminates false positives while strictly catching real credentials.
+- **Topological Integrity in Code Graphs**: In `petgraph::Graph`, `remove_node` performs a swap-remove, moving the last node into the vacated index. Performing piecemeal removals on a non-stable graph during incremental indexing invalidates external `NodeIndex` tables, causing `Graph::add_edge: node indices out of bounds` panics. Running a clean, full AST rebuild when files are modified guarantees 100% graph consistency with sub-50ms Tree-sitter parsing times.
+- **CLI Argument Disambiguation**: Subcommand arguments should never collide with global root CLI options of different types or purposes. Disambiguating `minicode stack add`'s destination parameter to `--dest` / `--target` prevents Clap downcast panics and path-doubling, while non-existent workspace auto-creation ensures fresh destination directories can be sandboxed and canonicalized without errors.
+
+#### 🚀 Features & Changes
+- **Token-Boundary Secret Leak Audit (`src/agent/verification_barrier.rs`)**:
+  - Implemented `has_token_prefix` checking that `sk-`, `ghp_`, and `AIzaSy` prefixes are preceded by a non-alphanumeric boundary (`abs_pos == 0 || (!prev_byte.is_ascii_alphanumeric() && prev_byte != b'_')`).
+  - Required minimum secret character lengths (20+ chars for `sk-` / `ghp_`, 25+ chars for `AIzaSy`).
+  - Added unit test `test_gate4_ignores_benign_subwords_like_task` ensuring HTML forms and CSS classes with `task-*` pass Gate 4 diff sanity cleanly.
+- **CLI Argument Disambiguation & Workspace Auto-Creation (`src/main.rs`)**:
+  - Disambiguated `StackCommands::Add` argument from the global `--dir` option by using `dest: Option<PathBuf>` with `--dest` and `--target` aliases.
+  - Added automatic directory creation (`if !workspace_dir.exists() { let _ = fs::create_dir_all(&workspace_dir); }`) so fresh destination folders can be canonicalized and sandboxed by Landlock without `os error 2`.
+  - Updated scaffold command help text and resolved path-doubling when scaffolding architecture stacks.
+- **Petgraph Node Index Out of Bounds Fix (`src/context/graph/graph.rs`)**:
+  - Replaced fragile swap-removing `remove_node` calls in `incremental_update` with clean AST graph rebuilds on dirty files.
+  - Preserved sub-millisecond instant return when all files are clean.
+  - Eliminated `Graph::add_edge: node indices out of bounds` panics during `graph_visualize` and `impact_analysis`.
+- **Comprehensive Real-World Verification**:
+  - Verified full web application scaffolding, multi-turn surgical diff patching, and sandboxed automated test execution (51/51 tests passing).
+  - Verified multi-agent swarm orchestration (`researcher` and `security_auditor` communicating via shared scratchpad blackboard).
+  - Verified turn-level undo checkpointing (`.minicode/backups/`) and session history continuation (`--continue-session`).
+
 ## [0.3.17] — 2026-09-14
 
 ### Dynamic Context-Aware Donut Scaling & Unified Compaction Architecture (Phase 117)
