@@ -65,6 +65,14 @@ pub fn lookup_cached_model_context(model: &str) -> Option<usize> {
 /// 3. Well-known model family heuristics
 /// 4. Safe standard default: 128,000 tokens
 pub fn get_model_context_limit(model: &str) -> usize {
+    if let Ok(val) = std::env::var("MINICODE_CONTEXT_WINDOW") {
+        if let Ok(limit) = val.parse::<usize>() {
+            if limit >= 1024 {
+                return limit;
+            }
+        }
+    }
+
     if let Some(cached) = lookup_cached_model_context(model) {
         return cached;
     }
