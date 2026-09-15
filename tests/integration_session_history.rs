@@ -43,6 +43,7 @@ async fn test_session_summary_analytics() {
         turn_id: 1,
         status: "completed".to_string(),
         total_tokens_used: 450,
+        cached_prompt_tokens: 0,
         files_modified: vec!["src/lib.rs".to_string()],
     };
 
@@ -334,6 +335,7 @@ async fn test_user_prompt_in_summary_and_export() {
         turn_id: 1,
         status: "completed".to_string(),
         total_tokens_used: 350,
+        cached_prompt_tokens: 0,
         files_modified: vec!["src/auth.rs".to_string()],
     };
 

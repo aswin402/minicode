@@ -134,6 +134,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
         Message {
             role: Role::Assistant,
             content: "I will view the files.".to_string(),
+            reasoning_content: None,
             tool_calls: Some(vec![
                 ToolCall {
                     id: "call_a".to_string(),
@@ -152,6 +153,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
         Message {
             role: Role::Tool,
             content: "[package]\nname = \"minicode\"".to_string(),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some("call_a".to_string()),
             tool_name: Some("view_file".to_string()),
@@ -159,6 +161,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
         Message {
             role: Role::Tool,
             content: "main.rs\nlib.rs".to_string(),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some("call_b".to_string()),
             tool_name: Some("list_dir".to_string()),
