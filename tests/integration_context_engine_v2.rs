@@ -274,6 +274,18 @@ fn test_hermes_strip_thought_tags() {
         AutoCompactor::strip_thought_tags(raw3),
         "Pre-text  Mid-text  Post-text"
     );
+
+    let raw4 = "<thinking>Claude 3.7 reasoning block</thinking>Production fix applied.";
+    assert_eq!(
+        AutoCompactor::strip_thought_tags(raw4),
+        "Production fix applied."
+    );
+
+    let raw5 = "<scratchpad>Hermes scratchpad content</scratchpad><reasoning>o1 replica reasoning</reasoning>Done.";
+    assert_eq!(AutoCompactor::strip_thought_tags(raw5), "Done.");
+
+    let raw6 = "<antThinking>Internal chain of thought</antThinking>Verified answer.";
+    assert_eq!(AutoCompactor::strip_thought_tags(raw6), "Verified answer.");
 }
 
 #[test]
@@ -283,7 +295,7 @@ fn test_strip_older_reasoning() {
 
     let mut messages = vec![
         Message::user("Turn 1 question"),
-        Message::assistant("<thought>Old thought 1</thought>Assistant answer 1")
+        Message::assistant("<scratchpad>Old scratchpad 1</scratchpad>Assistant answer 1")
             .with_reasoning("Old reasoning 1"),
         Message::user("Turn 2 question"),
         Message::assistant("Assistant answer 2").with_reasoning("Old reasoning 2"),
@@ -550,4 +562,126 @@ fn test_observation_pruner_log_and_ccr_cache() {
     let recovered =
         CcrCache::retrieve(ccr_id, None, None).expect("Must retrieve full log from CCR");
     assert_eq!(recovered, noisy_log);
+}
+
+#[test]
+fn test_recency_context_kv_cache_prefix_alignment() {
+    use minicode::agent::prompt::PromptBuilder;
+    use minicode::context::budget::ContextBudget;
+    use minicode::git::GitStatus;
+    use std::path::Path;
+
+    let ws = Path::new("/tmp/test_workspace");
+    let active_set = vec!["src/lib.rs".to_string(), "src/main.rs".to_string()];
+    let git_status = GitStatus {
+        branch: "main".to_string(),
+        is_clean: false,
+        staged: vec!["src/lib.rs".to_string()],
+        unstaged: vec![],
+        untracked: vec![],
+        conflicted: vec![],
+    };
+    let anchor = "Active Objective: Implement LMCache Prefix Alignment";
+    let budget = ContextBudget::new(15_000, 128_000, 30_000);
+
+    let recency = PromptBuilder::build_recency_context(
+        ws,
+        Some(anchor),
+        &active_set,
+        Some(&git_status),
+        Some(&budget),
+    );
+
+    // Verify presence of structural elements
+    assert!(recency.contains("<workspace_context>"));
+    assert!(recency.contains("<active_working_set>"));
+    assert!(recency.contains("<!-- KV_CACHE_ANCHOR -->"));
+    assert!(recency.contains("<git_status"));
+    assert!(recency.contains("<task_anchor>"));
+    assert!(recency.contains("<context_budget"));
+
+    // Verify strict stable-to-volatile ordering for Radix KV cache prefix preservation:
+    // active_working_set (stable) -> anchor delimiter -> git_status (volatile) -> context_budget (most volatile)
+    let ws_pos = recency
+        .find("<active_working_set>")
+        .expect("must contain active_working_set");
+    let anchor_marker_pos = recency
+        .find("<!-- KV_CACHE_ANCHOR -->")
+        .expect("must contain KV_CACHE_ANCHOR");
+    let git_pos = recency
+        .find("<git_status")
+        .expect("must contain git_status");
+    let budget_pos = recency
+        .find("<context_budget")
+        .expect("must contain context_budget");
+
+    assert!(
+        ws_pos < anchor_marker_pos,
+        "Active working set must precede KV cache anchor"
+    );
+    assert!(
+        anchor_marker_pos < git_pos,
+        "KV cache anchor must precede git status"
+    );
+    assert!(
+        git_pos < budget_pos,
+        "Git status must precede per-turn context budget"
+    );
+}
+
+#[tokio::test]
+async fn test_agent_loop_prune_context_proactive_thought_stripping() {
+    let temp_dir = TempDir::new().unwrap();
+    let config = Config::default();
+    let mock = minicode::agent::mock_provider::MockProvider::new("mock", "mock-model");
+    let mut agent = AgentLoop::new(temp_dir.path(), config, Box::new(mock));
+
+    // Seed 4 assistant messages with thoughts
+    agent.messages_mut().push(Message::user("Turn 1"));
+    agent.messages_mut().push(
+        Message::assistant("<think>Older thought turn 1</think>Answer 1")
+            .with_reasoning("Old reasoning 1"),
+    );
+    agent.messages_mut().push(Message::user("Turn 2"));
+    agent.messages_mut().push(
+        Message::assistant("<scratchpad>Older thought turn 2</scratchpad>Answer 2")
+            .with_reasoning("Old reasoning 2"),
+    );
+    agent.messages_mut().push(Message::user("Turn 3"));
+    agent.messages_mut().push(
+        Message::assistant("<thought>Recent thought turn 3</thought>Answer 3")
+            .with_reasoning("Recent reasoning 3"),
+    );
+    agent.messages_mut().push(Message::user("Turn 4"));
+    agent.messages_mut().push(
+        Message::assistant("<thinking>Recent thought turn 4</thinking>Answer 4")
+            .with_reasoning("Recent reasoning 4"),
+    );
+
+    // Call prune_context proactively
+    let _ = agent.prune_context();
+
+    // Older turns (1 & 2) should have thoughts and reasoning stripped
+    assert_eq!(agent.messages()[1].content, "Answer 1");
+    assert!(agent.messages()[1].reasoning_content.is_none());
+
+    assert_eq!(agent.messages()[3].content, "Answer 2");
+    assert!(agent.messages()[3].reasoning_content.is_none());
+
+    // Most recent 2 assistant turns (3 & 4) should preserve thoughts and reasoning
+    assert!(agent.messages()[5]
+        .content
+        .contains("<thought>Recent thought turn 3</thought>"));
+    assert_eq!(
+        agent.messages()[5].reasoning_content.as_deref(),
+        Some("Recent reasoning 3")
+    );
+
+    assert!(agent.messages()[7]
+        .content
+        .contains("<thinking>Recent thought turn 4</thinking>"));
+    assert_eq!(
+        agent.messages()[7].reasoning_content.as_deref(),
+        Some("Recent reasoning 4")
+    );
 }

@@ -393,10 +393,28 @@ impl AutoCompactor {
         }
     }
 
-    /// Strips XML thinking tags (`<thought>...</thought>` or `<think>...</think>`) from a content string.
+    pub const THOUGHT_TAG_PAIRS: [(&'static str, &'static str); 6] = [
+        ("<thought>", "</thought>"),
+        ("<think>", "</think>"),
+        ("<thinking>", "</thinking>"),
+        ("<reasoning>", "</reasoning>"),
+        ("<antThinking>", "</antThinking>"),
+        ("<scratchpad>", "</scratchpad>"),
+    ];
+
+    /// Checks if a string contains any recognized thinking or reasoning XML tags.
+    #[must_use]
+    pub fn has_thought_tags(content: &str) -> bool {
+        Self::THOUGHT_TAG_PAIRS
+            .iter()
+            .any(|(open, _)| content.contains(open))
+    }
+
+    /// Strips XML thinking tags (`<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, `<scratchpad>`) from a content string.
+    #[must_use]
     pub fn strip_thought_tags(content: &str) -> String {
         let mut res = content.to_string();
-        for (open_tag, close_tag) in [("<thought>", "</thought>"), ("<think>", "</think>")] {
+        for (open_tag, close_tag) in Self::THOUGHT_TAG_PAIRS {
             while let Some(start) = res.find(open_tag) {
                 if let Some(end) = res[start..].find(close_tag) {
                     let end_pos = start + end + close_tag.len();
@@ -421,7 +439,7 @@ impl AutoCompactor {
                     assistant_seen += 1;
                 } else {
                     msg.reasoning_content = None;
-                    if msg.content.contains("<thought>") || msg.content.contains("<think>") {
+                    if Self::has_thought_tags(&msg.content) {
                         msg.content = Self::strip_thought_tags(&msg.content);
                     }
                 }
@@ -435,6 +453,9 @@ impl AutoCompactor {
         messages: &mut Vec<Message>,
         current_turn: usize,
     ) -> Option<CompactionMetrics> {
+        // Strip older reasoning blocks to eliminate O(N^2) thought bloat across multi-turn sessions
+        Self::strip_older_reasoning(messages);
+
         let initial_tokens = self.compressor.count_messages_tokens(messages);
         let limit = self.model_token_limit();
 
@@ -483,9 +504,6 @@ impl AutoCompactor {
             tier3_threshold = tier3_threshold,
             "AutoCompactor: evaluating progressive context compaction"
         );
-
-        // Strip older reasoning blocks to eliminate O(N^2) thought bloat
-        Self::strip_older_reasoning(messages);
 
         // --- TIER 1: Observation Masking on older tool messages ---
         for msg in messages.iter_mut().take(cutoff) {

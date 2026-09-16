@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 118 (v0.3.18) Real-World Subagent Hardening, Code Graph Stability & CLI Ergonomics | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 121 (v0.3.21) Advanced Context Management, TurboQuant Vector Engine, DOX Pruning & LMCache KV-Prefix Alignment | **Status:** ✅ Complete (130 Tools)
 
 ---
 
@@ -1771,7 +1771,16 @@
 - [x] 120.3: Wire session continuation and hydration into interactive mode (`run_interactive_mode` for both accessible plain REPL and Aura Ratatui TUI startup)
 - [x] 120.4: Wire `AgentCommand::HydrateSession` through background actor channel on interactive session switch (`/session <id>`) and session modal fork
 - [x] 120.5: Develop end-to-end integration test suite in `tests/integration_session_hydration.rs`, verifying state reconstruction and subsequent turn execution
-- [x] 120.6: Pass quality gates (`cargo check -j 1`, `cargo test --test integration_session_hydration -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update global binary via `./localupdate.sh`, and commit
+### Phase 121: Advanced Context Management, TurboQuant (ICLR 2026) Vector Engine, DOX Pruning & LMCache KV-Prefix Alignment (v0.3.21)
+- [x] 121.1: Implement in-place $O(N \log N)$ Fast Walsh-Hadamard Transform (`fwht_128`) and `PolarQuant4` (4-bit asymmetric dot product) in `src/context/search/quantize.rs`, delivering 7.5x RAM reduction with <5% relative error
+- [x] 121.2: Upgrade `search_fast` and `search_symbols` in `src/context/search/semantic.rs` to 2-stage screening (Stage 1: popcount Hamming distance, Stage 2: 4-bit asymmetric dot product)
+- [x] 121.3: Expand hierarchical DOX developer rule candidate discovery (`.dox`, `.dox.md`, `.minicode/rules.md`, `.rules.md`) and language-aware markdown section filtering in `src/context/governance/dox.rs`
+- [x] 121.4: Implement `LogPruner` in `src/context/budget/log_pruner.rs` (strips ANSI escapes, collapses consecutive progress/compiling noise, folds deep runtime/system stack frames while strictly preserving compiler diagnostics and failure summaries, with lossless CCR storage)
+- [x] 121.5: Wire unified `ObservationPruner` gateway in `src/context/budget/observation_pruner.rs` routing JSON arrays to `JsonCrusher` and command logs/traces to `LogPruner` across parallel and sequential tool execution in `src/agent/loop.rs`
+- [x] 121.6: Implement LMCache-style KV-cache prefix alignment in `src/agent/prompt.rs`: reorder `build_recency_context` from most stable (developer rules, progressive memory, working memory, working set) to most volatile (transaction, git status, task anchor, context budget), inserting `<!-- KV_CACHE_ANCHOR -->` boundary marker
+- [x] 121.7: Proactive multi-turn thought scratchpad compaction: enhance `strip_thought_tags` and `strip_older_reasoning` in `src/context/budget/auto_compact.rs` for `<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, and `<scratchpad>`, and invoke proactively in `AgentLoop::prune_context`
+- [x] 121.8: Pass full verification suite across all 18 context engine integration tests in `tests/integration_context_engine_v2.rs`, verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update global release binary via `./localupdate.sh`, and test in real-world via `minicode run --json-stream`
+
 
 
 

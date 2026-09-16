@@ -168,12 +168,83 @@ impl PromptBuilder {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
 
-        // 1. Context Budget & Headroom Bar
-        if let Some(budget) = context_budget {
-            recency.push_str(&budget.to_prompt_block());
+        // === ZONE A: KV-CACHE STABLE PREFIX (Ordered by lowest volatility) ===
+        // Modern inference runtimes (vLLM, SGLang, LMCache, DeepSeek, Anthropic) utilize
+        // radix-tree prefix caching. Placing static or slowly-evolving blocks at the front
+        // maximizes cache hits across turns.
+
+        // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md for active working set)
+        if !active_working_set.is_empty() {
+            let scoped_rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules(
+                workspace_dir,
+                active_working_set,
+            );
+            if !scoped_rules.is_empty() {
+                recency.push_str("  <scoped_developer_rules>\n");
+                recency.push_str(scoped_rules.trim());
+                recency.push_str("\n  </scoped_developer_rules>\n");
+            }
         }
 
-        // 2. Git Status & Active Branch
+        // 2. Progressive 4-Tier Memory (<progressive_memory>)
+        let mut prog_memory =
+            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
+        // Sync any legacy CoreMemory entries into ProgressiveMemory
+        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
+        for g in &core_memory.global_entries {
+            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
+        }
+        for l in &core_memory.local_entries {
+            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
+        }
+        // Apply biological decay retention filter
+        prog_memory.prune_decayed(0.15);
+
+        let prog_block = prog_memory.to_prompt_block();
+        if !prog_block.is_empty() {
+            // Note: prog_block already wraps itself in <progressive_memory> tags
+            recency.push_str("  ");
+            recency.push_str(prog_block.trim());
+            recency.push('\n');
+        }
+
+        // 3. Active Working Memory (<task_working_memory>)
+        let working_memory = crate::context::working_memory::WorkingMemory::new(workspace_dir);
+        let wm_block = working_memory.to_prompt_block();
+        if !wm_block.is_empty() {
+            recency.push_str("  <task_working_memory>\n");
+            recency.push_str(wm_block.trim());
+            recency.push_str("\n  </task_working_memory>\n");
+        }
+
+        // 4. Active Working Set (recently read / modified files)
+        if !active_working_set.is_empty() {
+            recency.push_str("  <active_working_set>\n");
+            for path in active_working_set.iter().take(8) {
+                recency.push_str(&format!("    <file path=\"{}\" />\n", path));
+            }
+            recency.push_str("  </active_working_set>\n");
+        }
+
+        // === KV-CACHE ANCHOR DELIMITER ===
+        // Delimits invariant/slowly-evolving context from volatile turn-by-turn state
+        recency.push_str("  <!-- KV_CACHE_ANCHOR -->\n");
+
+        // === ZONE B: VOLATILE PER-TURN STATE ===
+
+        // 5. Active Workspace Transaction (if one is open)
+        if let Ok(Some(active_tx)) =
+            crate::session::transaction::TransactionManager::get_active(workspace_dir)
+        {
+            recency.push_str(&format!(
+                "  <active_transaction id=\"{}\" files_tracked=\"{}\">\n    <description>{}</description>\n  </active_transaction>\n",
+                active_tx.tx_id,
+                active_tx.files.len(),
+                active_tx.description
+            ));
+        }
+
+        // 6. Git Status & Active Branch
         if let Some(status) = git_status {
             recency.push_str(&format!(
                 "  <git_status branch=\"{}\" clean=\"{}\">\n",
@@ -210,39 +281,7 @@ impl PromptBuilder {
             recency.push_str("  </git_status>\n");
         }
 
-        // 2. Active Working Set (recently read / modified files)
-        if !active_working_set.is_empty() {
-            recency.push_str("  <active_working_set>\n");
-            for path in active_working_set.iter().take(8) {
-                recency.push_str(&format!("    <file path=\"{}\" />\n", path));
-            }
-            recency.push_str("  </active_working_set>\n");
-
-            // Scoped DOX Developer Rules (hierarchical AGENTS.md for active working set)
-            let scoped_rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules(
-                workspace_dir,
-                active_working_set,
-            );
-            if !scoped_rules.is_empty() {
-                recency.push_str("  <scoped_developer_rules>\n");
-                recency.push_str(scoped_rules.trim());
-                recency.push_str("\n  </scoped_developer_rules>\n");
-            }
-        }
-
-        // Active Workspace Transaction (if one is open)
-        if let Ok(Some(active_tx)) =
-            crate::session::transaction::TransactionManager::get_active(workspace_dir)
-        {
-            recency.push_str(&format!(
-                "  <active_transaction id=\"{}\" files_tracked=\"{}\">\n    <description>{}</description>\n  </active_transaction>\n",
-                active_tx.tx_id,
-                active_tx.files.len(),
-                active_tx.description
-            ));
-        }
-
-        // 3. Dynamic Memory Anchor (active objective, key decisions, blockers)
+        // 7. Dynamic Memory Anchor (active objective, key decisions, blockers)
         if let Some(anchor) = memory_anchor {
             if !anchor.trim().is_empty() {
                 recency.push_str("  <task_anchor>\n");
@@ -251,35 +290,9 @@ impl PromptBuilder {
             }
         }
 
-        // 4. Progressive 4-Tier Memory (<progressive_memory>)
-        let mut prog_memory =
-            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
-        // Sync any legacy CoreMemory entries into ProgressiveMemory
-        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
-        for g in &core_memory.global_entries {
-            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
-        }
-        for l in &core_memory.local_entries {
-            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
-        }
-        // Apply biological decay retention filter
-        prog_memory.prune_decayed(0.15);
-
-        let prog_block = prog_memory.to_prompt_block();
-        if !prog_block.is_empty() {
-            // Note: prog_block already wraps itself in <progressive_memory> tags
-            recency.push_str("  ");
-            recency.push_str(prog_block.trim());
-            recency.push('\n');
-        }
-
-        // 6. Active Working Memory (<working_memory>)
-        let working_memory = crate::context::working_memory::WorkingMemory::new(workspace_dir);
-        let wm_block = working_memory.to_prompt_block();
-        if !wm_block.is_empty() {
-            recency.push_str("  <task_working_memory>\n");
-            recency.push_str(wm_block.trim());
-            recency.push_str("\n  </task_working_memory>\n");
+        // 8. Context Budget & Headroom Bar (most volatile, placed at tail to avoid invalidating KV prefix)
+        if let Some(budget) = context_budget {
+            recency.push_str(&budget.to_prompt_block());
         }
 
         recency.push_str("</workspace_context>");
@@ -417,8 +430,22 @@ mod tests {
         assert!(recency.contains("<file path=\"src/main.rs\" />"));
         assert!(recency.contains("<file path=\"src/agent/prompt.rs\" />"));
         assert!(recency.contains("<active_working_set>"));
+        assert!(recency.contains("<!-- KV_CACHE_ANCHOR -->"));
         assert!(recency.contains("<task_anchor>"));
         assert!(recency.contains("Implement Tri-Zone Prompts"));
         assert!(recency.contains("</workspace_context>"));
+
+        // Verify KV-cache prefix stability: stable active_working_set precedes volatile context_budget
+        let active_set_pos = recency
+            .find("<active_working_set>")
+            .expect("must contain active_working_set");
+        let anchor_marker_pos = recency
+            .find("<!-- KV_CACHE_ANCHOR -->")
+            .expect("must contain KV_CACHE_ANCHOR");
+        let budget_pos = recency
+            .find("<context_budget")
+            .expect("must contain context_budget");
+        assert!(active_set_pos < anchor_marker_pos);
+        assert!(anchor_marker_pos < budget_pos);
     }
 }

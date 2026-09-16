@@ -282,6 +282,12 @@ impl AgentLoop {
     /// Prunes conversation message history progressively via 4-tier auto-compaction,
     /// or deduplicates repetitive file reads/diagnostics across turns.
     pub fn prune_context(&mut self) -> Option<crate::context::auto_compact::CompactionMetrics> {
+        // 0. Proactively strip thoughts/scratchpads from older assistant turns (keeping reasoning only on the 2 most recent)
+        // This prevents O(N^2) reasoning bloat across multi-turn sessions before token thresholds are hit.
+        crate::context::budget::auto_compact::AutoCompactor::strip_older_reasoning(
+            &mut self.messages,
+        );
+
         if self.messages.len() <= CONTEXT_MIN_PRESERVED_MESSAGES {
             return None;
         }
