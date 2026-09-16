@@ -905,7 +905,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 133;
+pub const TOTAL_TOOL_COUNT: usize = 134;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1000,6 +1000,8 @@ pub const CODE_EXPLORER_WIDTH_PCT: u16 = 85;
 pub const CODE_EXPLORER_HEIGHT_PCT: u16 = 80;
 pub const ARCHITECTURE_MODAL_WIDTH_PCT: u16 = 82;
 pub const ARCHITECTURE_MODAL_HEIGHT_PCT: u16 = 80;
+pub const CONTEXT_MODAL_WIDTH_PCT: u16 = 84;
+pub const CONTEXT_MODAL_HEIGHT_PCT: u16 = 82;
 pub const API_KEY_MODAL_WIDTH_PCT: u16 = 65;
 pub const API_KEY_MODAL_HEIGHT_PCT: u16 = 30;
 

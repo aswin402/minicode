@@ -135,18 +135,20 @@ impl IntentClassifier {
     /// - Database / Postgres / MySQL: "postgres", "mysql", "sqlite", "database", "query", "sql"
     /// - Docker: "docker", "container", "compose", "image"
     #[must_use]
-    pub fn detect_mcp_servers<'a, I>(prompt: &str, available_servers: I) -> HashSet<String>
+    pub fn detect_mcp_servers<I, S>(prompt: &str, available_servers: I) -> HashSet<String>
     where
-        I: IntoIterator<Item = &'a str>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
     {
         let mut matched = HashSet::new();
         let lower = prompt.to_ascii_lowercase();
 
         for server in available_servers {
-            let s_lower = server.to_ascii_lowercase();
+            let s_ref = server.as_ref();
+            let s_lower = s_ref.to_ascii_lowercase();
             // 1. Direct name match in prompt
             if lower.contains(&s_lower) {
-                matched.insert(server.to_string());
+                matched.insert(s_ref.to_string());
                 continue;
             }
 
@@ -159,7 +161,7 @@ impl IntentClassifier {
                         || lower.contains("design system")
                         || lower.contains("ui design")
                     {
-                        matched.insert(server.to_string());
+                        matched.insert(s_ref.to_string());
                     }
                 }
                 "github" | "gh" => {
@@ -168,7 +170,7 @@ impl IntentClassifier {
                         || lower.contains("issue")
                         || lower.contains("repo")
                     {
-                        matched.insert(server.to_string());
+                        matched.insert(s_ref.to_string());
                     }
                 }
                 "postgres" | "mysql" | "sqlite" | "database" | "db" | "sql" => {
@@ -178,7 +180,7 @@ impl IntentClassifier {
                         || lower.contains("migration")
                         || lower.contains("schema")
                     {
-                        matched.insert(server.to_string());
+                        matched.insert(s_ref.to_string());
                     }
                 }
                 "docker" => {
@@ -186,7 +188,7 @@ impl IntentClassifier {
                         || lower.contains("dockerfile")
                         || lower.contains("compose")
                     {
-                        matched.insert(server.to_string());
+                        matched.insert(s_ref.to_string());
                     }
                 }
                 _ => {}

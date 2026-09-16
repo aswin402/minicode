@@ -224,6 +224,19 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/context" || prompt == "/ctx" || prompt == "/kv" || prompt == "/cache" {
+            let data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
+                &self.workspace_root,
+                &self.config,
+                self.last_turn_tokens,
+                self.cumulative_tokens,
+                self.last_turn_cached_tokens,
+                self.timeline.entries.len(),
+            );
+            self.modal = ModalState::new_context_diagnostics(data);
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/tokens" {
             let model_limit =
                 crate::agent::models::get_model_context_limit(&self.config.provider.model);

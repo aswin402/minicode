@@ -147,6 +147,13 @@ impl CcrCache {
         cache.len()
     }
 
+    /// Returns the total byte footprint of observations in the CCR cache.
+    #[allow(dead_code)]
+    pub fn total_bytes() -> usize {
+        let cache = get_cache().read().unwrap_or_else(|e| e.into_inner());
+        cache.total_bytes
+    }
+
     /// Clears the global CCR cache.
     #[allow(dead_code)]
     pub fn clear() {

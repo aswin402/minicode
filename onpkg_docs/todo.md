@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 123 (v0.3.23) Subagent Swarm Ephemeral Context Isolation & Result Synthesis | **Status:** ✅ Complete (131+ Tools)
+> **Current Phase:** Phase 124 (v0.3.24) Interactive /context Visualizer & Real-Time KV-Cache Diagnostics | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1799,10 +1799,12 @@
 - [x] 123.6: Develop comprehensive integration test suite in `tests/integration_subagent_synthesis.rs` (5 tests passing, covering transcripts, persistence, AST & test reduction, drilldown tool dispatch, and token reduction)
 - [x] 123.7: Pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), bump version → `v0.3.23`, build global release binary via `./localupdate.sh`, and validate in real-world autonomous execution via `minicode run --json-stream`
 
-
-
-
-
-
-
-
+### Phase 124: Interactive `/context` Visualizer & Real-Time KV-Cache Diagnostics in Ratatui TUI (v0.3.24)
+- [x] 124.1: Add `CONTEXT_MODAL_WIDTH_PCT` (84) and `CONTEXT_MODAL_HEIGHT_PCT` (82) constants in `src/constants.rs` and `total_bytes()` accessor in `src/context/budget/ccr_cache.rs`
+- [x] 124.2: Implement `ContextDiagnosticsData` telemetry aggregator and `render_context_diagnostics` 3-tab modal layout in `src/ui/modals/context_diagnostics.rs` (ASCII utilization bar, 6-zone allocation breakdown, KV-cache speedup/discount metrics, prefix stability principles, and progressive memory tiers)
+- [x] 124.3: Expose `ContextDiagnostics` modal variant, constructor `new_context_diagnostics`, and rendering dispatch in `src/ui/modals/mod.rs`
+- [x] 124.4: Add interactive keyboard navigation (`Tab`/`BackTab`, `1-3`, `j`/`k`/`Up`/`Down`, `PgUp`/`PgDn`, `Home`, `Esc`/`q`) and `[P]` prune maintenance action (purges decayed memories & flushes CCR observation cache) in `src/app/modals.rs`
+- [x] 124.5: Wire `/context`, `/ctx`, `/kv`, `/cache` commands in `src/app/commands.rs` and global `Ctrl+X` hotkey in `src/app/mod.rs`
+- [x] 124.6: Update command catalog in `src/ui/modals/command_catalog.rs` and help modal in `src/ui/modals/help.rs`
+- [x] 124.7: Pass all 4 integration tests in `tests/integration_context_modal.rs` and full test suite (398 tests passing), update `TOTAL_TOOL_COUNT` to 134, pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`)
+- [x] 124.8: Recompile release binary via `./localupdate.sh` to `/home/aswin/.local/bin/minicode` and validate in real-world autonomous execution via `minicode run --json-stream`

@@ -61,6 +61,7 @@ pub struct App<'a> {
     last_user_prompt: Option<String>,
     last_turn_tokens: usize,
     last_turn_cached_tokens: usize,
+    cumulative_tokens: usize,
     total_cost_usd: f64,
     /// Handle to the agent's in-flight approval requests.
     approvals: crate::agent::types::ApprovalRegistry,
@@ -100,6 +101,7 @@ impl<'a> App<'a> {
             last_user_prompt: None,
             last_turn_tokens: 0,
             last_turn_cached_tokens: 0,
+            cumulative_tokens: 0,
             total_cost_usd: 0.0,
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             should_exit: false,
@@ -146,6 +148,8 @@ impl<'a> App<'a> {
                 } => {
                     if *total_tokens_used > 0 {
                         self.last_turn_tokens = *total_tokens_used;
+                        self.cumulative_tokens =
+                            self.cumulative_tokens.saturating_add(*total_tokens_used);
                     }
                 }
                 AgentEvent::ContextCompacted {
@@ -401,6 +405,7 @@ impl<'a> App<'a> {
                             if let AgentEvent::TurnEnd { total_tokens_used, .. } = agent_event {
                                 if total_tokens_used > 0 {
                                     self.last_turn_tokens = total_tokens_used;
+                                    self.cumulative_tokens = self.cumulative_tokens.saturating_add(total_tokens_used);
                                 }
                                 self.cancel_token = None;
                             }
@@ -445,7 +450,7 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.current_activity =
-                                    Some(crate::ui::AgentActivity::Thinking);
+                                        Some(crate::ui::AgentActivity::Thinking);
                                 self.timeline
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }
@@ -456,6 +461,7 @@ impl<'a> App<'a> {
                             } => {
                                 if total_tokens_used > 0 {
                                     self.last_turn_tokens = total_tokens_used;
+                                    self.cumulative_tokens = self.cumulative_tokens.saturating_add(total_tokens_used);
                                 }
                                 self.last_turn_cached_tokens = cached_prompt_tokens;
                                 let prompt_toks = (total_tokens_used * 3) / 4;
@@ -691,6 +697,20 @@ impl<'a> App<'a> {
                                             self.timeline.add_status(format!("✗ Code review error: {}", e));
                                         }
                                     }
+                                    continue;
+                                }
+
+                                // Ctrl+X opens interactive Context Visualizer & KV-Cache Diagnostics modal
+                                if key_event.code == KeyCode::Char('x') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    let data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
+                                        &self.workspace_root,
+                                        &self.config,
+                                        self.last_turn_tokens,
+                                        self.cumulative_tokens,
+                                        self.last_turn_cached_tokens,
+                                        self.timeline.entries.len(),
+                                    );
+                                    self.modal = ModalState::new_context_diagnostics(data);
                                     continue;
                                 }
 

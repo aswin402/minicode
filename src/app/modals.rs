@@ -1390,6 +1390,83 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::ContextDiagnostics {
+                data,
+                active_tab,
+                scroll_offset,
+            } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Tab => {
+                    *active_tab = (*active_tab + 1) % 3;
+                    *scroll_offset = 0;
+                }
+                KeyCode::BackTab => {
+                    *active_tab = if *active_tab == 0 { 2 } else { *active_tab - 1 };
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('1') => {
+                    *active_tab = 0;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('2') => {
+                    *active_tab = 1;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('3') => {
+                    *active_tab = 2;
+                    *scroll_offset = 0;
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                    *scroll_offset = scroll_offset.saturating_sub(1);
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                    *scroll_offset = scroll_offset.saturating_add(1);
+                }
+                KeyCode::PageUp => {
+                    *scroll_offset = scroll_offset.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    *scroll_offset = scroll_offset.saturating_add(10);
+                }
+                KeyCode::Home => {
+                    *scroll_offset = 0;
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    let mut prog_mem =
+                        crate::context::memory::progressive_memory::ProgressiveMemory::load(
+                            &self.workspace_root,
+                        );
+                    let before =
+                        prog_mem.l1_session_anchors.len() + prog_mem.l2_project_facts.len();
+                    prog_mem.prune_decayed(0.15);
+                    let pruned = before.saturating_sub(
+                        prog_mem.l1_session_anchors.len() + prog_mem.l2_project_facts.len(),
+                    );
+                    let _ = prog_mem.save(&self.workspace_root);
+
+                    crate::context::budget::ccr_cache::CcrCache::clear();
+
+                    let used_tokens = self.last_turn_tokens;
+                    let cumulative = self.cumulative_tokens;
+                    let cached = self.last_turn_cached_tokens;
+                    let msg_count = self.timeline.entries.len();
+                    **data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
+                        &self.workspace_root,
+                        &self.config,
+                        used_tokens,
+                        cumulative,
+                        cached,
+                        msg_count,
+                    );
+                    self.timeline.add_status(format!(
+                        "🧹 Pruned {} decayed memory entries & flushed observation CCR cache",
+                        pruned
+                    ));
+                }
+                _ => {}
+            },
         }
     }
 

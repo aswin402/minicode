@@ -80,6 +80,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/explore | /explore SymbolName",
     },
     CommandCatalogItem {
+        name: "/context",
+        category: "Code & Inspection",
+        shortcut: "Ctrl+X",
+        description: "Interactive context breakdown, zone allocations & KV-cache telemetry",
+        example: "/context | /ctx | /kv | /cache",
+    },
+    CommandCatalogItem {
         name: "/review",
         category: "Code & Inspection",
         shortcut: "",

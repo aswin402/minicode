@@ -114,6 +114,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  Ctrl+X     ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Inspect context window tokens & KV-cache (/context)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Esc        ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Interrupt running execution / close modal",

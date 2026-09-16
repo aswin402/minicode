@@ -5,6 +5,7 @@ pub mod architecture;
 pub mod code_explorer;
 pub mod command_catalog;
 pub mod common;
+pub mod context_diagnostics;
 pub mod exit_confirm;
 pub mod git_diff;
 pub mod help;
@@ -119,11 +120,24 @@ pub enum ModalState {
         selected_index: usize,
         scroll_offset: usize,
     },
+    ContextDiagnostics {
+        data: Box<context_diagnostics::ContextDiagnosticsData>,
+        active_tab: usize,
+        scroll_offset: usize,
+    },
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_context_diagnostics(data: context_diagnostics::ContextDiagnosticsData) -> Self {
+        Self::ContextDiagnostics {
+            data: Box::new(data),
+            active_tab: 0,
+            scroll_offset: 0,
+        }
     }
 
     pub fn new_architecture_audit(report: crate::context::governance::ArchitectureReport) -> Self {
@@ -692,6 +706,20 @@ impl ModalState {
                     report,
                     *active_tab,
                     *selected_index,
+                    *scroll_offset,
+                );
+            }
+            ModalState::ContextDiagnostics {
+                data,
+                active_tab,
+                scroll_offset,
+            } => {
+                context_diagnostics::render_context_diagnostics(
+                    frame,
+                    area,
+                    theme,
+                    data,
+                    *active_tab,
                     *scroll_offset,
                 );
             }
