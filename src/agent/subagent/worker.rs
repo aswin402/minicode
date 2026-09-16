@@ -107,20 +107,54 @@ impl SubagentWorker {
             let mut turns_executed = 0;
             let mut final_summary = String::new();
             let mut success = true;
+            let mut step_counter = 0;
+            let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
+                &id,
+                role.clone(),
+                prompt.clone(),
+            );
 
             while turns_executed < self.config.max_turns {
                 if self.cancel_flag.load(Ordering::SeqCst) {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    transcript.total_tokens = tokens_used;
+                    transcript.turns_executed = turns_executed;
+                    transcript.finished_at_secs = Some(now);
+                    crate::agent::subagent::transcript::get_global_transcript_store()
+                        .store(transcript.clone(), Some(&self.workspace_root));
+
+                    let report = crate::agent::subagent::reducer::SubagentSynthesisReducer::reduce(
+                        crate::agent::subagent::reducer::SubagentSynthesisContext {
+                            subagent_id: &id,
+                            role: &role,
+                            final_summary: "Subagent execution canceled by user",
+                            success: false,
+                            status: "canceled",
+                            files_inspected: &files_inspected,
+                            files_modified: &files_modified,
+                            transcript: &transcript,
+                            workspace_root: &self.workspace_root,
+                            worktree_branch: None,
+                        },
+                    )
+                    .await;
+                    let report_md = report.format_markdown();
+
                     let mut info = self.info.write().await;
                     info.state = SubagentState::Canceled;
                     info.current_tool = None;
                     info.status_message = Some("Canceled by user".to_string());
-                    info.final_summary = Some("Subagent execution canceled by user".to_string());
+                    info.final_summary = Some(report_md.clone());
                     return Ok(SubagentResult {
                         id: id.clone(),
                         task_id: id,
                         role,
                         success: false,
-                        final_summary: "Subagent execution canceled by user".to_string(),
+                        final_summary: report_md,
                         tokens_used,
                         turns_executed,
                         files_inspected,
@@ -254,6 +288,9 @@ impl SubagentWorker {
                         info.status_message = Some(format!("Executing `{}`", tool_name));
                     }
 
+                    let step_start = std::time::Instant::now();
+                    step_counter += 1;
+
                     // Execute tool via ToolRegistry
                     let tool_res = crate::tools::ToolRegistry::dispatch(
                         &self.workspace_root,
@@ -264,6 +301,21 @@ impl SubagentWorker {
                         turns_executed,
                     )
                     .await;
+
+                    let duration_ms = step_start.elapsed().as_millis() as u64;
+
+                    // Record step into ephemeral transcript
+                    transcript.add_step(
+                        crate::agent::subagent::transcript::SubagentStepRecord::new(
+                            step_counter,
+                            turns_executed,
+                            tool_name.clone(),
+                            args.clone(),
+                            tool_res.output.clone(),
+                            tool_res.success,
+                            duration_ms,
+                        ),
+                    );
 
                     // Reset tool telemetry after execution
                     {
@@ -281,12 +333,45 @@ impl SubagentWorker {
                 .unwrap_or_default()
                 .as_secs();
 
+            transcript.total_tokens = tokens_used;
+            transcript.turns_executed = turns_executed;
+            transcript.finished_at_secs = Some(now);
+            crate::agent::subagent::transcript::get_global_transcript_store()
+                .store(transcript.clone(), Some(&self.workspace_root));
+
+            let isolate_worktree = {
+                let info = self.info.read().await;
+                info.isolate_worktree
+            };
+            let worktree_branch = if isolate_worktree {
+                Some(format!("subagent/{}", id))
+            } else {
+                None
+            };
+
+            let report = crate::agent::subagent::reducer::SubagentSynthesisReducer::reduce(
+                crate::agent::subagent::reducer::SubagentSynthesisContext {
+                    subagent_id: &id,
+                    role: &role,
+                    final_summary: &final_summary,
+                    success,
+                    status: if success { "completed" } else { "failed" },
+                    files_inspected: &files_inspected,
+                    files_modified: &files_modified,
+                    transcript: &transcript,
+                    workspace_root: &self.workspace_root,
+                    worktree_branch: worktree_branch.clone(),
+                },
+            )
+            .await;
+            let markdown_report = report.format_markdown();
+
             {
                 let mut info = self.info.write().await;
                 info.state = if success {
                     SubagentState::Completed
                 } else {
-                    SubagentState::Failed(final_summary.clone())
+                    SubagentState::Failed(markdown_report.clone())
                 };
                 info.finished_at_secs = Some(now);
                 info.tokens_used = tokens_used;
@@ -297,22 +382,22 @@ impl SubagentWorker {
                 } else {
                     "Failed".to_string()
                 });
-                info.final_summary = Some(final_summary.clone());
+                info.final_summary = Some(markdown_report.clone());
             }
 
-            // Auto-deposit subagent findings into shared scratchpad
+            // Auto-deposit synthesized report into shared scratchpad
             let scratchpad = crate::agent::subagent::get_global_scratchpad();
             let report_title = format!("Subagent {} ({}) Report", id, role.badge());
             scratchpad.write_entry(
                 &format!("subagent_{}", id),
                 &report_title,
-                &final_summary,
+                &markdown_report,
                 &id,
             );
             scratchpad.write_entry(
                 &format!("subagent/{}", id),
                 &report_title,
-                &final_summary,
+                &markdown_report,
                 &id,
             );
             let _ = scratchpad.save_to_disk(&self.workspace_root);
@@ -321,6 +406,7 @@ impl SubagentWorker {
                 subagent_id = %id,
                 turns = turns_executed,
                 tokens = tokens_used,
+                steps = transcript.steps.len(),
                 success,
                 "Subagent worker finished"
             );
@@ -330,12 +416,12 @@ impl SubagentWorker {
                 task_id: id,
                 role,
                 success,
-                final_summary,
+                final_summary: markdown_report,
                 tokens_used,
                 turns_executed,
                 files_inspected,
                 files_modified,
-                worktree_branch: None,
+                worktree_branch,
             })
         })
     }

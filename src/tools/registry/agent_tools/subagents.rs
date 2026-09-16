@@ -132,12 +132,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "await", "kill", "kill_all"],
-                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "await", "transcript", "drilldown", "kill", "kill_all"],
+                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
-                        "description": "Identifier of the target subagent (required for 'status', 'kill', and 'await')"
+                        "description": "Identifier of the target subagent (required for 'status', 'kill', 'await', and 'transcript')"
+                    },
+                    "step_index": {
+                        "type": "integer",
+                        "description": "Optional step number (1-indexed) when action is 'transcript' or 'drilldown'"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -204,6 +208,33 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "subagent_id": {
                         "type": "string",
                         "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'task-a1b2c3d4' or 'testengineer-2')"
+                    }
+                },
+                "required": ["subagent_id"]
+            }),
+        },
+        ToolSchema {
+            name: "subagent_transcript_drilldown".to_string(),
+            description: "Inspect the raw execution transcript of an isolated subagent worker. Allows lossless inspection of tool parameters, complete stdout/stderr, compiler logs, and step-by-step diagnostics on demand without bloating parent context.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "subagent_id": {
+                        "type": "string",
+                        "description": "Unique identifier of the subagent to inspect (e.g. 'researcher-1', 'testengineer-2')"
+                    },
+                    "step_index": {
+                        "type": "integer",
+                        "description": "Optional step number (1-indexed) to inspect in full detail. If omitted, returns an overview table of all steps."
+                    },
+                    "filter": {
+                        "type": "string",
+                        "enum": ["summary", "all", "errors", "tools", "exec"],
+                        "description": "Filter mode: 'summary' (overview table), 'all' (all steps), 'errors' (only failed steps), 'tools' (all tools), or 'exec' (only command executions)"
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Maximum output lines to display for a single step (default: 120)"
                     }
                 },
                 "required": ["subagent_id"]
@@ -276,16 +307,19 @@ pub async fn dispatch(
                 )
                 .await?;
 
-            let report = format!(
-                "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
-                res.id,
-                role.badge(),
-                res.tokens_used,
-                if res.files_modified.is_empty() { "None (Read-Only)".to_string() } else { res.files_modified.join(", ") },
-                res.final_summary
-            );
-
-            Ok(report)
+            if res.final_summary.starts_with("### ") {
+                Ok(res.final_summary)
+            } else {
+                let report = format!(
+                    "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
+                    res.id,
+                    role.badge(),
+                    res.tokens_used,
+                    if res.files_modified.is_empty() { "None (Read-Only)".to_string() } else { res.files_modified.join(", ") },
+                    res.final_summary
+                );
+                Ok(report)
+            }
         }.await),
         "dispatch_subagent" => Some(async {
             let role_str = param::require_str(args, "role", "dispatch_subagent")?;
@@ -421,22 +455,26 @@ pub async fn dispatch(
                             .or(info.final_summary.clone())
                             .unwrap_or_else(|| "No output report recorded.".to_string());
 
-                        Ok(format!(
-                            "✔ Subagent `{}` has finished execution (State: {:?})!\n\
-                             • **Role**: {}\n\
-                             • **Turns Executed**: {}\n\
-                             • **Tokens Used**: {}\n\
-                             • **Isolation**: {}\n\n\
-                             ### Findings & Outcome Summary\n\
-                             {}",
-                            info.id,
-                            info.state,
-                            info.role.badge(),
-                            info.turns_executed,
-                            info.tokens_used,
-                            if info.isolate_worktree { "Git Worktree" } else { "Read-Only / Main" },
-                            scratchpad_content
-                        ))
+                        if scratchpad_content.starts_with("### ") {
+                            Ok(scratchpad_content)
+                        } else {
+                            Ok(format!(
+                                "✔ Subagent `{}` has finished execution (State: {:?})!\n\
+                                 • **Role**: {}\n\
+                                 • **Turns Executed**: {}\n\
+                                 • **Tokens Used**: {}\n\
+                                 • **Isolation**: {}\n\n\
+                                 ### Findings & Outcome Summary\n\
+                                 {}",
+                                info.id,
+                                info.state,
+                                info.role.badge(),
+                                info.turns_executed,
+                                info.tokens_used,
+                                if info.isolate_worktree { "Git Worktree" } else { "Read-Only / Main" },
+                                scratchpad_content
+                            ))
+                        }
                     } else {
                         let current_info = pool.get_subagent(id).await;
                         let detail = current_info
@@ -446,6 +484,36 @@ pub async fn dispatch(
                         Ok(format!(
                             "⏳ Subagent `{}` is still executing after {}s timeout.\n• Current Status: {}\n• Use 'manage_subagents(action=\"await\", subagent_id=\"{}\")' to continue waiting, or press Ctrl+S to monitor live telemetry in the TUI drawer.",
                             id, timeout_secs, detail, id
+                        ))
+                    }
+                }
+                "transcript" | "drilldown" => {
+                    let id = param::require_str(args, "subagent_id", "manage_subagents")?;
+                    let step_index = param::opt_u64(args, "step_index").map(|n| n as usize);
+                    let max_lines = param::opt_u64(args, "max_lines").map(|n| n as usize);
+                    let filter = param::opt_str(args, "filter").unwrap_or("summary");
+
+                    let store = crate::agent::subagent::transcript::get_global_transcript_store();
+                    if let Some(t) = store.get(id, Some(workspace_root)) {
+                        if let Some(step_idx) = step_index {
+                            if let Some(detail) = t.format_step_detail(step_idx, max_lines) {
+                                Ok(detail)
+                            } else {
+                                Ok(format!(
+                                    "ℹ Step {} not found in subagent `{}` transcript. Total steps recorded: {}.",
+                                    step_idx, id, t.steps.len()
+                                ))
+                            }
+                        } else if filter == "errors" || filter == "error" {
+                            Ok(t.format_errors())
+                        } else {
+                            Ok(t.format_overview(Some(50)))
+                        }
+                    } else {
+                        Ok(format!(
+                            "ℹ No execution transcript found for subagent `{}`. Available: {:?}",
+                            id,
+                            store.list_subagent_ids(Some(workspace_root))
                         ))
                     }
                 }
@@ -460,7 +528,7 @@ pub async fn dispatch(
                 }
                 other => Err(ToolError::InvalidArguments {
                     name: "manage_subagents".to_string(),
-                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, kill, kill_all", other),
+                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, transcript, drilldown, kill, kill_all", other),
                 }.into()),
             }
         }.await),
@@ -509,6 +577,36 @@ pub async fn dispatch(
                 workspace_root,
                 subagent_id,
             ).await
+        }.await),
+        "subagent_transcript_drilldown" => Some(async {
+            let subagent_id = param::require_str(args, "subagent_id", "subagent_transcript_drilldown")?;
+            let step_index = param::opt_u64(args, "step_index").map(|n| n as usize);
+            let filter = param::opt_str(args, "filter").unwrap_or("summary");
+            let max_lines = param::opt_u64(args, "max_lines").map(|n| n as usize);
+
+            let store = crate::agent::subagent::transcript::get_global_transcript_store();
+            if let Some(t) = store.get(subagent_id, Some(workspace_root)) {
+                if let Some(step_idx) = step_index {
+                    if let Some(detail) = t.format_step_detail(step_idx, max_lines) {
+                        Ok(detail)
+                    } else {
+                        Ok(format!(
+                            "ℹ Step {} not found in subagent `{}` transcript. Total steps recorded: {}.",
+                            step_idx, subagent_id, t.steps.len()
+                        ))
+                    }
+                } else if filter == "errors" || filter == "error" {
+                    Ok(t.format_errors())
+                } else {
+                    Ok(t.format_overview(Some(50)))
+                }
+            } else {
+                Ok(format!(
+                    "ℹ No execution transcript found for subagent `{}`. Available: {:?}",
+                    subagent_id,
+                    store.list_subagent_ids(Some(workspace_root))
+                ))
+            }
         }.await),
         _ => None,
     }

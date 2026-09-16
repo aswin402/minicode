@@ -1,12 +1,23 @@
 pub mod pool;
+pub mod reducer;
 pub mod scratchpad;
+pub mod transcript;
 pub mod types;
 pub mod worker;
 
 #[allow(unused_imports)]
 pub use pool::SubagentPool;
 #[allow(unused_imports)]
+pub use reducer::{
+    AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
+    SubagentSynthesisReducer,
+};
+#[allow(unused_imports)]
 pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
+#[allow(unused_imports)]
+pub use transcript::{
+    get_global_transcript_store, SubagentStepRecord, SubagentTranscript, SubagentTranscriptStore,
+};
 pub use types::SubagentResult as SubAgentResult;
 #[allow(unused_imports)]
 pub use types::{

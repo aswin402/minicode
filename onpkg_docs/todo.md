@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 122 (v0.3.22) Dynamic MCP Tool Schema Pruning, Server Intent Gating & Schema Compaction | **Status:** ✅ Complete (130+ Tools)
+> **Current Phase:** Phase 123 (v0.3.23) Subagent Swarm Ephemeral Context Isolation & Result Synthesis | **Status:** ✅ Complete (131+ Tools)
 
 ---
 
@@ -1789,6 +1789,15 @@
 - [x] 122.5: Add `compact_tool_schemas` configuration in `src/config.rs` and `src/constants.rs` (`MINICODE_COMPACT_TOOL_SCHEMAS`, defaulting to `true`)
 - [x] 122.6: Wire dynamic MCP tool gating and compaction into `execute_turn` in `src/agent/loop.rs`, and extend `activate_tools` handler for `"mcp:<server>"`, `"mcp"`, and server names
 - [x] 122.7: Pass all 7 integration tests in `tests/integration_dynamic_tool_gating.rs`, pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update release binary via `./localupdate.sh`, and validate in real-world autonomous execution via `minicode run --json-stream`
+ 
+### Phase 123: Subagent Swarm Ephemeral Context Isolation & Result Synthesis (v0.3.23)
+- [x] 123.1: Implement `SubagentStepRecord`, `SubagentTranscript`, and thread-safe `SubagentTranscriptStore` in `src/agent/subagent/transcript.rs` with in-memory caching and persistent JSON storage (`.minicode/subagents/<id>/transcript.json`)
+- [x] 123.2: Implement `SubagentSynthesisReducer`, `SubagentSynthesisContext`, and structured `SubagentReport` in `src/agent/subagent/reducer.rs` with automatic AST symbol diff extraction (`AstDiffEngine`), command verification parsing (`exec_cmd` exit codes/test summaries), key findings extraction, and lossless CCR caching
+- [x] 123.3: Register `subagent_transcript_drilldown` tool and extend `manage_subagents` with `"transcript"` and `"drilldown"` actions in `src/tools/registry/agent_tools/subagents.rs` for lossless step-by-step diagnostic inspection
+- [x] 123.4: Wire ephemeral context recording into `SubagentWorker::run` in `src/agent/subagent/worker.rs`, automatically reducing completed/canceled/failed runs into executive reports and writing to shared scratchpad
+- [x] 123.5: Update `invoke_subagent` and `manage_subagents(action="await")` to return structured synthesized executive reports directly, delivering >80% token savings to the parent orchestrator context
+- [x] 123.6: Develop comprehensive integration test suite in `tests/integration_subagent_synthesis.rs` (5 tests passing, covering transcripts, persistence, AST & test reduction, drilldown tool dispatch, and token reduction)
+- [x] 123.7: Pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), bump version → `v0.3.23`, build global release binary via `./localupdate.sh`, and validate in real-world autonomous execution via `minicode run --json-stream`
 
 
 
