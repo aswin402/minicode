@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 124 (v0.3.24) Interactive /context Visualizer & Real-Time KV-Cache Diagnostics | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 125 (v0.3.25) Multiline Bracketed Paste Hardening, Preview Placeholders & Dynamic Input Dock | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1808,3 +1808,15 @@
 - [x] 124.6: Update command catalog in `src/ui/modals/command_catalog.rs` and help modal in `src/ui/modals/help.rs`
 - [x] 124.7: Pass all 4 integration tests in `tests/integration_context_modal.rs` and full test suite (398 tests passing), update `TOTAL_TOOL_COUNT` to 134, pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`)
 - [x] 124.8: Recompile release binary via `./localupdate.sh` to `/home/aswin/.local/bin/minicode` and validate in real-world autonomous execution via `minicode run --json-stream`
+
+### Phase 125: Multiline Bracketed Paste Hardening, Preview Placeholders & Dynamic Input Dock (v0.3.25)
+- [x] 125.1: Enable `"bracketed-paste"` in `Cargo.toml` (`crossterm`), initialize `EnableBracketedPaste` on startup and `DisableBracketedPaste` on teardown and panic hook
+- [x] 125.2: Intercept atomic `Event::Paste(text)` in event loop (`src/app/mod.rs`), preventing terminal emulator from streaming raw newlines as runaway enter events
+- [x] 125.3: Implement `handle_paste` in `src/ui/input.rs`: insert directly for $\le 5$ lines with dynamic dock height, and collapse $> 5$ lines into clean preview `[<preview> ..... +<count> lines]`
+- [x] 125.4: Implement `resolve_submission` in `src/ui/input.rs`: preserve compact preview in `display` (chat timeline) while uncompressing full multiline code in `full` prompt for AI agent execution
+- [x] 125.5: Configure `Shift+Enter`, `Alt+Enter`, `Ctrl+Enter`, `Ctrl+J` to insert newlines, reserving plain `Enter` for prompt submission
+- [x] 125.6: Protect bracketed blocks in `auto_wrap` from being torn across lines, maintaining placeholder integrity during user typing
+- [x] 125.7: Format multiline user prompts in timeline (`src/ui/view.rs`) with clean `› ` prefix on first line and indented continuation lines
+- [x] 125.8: Write comprehensive unit tests in `src/ui/input.rs` and 5 integration tests in `tests/integration_multiline_paste.rs`
+- [x] 125.9: Pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), recompile release binary via `./localupdate.sh`, and verify
+

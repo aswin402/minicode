@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.3.24"
+version = "0.3.25"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -31,7 +31,7 @@ reqwest-eventsource = "0.6"
 
 # TUI & Terminal Rendering
 ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
 tui-textarea = "0.7"
 
 # Markdown, Highlighting & Diffs

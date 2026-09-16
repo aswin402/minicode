@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.25] — 2026-09-17
+
+### Multiline Bracketed Paste Hardening, Preview Placeholders & Dynamic Input Dock (Phase 125)
+
+#### 💡 Ideas & Inspirations
+- **Terminal Bracketed Paste Standard**: Modern terminal emulators wrap pasted text inside ANSI escape sequences (`\x1b[200~` ... `\x1b[201~`). Without enabling bracketed paste, the terminal streams multiline text as raw sequential characters where newline (`\r`/`\n`) translates into individual `Enter` key events. In interactive CLI/TUI agents, this causes the first line of a pasted prompt to submit immediately, launching background agent execution while subsequent lines queue and run as uncontrolled chained turns. Enabling bracketed paste delivers multiline pastes atomically as a single `Event::Paste(String)`.
+- **Dynamic Preview Placeholders & LLM Prompt Fidelity**: Long multiline pastes (e.g. 10+, 20+, 50+ lines of code) flood small terminal input widgets and crowd out the active editing view. Rather than displaying an unmanageable wall of text, minicode cleanly collapses long pastes into a compact tag: `[<preview words> ..... +<count> lines]`. When submitted, the timeline display retains the compact preview while the background agent actor transparently expands the placeholder back to the 100% complete, original multiline text.
+- **5-Line Visual Cap & Auto-Scroll Viewport**: The input dock dynamically expands up to 5 visible lines. When typed or wrapped lines exceed 5, the dock maintains a 5-line height cap and auto-scrolls to keep the cursor and active editing line visible, hiding top lines.
+
+#### 🚀 Features & Changes
+- **Bracketed Paste Management (`Cargo.toml`, `src/app/mod.rs`, `src/main.rs`)**:
+  - Enabled `"bracketed-paste"` feature in `crossterm` dependency.
+  - Enabled `EnableBracketedPaste` on terminal initialization in `App::run`.
+  - Added `DisableBracketedPaste` to normal terminal teardown and the crash/panic restoration hook.
+- **Atomic Paste Event Dispatch (`src/app/mod.rs`)**:
+  - Handled `Event::Paste(pasted_text)` in the main event stream, bypassing sequential newline keycode conversion.
+  - Routed pastes to `ApiKeyInput` modal when active, embedded PTY drawer when open, and `InputDock::handle_paste` during standard interaction.
+- **Smart Paste & Collapse (`src/ui/input.rs`)**:
+  - Implemented `handle_paste`: pastes of $\le 5$ lines are inserted directly into the textarea, allowing dynamic dock height adjustment up to 5 lines.
+  - Pastes of $> 5$ lines are collapsed into `[<preview> ..... +<count> lines]`, registering the raw text in `pasted_blocks`.
+  - Implemented `resolve_submission`: expands placeholders to original text in `full` prompt while preserving compact representation in `display`.
+  - Configured `Shift+Enter`, `Alt+Enter`, `Ctrl+Enter`, and `Ctrl+J` to insert newlines, leaving plain `Enter` to trigger atomic prompt submission.
+  - Updated `auto_wrap` to treat bracketed blocks `[...]` as indivisible units so placeholder tags are never torn across line breaks.
+- **Clean Multiline Timeline Formatting (`src/ui/view.rs`)**:
+  - Formatted multiline `TimelineEntry::UserPrompt` with `› ` prefix on the first line and aligned indentation on subsequent lines.
+- **Testing & Verification (`tests/integration_multiline_paste.rs`, `src/ui/input.rs`)**:
+  - Added 4 unit tests and 5 comprehensive integration tests covering short pastes, preview collapsing, multiple pasted blocks, Shift+Enter newlines, and 5-line height constraints with Ratatui `TestBackend`.
+
 ## [0.3.19] — 2026-09-16
 
 ### Next-Gen Context Compression, KV-Cache Stability & High-Density Memory Engine (Phase 119)

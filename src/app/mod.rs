@@ -5,8 +5,8 @@ use crate::config::Config;
 use crate::error::Result;
 use crate::ui::{InputDock, ModalState, StatusWidgets, Theme, TimelineContext, TimelineView};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -204,7 +204,12 @@ impl<'a> App<'a> {
     pub async fn run(&mut self, mut agent: AgentLoop) -> Result<()> {
         enable_raw_mode()?;
         let mut stdout = stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -559,6 +564,23 @@ impl<'a> App<'a> {
                     // Handle user keyboard and mouse events from terminal
                     Some(Ok(event)) = event_stream.next() => {
                         match event {
+                            Event::Paste(pasted_text) => {
+                                if self.modal.is_active() {
+                                    if let ModalState::ApiKeyInput { ref mut input, ref mut cursor, .. } = self.modal {
+                                        let sanitized = pasted_text.trim().replace(['\r', '\n'], "");
+                                        input.insert_str(*cursor, &sanitized);
+                                        *cursor += sanitized.len();
+                                    }
+                                    continue;
+                                }
+
+                                if self.pty_drawer.is_open {
+                                    self.pty_drawer.input_buffer.push_str(&pasted_text);
+                                    continue;
+                                }
+
+                                self.input_dock.handle_paste(&pasted_text);
+                            }
                             Event::Mouse(mouse_event) => {
                                 match mouse_event.kind {
                                     MouseEventKind::ScrollUp => {
@@ -900,13 +922,14 @@ impl<'a> App<'a> {
                                 }
 
                             // Send input to input dock
-                            if let Some(raw_prompt) = self.input_dock.handle_key(key_event) {
-                                let prompt = raw_prompt.trim().to_string();
+                            if let Some(submission) = self.input_dock.handle_key(key_event) {
+                                let prompt = submission.full.trim().to_string();
                                 if prompt.is_empty() {
                                     continue;
                                 }
 
-                                match self.handle_command_or_prompt(&prompt, &control_tx).await {
+                                let display = submission.display.trim().to_string();
+                                match self.handle_command_or_prompt(&prompt, Some(&display), &control_tx).await {
                                     Ok(CommandAction::Continue) => continue,
                                     Ok(CommandAction::Exit) => return Ok(()),
                                     Err(e) => {
@@ -927,6 +950,7 @@ impl<'a> App<'a> {
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             DisableMouseCapture
         )?;

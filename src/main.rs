@@ -265,6 +265,7 @@ fn install_panic_hook() {
             std::io::stdout(),
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste,
             crossterm::cursor::Show,
         );
         original_hook(panic_info);

@@ -343,11 +343,30 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     },
 ];
 
+/// A collapsed block representing a multiline paste (> 5 lines).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastedBlock {
+    pub id: usize,
+    pub placeholder: String,
+    pub full_text: String,
+    pub line_count: usize,
+}
+
+/// Prompt submission containing both the visual display version (with placeholders)
+/// and the full version (with placeholders expanded back to the original text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSubmission {
+    pub display: String,
+    pub full: String,
+}
+
 pub struct InputDock<'a> {
     pub textarea: TextArea<'a>,
     pub slash_selected_index: usize,
     pub category_index: usize,
     pub last_width: std::cell::Cell<u16>,
+    pub pasted_blocks: Vec<PastedBlock>,
+    pub next_block_id: usize,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -366,6 +385,8 @@ impl<'a> InputDock<'a> {
             slash_selected_index: 0,
             category_index: 0,
             last_width: std::cell::Cell::new(80),
+            pasted_blocks: Vec::new(),
+            next_block_id: 1,
         }
     }
 
@@ -398,13 +419,20 @@ impl<'a> InputDock<'a> {
             if line_width > max_width {
                 let current = &lines[r];
 
-                // Find the last space at or before max_width chars
+                // Find the last space at or before max_width chars, ignoring spaces inside bracketed blocks '[...]'
                 let mut current_w = 0;
                 let mut last_space_char_idx = None;
+                let mut in_bracket = false;
 
                 for (char_idx, ch) in current.chars().enumerate() {
+                    if ch == '[' {
+                        in_bracket = true;
+                    } else if ch == ']' {
+                        in_bracket = false;
+                    }
+
                     current_w += UnicodeWidthChar::width(ch).unwrap_or(1);
-                    if ch == ' ' && current_w <= max_width {
+                    if ch == ' ' && !in_bracket && current_w <= max_width {
                         last_space_char_idx = Some(char_idx);
                     }
                     if current_w > max_width {
@@ -415,18 +443,29 @@ impl<'a> InputDock<'a> {
                 let char_break = match last_space_char_idx {
                     Some(idx) => idx,
                     None => {
-                        // No space before max_width; hard break at max_width
-                        let mut w = 0;
-                        let mut hard_idx = 0;
+                        // If no space outside brackets, check if a bracket started before max_width to break before it
+                        let mut bracket_start_idx = None;
                         for (char_idx, ch) in current.chars().enumerate() {
-                            let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
-                            if w + cw > max_width {
-                                break;
+                            if ch == '[' && char_idx > 0 {
+                                bracket_start_idx = Some(char_idx);
                             }
-                            w += cw;
-                            hard_idx = char_idx + 1;
                         }
-                        hard_idx.max(1)
+                        if let Some(b_idx) = bracket_start_idx {
+                            b_idx
+                        } else {
+                            // Hard break at max_width
+                            let mut w = 0;
+                            let mut hard_idx = 0;
+                            for (char_idx, ch) in current.chars().enumerate() {
+                                let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+                                if w + cw > max_width {
+                                    break;
+                                }
+                                w += cw;
+                                hard_idx = char_idx + 1;
+                            }
+                            hard_idx.max(1)
+                        }
                     }
                 };
 
@@ -484,6 +523,77 @@ impl<'a> InputDock<'a> {
         ta.set_cursor_line_style(Style::default());
         self.textarea = ta;
         self.slash_selected_index = 0;
+        self.pasted_blocks.clear();
+        self.next_block_id = 1;
+    }
+
+    /// Handles bracketed paste events.
+    /// - If <= 5 lines: pastes full content directly into the textarea (dock height adjusts dynamically up to 5 lines).
+    /// - If > 5 lines: collapses into a clean preview placeholder: `[<preview words> ..... +<line_count> lines]`,
+    ///   storing the raw full text in `pasted_blocks` to be expanded on submission.
+    pub fn handle_paste(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let line_count = normalized.lines().count();
+
+        if line_count <= 5 {
+            // Paste directly into the textarea
+            let parts: Vec<&str> = normalized.split('\n').collect();
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    self.textarea.insert_newline();
+                }
+                self.textarea.insert_str(part);
+            }
+            self.auto_wrap();
+        } else {
+            // Collapse into a preview placeholder
+            let first_non_empty = normalized
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("snippet");
+            let trimmed = first_non_empty.trim();
+            let preview = if trimmed.chars().count() > 24 {
+                let s: String = trimmed.chars().take(24).collect();
+                format!("{}…", s.trim_end())
+            } else {
+                trimmed.to_string()
+            };
+
+            let block_id = self.next_block_id;
+            self.next_block_id += 1;
+
+            let placeholder = format!("[{} ..... +{} lines]", preview, line_count);
+
+            self.pasted_blocks.push(PastedBlock {
+                id: block_id,
+                placeholder: placeholder.clone(),
+                full_text: normalized,
+                line_count,
+            });
+
+            self.textarea.insert_str(&placeholder);
+            self.textarea.insert_str(" ");
+            self.auto_wrap();
+        }
+    }
+
+    /// Resolves the typed text against any collapsed paste blocks.
+    /// Returns `PromptSubmission { display, full }`.
+    pub fn resolve_submission(&self, text: &str) -> PromptSubmission {
+        let display = text.trim().to_string();
+        let mut full = display.clone();
+
+        for block in &self.pasted_blocks {
+            if let Some(pos) = full.find(&block.placeholder) {
+                full.replace_range(pos..pos + block.placeholder.len(), &block.full_text);
+            }
+        }
+
+        PromptSubmission { display, full }
     }
 
     /// Checks if the input starts with '/' and is actively triggering the command palette
@@ -575,7 +685,7 @@ impl<'a> InputDock<'a> {
         self.slash_selected_index = 0;
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<String> {
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<PromptSubmission> {
         // Only process KeyPress / KeyRepeat events (ignore KeyRelease)
         if key.kind == KeyEventKind::Release {
             return None;
@@ -615,10 +725,24 @@ impl<'a> InputDock<'a> {
         }
 
         match (key.code, key.modifiers) {
-            // Submit prompt on Enter (Enter alone or Shift+Enter)
+            // Shift+Enter, Alt+Enter, Ctrl+Enter insert a newline
             (KeyCode::Enter, m)
-                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+                if m.contains(KeyModifiers::SHIFT)
+                    || m.contains(KeyModifiers::ALT)
+                    || m.contains(KeyModifiers::CONTROL) =>
             {
+                self.textarea.insert_newline();
+                self.auto_wrap();
+                None
+            }
+            // Insert newline on Ctrl+J
+            (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
+                self.textarea.insert_newline();
+                self.auto_wrap();
+                None
+            }
+            // Submit prompt on plain Enter
+            (KeyCode::Enter, _) => {
                 let text = self.textarea.lines().join("\n");
                 let trimmed = text.trim().to_string();
 
@@ -635,23 +759,19 @@ impl<'a> InputDock<'a> {
                 };
 
                 if !final_prompt.is_empty() {
+                    let submission = if is_slash_open {
+                        PromptSubmission {
+                            display: final_prompt.clone(),
+                            full: final_prompt,
+                        }
+                    } else {
+                        self.resolve_submission(&final_prompt)
+                    };
                     self.reset();
-                    Some(final_prompt)
+                    Some(submission)
                 } else {
                     None
                 }
-            }
-            // Insert newline on Ctrl+J
-            (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-                self.textarea.insert_newline();
-                None
-            }
-            // Insert newline on Alt+Enter or Ctrl+Enter
-            (KeyCode::Enter, m)
-                if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
-            {
-                self.textarea.insert_newline();
-                None
             }
             _ => {
                 self.textarea.input(key);
@@ -953,5 +1073,110 @@ mod tests {
         assert_eq!(lines[0], "This is a long");
         assert_eq!(lines[1], "sentence that wraps");
         assert_eq!(dock.required_height(), 4);
+    }
+
+    #[test]
+    fn test_short_paste_lte_5_lines() {
+        let mut dock = InputDock::new();
+        let short_paste = "line 1\nline 2\nline 3";
+        dock.handle_paste(short_paste);
+
+        // Should not create collapsed block for <= 5 lines
+        assert!(dock.pasted_blocks.is_empty());
+        assert_eq!(dock.textarea.lines().len(), 3);
+        assert_eq!(dock.required_height(), 5); // 3 lines + 2 borders
+
+        let submission = dock.resolve_submission(&dock.textarea.lines().join("\n"));
+        assert_eq!(submission.display, "line 1\nline 2\nline 3");
+        assert_eq!(submission.full, "line 1\nline 2\nline 3");
+    }
+
+    #[test]
+    fn test_long_paste_gt_5_lines_collapses_to_preview() {
+        let mut dock = InputDock::new();
+        let long_code = "\
+fn calculate_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0x12345678;
+    for &byte in data {
+        hash = hash.rotate_left(5) ^ (byte as u64);
+        hash = hash.wrapping_mul(0x5bd1e995);
+    }
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x1b873593);
+    hash ^= hash >> 13;
+    hash
+}";
+        let lines_count = long_code.lines().count();
+        assert_eq!(lines_count, 11);
+
+        dock.handle_paste(long_code);
+
+        // Must create a single collapsed block
+        assert_eq!(dock.pasted_blocks.len(), 1);
+        let block = &dock.pasted_blocks[0];
+        assert_eq!(block.line_count, 11);
+        assert!(block.placeholder.contains("..... +11 lines]"));
+        assert!(block.placeholder.starts_with("[fn calculate_hash"));
+
+        // Textarea should contain placeholder, not raw 11 lines
+        let ta_text = dock.textarea.lines().join("\n");
+        assert!(ta_text.contains(&block.placeholder));
+
+        // Now user types instructions after the placeholder
+        dock.textarea.insert_str("please optimize this function");
+
+        let current_text = dock.textarea.lines().join("\n");
+        let submission = dock.resolve_submission(&current_text);
+
+        // Display keeps the clean preview
+        assert!(submission.display.contains(&block.placeholder));
+        assert!(submission.display.contains("please optimize this function"));
+
+        // Full submission contains the actual uncompressed 11 lines of code!
+        assert!(submission
+            .full
+            .contains("fn calculate_hash(data: &[u8]) -> u64 {"));
+        assert!(submission.full.contains("please optimize this function"));
+        assert!(!submission.full.contains(&block.placeholder));
+    }
+
+    #[test]
+    fn test_shift_enter_inserts_newline_and_plain_enter_submits() {
+        let mut dock = InputDock::new();
+        dock.textarea.insert_str("line 1");
+
+        // Shift+Enter should insert newline, not submit
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        let res = dock.handle_key(shift_enter);
+        assert!(res.is_none());
+        assert_eq!(dock.textarea.lines().len(), 2);
+
+        dock.textarea.insert_str("line 2");
+
+        // Plain Enter should submit both lines
+        let plain_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let res = dock.handle_key(plain_enter);
+        assert!(res.is_some());
+        let submission = res.unwrap();
+        assert_eq!(submission.display, "line 1\nline 2");
+        assert_eq!(submission.full, "line 1\nline 2");
+
+        // Dock should be cleanly reset
+        assert_eq!(dock.textarea.lines().len(), 1);
+        assert_eq!(dock.textarea.lines()[0], "");
+    }
+
+    #[test]
+    fn test_height_capped_at_5_lines() {
+        let mut dock = InputDock::new();
+        for i in 1..=20 {
+            if i > 1 {
+                dock.textarea.insert_newline();
+            }
+            dock.textarea.insert_str(&format!("Line {}", i));
+        }
+        assert_eq!(dock.textarea.lines().len(), 20);
+        // Required height is capped at 5 lines + 2 borders = 7
+        assert_eq!(dock.required_height(), 7);
     }
 }

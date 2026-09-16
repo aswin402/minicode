@@ -779,20 +779,39 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::UserPrompt(prompt) => {
-                    lines.push(Line::from(vec![
-                        Span::styled(
+                    let prompt_lines: Vec<&str> = prompt.lines().collect();
+                    if prompt_lines.is_empty() {
+                        lines.push(Line::from(vec![Span::styled(
                             "› ",
                             Style::default()
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            prompt,
-                            Style::default()
-                                .fg(theme.text_primary)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
+                        )]));
+                    } else {
+                        for (idx, pline) in prompt_lines.iter().enumerate() {
+                            let prefix = if idx == 0 { "› " } else { "  " };
+                            let prefix_style = if idx == 0 {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(prefix, prefix_style),
+                                Span::styled(
+                                    pline.to_string(),
+                                    Style::default().fg(theme.text_primary).add_modifier(
+                                        if idx == 0 {
+                                            Modifier::BOLD
+                                        } else {
+                                            Modifier::empty()
+                                        },
+                                    ),
+                                ),
+                            ]));
+                        }
+                    }
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::ThoughtBlock {

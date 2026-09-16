@@ -25,7 +25,8 @@ pub use clipboard::copy_to_clipboard;
 pub use configure::ConfigMenu;
 #[allow(unused_imports)]
 pub use diff_viewer::DiffViewer;
-pub use input::InputDock;
+#[allow(unused_imports)]
+pub use input::{InputDock, PastedBlock, PromptSubmission};
 #[allow(unused_imports)]
 pub use layout_utils::{centered_rect, centered_rect_exact};
 #[allow(unused_imports)]

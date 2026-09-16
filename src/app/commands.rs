@@ -21,6 +21,7 @@ impl<'a> App<'a> {
     pub async fn handle_command_or_prompt(
         &mut self,
         prompt: &str,
+        display_prompt: Option<&str>,
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
     ) -> Result<CommandAction> {
         if prompt == "/exit" || prompt == "/quit" {
@@ -1293,7 +1294,9 @@ impl<'a> App<'a> {
             prompt.to_string()
         };
 
-        self.timeline.add_user_message(prompt_to_run.clone());
+        let message_to_display = display_prompt.unwrap_or(&prompt_to_run);
+        self.timeline
+            .add_user_message(message_to_display.to_string());
 
         // Check for recognized autonomous intent to notify the user
         if let Some(m) = crate::agent::intent::match_intent(&prompt_to_run) {
