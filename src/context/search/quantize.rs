@@ -29,6 +29,43 @@ impl BinaryVector128 {
         Self { bits }
     }
 
+    /// In-place Fast Walsh-Hadamard Transform (FWHT) for 128-dimensional vectors.
+    /// As an orthogonal transform ($H \cdot H^T = I$), it perfectly preserves inner products
+    /// while uniformly distributing coordinate variance for optimal data-oblivious quantization (TurboQuant).
+    pub fn fwht_128(vec: &mut [f32; 128]) {
+        let mut h = 1;
+        while h < 128 {
+            for i in (0..128).step_by(h * 2) {
+                for j in i..i + h {
+                    let x = vec[j];
+                    let y = vec[j + h];
+                    vec[j] = x + y;
+                    vec[j + h] = x - y;
+                }
+            }
+            h *= 2;
+        }
+        let inv_norm = 1.0 / (128.0f32).sqrt();
+        for v in vec.iter_mut() {
+            *v *= inv_norm;
+        }
+    }
+
+    /// Prepares a 128-float slice with FWHT rotation.
+    pub fn fwht_slice(slice: &[f32]) -> [f32; 128] {
+        let mut buf = [0.0f32; 128];
+        let len = slice.len().min(128);
+        buf[..len].copy_from_slice(&slice[..len]);
+        Self::fwht_128(&mut buf);
+        buf
+    }
+
+    /// Quantizes a 128-dimensional float slice with FWHT rotation for maximal entropy.
+    pub fn from_f32_with_wht(slice: &[f32]) -> Self {
+        let rotated = Self::fwht_slice(slice);
+        Self::from_f32_slice(&rotated)
+    }
+
     /// Calculates Hamming distance (number of differing bits) using bitwise popcount.
     #[inline]
     pub fn hamming_distance(&self, other: &Self) -> u32 {
@@ -118,6 +155,19 @@ impl PolarQuant4 {
         dot
     }
 
+    /// Quantizes a 128-dimensional float slice with FWHT rotation for maximal entropy.
+    pub fn from_f32_with_wht(slice: &[f32]) -> Self {
+        let rotated = BinaryVector128::fwht_slice(slice);
+        Self::from_f32_slice(&rotated)
+    }
+
+    /// Fast asymmetric dot product between an f32 query vector (automatically rotated via FWHT)
+    /// and the quantized vector.
+    pub fn asymmetric_dot_product_with_wht(&self, query: &[f32]) -> f32 {
+        let rotated_query = BinaryVector128::fwht_slice(query);
+        self.asymmetric_dot_product(&rotated_query)
+    }
+
     /// Reconstructs the 128-dimensional f32 vector.
     pub fn dequantize(&self) -> Vec<f32> {
         let mut out = Vec::with_capacity(128);
@@ -129,5 +179,82 @@ impl PolarQuant4 {
             out.push(Self::dequantize_nibble(q1, self.scale));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fwht_orthogonality_and_dot_product_preservation() {
+        let mut v1 = [0.0f32; 128];
+        let mut v2 = [0.0f32; 128];
+
+        for i in 0..128 {
+            v1[i] = (i as f32 * 0.17).sin();
+            v2[i] = (i as f32 * 0.31).cos();
+        }
+
+        // Compute raw inner product
+        let raw_dot: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
+
+        // Rotate with FWHT
+        let mut rot1 = v1;
+        let mut rot2 = v2;
+        BinaryVector128::fwht_128(&mut rot1);
+        BinaryVector128::fwht_128(&mut rot2);
+
+        let rot_dot: f32 = rot1.iter().zip(rot2.iter()).map(|(a, b)| a * b).sum();
+
+        // Inner product should be preserved within floating point precision (< 1e-4)
+        assert!(
+            (raw_dot - rot_dot).abs() < 1e-4,
+            "FWHT must preserve dot product: raw {} vs rot {}",
+            raw_dot,
+            rot_dot
+        );
+    }
+
+    #[test]
+    fn test_binary_vector_quantization_and_hamming() {
+        let v1 = vec![0.5f32; 128];
+        let mut v2 = vec![0.5f32; 128];
+        v2[0] = -0.5;
+        v2[1] = -0.5;
+
+        let b1 = BinaryVector128::from_f32_slice(&v1);
+        let b2 = BinaryVector128::from_f32_slice(&v2);
+
+        assert_eq!(b1.hamming_distance(&b1), 0);
+        assert_eq!(b1.hamming_distance(&b2), 2);
+        assert!(b1.cosine_similarity(&b1) > 0.99);
+    }
+
+    #[test]
+    fn test_polar_quant4_fidelity() {
+        let mut target = [0.0f32; 128];
+        let mut query = [0.0f32; 128];
+
+        for i in 0..128 {
+            target[i] = (i as f32 * 0.23).sin();
+            query[i] = (i as f32 * 0.23).sin() + (i as f32 * 0.1).cos() * 0.1;
+        }
+
+        let pq = PolarQuant4::from_f32_slice(&target);
+        assert_eq!(pq.nibbles.len(), 64);
+
+        let exact_dot: f32 = target.iter().zip(query.iter()).map(|(a, b)| a * b).sum();
+        let quant_dot = pq.asymmetric_dot_product(&query);
+
+        // High fidelity dot product approximation (relative error < 5%)
+        let rel_err = (exact_dot - quant_dot).abs() / exact_dot.abs();
+        assert!(
+            rel_err < 0.05,
+            "Relative error should be < 5%, got exact: {}, quant: {}, rel_err: {}",
+            exact_dot,
+            quant_dot,
+            rel_err
+        );
     }
 }

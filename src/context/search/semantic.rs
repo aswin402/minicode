@@ -14,6 +14,7 @@ pub struct CodeChunk {
     pub start_line: usize,
     pub end_line: usize,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
     #[serde(default)]
     pub symbol_name: Option<String>,
@@ -21,6 +22,8 @@ pub struct CodeChunk {
     pub symbol_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_vector: Option<crate::context::search::quantize::BinaryVector128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polar_quant: Option<crate::context::search::quantize::PolarQuant4>,
 }
 
 impl CodeChunk {
@@ -28,6 +31,29 @@ impl CodeChunk {
         self.binary_vector.unwrap_or_else(|| {
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&self.vector)
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn get_polar_quant(&self) -> crate::context::search::quantize::PolarQuant4 {
+        self.polar_quant.clone().unwrap_or_else(|| {
+            crate::context::search::quantize::PolarQuant4::from_f32_slice(&self.vector)
+        })
+    }
+
+    /// Computes similarity score against an f32 query vector using 4-bit asymmetric dot product
+    /// (or full vector cosine similarity if available).
+    pub fn similarity_to_query(&self, query_vec: &[f32]) -> f32 {
+        if let Some(ref pq) = self.polar_quant {
+            pq.asymmetric_dot_product(query_vec)
+        } else if !self.vector.is_empty() {
+            SemanticIndex::cosine_similarity(query_vec, &self.vector)
+        } else if let Some(ref bv) = self.binary_vector {
+            let q_bin =
+                crate::context::search::quantize::BinaryVector128::from_f32_slice(query_vec);
+            bv.cosine_similarity(&q_bin)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -198,7 +224,7 @@ impl SemanticIndex {
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
 
         // Stage 1: Fast popcount hamming distance screening
-        let candidate_pool_size = (limit * 4).clamp(32, self.chunks.len());
+        let candidate_pool_size = (limit * 4).max(32).min(self.chunks.len());
         let mut candidates: Vec<(u32, &CodeChunk)> = self
             .chunks
             .iter()
@@ -207,12 +233,12 @@ impl SemanticIndex {
 
         candidates.sort_by_key(|c| c.0);
 
-        // Stage 2: Dense cosine similarity scoring on top candidates
+        // Stage 2: 4-bit Asymmetric dot product scoring on top candidates
         let mut scored: Vec<(f32, &CodeChunk)> = candidates
             .into_iter()
             .take(candidate_pool_size)
             .map(|(_, chunk)| {
-                let score = Self::cosine_similarity(&query_vec, &chunk.vector);
+                let score = chunk.similarity_to_query(&query_vec);
                 (score, chunk)
             })
             .filter(|(score, _)| *score > 0.05)
@@ -246,7 +272,7 @@ impl SemanticIndex {
             .chunks
             .iter()
             .map(|chunk| {
-                let score = Self::cosine_similarity(&query_vec, &chunk.vector);
+                let score = chunk.similarity_to_query(&query_vec);
                 (score, chunk)
             })
             .filter(|(score, _)| *score > 0.05)
@@ -271,14 +297,52 @@ impl SemanticIndex {
 
     /// Specifically searches for AST symbol definitions (functions, classes, structs) matching the query.
     pub fn search_symbols(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
+        if self.chunks.is_empty() {
+            return Vec::new();
+        }
+
         let query_vec = Self::embed(query);
-        let mut scored: Vec<(f32, &CodeChunk)> = self
+        let query_bin =
+            crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
+
+        let symbol_chunks: Vec<&CodeChunk> = self
             .chunks
             .iter()
             .filter(|chunk| chunk.symbol_name.is_some())
-            .map(|chunk| {
-                let base_score = Self::cosine_similarity(&query_vec, &chunk.vector);
-                // Exact name matching boost
+            .collect();
+
+        if symbol_chunks.is_empty() {
+            return Vec::new();
+        }
+
+        // Fast 2-stage screening for symbol search: stage 1 popcount + name boost, stage 2 asymmetric dot product
+        let candidate_pool_size = (limit * 4).max(32).min(symbol_chunks.len());
+        let mut candidates: Vec<(u32, &CodeChunk)> = symbol_chunks
+            .into_iter()
+            .map(|c| {
+                let dist = c.get_binary_vector().hamming_distance(&query_bin);
+                let name_discount = if let Some(ref sym) = c.symbol_name {
+                    if sym.eq_ignore_ascii_case(query) {
+                        24
+                    } else if sym.to_lowercase().contains(&query.to_lowercase()) {
+                        12
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                (dist.saturating_sub(name_discount), c)
+            })
+            .collect();
+
+        candidates.sort_by_key(|c| c.0);
+
+        let mut scored: Vec<(f32, &CodeChunk)> = candidates
+            .into_iter()
+            .take(candidate_pool_size)
+            .map(|(_, chunk)| {
+                let base_score = chunk.similarity_to_query(&query_vec);
                 let name_boost = if let Some(ref sym) = chunk.symbol_name {
                     if sym.eq_ignore_ascii_case(query) {
                         0.4
@@ -372,6 +436,8 @@ pub fn chunk_source_code_ast(
 
                 let binary_vector =
                     crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
+                let polar_quant =
+                    crate::context::search::quantize::PolarQuant4::from_f32_slice(&vector);
                 chunks.push(CodeChunk {
                     file_path: file_path.to_string(),
                     start_line: start + 1,
@@ -381,6 +447,7 @@ pub fn chunk_source_code_ast(
                     symbol_name: Some(sym.name),
                     symbol_kind: Some(sym.kind),
                     binary_vector: Some(binary_vector),
+                    polar_quant: Some(polar_quant),
                 });
             }
             return chunks;
@@ -410,6 +477,7 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
         let vector = SemanticIndex::embed(&chunk_text);
         let binary_vector =
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
+        let polar_quant = crate::context::search::quantize::PolarQuant4::from_f32_slice(&vector);
 
         chunks.push(CodeChunk {
             file_path: file_path.to_string(),
@@ -420,6 +488,7 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
             symbol_name: None,
             symbol_kind: None,
             binary_vector: Some(binary_vector),
+            polar_quant: Some(polar_quant),
         });
 
         if end == lines.len() {
