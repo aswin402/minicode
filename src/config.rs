@@ -174,6 +174,9 @@ pub struct AgentConfig {
 
     #[serde(default = "default_max_parallel_tools")]
     pub max_parallel_tools: usize,
+
+    #[serde(default = "default_true")]
+    pub compact_tool_schemas: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -198,12 +201,12 @@ impl std::fmt::Display for ToolFilterMode {
 impl std::str::FromStr for ToolFilterMode {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().trim() {
-            "dynamic" | "auto" | "tier" => Ok(Self::Dynamic),
-            "core" | "core_only" | "minimal" => Ok(Self::CoreOnly),
-            "full" | "all" | "legacy" => Ok(Self::Full),
+        match s.to_lowercase().trim() {
+            "dynamic" => Ok(Self::Dynamic),
+            "core_only" | "core" => Ok(Self::CoreOnly),
+            "full" | "all" => Ok(Self::Full),
             other => Err(format!(
-                "Unknown tool mode '{}'. Available: dynamic, core_only, full",
+                "Invalid tool_mode '{}'. Must be 'dynamic', 'core_only', or 'full'",
                 other
             )),
         }
@@ -234,6 +237,7 @@ impl Default for AgentConfig {
             parallel_tools: true,
             speculative_execution: true,
             max_parallel_tools: crate::constants::DEFAULT_MAX_PARALLEL_TOOLS,
+            compact_tool_schemas: true,
         }
     }
 }
@@ -471,6 +475,7 @@ pub struct RawAgentConfig {
     pub parallel_tools: Option<bool>,
     pub speculative_execution: Option<bool>,
     pub max_parallel_tools: Option<usize>,
+    pub compact_tool_schemas: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -743,6 +748,9 @@ impl Config {
                 crate::constants::MAX_PARALLEL_TOOLS_CAP,
             );
         }
+        if let Some(compact_tool_schemas) = other.agent.compact_tool_schemas {
+            self.agent.compact_tool_schemas = compact_tool_schemas;
+        }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
         }
@@ -849,6 +857,10 @@ impl Config {
                     crate::constants::MAX_PARALLEL_TOOLS_CAP,
                 );
             }
+        }
+        if let Ok(compact) = std::env::var(env_vars::MINICODE_COMPACT_TOOL_SCHEMAS) {
+            self.agent.compact_tool_schemas =
+                compact == "1" || compact.eq_ignore_ascii_case("true");
         }
     }
 

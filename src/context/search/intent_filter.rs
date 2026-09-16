@@ -126,6 +126,75 @@ impl IntentClassifier {
 
         categories
     }
+
+    /// Detects relevant MCP server names from user prompt text and available servers.
+    ///
+    /// Matches explicit server names as tokens or substrings, as well as common domain keywords:
+    /// - Figma: "figma", "frame", "component", "canvas", "design system"
+    /// - GitHub: "github", "gh", "issue", "pull request", "pr"
+    /// - Database / Postgres / MySQL: "postgres", "mysql", "sqlite", "database", "query", "sql"
+    /// - Docker: "docker", "container", "compose", "image"
+    #[must_use]
+    pub fn detect_mcp_servers<'a, I>(prompt: &str, available_servers: I) -> HashSet<String>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let mut matched = HashSet::new();
+        let lower = prompt.to_ascii_lowercase();
+
+        for server in available_servers {
+            let s_lower = server.to_ascii_lowercase();
+            // 1. Direct name match in prompt
+            if lower.contains(&s_lower) {
+                matched.insert(server.to_string());
+                continue;
+            }
+
+            // 2. Domain keyword matching
+            match s_lower.as_str() {
+                "figma" => {
+                    if lower.contains("frame")
+                        || lower.contains("component")
+                        || lower.contains("canvas")
+                        || lower.contains("design system")
+                        || lower.contains("ui design")
+                    {
+                        matched.insert(server.to_string());
+                    }
+                }
+                "github" | "gh" => {
+                    if lower.contains("pull request")
+                        || lower.contains(" pr ")
+                        || lower.contains("issue")
+                        || lower.contains("repo")
+                    {
+                        matched.insert(server.to_string());
+                    }
+                }
+                "postgres" | "mysql" | "sqlite" | "database" | "db" | "sql" => {
+                    if lower.contains("sql")
+                        || lower.contains("query")
+                        || lower.contains("database")
+                        || lower.contains("migration")
+                        || lower.contains("schema")
+                    {
+                        matched.insert(server.to_string());
+                    }
+                }
+                "docker" => {
+                    if lower.contains("container")
+                        || lower.contains("dockerfile")
+                        || lower.contains("compose")
+                    {
+                        matched.insert(server.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        matched
+    }
 }
 
 #[cfg(test)]
@@ -171,5 +240,33 @@ mod tests {
         let detected = IntentClassifier::detect("check git diff and search web for docs");
         assert!(detected.contains(&ToolCategory::Git));
         assert!(detected.contains(&ToolCategory::Web));
+    }
+
+    #[test]
+    fn test_detect_mcp_servers() {
+        let servers = vec!["figma", "github", "postgres"];
+
+        // 1. Direct name match
+        let matched = IntentClassifier::detect_mcp_servers("inspect figma document", &servers);
+        assert!(matched.contains("figma"));
+        assert!(!matched.contains("github"));
+
+        // 2. Domain keywords
+        let matched =
+            IntentClassifier::detect_mcp_servers("create a new frame and component", &servers);
+        assert!(matched.contains("figma"));
+
+        let matched =
+            IntentClassifier::detect_mcp_servers("open a pull request for this branch", &servers);
+        assert!(matched.contains("github"));
+
+        let matched =
+            IntentClassifier::detect_mcp_servers("run this sql migration query", &servers);
+        assert!(matched.contains("postgres"));
+
+        // 3. No match
+        let matched =
+            IntentClassifier::detect_mcp_servers("fix compiler error in main.rs", &servers);
+        assert!(matched.is_empty());
     }
 }

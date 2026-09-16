@@ -14,6 +14,7 @@ pub mod param;
 pub mod registry;
 pub mod repair;
 pub mod rtk_filter;
+pub mod schema_compactor;
 pub mod search;
 pub mod web;
 pub mod web_search;
@@ -124,28 +125,52 @@ impl ToolRegistry {
                 .unwrap_or("Dynamic on-demand activation");
 
             if cat_str == "all" {
-                return Ok("All tool categories successfully activated.".to_string());
+                return Ok(
+                    "All tool categories and MCP servers successfully activated.".to_string(),
+                );
             }
 
-            match cat_str.parse::<crate::tools::category::ToolCategory>() {
-                Ok(cat) => {
-                    let tool_count = cat.get_schemas().len();
+            if cat_str == "mcp" {
+                return Ok("All connected MCP servers successfully activated.".to_string());
+            }
+
+            if let Ok(cat) = cat_str.parse::<crate::tools::category::ToolCategory>() {
+                let tool_count = cat.get_schemas().len();
+                return Ok(format!(
+                    "Successfully activated '{}' category ({} tools: {}). Reason: {}. These tools are now active in your context.",
+                    cat.name(),
+                    tool_count,
+                    cat.description(),
+                    reason
+                ));
+            }
+
+            // Check if it's an explicit MCP server request (e.g. "mcp:figma")
+            if let Some(server_name) = cat_str.strip_prefix("mcp:") {
+                return Ok(format!(
+                    "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
+                    server_name, reason
+                ));
+            }
+
+            // Check if it matches a configured MCP server in the workspace
+            if let Ok(config) = crate::config::Config::load(Some(workspace_root), None) {
+                if config.mcp.servers.contains_key(cat_str) {
                     return Ok(format!(
-                        "Successfully activated '{}' category ({} tools: {}). Reason: {}. These tools are now active in your context.",
-                        cat.name(),
-                        tool_count,
-                        cat.description(),
-                        reason
+                        "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
+                        cat_str, reason
                     ));
                 }
-                Err(err) => {
-                    return Err(ToolError::InvalidArguments {
-                        name: "activate_tools".to_string(),
-                        reason: err,
-                    }
-                    .into());
-                }
             }
+
+            return Err(ToolError::InvalidArguments {
+                name: "activate_tools".to_string(),
+                reason: format!(
+                    "Unknown tool category or MCP server '{}'. Available: files, exec, search, git, web, onpkg, codegraph, agent, memory, all, mcp, or mcp:<server>",
+                    cat_str
+                ),
+            }
+            .into());
         }
 
         // 1. Filesystem Tools

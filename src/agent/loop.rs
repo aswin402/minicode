@@ -398,12 +398,8 @@ impl AgentLoop {
 
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
             std::collections::HashSet::new();
-
-        let mut tools = crate::tools::category::assemble_active_tools(
-            self.config.agent.tool_mode,
-            user_prompt,
-            &active_categories,
-        );
+        let mut active_mcp_servers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Idempotent initialization of MCP client
         if !self.mcp_client.is_initialized() {
@@ -411,8 +407,19 @@ impl AgentLoop {
                 tracing::warn!("Failed to initialize MCP client: {}", e);
             }
         }
-        let mcp_tools = self.mcp_client.get_tool_schemas().await;
-        tools.extend(mcp_tools.clone());
+        let mcp_tools_by_server = self.mcp_client.get_tools_by_server().await;
+
+        let mut tools = crate::tools::category::assemble_active_tools_with_mcp(
+            self.config.agent.tool_mode,
+            user_prompt,
+            &active_categories,
+            &mcp_tools_by_server,
+            &active_mcp_servers,
+        );
+
+        if self.config.agent.compact_tool_schemas {
+            tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
+        }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
 
         let now_ts = chrono::Utc::now().to_rfc3339();
@@ -1177,19 +1184,33 @@ impl AgentLoop {
                                     if cat_str == "all" {
                                         active_categories
                                             .extend(crate::tools::category::ToolCategory::ALL);
+                                        active_mcp_servers
+                                            .extend(mcp_tools_by_server.keys().cloned());
+                                    } else if cat_str == "mcp" {
+                                        active_mcp_servers
+                                            .extend(mcp_tools_by_server.keys().cloned());
                                     } else if let Ok(cat) =
                                         cat_str.parse::<crate::tools::category::ToolCategory>()
                                     {
                                         active_categories.insert(cat);
+                                    } else {
+                                        let server =
+                                            cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
+                                        active_mcp_servers.insert(server.to_string());
                                     }
-                                    tools = crate::tools::category::assemble_active_tools(
+                                    tools = crate::tools::category::assemble_active_tools_with_mcp(
                                         self.config.agent.tool_mode,
                                         user_prompt,
                                         &active_categories,
+                                        &mcp_tools_by_server,
+                                        &active_mcp_servers,
                                     );
-                                    tools.extend(mcp_tools.clone());
+                                    if self.config.agent.compact_tool_schemas {
+                                        tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
+                                    }
+                                    tools.sort_by(|a, b| a.name.cmp(&b.name));
                                     tracing::info!(
-                                        "Dynamically activated '{}' tool category; active schemas count now {}",
+                                        "Dynamically activated '{}'; active schemas count now {}",
                                         cat_str,
                                         tools.len()
                                     );

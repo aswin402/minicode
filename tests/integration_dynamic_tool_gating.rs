@@ -138,3 +138,204 @@ async fn test_activate_tools_dispatch_meta_tool() {
     assert!(!res.success);
     assert!(res.output.contains("Unknown tool category"));
 }
+
+#[tokio::test]
+async fn test_dynamic_mcp_tool_gating_and_isolation() {
+    use minicode::agent::provider::ToolSchema;
+    use minicode::tools::category::assemble_active_tools_with_mcp;
+    use std::collections::{HashMap, HashSet};
+
+    let mut mcp_by_server = HashMap::new();
+    let figma_tools = vec![
+        ToolSchema {
+            name: "mcp__figma__create_frame".to_string(),
+            description: "Creates an auto-layout frame".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolSchema {
+            name: "mcp__figma__create_rectangle".to_string(),
+            description: "Draws a rectangle on canvas".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolSchema {
+            name: "mcp__figma__set_fill_color".to_string(),
+            description: "Sets node fill color".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolSchema {
+            name: "mcp__figma__scan_text_nodes".to_string(),
+            description: "Scans text layers".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolSchema {
+            name: "mcp__figma__export_node".to_string(),
+            description: "Exports frame as png".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+    let github_tools = vec![
+        ToolSchema {
+            name: "mcp__github__create_issue".to_string(),
+            description: "Opens an issue on GitHub".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+        ToolSchema {
+            name: "mcp__github__create_pull_request".to_string(),
+            description: "Opens a pull request".to_string(),
+            parameters: json!({"type": "object"}),
+        },
+    ];
+
+    mcp_by_server.insert("figma".to_string(), figma_tools);
+    mcp_by_server.insert("github".to_string(), github_tools);
+
+    let empty_cats = HashSet::new();
+    let empty_mcp = HashSet::new();
+
+    // 1. Plain coding prompt -> 0 MCP tools included (isolated!)
+    let tools_plain = assemble_active_tools_with_mcp(
+        ToolFilterMode::Dynamic,
+        "fix bug in src/main.rs",
+        &empty_cats,
+        &mcp_by_server,
+        &empty_mcp,
+    );
+    let plain_names: Vec<&str> = tools_plain.iter().map(|s| s.name.as_str()).collect();
+    assert!(!plain_names.contains(&"mcp__figma__create_frame"));
+    assert!(!plain_names.contains(&"mcp__github__create_issue"));
+    assert!(plain_names.contains(&"read_file"));
+
+    // 2. Figma prompt -> Figma tools included, GitHub tools excluded
+    let tools_figma = assemble_active_tools_with_mcp(
+        ToolFilterMode::Dynamic,
+        "inspect the figma design frame for the login screen",
+        &empty_cats,
+        &mcp_by_server,
+        &empty_mcp,
+    );
+    let figma_names: Vec<&str> = tools_figma.iter().map(|s| s.name.as_str()).collect();
+    assert!(figma_names.contains(&"mcp__figma__create_frame"));
+    assert!(figma_names.contains(&"mcp__figma__set_fill_color"));
+    assert!(!figma_names.contains(&"mcp__github__create_issue"));
+
+    // 3. GitHub prompt -> GitHub tools included, Figma tools excluded
+    let tools_github = assemble_active_tools_with_mcp(
+        ToolFilterMode::Dynamic,
+        "open a pull request for this branch",
+        &empty_cats,
+        &mcp_by_server,
+        &empty_mcp,
+    );
+    let github_names: Vec<&str> = tools_github.iter().map(|s| s.name.as_str()).collect();
+    assert!(github_names.contains(&"mcp__github__create_pull_request"));
+    assert!(!github_names.contains(&"mcp__figma__create_frame"));
+
+    // 4. CoreOnly mode -> 0 MCP tools even if prompt mentions figma
+    let tools_core = assemble_active_tools_with_mcp(
+        ToolFilterMode::CoreOnly,
+        "draw on figma",
+        &empty_cats,
+        &mcp_by_server,
+        &empty_mcp,
+    );
+    let core_names: Vec<&str> = tools_core.iter().map(|s| s.name.as_str()).collect();
+    assert!(!core_names.contains(&"mcp__figma__create_frame"));
+    assert!(core_names.contains(&"read_file"));
+
+    // 5. Full mode -> All MCP tools + native tools included
+    let tools_full = assemble_active_tools_with_mcp(
+        ToolFilterMode::Full,
+        "hello",
+        &empty_cats,
+        &mcp_by_server,
+        &empty_mcp,
+    );
+    let full_names: Vec<&str> = tools_full.iter().map(|s| s.name.as_str()).collect();
+    assert!(full_names.contains(&"mcp__figma__create_frame"));
+    assert!(full_names.contains(&"mcp__github__create_pull_request"));
+}
+
+#[test]
+fn test_tool_schema_compactor_fidelity() {
+    use minicode::agent::provider::ToolSchema;
+    use minicode::tools::schema_compactor::ToolSchemaCompactor;
+
+    let raw = ToolSchema {
+        name: "mcp__postgres__execute_query".to_string(),
+        description: "Executes an arbitrary SQL query against the active PostgreSQL database cluster. Use this tool when you need to inspect table schemas, retrieve records, insert data, or run migration statements. Do not use this tool for destructive DROP operations without approval.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "sql": {
+                    "type": "string",
+                    "description": "The exact SQL statement to execute. Example: ```sql\nSELECT * FROM users WHERE active = true;\n```. Must be syntactically valid."
+                },
+                "read_only": {
+                    "type": "boolean",
+                    "description": "If true, enforces read-only query execution.",
+                    "default": false
+                }
+            },
+            "required": ["sql"]
+        }),
+    };
+
+    let compacted = ToolSchemaCompactor::compact_schema(&raw, 120, 80);
+
+    // Schema contract integrity
+    assert_eq!(compacted.name, "mcp__postgres__execute_query");
+    assert_eq!(compacted.parameters["required"], json!(["sql"]));
+    assert_eq!(compacted.parameters["properties"]["sql"]["type"], "string");
+    assert_eq!(
+        compacted.parameters["properties"]["read_only"]["type"],
+        "boolean"
+    );
+
+    // Token savings
+    assert!(compacted.description.len() < raw.description.len());
+    assert_eq!(
+        compacted.description,
+        "Executes an arbitrary SQL query against the active PostgreSQL database cluster."
+    );
+    let sql_desc = compacted.parameters["properties"]["sql"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(!sql_desc.contains("```"));
+    assert!(sql_desc.len() <= 80);
+}
+
+#[tokio::test]
+async fn test_activate_tools_mcp_server_dispatch() {
+    let temp = tempdir().unwrap();
+    let workspace_root = temp.path();
+
+    // Explicit MCP server activation with mcp: prefix
+    let res = ToolRegistry::dispatch(
+        workspace_root,
+        "test_call_mcp_1",
+        "activate_tools",
+        &json!({ "category": "mcp:figma", "reason": "Need Figma UI canvas inspection" }),
+        None,
+        1,
+    )
+    .await;
+    assert!(res.success);
+    assert!(res
+        .output
+        .contains("Successfully activated MCP server 'figma'"));
+
+    // All MCP servers activation
+    let res = ToolRegistry::dispatch(
+        workspace_root,
+        "test_call_mcp_2",
+        "activate_tools",
+        &json!({ "category": "mcp", "reason": "Need all connected MCP servers" }),
+        None,
+        1,
+    )
+    .await;
+    assert!(res.success);
+    assert!(res
+        .output
+        .contains("All connected MCP servers successfully activated"));
+}

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 121 (v0.3.21) Advanced Context Management, TurboQuant Vector Engine, DOX Pruning & LMCache KV-Prefix Alignment | **Status:** ✅ Complete (130 Tools)
+> **Current Phase:** Phase 122 (v0.3.22) Dynamic MCP Tool Schema Pruning, Server Intent Gating & Schema Compaction | **Status:** ✅ Complete (130+ Tools)
 
 ---
 
@@ -1780,6 +1780,15 @@
 - [x] 121.6: Implement LMCache-style KV-cache prefix alignment in `src/agent/prompt.rs`: reorder `build_recency_context` from most stable (developer rules, progressive memory, working memory, working set) to most volatile (transaction, git status, task anchor, context budget), inserting `<!-- KV_CACHE_ANCHOR -->` boundary marker
 - [x] 121.7: Proactive multi-turn thought scratchpad compaction: enhance `strip_thought_tags` and `strip_older_reasoning` in `src/context/budget/auto_compact.rs` for `<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, and `<scratchpad>`, and invoke proactively in `AgentLoop::prune_context`
 - [x] 121.8: Pass full verification suite across all 18 context engine integration tests in `tests/integration_context_engine_v2.rs`, verify quality gates (`cargo check -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update global release binary via `./localupdate.sh`, and test in real-world via `minicode run --json-stream`
+
+### Phase 122: Dynamic MCP Tool Schema Pruning, Server Intent Gating & Schema Compaction (v0.3.22)
+- [x] 122.1: Implement `ToolSchemaCompactor` in `src/tools/schema_compactor.rs` (condenses top-level descriptions to first sentence or 180 chars, strips markdown blocks and parameter commentary to 120 chars while strictly preserving JSON schema types, required fields, and nested structures)
+- [x] 122.2: Add server-aware tool indexing to `McpClientManager` (`get_tools_by_server`, `get_server_names` in `src/mcp/client.rs`)
+- [x] 122.3: Implement domain-aware MCP server intent detection in `src/context/search/intent_filter.rs` (`detect_mcp_servers` mapping user prompts to Figma, GitHub, Postgres, and connected MCP servers)
+- [x] 122.4: Implement dynamic MCP tool assembly in `src/tools/category.rs` (`assemble_active_tools_with_mcp` with `ToolFilterMode::Dynamic`, auto-including small servers $\le 4$ tools and strictly gating heavy servers until invoked or semantically matched)
+- [x] 122.5: Add `compact_tool_schemas` configuration in `src/config.rs` and `src/constants.rs` (`MINICODE_COMPACT_TOOL_SCHEMAS`, defaulting to `true`)
+- [x] 122.6: Wire dynamic MCP tool gating and compaction into `execute_turn` in `src/agent/loop.rs`, and extend `activate_tools` handler for `"mcp:<server>"`, `"mcp"`, and server names
+- [x] 122.7: Pass all 7 integration tests in `tests/integration_dynamic_tool_gating.rs`, pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update release binary via `./localupdate.sh`, and validate in real-world autonomous execution via `minicode run --json-stream`
 
 
 

@@ -328,6 +328,7 @@ impl McpClientManager {
     }
 
     /// Returns list of discovered tool schemas formatted as ToolSchema for LLM injection
+    #[allow(dead_code)]
     pub async fn get_tool_schemas(&self) -> Vec<ToolSchema> {
         let tools_guard = self.tools.read().await;
         tools_guard
@@ -338,6 +339,36 @@ impl McpClientManager {
                 parameters: t.parameters.clone(),
             })
             .collect()
+    }
+
+    /// Returns discovered tool schemas grouped by server name.
+    pub async fn get_tools_by_server(&self) -> HashMap<String, Vec<ToolSchema>> {
+        let tools_guard = self.tools.read().await;
+        let mut map: HashMap<String, Vec<ToolSchema>> = HashMap::new();
+        for t in tools_guard.iter() {
+            map.entry(t.server_name.clone())
+                .or_default()
+                .push(ToolSchema {
+                    name: t.namespaced_name.clone(),
+                    description: format!("[MCP: {}] {}", t.server_name, t.description),
+                    parameters: t.parameters.clone(),
+                });
+        }
+        map
+    }
+
+    /// Returns the sorted list of registered server names that have discovered tools.
+    #[allow(dead_code)]
+    pub async fn get_server_names(&self) -> Vec<String> {
+        let tools_guard = self.tools.read().await;
+        let mut names: Vec<String> = tools_guard
+            .iter()
+            .map(|t| t.server_name.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        names.sort();
+        names
     }
 
     /// Helper to parse standard JSON-RPC 2.0 response and extract text output

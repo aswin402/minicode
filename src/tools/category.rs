@@ -100,16 +100,51 @@ impl FromStr for ToolCategory {
 
 /// JSON Schema for the `activate_tools` dynamic meta-tool.
 pub fn activate_tools_schema() -> ToolSchema {
+    activate_tools_schema_with_mcp(&[])
+}
+
+/// JSON Schema for the `activate_tools` dynamic meta-tool with connected MCP servers advertised.
+pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSchema {
+    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
+
+    let mut enums = vec![
+        "git".to_string(),
+        "web".to_string(),
+        "codegraph".to_string(),
+        "onpkg".to_string(),
+        "agent".to_string(),
+        "search".to_string(),
+        "memory".to_string(),
+        "files".to_string(),
+        "exec".to_string(),
+        "all".to_string(),
+        "mcp".to_string(),
+    ];
+
+    if !mcp_servers.is_empty() {
+        desc.push_str(" Connected MCP servers: ");
+        let entries: Vec<String> = mcp_servers
+            .iter()
+            .map(|(name, count)| {
+                enums.push((*name).to_string());
+                enums.push(format!("mcp:{}", name));
+                format!("'{}' ({} tools)", name, count)
+            })
+            .collect();
+        desc.push_str(&entries.join(", "));
+        desc.push('.');
+    }
+
     ToolSchema {
         name: "activate_tools".to_string(),
-        description: "Dynamically activate a specialized tool category into your active toolset for this turn. Available categories: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string(),
+        description: desc,
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "The category of tools to activate: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', or 'all'",
-                    "enum": ["git", "web", "codegraph", "onpkg", "agent", "search", "memory", "files", "exec", "all"]
+                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
+                    "enum": enums
                 },
                 "reason": {
                     "type": "string",
@@ -154,29 +189,66 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
     core
 }
 
-/// Assembles active schemas for an agent turn based on configuration mode, prompt intent, and dynamic activations.
+/// Backward-compatible wrapper assembling active tools without external MCP servers.
+#[allow(dead_code)]
 pub fn assemble_active_tools(
     mode: crate::config::ToolFilterMode,
     user_prompt: &str,
     dynamic_categories: &HashSet<ToolCategory>,
 ) -> Vec<ToolSchema> {
+    assemble_active_tools_with_mcp(
+        mode,
+        user_prompt,
+        dynamic_categories,
+        &std::collections::HashMap::new(),
+        &HashSet::new(),
+    )
+}
+
+/// Assembles active schemas for an agent turn based on configuration mode, prompt intent,
+/// dynamically activated categories, and connected MCP servers.
+pub fn assemble_active_tools_with_mcp(
+    mode: crate::config::ToolFilterMode,
+    user_prompt: &str,
+    dynamic_categories: &HashSet<ToolCategory>,
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+    dynamic_mcp_servers: &HashSet<String>,
+) -> Vec<ToolSchema> {
+    let mcp_server_info: Vec<(&str, usize)> = mcp_tools_by_server
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.len()))
+        .collect();
+
     match mode {
         crate::config::ToolFilterMode::Full => {
             let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT + 1);
             for cat in &ToolCategory::ALL {
                 all.extend(cat.get_schemas());
             }
-            all.push(activate_tools_schema());
+            for tools in mcp_tools_by_server.values() {
+                all.extend(tools.clone());
+            }
+            all.push(activate_tools_schema_with_mcp(&mcp_server_info));
             all
         }
-        crate::config::ToolFilterMode::CoreOnly => get_core_schemas(),
+        crate::config::ToolFilterMode::CoreOnly => {
+            let mut core = get_core_schemas();
+            if let Some(pos) = core.iter().position(|s| s.name == "activate_tools") {
+                core[pos] = activate_tools_schema_with_mcp(&mcp_server_info);
+            }
+            core
+        }
         crate::config::ToolFilterMode::Dynamic => {
             let mut schemas = get_core_schemas();
+            if let Some(pos) = schemas.iter().position(|s| s.name == "activate_tools") {
+                schemas[pos] = activate_tools_schema_with_mcp(&mcp_server_info);
+            }
             let mut included_names: HashSet<String> =
                 schemas.iter().map(|s| s.name.clone()).collect();
 
-            // Detect categories from prompt intent
-            let detected = crate::context::intent_filter::IntentClassifier::detect(user_prompt);
+            // 1. Detect native categories from prompt intent
+            let detected =
+                crate::context::search::intent_filter::IntentClassifier::detect(user_prompt);
 
             // Merge detected intent + explicitly activated categories
             let mut active_cats = dynamic_categories.clone();
@@ -189,6 +261,46 @@ pub fn assemble_active_tools(
                     if !included_names.contains(&schema.name) {
                         included_names.insert(schema.name.clone());
                         schemas.push(schema);
+                    }
+                }
+            }
+
+            // 2. Dynamic MCP Server Gating
+            let total_mcp_tools: usize = mcp_tools_by_server.values().map(|v| v.len()).sum();
+            let activate_all_mcp = dynamic_mcp_servers.contains("all")
+                || dynamic_mcp_servers.contains("mcp")
+                || (total_mcp_tools > 0 && total_mcp_tools <= 4);
+
+            if activate_all_mcp {
+                for tools in mcp_tools_by_server.values() {
+                    for schema in tools {
+                        if !included_names.contains(&schema.name) {
+                            included_names.insert(schema.name.clone());
+                            schemas.push(schema.clone());
+                        }
+                    }
+                }
+            } else {
+                let server_keys: Vec<&str> =
+                    mcp_tools_by_server.keys().map(|k| k.as_str()).collect();
+                let detected_servers =
+                    crate::context::search::intent_filter::IntentClassifier::detect_mcp_servers(
+                        user_prompt,
+                        server_keys,
+                    );
+
+                for (server_name, tools) in mcp_tools_by_server {
+                    let is_active = dynamic_mcp_servers.contains(server_name)
+                        || dynamic_mcp_servers.contains(&format!("mcp:{}", server_name))
+                        || detected_servers.contains(server_name);
+
+                    if is_active {
+                        for schema in tools {
+                            if !included_names.contains(&schema.name) {
+                                included_names.insert(schema.name.clone());
+                                schemas.push(schema.clone());
+                            }
+                        }
                     }
                 }
             }
