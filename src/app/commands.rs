@@ -1245,8 +1245,12 @@ impl<'a> App<'a> {
                     Ok(events) => {
                         self.timeline.entries.clear();
                         self.hydrate_session(&events);
+                        let _ = control_tx.send(AgentCommand::HydrateSession {
+                            session_id: target_id.to_string(),
+                            events: events.clone(),
+                        });
                         self.timeline.add_status(format!(
-                            "✔ Loaded session '{}' with {} events",
+                            "✔ Loaded session '{}' and restored agent memory ({} events)",
                             target_id,
                             events.len()
                         ));

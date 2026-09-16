@@ -509,8 +509,12 @@ impl<'a> App<'a> {
                                 let count = events.len();
                                 self.timeline.entries.clear();
                                 self.hydrate_session(&events);
+                                let _ = control_tx.send(AgentCommand::HydrateSession {
+                                    session_id: target_id.clone(),
+                                    events: events.clone(),
+                                });
                                 self.timeline.add_status(format!(
-                                    "✔ Loaded session '{}' ({} events)",
+                                    "✔ Loaded session '{}' and restored agent memory ({} events)",
                                     target_id, count
                                 ));
                             }
@@ -539,6 +543,10 @@ impl<'a> App<'a> {
                                 if let Ok(events) = store.load_session(&new_id) {
                                     self.timeline.entries.clear();
                                     self.hydrate_session(&events);
+                                    let _ = control_tx.send(AgentCommand::HydrateSession {
+                                        session_id: new_id.clone(),
+                                        events,
+                                    });
                                 }
                             }
                             Err(e) => {

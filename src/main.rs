@@ -372,7 +372,20 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Configure) => unreachable!(), // Handled earlier
         Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
         Some(Commands::Run { task }) => {
-            run_headless_task(&workspace_canonical, &config, &task, cli.json_stream).await?;
+            let resume_session_id = if cli.continue_session {
+                let store = session::store::SessionStore::with_workspace(&workspace_canonical);
+                store.get_last_session_id()
+            } else {
+                cli.resume.clone()
+            };
+            run_headless_task(
+                &workspace_canonical,
+                &config,
+                &task,
+                cli.json_stream,
+                resume_session_id.as_deref(),
+            )
+            .await?;
         }
         Some(Commands::Serve { dir }) => {
             let target_dir = dir.unwrap_or(workspace_canonical);
@@ -403,7 +416,14 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 "Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
             };
-            run_headless_task(&workspace_canonical, &config, &plan_task, cli.json_stream).await?;
+            run_headless_task(
+                &workspace_canonical,
+                &config,
+                &plan_task,
+                cli.json_stream,
+                None,
+            )
+            .await?;
         }
         Some(Commands::History { json }) => {
             let store = session::store::SessionStore::with_workspace(&workspace_canonical);
@@ -620,6 +640,7 @@ async fn run_headless_task(
     config: &Config,
     task: &str,
     emit_ndjson: bool,
+    resume_session_id: Option<&str>,
 ) -> Result<()> {
     let api_key = match config.get_api_key(&config.provider.default) {
         Ok(k) => k,
@@ -644,6 +665,26 @@ async fn run_headless_task(
     )?;
 
     let mut agent = AgentLoop::new(workspace, config.clone(), provider);
+    if let Some(sid) = resume_session_id {
+        let store = session::store::SessionStore::with_workspace(workspace);
+        match store.load_session(sid) {
+            Ok(events) => {
+                agent.hydrate_from_events(sid, &events);
+                tracing::info!(
+                    session_id = sid,
+                    event_count = events.len(),
+                    "Hydrated agent loop from session history in headless mode"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    session_id = sid,
+                    error = %e,
+                    "Failed to load previous session to resume in headless mode"
+                );
+            }
+        }
+    }
     // No interactive approval sink exists in one-shot mode: dangerous tools
     // are refused unless auto_approve was set via --yes / MINICODE_AUTO_APPROVE.
     agent.set_interactive_approvals(false);
@@ -980,7 +1021,7 @@ async fn run_interactive_mode(
         api_key_res,
         custom_url.as_deref(),
     );
-    let agent = AgentLoop::new(workspace, config.clone(), provider);
+    let mut agent = AgentLoop::new(workspace, config.clone(), provider);
 
     let past_events = if let Some(sid) = resume_session_id {
         let store = session::store::SessionStore::with_workspace(workspace);
@@ -1001,6 +1042,12 @@ async fn run_interactive_mode(
     } else {
         Vec::new()
     };
+
+    if let Some(sid) = resume_session_id {
+        if !past_events.is_empty() {
+            agent.hydrate_from_events(sid, &past_events);
+        }
+    }
 
     if config.ui.plain {
         println!(

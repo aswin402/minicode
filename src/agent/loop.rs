@@ -142,6 +142,27 @@ impl AgentLoop {
         self.cumulative_tokens_used
     }
 
+    /// Returns the current turn index of the agent loop.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn current_turn_id(&self) -> usize {
+        self.current_turn_id
+    }
+
+    /// Returns the active session memory anchor.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn memory_anchor(&self) -> &crate::context::auto_compact::MemoryAnchor {
+        self.compactor.anchor()
+    }
+
+    /// Returns the active working set of accessed files.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn active_working_set(&self) -> &std::collections::VecDeque<String> {
+        &self.active_working_set
+    }
+
     /// Records a file path into the active working set (Zone 3 Recency).
     pub fn record_file_access(&mut self, file_path: &str) {
         let trimmed = file_path.trim();
@@ -1418,6 +1439,126 @@ impl AgentLoop {
         };
 
         Ok(turn)
+    }
+
+    /// Reconstructs the agent conversation history, turn counter, and working set
+    /// from a sequence of recorded `AgentEvent`s loaded from session persistence.
+    pub fn hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent]) {
+        self.session_id = session_id.to_string();
+        self.messages.clear();
+        self.active_working_set.clear();
+
+        let mut current_delta = String::new();
+        let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+        let mut max_turn_id: usize = 0;
+        let mut total_tokens: usize = 0;
+        let mut first_turn_prompt: Option<String> = None;
+
+        for event in events {
+            match event {
+                AgentEvent::UserPrompt {
+                    turn_id, prompt, ..
+                } => {
+                    // If there was an in-flight assistant response from previous turn, flush it
+                    if !current_delta.is_empty() {
+                        let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+                        self.messages.push(Message::assistant(clean));
+                        current_delta.clear();
+                    }
+                    max_turn_id = max_turn_id.max(*turn_id);
+
+                    if first_turn_prompt.is_none() {
+                        first_turn_prompt = Some(prompt.clone());
+                    }
+
+                    self.messages.push(Message::user(prompt.clone()));
+                }
+                AgentEvent::StreamDelta { delta, .. } => {
+                    current_delta.push_str(delta);
+                }
+                AgentEvent::ToolCall {
+                    tool_id,
+                    tool,
+                    args,
+                    ..
+                } => {
+                    pending_tool_calls.push(ToolCall {
+                        id: tool_id.clone(),
+                        name: tool.clone(),
+                        arguments: args.clone(),
+                    });
+                }
+                AgentEvent::ToolResult {
+                    tool_id,
+                    tool,
+                    output,
+                    ..
+                } => {
+                    // Before the first tool result of a batch, flush the assistant message with tools
+                    if !pending_tool_calls.is_empty() {
+                        let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+                        self.messages.push(Message::assistant_with_tools(
+                            clean,
+                            std::mem::take(&mut pending_tool_calls),
+                        ));
+                        current_delta.clear();
+                    }
+
+                    self.messages.push(Message::tool_result(
+                        tool_id.clone(),
+                        tool.clone(),
+                        output.clone(),
+                    ));
+                }
+                AgentEvent::FileModified { path, .. } => {
+                    self.record_file_access(path);
+                }
+                AgentEvent::TurnEnd {
+                    turn_id,
+                    total_tokens_used,
+                    files_modified,
+                    ..
+                } => {
+                    // If assistant produced final text, flush it
+                    if !current_delta.is_empty() {
+                        let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+                        self.messages.push(Message::assistant(clean));
+                        current_delta.clear();
+                    }
+                    max_turn_id = max_turn_id.max(*turn_id);
+                    total_tokens = total_tokens.saturating_add(*total_tokens_used);
+                    for path in files_modified {
+                        self.record_file_access(path);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Final cleanup if delta or tool calls were trailing
+        if !pending_tool_calls.is_empty() {
+            let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+            self.messages
+                .push(Message::assistant_with_tools(clean, pending_tool_calls));
+        } else if !current_delta.is_empty() {
+            let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+            self.messages.push(Message::assistant(clean));
+        }
+
+        self.current_turn_id = max_turn_id;
+        self.cumulative_tokens_used = total_tokens;
+
+        if let Some(first_prompt) = first_turn_prompt {
+            self.compactor.set_working_context(&first_prompt);
+        }
+
+        tracing::info!(
+            session_id = %self.session_id,
+            turns = self.current_turn_id,
+            messages = self.messages.len(),
+            working_set = self.active_working_set.len(),
+            "Successfully hydrated AgentLoop from session history"
+        );
     }
 
     /// Rolls back the agent's turn counter and truncates message history

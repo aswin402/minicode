@@ -17,6 +17,7 @@ pub struct MockResponse {
 }
 
 impl MockResponse {
+    #[allow(dead_code)]
     pub fn text_only(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -26,6 +27,7 @@ impl MockResponse {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_tool_call(tool_id: &str, tool_name: &str, args: serde_json::Value) -> Self {
         Self {
             text: String::new(),

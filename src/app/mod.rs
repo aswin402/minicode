@@ -38,6 +38,10 @@ pub enum AgentCommand {
         target_turn_id: usize,
         message_index: usize,
     },
+    HydrateSession {
+        session_id: String,
+        events: Vec<crate::agent::types::AgentEvent>,
+    },
 }
 
 pub struct App<'a> {
@@ -238,6 +242,9 @@ impl<'a> App<'a> {
                         message_index,
                     } => {
                         agent.rollback_turn(target_turn_id, message_index);
+                    }
+                    AgentCommand::HydrateSession { session_id, events } => {
+                        agent.hydrate_from_events(&session_id, &events);
                     }
                 }
             }
