@@ -8,5 +8,8 @@ pub mod dedup;
 pub mod donut;
 pub mod flaky;
 pub mod json_crusher;
+pub mod log_pruner;
+pub mod observation_pruner;
 
 pub use budget::*;
+pub use observation_pruner::ObservationPruner;

@@ -899,15 +899,12 @@ impl AgentLoop {
                                 }
                                 event_sender.send(res_event)?;
 
-                                // Append tool result message for LLM context with smart JSON crushing
-                                let output_for_llm = if let Some((crushed, _)) =
-                                    crate::context::budget::json_crusher::JsonCrusher::crush(
+                                // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
+                                let output_for_llm =
+                                    crate::context::budget::ObservationPruner::prune_for_llm(
+                                        &tool_call.name,
                                         &tool_result.output,
-                                    ) {
-                                    crushed
-                                } else {
-                                    tool_result.output.clone()
-                                };
+                                    );
                                 self.messages.push(Message::tool_result(
                                     tool_call.id,
                                     tool_call.name,
@@ -1209,15 +1206,12 @@ impl AgentLoop {
                             }
                             event_sender.send(res_event)?;
 
-                            // Append tool result message for LLM context with smart JSON crushing
-                            let output_for_llm = if let Some((crushed, _)) =
-                                crate::context::budget::json_crusher::JsonCrusher::crush(
+                            // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
+                            let output_for_llm =
+                                crate::context::budget::ObservationPruner::prune_for_llm(
+                                    &tool_call.name,
                                     &tool_result.output,
-                                ) {
-                                crushed
-                            } else {
-                                tool_result.output.clone()
-                            };
+                                );
                             self.messages.push(Message::tool_result(
                                 tool_call.id,
                                 tool_call.name,

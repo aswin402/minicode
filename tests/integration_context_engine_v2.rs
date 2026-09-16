@@ -517,3 +517,37 @@ fn test_status_bar_kv_cache_rendering() {
         ((ctx_with_kv.cached_tokens as f64 / ctx_with_kv.used_tokens as f64) * 100.0) as usize;
     assert_eq!(hit_pct, 82);
 }
+
+#[test]
+fn test_observation_pruner_log_and_ccr_cache() {
+    use minicode::context::budget::ccr_cache::CcrCache;
+    use minicode::context::budget::ObservationPruner;
+
+    let mut noisy_log = String::new();
+    noisy_log.push_str("\x1b[32mBuild target initialized\x1b[0m\n");
+    for i in 0..35 {
+        noisy_log.push_str(&format!("Compiling crate_{} v0.2.1 (/tmp/build)\n", i));
+    }
+    for i in 0..15 {
+        noisy_log.push_str(&format!("  at tokio::runtime::worker_{}:{}\n", i, i * 4));
+    }
+    noisy_log.push_str("Finished release [optimized] target(s) in 12.3s\n");
+
+    let pruned = ObservationPruner::prune_for_llm("run_command", &noisy_log);
+
+    assert!(pruned.len() < noisy_log.len());
+    assert!(pruned.contains("compilation lines collapsed"));
+    assert!(pruned.contains("runtime/system stack frames folded"));
+    assert!(pruned.contains("Finished release [optimized]"));
+    assert!(pruned.contains("Use retrieve_observation(id=\""));
+
+    // Extract ccr_id from hint
+    let id_prefix = "retrieve_observation(id=\"";
+    let start_idx = pruned.find(id_prefix).unwrap() + id_prefix.len();
+    let end_idx = pruned[start_idx..].find('"').unwrap() + start_idx;
+    let ccr_id = &pruned[start_idx..end_idx];
+
+    let recovered =
+        CcrCache::retrieve(ccr_id, None, None).expect("Must retrieve full log from CCR");
+    assert_eq!(recovered, noisy_log);
+}
