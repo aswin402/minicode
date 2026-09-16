@@ -1765,6 +1765,15 @@
 - [x] 119.10: Render KV cache efficiency and TTFT metrics in Ratatui TUI status line (`src/ui/status.rs`)
 - [x] 119.11: Develop comprehensive integration test suite in `tests/integration_context_engine_v2.rs`, verify quality gates (`cargo check -j 1`, `cargo test --bin minicode -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update `CHANGELOG.md`, bump version → `v0.3.19`, run `./localupdate.sh`, and commit
 
+### Phase 120: Cross-Process Session Continuation, Context Hydration & Full Memory Recovery (v0.3.20)
+- [x] 120.1: Implement `AgentLoop::hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent])` restoring `messages`, `current_turn_id`, `session_id`, `cumulative_tokens_used`, `compactor` working context, and `active_working_set`
+- [x] 120.2: Wire session continuation and hydration into headless mode (`minicode run --continue-session` and `minicode run --resume <ID>`)
+- [x] 120.3: Wire session continuation and hydration into interactive mode (`run_interactive_mode` for both accessible plain REPL and Aura Ratatui TUI startup)
+- [x] 120.4: Wire `AgentCommand::HydrateSession` through background actor channel on interactive session switch (`/session <id>`) and session modal fork
+- [x] 120.5: Develop end-to-end integration test suite in `tests/integration_session_hydration.rs`, verifying state reconstruction and subsequent turn execution
+- [x] 120.6: Pass quality gates (`cargo check -j 1`, `cargo test --test integration_session_hydration -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), update global binary via `./localupdate.sh`, and commit
+
+
 
 
 
