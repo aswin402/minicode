@@ -664,7 +664,7 @@ async fn run_headless_task(
         custom_url.as_deref(),
     )?;
 
-    let mut agent = AgentLoop::new(workspace, config.clone(), provider);
+    let mut agent = AgentLoop::with_session(workspace, config.clone(), provider, resume_session_id);
     if let Some(sid) = resume_session_id {
         let store = session::store::SessionStore::with_workspace(workspace);
         match store.load_session(sid) {
@@ -1021,7 +1021,7 @@ async fn run_interactive_mode(
         api_key_res,
         custom_url.as_deref(),
     );
-    let mut agent = AgentLoop::new(workspace, config.clone(), provider);
+    let mut agent = AgentLoop::with_session(workspace, config.clone(), provider, resume_session_id);
 
     let past_events = if let Some(sid) = resume_session_id {
         let store = session::store::SessionStore::with_workspace(workspace);

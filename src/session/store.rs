@@ -217,10 +217,14 @@ impl SessionStore {
             .map(|(_, events)| events)
     }
 
-    /// Returns the session ID of the most recent session.
+    /// Returns the session ID of the most recent session with recorded events.
     pub fn get_last_session_id(&self) -> Option<String> {
-        match self.list_sessions() {
-            Ok(sessions) => sessions.first().map(|s| s.id.clone()),
+        match self.list_sessions_rich() {
+            Ok(sessions) => sessions
+                .iter()
+                .find(|s| s.event_count > 0)
+                .or_else(|| sessions.first())
+                .map(|s| s.id.clone()),
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to list sessions for latest session lookup");
                 None

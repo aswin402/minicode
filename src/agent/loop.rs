@@ -49,10 +49,23 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     pub fn new(workspace_root: &Path, config: Config, provider: Box<dyn Provider>) -> Self {
+        Self::with_session(workspace_root, config, provider, None)
+    }
+
+    pub fn with_session(
+        workspace_root: &Path,
+        config: Config,
+        provider: Box<dyn Provider>,
+        resume_session_id: Option<&str>,
+    ) -> Self {
         let session_store = SessionStore::with_workspace(workspace_root);
-        let session_id = session_store
-            .create_session(workspace_root)
-            .unwrap_or_else(|_| "ephemeral-session".to_string());
+        let session_id = if let Some(sid) = resume_session_id {
+            sid.to_string()
+        } else {
+            session_store
+                .create_session(workspace_root)
+                .unwrap_or_else(|_| "ephemeral-session".to_string())
+        };
         let session_file = session_store.session_file_path(&session_id);
         let active_guard = crate::logging::register_active_session(
             &session_id,
@@ -1444,7 +1457,26 @@ impl AgentLoop {
     /// Reconstructs the agent conversation history, turn counter, and working set
     /// from a sequence of recorded `AgentEvent`s loaded from session persistence.
     pub fn hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent]) {
+        if self.session_id != session_id {
+            let old_path = self.session_store.session_file_path(&self.session_id);
+            if let Ok(content) = std::fs::read_to_string(&old_path) {
+                let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+                if non_empty_lines <= 1 {
+                    let _ = std::fs::remove_file(&old_path);
+                    tracing::debug!(path = %old_path.display(), "Cleaned up placeholder session file upon hydration");
+                }
+            }
+        }
         self.session_id = session_id.to_string();
+        let session_file = self.session_store.session_file_path(&self.session_id);
+        self._active_guard = crate::logging::register_active_session(
+            &self.session_id,
+            &self.workspace_root,
+            &self.config.provider.default,
+            &self.config.provider.model,
+            &session_file,
+        )
+        .ok();
         self.messages.clear();
         self.active_working_set.clear();
 
