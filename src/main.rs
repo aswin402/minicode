@@ -113,6 +113,14 @@ struct Cli {
     /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 110 tools)
     #[arg(long, global = true)]
     tools: Option<String>,
+
+    /// Maximum tool calling iterations per turn (0 for unbounded autonomous execution, default: 0)
+    #[arg(long, global = true)]
+    max_iterations: Option<usize>,
+
+    /// Auto-continue turn execution when tool iteration limit is reached (default: true)
+    #[arg(long, global = true)]
+    auto_continue: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -345,6 +353,12 @@ async fn main() -> anyhow::Result<()> {
         if let Ok(mode) = tool_mode_str.parse::<crate::config::ToolFilterMode>() {
             config.agent.tool_mode = mode;
         }
+    }
+    if let Some(max_iter) = cli.max_iterations {
+        config.agent.max_tool_iterations = max_iter;
+    }
+    if let Some(ac) = cli.auto_continue {
+        config.agent.auto_continue = ac;
     }
     if let Some(lvl) = cli.log_level {
         config.logging.level = lvl;
@@ -731,15 +745,23 @@ async fn run_headless_task(
                         );
                     }
                     AgentEvent::TurnEnd {
+                        status,
                         total_tokens_used,
                         files_modified,
                         ..
                     } => {
                         println!("\n─────────────────────────────────────────");
-                        println!(
-                            "✓ Completed (tokens: {}, modified: {:?})",
-                            total_tokens_used, files_modified
-                        );
+                        if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
+                            println!(
+                                "⏸ Paused (iteration limit reached, tokens: {}, modified: {:?})",
+                                total_tokens_used, files_modified
+                            );
+                        } else {
+                            println!(
+                                "✓ Completed (tokens: {}, modified: {:?})",
+                                total_tokens_used, files_modified
+                            );
+                        }
                     }
                     AgentEvent::ContextCompacted {
                         tier,
@@ -1131,15 +1153,23 @@ async fn run_interactive_mode(
                             );
                         }
                         AgentEvent::TurnEnd {
+                            status,
                             total_tokens_used,
                             files_modified,
                             ..
                         } => {
                             println!("\n─────────────────────────────────────────");
-                            println!(
-                                "✓ Completed (tokens: {}, modified: {:?})",
-                                total_tokens_used, files_modified
-                            );
+                            if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
+                                println!(
+                                    "⏸ Paused (iteration limit reached, tokens: {}, modified: {:?})",
+                                    total_tokens_used, files_modified
+                                );
+                            } else {
+                                println!(
+                                    "✓ Completed (tokens: {}, modified: {:?})",
+                                    total_tokens_used, files_modified
+                                );
+                            }
                         }
                         AgentEvent::ContextCompacted {
                             tier,

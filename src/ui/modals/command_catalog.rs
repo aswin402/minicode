@@ -152,7 +152,7 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
     CommandCatalogItem {
         name: "/copy",
         category: "Display & Aesthetics",
-        shortcut: "",
+        shortcut: "Ctrl+Y",
         description: "Copy latest AI response or entire chat to system clipboard",
         example: "/copy | /copy all",
     },

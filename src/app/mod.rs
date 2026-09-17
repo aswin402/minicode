@@ -460,6 +460,7 @@ impl<'a> App<'a> {
                                     .finish_tool_call(&tool, success, output, duration_ms);
                             }
                             AgentEvent::TurnEnd {
+                                status,
                                 total_tokens_used,
                                 cached_prompt_tokens,
                                 ..
@@ -481,9 +482,13 @@ impl<'a> App<'a> {
                                         self.config.provider.completion_cost_per_m,
                                     );
                                 self.total_cost_usd += turn_cost;
-                                let elapsed_secs =
-                                    self.work_start.map(|s| s.elapsed().as_secs_f64());
-                                self.timeline.finalize_pending_thoughts(elapsed_secs);
+                                self.timeline.finalize_pending_thoughts(None);
+                                if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
+                                    self.timeline.add_status(
+                                        "⏸ Turn paused: reached tool iteration limit. Type 'continue' to resume."
+                                            .to_string(),
+                                    );
+                                }
                                 self.is_working = false;
                                 self.current_activity = None;
                                 self.work_start = None;
@@ -632,6 +637,25 @@ impl<'a> App<'a> {
                                             }
                                         }
                                     }
+                                    MouseEventKind::Up(MouseButton::Right) => {
+                                        if !self.pty_drawer.is_open && !self.subagent_drawer.is_open && !self.modal.is_active() {
+                                            let text = self
+                                                .timeline
+                                                .extract_selected_text()
+                                                .filter(|t| !t.trim().is_empty())
+                                                .or_else(|| self.timeline.get_last_assistant_response());
+
+                                            if let Some(t) = text {
+                                                let trimmed = t.trim();
+                                                if !trimmed.is_empty()
+                                                    && crate::ui::clipboard::copy_to_clipboard(trimmed)
+                                                {
+                                                    let preview = crate::utils::truncate_ellipsis(trimmed, 28);
+                                                    self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                                }
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -736,6 +760,45 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+Y or Ctrl+Shift+C copies active text selection, input text, or latest AI response to clipboard
+                                let is_ctrl_y = key_event.code == KeyCode::Char('y')
+                                    && key_event.modifiers.contains(KeyModifiers::CONTROL);
+                                let is_ctrl_shift_c = (key_event.code == KeyCode::Char('c') || key_event.code == KeyCode::Char('C'))
+                                    && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                    && key_event.modifiers.contains(KeyModifiers::SHIFT);
+                                if is_ctrl_y || is_ctrl_shift_c {
+                                    let text = self
+                                        .timeline
+                                        .extract_selected_text()
+                                        .filter(|t| !t.trim().is_empty())
+                                        .or_else(|| {
+                                            if !self.input_dock.is_empty() {
+                                                Some(self.input_dock.get_text())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .or_else(|| self.timeline.get_last_assistant_response());
+
+                                    if let Some(t) = text {
+                                        let trimmed = t.trim();
+                                        if !trimmed.is_empty() {
+                                            let ok = crate::ui::clipboard::copy_to_clipboard(trimmed);
+                                            if ok {
+                                                let preview = crate::utils::truncate_ellipsis(trimmed, 28);
+                                                self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                            } else {
+                                                self.timeline.add_status("✗ Failed to copy to clipboard".to_string());
+                                            }
+                                        } else {
+                                            self.timeline.add_status("ℹ Nothing to copy yet".to_string());
+                                        }
+                                    } else {
+                                        self.timeline.add_status("ℹ Nothing to copy yet".to_string());
+                                    }
+                                    continue;
+                                }
+
                                 // F1 opens interactive Help modal
                                 if key_event.code == KeyCode::F(1) {
                                     self.modal = ModalState::Help;
@@ -836,20 +899,45 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // Check for Ctrl+C to interrupt turn or confirm exit
-                                if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                // Check for Ctrl+C to interrupt turn, copy selection/input, or confirm exit
+                                if key_event.code == KeyCode::Char('c')
+                                    && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                    && !key_event.modifiers.contains(KeyModifiers::SHIFT)
+                                {
                                     if self.is_working {
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
                                         }
                                         self.is_working = false;
                                         self.current_activity = None;
-                                        let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
-                                        self.timeline.finalize_pending_thoughts(elapsed_secs);
+                                        self.work_start = None;
+                                        self.timeline.finalize_pending_thoughts(None);
                                         self.timeline.add_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else {
+                                        // 1. If text is visually selected in timeline, copy selection
+                                        if let Some(selected) = self.timeline.extract_selected_text().filter(|t| !t.trim().is_empty()) {
+                                            let ok = crate::ui::clipboard::copy_to_clipboard(&selected);
+                                            if ok {
+                                                let preview = crate::utils::truncate_ellipsis(selected.trim(), 28);
+                                                self.timeline.add_status(format!("✔ Copied selection to clipboard: \"{}\"", preview));
+                                            }
+                                            continue;
+                                        }
+
+                                        // 2. If user has typed text in input dock, copy input text
+                                        if !self.input_dock.is_empty() {
+                                            let input_text = self.input_dock.get_text();
+                                            let ok = crate::ui::clipboard::copy_to_clipboard(input_text.trim());
+                                            if ok {
+                                                let preview = crate::utils::truncate_ellipsis(input_text.trim(), 28);
+                                                self.timeline.add_status(format!("✔ Copied input to clipboard: \"{}\"", preview));
+                                            }
+                                            continue;
+                                        }
+
+                                        // 3. Otherwise, confirm exit (double Ctrl+C exits immediately)
                                         let now = Instant::now();
                                         if let Some(last) = self.last_ctrl_c {
                                             if now.duration_since(last) < Duration::from_millis(1500) {
@@ -869,8 +957,8 @@ impl<'a> App<'a> {
                                         }
                                         self.is_working = false;
                                         self.current_activity = None;
-                                        let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
-                                        self.timeline.finalize_pending_thoughts(elapsed_secs);
+                                        self.work_start = None;
+                                        self.timeline.finalize_pending_thoughts(None);
                                         self.timeline.add_status("⏹ Turn interrupted by user (Esc)".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;

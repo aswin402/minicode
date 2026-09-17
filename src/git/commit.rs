@@ -45,7 +45,24 @@ impl<'a> GitCommitService<'a> {
         }
 
         // 2. Execute commit
-        self.git.run_git(&["commit", "-m", trimmed_msg]).await?;
+        match self.git.run_git(&["commit", "-m", trimmed_msg]).await {
+            Ok(_) => {}
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("nothing to commit") || err_str.contains("working tree clean") {
+                    let hash = self
+                        .git
+                        .run_git(&["rev-parse", "HEAD"])
+                        .await
+                        .unwrap_or_else(|_| "HEAD".to_string());
+                    return Ok(format!(
+                        "{} (clean working tree, nothing new to commit)",
+                        hash.trim()
+                    ));
+                }
+                return Err(e);
+            }
+        }
 
         // 3. Extract new commit hash
         let hash = self.git.run_git(&["rev-parse", "HEAD"]).await?;

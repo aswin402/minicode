@@ -95,13 +95,43 @@ pub fn apply_landlock_sandbox_with_opts(
             .map_err(|e| SecurityError::Landlock(format!("Failed to add workspace rule: {}", e)))?;
     }
 
-    // Allow read/write access to /tmp for compilers, package managers, and lockfiles
-    let tmp_path = Path::new("/tmp");
-    if tmp_path.exists() {
-        if let Ok(fd) = PathFd::new(tmp_path) {
-            ruleset_created = ruleset_created
-                .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
-                .map_err(|e| SecurityError::Landlock(format!("Failed to add /tmp rule: {}", e)))?;
+    // Allow read/write access to /tmp and shared memory/terminals for compilers, package managers, and lockfiles
+    for rw_path_str in &["/tmp", "/dev/shm", "/dev/pts"] {
+        let p = Path::new(rw_path_str);
+        if p.exists() {
+            if let Ok(fd) = PathFd::new(p) {
+                ruleset_created = ruleset_created
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                    .map_err(|e| {
+                        SecurityError::Landlock(format!(
+                            "Failed to add rw path rule {}: {}",
+                            rw_path_str, e
+                        ))
+                    })?;
+            }
+        }
+    }
+
+    // Allow read/write access to standard device sink and random streams
+    for dev_file in &[
+        "/dev/null",
+        "/dev/zero",
+        "/dev/urandom",
+        "/dev/random",
+        "/dev/tty",
+    ] {
+        let p = Path::new(dev_file);
+        if p.exists() {
+            if let Ok(fd) = PathFd::new(p) {
+                ruleset_created = ruleset_created
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                    .map_err(|e| {
+                        SecurityError::Landlock(format!(
+                            "Failed to add dev file rule {}: {}",
+                            dev_file, e
+                        ))
+                    })?;
+            }
         }
     }
 
@@ -212,4 +242,48 @@ pub fn is_landlock_supported() -> bool {
 #[cfg(not(target_os = "linux"))]
 pub fn is_landlock_supported() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use landlock::{
+        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+    };
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_landlock_dev_null_support() {
+        if !is_landlock_supported() {
+            return;
+        }
+        let ruleset = Ruleset::default()
+            .handle_access(AccessFs::from_all(ABI::V1))
+            .unwrap();
+        let mut rc = ruleset.create().unwrap();
+
+        for path in &["/tmp", "/dev/shm"] {
+            let p = Path::new(path);
+            if p.exists() {
+                if let Ok(fd) = PathFd::new(p) {
+                    rc = rc
+                        .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                        .unwrap();
+                }
+            }
+        }
+
+        // Test character device
+        let p = Path::new("/dev/null");
+        if let Ok(fd) = PathFd::new(p) {
+            match rc.add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1))) {
+                Ok(_) => {
+                    println!("Direct /dev/null PathBeneath succeeded!");
+                }
+                Err(e) => {
+                    println!("Direct /dev/null PathBeneath error: {}", e);
+                }
+            }
+        }
+    }
 }

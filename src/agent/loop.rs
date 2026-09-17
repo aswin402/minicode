@@ -4,9 +4,9 @@ use crate::agent::stuck_detector::BreakerAction;
 use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    CONTEXT_MIN_PRESERVED_MESSAGES, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOOL_ITERATIONS,
-    FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS, TURN_STATUS_CANCELLED,
-    TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE,
+    CONTEXT_MIN_PRESERVED_MESSAGES, DEFAULT_MAX_RETRIES, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX,
+    RETRY_BACKOFF_SECS, TURN_STATUS_CANCELLED, TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE,
+    TURN_STATUS_ITERATION_LIMIT,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -465,11 +465,17 @@ impl AgentLoop {
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
 
-        let max_iterations = DEFAULT_MAX_TOOL_ITERATIONS; // Prevent infinite tool loops
+        let mut max_iterations = self.config.agent.max_tool_iterations;
+        let mut auto_continues_remaining = if self.config.agent.auto_continue {
+            self.config.agent.max_auto_continues
+        } else {
+            0
+        };
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut was_cancelled = false;
         let mut circuit_tripped = false;
+        let mut hit_iteration_limit = false;
 
         let options = CompletionOptions {
             model: self.config.provider.model.clone(),
@@ -482,7 +488,7 @@ impl AgentLoop {
 
         let max_retries = DEFAULT_MAX_RETRIES;
 
-        while iteration < max_iterations {
+        while max_iterations == 0 || iteration < max_iterations {
             // Check cancellation before each LLM call
             if let Some(cancel) = &cancel_token {
                 if cancel.is_cancelled() {
@@ -493,6 +499,12 @@ impl AgentLoop {
             }
 
             iteration += 1;
+
+            // In long-horizon multi-step turns, proactively prune context and strip older reasoning
+            // to prevent context bloat before requesting next LLM completion.
+            if iteration > 1 {
+                self.prune_context();
+            }
             let mut retry_count = 0;
 
             let mut iteration_text = String::new();
@@ -1273,6 +1285,47 @@ impl AgentLoop {
                     }
                     break;
                 }
+
+                // Check if we hit an explicit iteration limit while work was actively occurring
+                if max_iterations > 0 && iteration >= max_iterations {
+                    if auto_continues_remaining > 0 {
+                        auto_continues_remaining -= 1;
+                        let extend_amount = self.config.agent.max_tool_iterations.max(1);
+                        max_iterations = max_iterations.saturating_add(extend_amount);
+                        tracing::info!(
+                            turn_id,
+                            extended_max = max_iterations,
+                            remaining_continues = auto_continues_remaining,
+                            "Auto-continuing turn execution: iteration limit extended"
+                        );
+                        let notice = format!(
+                            "\n\n🔄 *Auto-continuing execution (tool iteration limit extended to {})*...\n",
+                            max_iterations
+                        );
+                        let _ = event_sender.send(AgentEvent::StreamDelta {
+                            turn_id,
+                            delta: notice,
+                        });
+                    } else {
+                        tracing::warn!(
+                            turn_id,
+                            max_iterations,
+                            "Turn reached tool iteration limit with active tool executions; pausing"
+                        );
+                        hit_iteration_limit = true;
+                        let pause_msg = format!(
+                            "\n\n⚠️ *Reached tool iteration limit ({}). Pausing turn. Type 'continue' to resume.*",
+                            max_iterations
+                        );
+                        let _ = event_sender.send(AgentEvent::StreamDelta {
+                            turn_id,
+                            delta: pause_msg.clone(),
+                        });
+                        turn_response.push_str(&pause_msg);
+                        self.messages.push(Message::assistant(pause_msg.trim()));
+                        break;
+                    }
+                }
             } else {
                 if was_cancelled || circuit_tripped {
                     break;
@@ -1429,6 +1482,8 @@ impl AgentLoop {
                 TURN_STATUS_CANCELLED
             } else if circuit_tripped {
                 TURN_STATUS_CIRCUIT_TRIPPED
+            } else if hit_iteration_limit {
+                TURN_STATUS_ITERATION_LIMIT
             } else {
                 TURN_STATUS_COMPLETE
             }

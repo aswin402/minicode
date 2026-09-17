@@ -207,41 +207,102 @@ impl FastCompilerChecker {
 
     /// Runs `tsc --noEmit` if TypeScript is available.
     async fn check_typescript(workspace_root: &Path, report: &mut DiagnosticReport) -> Result<()> {
-        let output = Command::new("npx")
-            .args(["tsc", "--noEmit", "--pretty", "false"])
-            .current_dir(workspace_root)
-            .output()
-            .await;
+        if !workspace_root.join("node_modules").exists() {
+            report.warnings.push(DiagnosticItem {
+                file: workspace_root.join("package.json"),
+                line: 1,
+                column: 1,
+                severity: "warning".to_string(),
+                code: None,
+                message: "node_modules is not installed. Run 'bun install' or 'npm install' to enable TypeScript diagnostics.".to_string(),
+                rendered: None,
+            });
+            return Ok(());
+        }
+
+        let local_tsc = workspace_root.join("node_modules/.bin/tsc");
+        let output = if local_tsc.exists() {
+            Command::new(local_tsc)
+                .args(["--noEmit", "--pretty", "false"])
+                .current_dir(workspace_root)
+                .output()
+                .await
+        } else if workspace_root.join("bun.lockb").exists()
+            || workspace_root.join("bun.lock").exists()
+        {
+            Command::new("bun")
+                .args(["x", "tsc", "--noEmit", "--pretty", "false"])
+                .current_dir(workspace_root)
+                .output()
+                .await
+        } else {
+            Command::new("npx")
+                .args(["--no-install", "tsc", "--noEmit", "--pretty", "false"])
+                .current_dir(workspace_root)
+                .output()
+                .await
+        };
 
         if let Ok(o) = output {
             let stdout = String::from_utf8_lossy(&o.stdout);
             for line in stdout.lines() {
                 // Typical tsc format: src/index.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.
                 if let Some(paren_pos) = line.find('(') {
-                    if let Some(colon_pos) = line.find("): error ") {
-                        let file_part = &line[..paren_pos];
-                        let loc_part = &line[paren_pos + 1..colon_pos];
-                        let rest = &line[colon_pos + 9..];
+                    let (severity, sep, is_error) = if let Some(pos) = line.find("): error ") {
+                        ("error", pos, true)
+                    } else if let Some(pos) = line.find("): warning ") {
+                        ("warning", pos, false)
+                    } else {
+                        continue;
+                    };
 
-                        let mut coords = loc_part.split(',');
-                        let line_num = coords
-                            .next()
-                            .and_then(|s| s.trim().parse::<usize>().ok())
-                            .unwrap_or(1);
-                        let col_num = coords
-                            .next()
-                            .and_then(|s| s.trim().parse::<usize>().ok())
-                            .unwrap_or(1);
+                    let file_part = &line[..paren_pos];
+                    let loc_part = &line[paren_pos + 1..sep];
+                    let prefix_len = if is_error {
+                        "): error ".len()
+                    } else {
+                        "): warning ".len()
+                    };
+                    let rest = &line[sep + prefix_len..];
 
-                        report.errors.push(DiagnosticItem {
-                            file: workspace_root.join(file_part),
-                            line: line_num,
-                            column: col_num,
-                            severity: "error".to_string(),
-                            code: None,
-                            message: rest.to_string(),
-                            rendered: None,
-                        });
+                    let mut coords = loc_part.split(',');
+                    let line_num = coords
+                        .next()
+                        .and_then(|s| s.trim().parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let col_num = coords
+                        .next()
+                        .and_then(|s| s.trim().parse::<usize>().ok())
+                        .unwrap_or(1);
+
+                    let (code, msg) = if let Some(colon_pos) = rest.find(':') {
+                        let potential_code = rest[..colon_pos].trim();
+                        if potential_code.starts_with("TS") {
+                            (
+                                Some(potential_code.to_string()),
+                                rest[colon_pos + 1..].trim().to_string(),
+                            )
+                        } else {
+                            (None, rest.to_string())
+                        }
+                    } else {
+                        (None, rest.to_string())
+                    };
+
+                    let item = DiagnosticItem {
+                        file: workspace_root.join(file_part),
+                        line: line_num,
+                        column: col_num,
+                        severity: severity.to_string(),
+                        code,
+                        message: msg,
+                        rendered: None,
+                    };
+
+                    if is_error {
+                        report.errors.push(item);
+                    } else {
+                        report.warnings.push(item);
                     }
                 }
             }

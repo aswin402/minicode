@@ -37,6 +37,7 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    println!(
 - **Command Execution & Verification**: Run build checks and tests with `exec_cmd` (e.g. `cargo check`, `cargo test`, `npm test`, `pytest`).
 - **File Modifications**: Apply surgical edits using `patch_file`. For brand new files, use `write_file`.
 - **Project Scaffolding**: When asked to scaffold or bootstrap a new app or stack, use `onpkg_stack_list` and `onpkg_stack_add`.
+- **Subagent Delegation & Parallelism**: For large multi-step features, deep codebase audits, or independent research tasks, autonomously delegate to specialized workers using `invoke_subagent` (roles: "researcher", "code_reviewer", "test_engineer", "security_auditor") or `delegate_task` for isolated worktrees.
 - **Task Planning**: When planning complex features, track progress in `onpkg_docs/todo.md` and spec in `onpkg_docs/implementation.md`.
 "#;
 

@@ -527,6 +527,16 @@ impl<'a> InputDock<'a> {
         self.next_block_id = 1;
     }
 
+    /// Returns the full text in the input dock (joining lines with newline)
+    pub fn get_text(&self) -> String {
+        self.textarea.lines().join("\n")
+    }
+
+    /// Checks whether the input dock has no user text typed into it
+    pub fn is_empty(&self) -> bool {
+        self.textarea.lines().iter().all(|l| l.trim().is_empty())
+    }
+
     /// Handles bracketed paste events.
     /// - If <= 5 lines: pastes full content directly into the textarea (dock height adjusts dynamically up to 5 lines).
     /// - If > 5 lines: collapses into a clean preview placeholder: `[<preview words> ..... +<line_count> lines]`,

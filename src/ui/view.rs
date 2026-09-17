@@ -3,9 +3,9 @@ use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Execution status of a subagent tool action item
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,16 +220,17 @@ impl TimelineView {
         if cleaned.is_empty() {
             return;
         }
-        if self.thought_start.is_none() {
-            self.thought_start = self.turn_start.or_else(|| Some(std::time::Instant::now()));
-        }
         if let Some(TimelineEntry::ThoughtBlock { text, .. }) = self.entries.last_mut() {
             text.push_str(&cleaned);
         } else {
+            self.thought_start = Some(std::time::Instant::now());
             self.entries.push(TimelineEntry::ThoughtBlock {
                 text: cleaned,
                 duration_secs: None,
             });
+        }
+        if self.thought_start.is_none() {
+            self.thought_start = Some(std::time::Instant::now());
         }
     }
 
@@ -244,7 +245,7 @@ impl TimelineView {
         }
     }
 
-    pub fn finalize_pending_thoughts(&mut self, elapsed_secs: Option<f64>) {
+    pub fn finalize_pending_thoughts(&mut self, _elapsed_secs: Option<f64>) {
         if !self.thought_tag_buffer.is_empty() {
             let pending = std::mem::take(&mut self.thought_tag_buffer);
             if self.in_thought_mode {
@@ -264,11 +265,10 @@ impl TimelineView {
         {
             *text = Self::sanitize_thought_text(text);
             if duration_secs.is_none() || duration_secs.unwrap_or(0.0) < 0.1 {
-                *duration_secs = elapsed_secs
-                    .or_else(|| self.thought_start.take().map(|s| s.elapsed().as_secs_f64()))
-                    .or_else(|| self.turn_start.map(|s| s.elapsed().as_secs_f64()));
+                *duration_secs = self.thought_start.take().map(|s| s.elapsed().as_secs_f64());
             }
         }
+        self.thought_start = None;
         self.in_thought_mode = false;
     }
 
@@ -360,11 +360,7 @@ impl TimelineView {
                         self.append_thought_delta(thought_chunk);
                     }
                     self.in_thought_mode = false;
-                    let dur = self
-                        .thought_start
-                        .take()
-                        .or(self.turn_start)
-                        .map(|s| s.elapsed().as_secs_f64());
+                    let dur = self.thought_start.take().map(|s| s.elapsed().as_secs_f64());
                     if let Some(TimelineEntry::ThoughtBlock { duration_secs, .. }) =
                         self.entries.last_mut()
                     {
@@ -406,8 +402,7 @@ impl TimelineView {
                         self.append_assistant_text(prefix);
                     }
                     self.in_thought_mode = true;
-                    self.thought_start =
-                        self.turn_start.or_else(|| Some(std::time::Instant::now()));
+                    self.thought_start = Some(std::time::Instant::now());
                     let mut next_start = start_idx + tag_len;
                     if working_text[next_start..].starts_with("\r\n") {
                         next_start += 2;
@@ -632,6 +627,7 @@ impl TimelineView {
     pub fn handle_mouse_down(&self, col: u16, row: u16) {
         let area = self.selection.timeline_area.get();
         if col >= area.x && col < area.right() && row >= area.y && row < area.bottom() {
+            self.auto_scroll.set(false);
             self.selection
                 .handle_mouse_down(col, row, self.scroll_offset.get());
         } else {
@@ -713,14 +709,113 @@ impl TimelineView {
         }
     }
 
-    fn extract_cmd_display(name: &str, args_json: &str) -> String {
+    /// Cleans and truncates shell commands for minimal single-line badge display.
+    /// Strips multiline heredoc payloads (`<< ...`), normalizes whitespace, and truncates to 70 chars.
+    pub fn clean_command_display(cmd: &str) -> String {
+        let first_line = cmd.lines().next().unwrap_or("").trim();
+        // If it's a heredoc like `cat > file << 'EOF'`, cut off at `<<`
+        let stripped = if let Some(idx) = first_line.find("<<") {
+            first_line[..idx].trim_end()
+        } else {
+            first_line
+        };
+        let parts: Vec<&str> = stripped.split_whitespace().collect();
+        let compacted = parts.join(" ");
+        if compacted.chars().count() > 70 {
+            let mut res: String = compacted.chars().take(67).collect();
+            res.push_str("...");
+            res
+        } else {
+            compacted
+        }
+    }
+
+    /// Cleans and truncates file paths for compact header display.
+    pub fn clean_path_display(path: &str) -> String {
+        let trimmed = path.trim();
+        if trimmed.chars().count() > 70 {
+            let mut res: String = trimmed.chars().take(67).collect();
+            res.push_str("...");
+            res
+        } else {
+            trimmed.to_string()
+        }
+    }
+
+    /// Splits a long line of text into sub-chunks of max `max_width` visual cells.
+    /// Splits on whitespace boundaries when possible, breaking long indivisible words cleanly.
+    pub fn split_line_into_chunks(text: &str, max_width: usize) -> Vec<String> {
+        if max_width == 0 {
+            return vec![text.to_string()];
+        }
+        let total_width = UnicodeWidthStr::width(text);
+        if total_width <= max_width {
+            return vec![text.to_string()];
+        }
+
+        let mut chunks = Vec::new();
+        let mut current = String::new();
+        let mut current_width = 0;
+
+        for word in text.split(' ') {
+            let word_width = UnicodeWidthStr::width(word);
+            if current.is_empty() {
+                if word_width <= max_width {
+                    current.push_str(word);
+                    current_width = word_width;
+                } else {
+                    for ch in word.chars() {
+                        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                        if current_width + ch_w > max_width && !current.is_empty() {
+                            chunks.push(std::mem::take(&mut current));
+                            current_width = 0;
+                        }
+                        current.push(ch);
+                        current_width += ch_w;
+                    }
+                }
+            } else if current_width + 1 + word_width <= max_width {
+                current.push(' ');
+                current.push_str(word);
+                current_width += 1 + word_width;
+            } else {
+                chunks.push(std::mem::take(&mut current));
+                if word_width <= max_width {
+                    current.push_str(word);
+                    current_width = word_width;
+                } else {
+                    for ch in word.chars() {
+                        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                        if current_width + ch_w > max_width && !current.is_empty() {
+                            chunks.push(std::mem::take(&mut current));
+                            current_width = 0;
+                        }
+                        current.push(ch);
+                        current_width += ch_w;
+                    }
+                }
+            }
+        }
+
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+
+        if chunks.is_empty() {
+            vec![text.to_string()]
+        } else {
+            chunks
+        }
+    }
+
+    pub fn extract_cmd_display(name: &str, args_json: &str) -> String {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(args_json) {
             if let Some(cmd) = val
                 .get("command")
                 .or_else(|| val.get("cmd"))
                 .and_then(|c| c.as_str())
             {
-                return cmd.to_string();
+                return Self::clean_command_display(cmd);
             }
             if let Some(path) = val
                 .get("path")
@@ -728,7 +823,7 @@ impl TimelineView {
                 .or_else(|| val.get("target_file"))
                 .and_then(|p| p.as_str())
             {
-                return path.to_string();
+                return Self::clean_path_display(path);
             }
             if let Some(query) = val
                 .get("query")
@@ -756,7 +851,7 @@ impl TimelineView {
         if trimmed == "{}" || trimmed.is_empty() {
             String::new()
         } else {
-            format!("{}({})", name, trimmed)
+            Self::clean_command_display(&format!("{}({})", name, trimmed))
         }
     }
 
@@ -820,11 +915,19 @@ impl TimelineView {
                 } => {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        let dur_display = match duration_secs {
-                            Some(secs) if *secs >= 0.1 => *secs,
-                            _ => ((ctx.working_millis as f64) / 1000.0).max(0.1),
+                        let header = match duration_secs {
+                            Some(secs) if *secs >= 0.1 => format!("• Thought for {:.1}s", secs),
+                            _ => {
+                                if let Some(st) = self.thought_start {
+                                    format!(
+                                        "• Thinking ({:.1}s)",
+                                        st.elapsed().as_secs_f64().max(0.1)
+                                    )
+                                } else {
+                                    "• Thought".to_string()
+                                }
+                            }
                         };
-                        let header = format!("• Thought for {:.1}s", dur_display);
 
                         lines.push(Line::from(vec![Span::styled(
                             header,
@@ -832,16 +935,20 @@ impl TimelineView {
                                 .fg(theme.muted)
                                 .add_modifier(Modifier::BOLD),
                         )]));
+                        let max_t_width = (area.width.saturating_sub(4) as usize).max(20);
                         for t_line in trimmed.lines() {
-                            lines.push(Line::from(vec![
-                                Span::styled("  ", Style::default()),
-                                Span::styled(
-                                    t_line,
-                                    Style::default()
-                                        .fg(theme.muted)
-                                        .add_modifier(Modifier::ITALIC),
-                                ),
-                            ]));
+                            let chunks = Self::split_line_into_chunks(t_line, max_t_width);
+                            for chunk in chunks {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  ", Style::default()),
+                                    Span::styled(
+                                        chunk,
+                                        Style::default()
+                                            .fg(theme.muted)
+                                            .add_modifier(Modifier::ITALIC),
+                                    ),
+                                ]));
+                            }
                         }
                         lines.push(Line::from(String::new()));
                     }
@@ -955,56 +1062,92 @@ impl TimelineView {
 
                     // Render diff lines with +/- colouring
                     if !diff_section.is_empty() {
+                        let usable_width = area.width.saturating_sub(2) as usize;
+                        let max_content_width = usable_width.saturating_sub(6).max(20);
                         let mut diff_line_count = 0;
                         for diff_line in diff_section.lines() {
                             if diff_line.starts_with("---") || diff_line.starts_with("+++") {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        diff_line,
-                                        Style::default()
-                                            .fg(theme.muted)
-                                            .add_modifier(Modifier::ITALIC),
-                                    ),
-                                ]));
+                                let chunks =
+                                    Self::split_line_into_chunks(diff_line, max_content_width);
+                                for (c_idx, chunk) in chunks.into_iter().enumerate() {
+                                    let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
+                                    lines.push(Line::from(vec![
+                                        Span::styled(pfx, Style::default().fg(theme.muted)),
+                                        Span::styled(
+                                            chunk,
+                                            Style::default()
+                                                .fg(theme.muted)
+                                                .add_modifier(Modifier::ITALIC),
+                                        ),
+                                    ]));
+                                }
                             } else if let Some(rest) = diff_line.strip_prefix("+ ") {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        "+",
-                                        Style::default()
-                                            .fg(theme.success)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        format!(" {}", rest),
-                                        Style::default().fg(theme.success),
-                                    ),
-                                ]));
+                                let chunks = Self::split_line_into_chunks(rest, max_content_width);
+                                for (c_idx, chunk) in chunks.into_iter().enumerate() {
+                                    if c_idx == 0 {
+                                        lines.push(Line::from(vec![
+                                            Span::styled("  │ ", Style::default().fg(theme.muted)),
+                                            Span::styled(
+                                                "+",
+                                                Style::default()
+                                                    .fg(theme.success)
+                                                    .add_modifier(Modifier::BOLD),
+                                            ),
+                                            Span::styled(
+                                                format!(" {}", chunk),
+                                                Style::default().fg(theme.success),
+                                            ),
+                                        ]));
+                                    } else {
+                                        lines.push(Line::from(vec![
+                                            Span::styled(
+                                                "  │   ",
+                                                Style::default().fg(theme.muted),
+                                            ),
+                                            Span::styled(chunk, Style::default().fg(theme.success)),
+                                        ]));
+                                    }
+                                }
                                 diff_line_count += 1;
                             } else if let Some(rest) = diff_line.strip_prefix("- ") {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        "-",
-                                        Style::default()
-                                            .fg(theme.destructive)
-                                            .add_modifier(Modifier::BOLD),
-                                    ),
-                                    Span::styled(
-                                        format!(" {}", rest),
-                                        Style::default().fg(theme.destructive),
-                                    ),
-                                ]));
+                                let chunks = Self::split_line_into_chunks(rest, max_content_width);
+                                for (c_idx, chunk) in chunks.into_iter().enumerate() {
+                                    if c_idx == 0 {
+                                        lines.push(Line::from(vec![
+                                            Span::styled("  │ ", Style::default().fg(theme.muted)),
+                                            Span::styled(
+                                                "-",
+                                                Style::default()
+                                                    .fg(theme.destructive)
+                                                    .add_modifier(Modifier::BOLD),
+                                            ),
+                                            Span::styled(
+                                                format!(" {}", chunk),
+                                                Style::default().fg(theme.destructive),
+                                            ),
+                                        ]));
+                                    } else {
+                                        lines.push(Line::from(vec![
+                                            Span::styled(
+                                                "  │   ",
+                                                Style::default().fg(theme.muted),
+                                            ),
+                                            Span::styled(
+                                                chunk,
+                                                Style::default().fg(theme.destructive),
+                                            ),
+                                        ]));
+                                    }
+                                }
                                 diff_line_count += 1;
                             } else if let Some(rest) = diff_line.strip_prefix("  ") {
-                                lines.push(Line::from(vec![
-                                    Span::styled("  │   ", Style::default().fg(theme.muted)),
-                                    Span::styled(
-                                        rest.to_string(),
-                                        Style::default().fg(theme.muted),
-                                    ),
-                                ]));
+                                let chunks = Self::split_line_into_chunks(rest, max_content_width);
+                                for chunk in chunks {
+                                    lines.push(Line::from(vec![
+                                        Span::styled("  │   ", Style::default().fg(theme.muted)),
+                                        Span::styled(chunk, Style::default().fg(theme.muted)),
+                                    ]));
+                                }
                             }
                             if diff_line_count > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
                                 let remaining = diff_section
@@ -1029,6 +1172,8 @@ impl TimelineView {
                     // Render regular tool output (summary after diff)
                     let trimmed = regular_output;
                     if !trimmed.is_empty() {
+                        let usable_width = area.width.saturating_sub(2) as usize;
+                        let max_content_width = usable_width.saturating_sub(6).max(20);
                         for out_line in trimmed
                             .lines()
                             .take(crate::constants::UI_MAX_TOOL_OUTPUT_LINES)
@@ -1045,10 +1190,14 @@ impl TimelineView {
                                 theme.muted
                             };
 
-                            lines.push(Line::from(vec![
-                                Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                Span::styled(out_line, Style::default().fg(line_color)),
-                            ]));
+                            let chunks = Self::split_line_into_chunks(out_line, max_content_width);
+                            for (c_idx, chunk) in chunks.into_iter().enumerate() {
+                                let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
+                                lines.push(Line::from(vec![
+                                    Span::styled(pfx, Style::default().fg(theme.muted)),
+                                    Span::styled(chunk, Style::default().fg(line_color)),
+                                ]));
+                            }
                         }
                         if trimmed.lines().count() > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
                             let remaining = trimmed
@@ -1479,11 +1628,9 @@ impl TimelineView {
             }
         }
 
-        self.selection.timeline_area.set(area);
-        self.selection.cache_plain_lines(&lines);
-        let lines = self.selection.apply_highlight(lines, theme);
+        let lines = Self::wrap_lines_to_width(lines, area.width as usize);
 
-        let total_lines = Self::visual_row_count(&lines, area.width);
+        let total_lines = lines.len().min(u16::MAX as usize) as u16;
         let viewport_height = area.height;
         let max_scroll = total_lines.saturating_sub(viewport_height);
         self.max_scroll.set(max_scroll);
@@ -1491,80 +1638,146 @@ impl TimelineView {
             self.scroll_offset.set(max_scroll);
             max_scroll
         } else {
-            self.scroll_offset.get().min(max_scroll)
+            let s = self.scroll_offset.get().min(max_scroll);
+            self.scroll_offset.set(s);
+            s
         };
+
+        self.selection.timeline_area.set(area);
+        self.selection.cache_plain_lines(&lines);
+        let lines = self.selection.apply_highlight(lines, theme);
 
         let block = Block::default()
             .borders(Borders::NONE)
             .style(Style::default().bg(theme.bg_primary));
 
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0));
+        let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
 
         frame.render_widget(paragraph, area);
     }
 
-    /// Counts visually rendered rows for `lines` at the given wrap width.
-    ///
-    /// ratatui's Paragraph::wrap expands long logical lines into multiple
-    /// visual rows by wrapping on whitespace word boundaries. We simulate
-    /// this word-wrapping to ensure scroll bounds never underestimate height,
-    /// which would otherwise push streaming content off-screen.
-    fn visual_row_count(lines: &[Line<'_>], width: u16) -> u16 {
-        let usable = usize::from(width.max(1));
-        let total: usize = lines
-            .iter()
-            .map(|line| {
-                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                if text.is_empty() {
-                    return 1;
-                }
-                let mut rows: usize = 0;
-                for sub_line in text.split('\n') {
-                    if sub_line.is_empty() {
-                        rows += 1;
+    /// Pre-wraps lines to the given visual column width so that each `Line`
+    /// maps 1:1 to a rendered terminal row. This guarantees that mouse selection,
+    /// scrolling, and plain text extraction are pixel-perfect and never out of sync.
+    pub fn wrap_lines_to_width<'a>(lines: Vec<Line<'a>>, max_width: usize) -> Vec<Line<'a>> {
+        let max_width = max_width.max(10);
+        let mut wrapped: Vec<Line<'a>> = Vec::with_capacity(lines.len());
+
+        for line in lines {
+            let total_width: usize = line
+                .spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            let has_newline = line.spans.iter().any(|s| s.content.contains('\n'));
+
+            if total_width <= max_width && !has_newline {
+                wrapped.push(line);
+                continue;
+            }
+
+            let mut cur_line_spans: Vec<Span<'a>> = Vec::new();
+            let mut cur_line_width: usize = 0;
+
+            for span in line.spans {
+                let style = span.style;
+                let content = span.content;
+
+                let sublines: Vec<&str> = content.split('\n').collect();
+                for (sub_idx, sub_text) in sublines.iter().enumerate() {
+                    if sub_idx > 0 {
+                        wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                        cur_line_width = 0;
+                    }
+
+                    if sub_text.is_empty() {
                         continue;
                     }
-                    let mut line_rows: usize = 1;
-                    let mut current_row_width: usize = 0;
 
-                    for word in sub_line.split(' ') {
-                        let word_width = UnicodeWidthStr::width(word);
-                        if current_row_width == 0 {
-                            if word_width > usable {
-                                let extra = (word_width.saturating_sub(1)) / usable;
-                                line_rows += extra;
-                                current_row_width = word_width % usable;
-                                if current_row_width == 0 {
-                                    current_row_width = usable;
-                                }
-                            } else {
-                                current_row_width = word_width;
+                    // Tokenize into (slice, is_whitespace)
+                    let mut tokens: Vec<(&str, bool)> = Vec::new();
+                    let mut start = 0;
+                    let mut in_ws: Option<bool> = None;
+                    for (idx, ch) in sub_text.char_indices() {
+                        let ws = ch.is_whitespace();
+                        if let Some(prev) = in_ws {
+                            if prev != ws {
+                                tokens.push((&sub_text[start..idx], prev));
+                                start = idx;
+                                in_ws = Some(ws);
                             }
-                        } else if current_row_width + 1 + word_width <= usable {
-                            current_row_width += 1 + word_width;
                         } else {
-                            line_rows += 1;
-                            if word_width > usable {
-                                let extra = (word_width.saturating_sub(1)) / usable;
-                                line_rows += extra;
-                                current_row_width = word_width % usable;
-                                if current_row_width == 0 {
-                                    current_row_width = usable;
+                            in_ws = Some(ws);
+                        }
+                    }
+                    if start < sub_text.len() {
+                        tokens.push((&sub_text[start..], in_ws.unwrap_or(false)));
+                    }
+
+                    for (tok, is_ws) in tokens {
+                        let tok_w = UnicodeWidthStr::width(tok);
+
+                        if is_ws {
+                            if cur_line_width == 0 {
+                                // Ignore leading space on a fresh wrapped line
+                                continue;
+                            } else if cur_line_width + tok_w <= max_width {
+                                Self::push_span_token(&mut cur_line_spans, tok, style);
+                                cur_line_width += tok_w;
+                            } else {
+                                wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                                cur_line_width = 0;
+                            }
+                        } else {
+                            // Non-whitespace word
+                            if cur_line_width + tok_w <= max_width {
+                                Self::push_span_token(&mut cur_line_spans, tok, style);
+                                cur_line_width += tok_w;
+                            } else if tok_w > max_width {
+                                // Word itself exceeds max_width: break by character
+                                for ch in tok.chars() {
+                                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                                    if cur_line_width + ch_w > max_width && cur_line_width > 0 {
+                                        wrapped
+                                            .push(Line::from(std::mem::take(&mut cur_line_spans)));
+                                        cur_line_width = 0;
+                                    }
+                                    let mut buf = [0u8; 4];
+                                    let s = ch.encode_utf8(&mut buf);
+                                    Self::push_span_token(&mut cur_line_spans, s, style);
+                                    cur_line_width += ch_w;
                                 }
                             } else {
-                                current_row_width = word_width;
+                                // Word doesn't fit on this line; wrap to next line
+                                if !cur_line_spans.is_empty() {
+                                    wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                                }
+                                Self::push_span_token(&mut cur_line_spans, tok, style);
+                                cur_line_width = tok_w;
                             }
                         }
                     }
-                    rows += line_rows;
                 }
-                rows
-            })
-            .sum();
-        total.min(u16::MAX as usize) as u16
+            }
+
+            if !cur_line_spans.is_empty() {
+                wrapped.push(Line::from(cur_line_spans));
+            }
+        }
+
+        wrapped
+    }
+
+    fn push_span_token<'a>(spans: &mut Vec<Span<'a>>, text: &str, style: Style) {
+        if let Some(last) = spans.last_mut() {
+            if last.style == style {
+                let mut merged = last.content.to_string();
+                merged.push_str(text);
+                last.content = merged.into();
+                return;
+            }
+        }
+        spans.push(Span::styled(text.to_string(), style));
     }
 
     /// Renders assistant Markdown text into highlighted Ratatui lines
@@ -1668,6 +1881,131 @@ mod tests {
     }
 
     #[test]
+    fn test_wrap_lines_to_width() {
+        // 1. Short line remains unchanged
+        let lines = vec![Line::from("Hello world")];
+        let wrapped = TimelineView::wrap_lines_to_width(lines, 40);
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0].spans[0].content, "Hello world");
+
+        // 2. Long line wraps at word boundary
+        let long_line = vec![Line::from("The quick brown fox jumps over the lazy dog")];
+        let wrapped = TimelineView::wrap_lines_to_width(long_line, 15);
+        assert!(wrapped.len() >= 3);
+        for l in &wrapped {
+            let line_text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(UnicodeWidthStr::width(line_text.as_str()) <= 15);
+        }
+
+        // 3. Very long continuous token wraps by character
+        let unbroken = vec![Line::from("abcdefghijklmnopqrstuvwxyz0123456789")];
+        let wrapped = TimelineView::wrap_lines_to_width(unbroken, 10);
+        assert_eq!(wrapped.len(), 4);
+        for l in &wrapped {
+            let line_text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(UnicodeWidthStr::width(line_text.as_str()) <= 10);
+        }
+    }
+
+    #[test]
+    fn test_paragraph_rendering_alignment() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut view = TimelineView::new();
+        view.entries
+            .push(TimelineEntry::UserPrompt("read src/main.rs".to_string()));
+        view.entries.push(TimelineEntry::ToolFinished {
+            name: "read_file".to_string(),
+            command_or_path: "src/main.rs".to_string(),
+            output: "line 1\nline 2\nline 3\nline 4\nline 5".to_string(),
+            success: true,
+            duration_ms: Some(15),
+        });
+        view.entries.push(TimelineEntry::AssistantMarkdown(
+            "This is a longer assistant message that explains what the file contains and will definitely wrap across several lines on a standard width terminal window so we can see how wrapping affects selection.".to_string(),
+        ));
+
+        for i in 0..25 {
+            view.entries.push(TimelineEntry::SystemStatus(format!(
+                "Status entry number {}",
+                i
+            )));
+        }
+
+        let theme = Theme::aura_dark();
+        let ctx = TimelineContext {
+            theme: &theme,
+            is_working: false,
+            working_millis: 0,
+            current_activity: None,
+            spinner_style: crate::ui::animation::SpinnerStyle::default(),
+            workspace: std::path::Path::new("."),
+            provider: "test",
+            model: "test",
+        };
+
+        // Render with auto_scroll=true (which will scroll down)
+        terminal
+            .draw(|f| {
+                view.render(f, Rect::new(0, 0, 80, 20), &ctx);
+            })
+            .unwrap();
+
+        let initial_scroll = view.scroll_offset.get();
+        assert!(initial_scroll > 0);
+
+        // Get the plain text displayed at screen row 10
+        let buf = terminal.backend().buffer();
+        let mut row_10_text = String::new();
+        for x in 0..20 {
+            row_10_text.push(buf[(x, 10)].symbol().chars().next().unwrap_or(' '));
+        }
+
+        // Simulate clicking and dragging on screen row 10
+        view.handle_mouse_down(0, 10);
+        view.handle_mouse_drag(20, 10);
+        let extracted = view.handle_mouse_up(20, 10);
+        assert_eq!(extracted, Some(row_10_text.clone()));
+
+        // Re-render to verify that row 10 has the selection style applied
+        terminal
+            .draw(|f| {
+                view.render(f, Rect::new(0, 0, 80, 20), &ctx);
+            })
+            .unwrap();
+
+        let buf2 = terminal.backend().buffer();
+        // Row 10 must be highlighted with REVERSED modifier
+        assert!(buf2[(0, 10)].modifier.contains(Modifier::REVERSED));
+        // Adjacent rows must NOT be highlighted
+        assert!(!buf2[(0, 9)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf2[(0, 11)].modifier.contains(Modifier::REVERSED));
+
+        // Test manual scroll alignment: scroll up 5 lines
+        view.scroll_up(5);
+        terminal
+            .draw(|f| {
+                view.render(f, Rect::new(0, 0, 80, 20), &ctx);
+            })
+            .unwrap();
+
+        let buf3 = terminal.backend().buffer();
+        let mut scrolled_row_5_text = String::new();
+        for x in 0..15 {
+            scrolled_row_5_text.push(buf3[(x, 5)].symbol().chars().next().unwrap_or(' '));
+        }
+
+        view.handle_mouse_down(0, 5);
+        view.handle_mouse_drag(15, 5);
+        let scrolled_extracted = view.handle_mouse_up(15, 5);
+        assert_eq!(scrolled_extracted, Some(scrolled_row_5_text));
+    }
+
+    #[test]
     fn test_minimax_think_tag_parsing_single_chunk() {
         let mut view = TimelineView::new();
         view.add_user_message("hii".to_string());
@@ -1767,6 +2105,33 @@ mod tests {
             "\"required_height\""
         );
         assert_eq!(TimelineView::extract_cmd_display("git_status", "{}"), "");
+    }
+
+    #[test]
+    fn test_clean_command_display_heredoc() {
+        let cmd = "cat > /path/to/Login.tsx << 'ENDOFFILE'\n'use client';\nexport default function() {}\nENDOFFILE";
+        assert_eq!(
+            TimelineView::clean_command_display(cmd),
+            "cat > /path/to/Login.tsx"
+        );
+    }
+
+    #[test]
+    fn test_clean_command_display_truncation() {
+        let cmd = "npm run very-long-command-name-that-keeps-going-and-going-and-exceeds-seventy-characters-easily";
+        let cleaned = TimelineView::clean_command_display(cmd);
+        assert!(cleaned.len() <= 70);
+        assert!(cleaned.ends_with("..."));
+    }
+
+    #[test]
+    fn test_split_line_into_chunks() {
+        let line = "export interface Customer { id: string; name: string; email: string; }";
+        let chunks = TimelineView::split_line_into_chunks(line, 30);
+        assert!(chunks.len() > 1);
+        for c in chunks {
+            assert!(unicode_width::UnicodeWidthStr::width(c.as_str()) <= 30);
+        }
     }
 
     #[test]

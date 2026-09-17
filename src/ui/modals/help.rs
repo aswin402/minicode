@@ -121,6 +121,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  Ctrl+Y     ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Copy text selection or latest response to clipboard",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  Esc        ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Interrupt running execution / close modal",

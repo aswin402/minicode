@@ -48,6 +48,11 @@ impl TimelineSelection {
         self.handle_mouse_drag(col, row, scroll_offset);
         self.is_selecting.set(false);
 
+        if self.start.get() == self.end.get() {
+            self.clear();
+            return None;
+        }
+
         let extracted = self.extract_selected_text();
         if let Some(ref text) = extracted {
             if !text.trim().is_empty() {
@@ -79,7 +84,24 @@ impl TimelineSelection {
 
     /// Returns whether there is an active selection
     pub fn has_selection(&self) -> bool {
-        self.start.get().is_some()
+        match (self.start.get(), self.end.get()) {
+            (Some(start), Some(end)) => start != end,
+            _ => false,
+        }
+    }
+
+    /// Converts a visual display column to a character index in a string.
+    pub fn col_to_char_idx(s: &str, target_col: usize) -> usize {
+        use unicode_width::UnicodeWidthChar;
+        let mut current_col = 0;
+        for (idx, ch) in s.chars().enumerate() {
+            if current_col >= target_col {
+                return idx;
+            }
+            let w = UnicodeWidthChar::width(ch).unwrap_or(1);
+            current_col += w;
+        }
+        s.chars().count()
     }
 
     /// Extracts the plain string contents of the selected text region
@@ -106,23 +128,22 @@ impl TimelineSelection {
         for r in r1..=r2 {
             if (r as usize) < plain_lines.len() {
                 let line = &plain_lines[r as usize];
-                let char_count = line.chars().count();
 
                 if r1 == r2 {
-                    let start_c = (c1 as usize).min(char_count);
-                    let end_c = (c2 as usize).min(char_count);
+                    let start_c = Self::col_to_char_idx(line, c1 as usize);
+                    let end_c = Self::col_to_char_idx(line, c2 as usize);
                     if start_c < end_c {
                         let sub: String =
                             line.chars().skip(start_c).take(end_c - start_c).collect();
                         result.push_str(&sub);
                     }
                 } else if r == r1 {
-                    let start_c = (c1 as usize).min(char_count);
+                    let start_c = Self::col_to_char_idx(line, c1 as usize);
                     let sub: String = line.chars().skip(start_c).collect();
                     result.push_str(&sub);
                     result.push('\n');
                 } else if r == r2 {
-                    let end_c = (c2 as usize).min(char_count);
+                    let end_c = Self::col_to_char_idx(line, c2 as usize);
                     let sub: String = line.chars().take(end_c).collect();
                     result.push_str(&sub);
                 } else {
@@ -139,7 +160,7 @@ impl TimelineSelection {
         }
     }
 
-    /// Slices a Line's spans and applies the visual selection highlight style across a character column range
+    /// Slices a Line's spans and applies the visual selection highlight style across a display column range
     pub fn apply_selection_to_line<'a>(
         line: Line<'a>,
         sel_start: usize,
@@ -150,6 +171,8 @@ impl TimelineSelection {
             return line;
         }
 
+        use unicode_width::UnicodeWidthChar;
+
         let mut new_spans = Vec::new();
         let mut current_col = 0;
 
@@ -159,38 +182,34 @@ impl TimelineSelection {
             .add_modifier(Modifier::REVERSED);
 
         for span in line.spans {
-            let span_len = span.content.chars().count();
-            let span_end = current_col + span_len;
+            let mut prefix = String::new();
+            let mut selected = String::new();
+            let mut suffix = String::new();
 
-            if span_end <= sel_start || current_col >= sel_end {
-                // Span is completely outside selection
-                new_spans.push(span);
-            } else {
-                // Span overlaps with selection
-                let chars: Vec<char> = span.content.chars().collect();
-                let overlap_start = sel_start.saturating_sub(current_col).min(span_len);
-                let overlap_end = (sel_end - current_col).min(span_len);
+            for ch in span.content.chars() {
+                let w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                let char_start_col = current_col;
+                let char_end_col = current_col + w;
+                current_col += w;
 
-                // 1. Prefix before selection
-                if overlap_start > 0 {
-                    let prefix: String = chars[..overlap_start].iter().collect();
-                    new_spans.push(Span::styled(prefix, span.style));
-                }
-
-                // 2. Selected portion
-                if overlap_start < overlap_end {
-                    let selected: String = chars[overlap_start..overlap_end].iter().collect();
-                    new_spans.push(Span::styled(selected, selection_style));
-                }
-
-                // 3. Suffix after selection
-                if overlap_end < span_len {
-                    let suffix: String = chars[overlap_end..].iter().collect();
-                    new_spans.push(Span::styled(suffix, span.style));
+                if char_end_col <= sel_start {
+                    prefix.push(ch);
+                } else if char_start_col >= sel_end {
+                    suffix.push(ch);
+                } else {
+                    selected.push(ch);
                 }
             }
 
-            current_col = span_end;
+            if !prefix.is_empty() {
+                new_spans.push(Span::styled(prefix, span.style));
+            }
+            if !selected.is_empty() {
+                new_spans.push(Span::styled(selected, selection_style));
+            }
+            if !suffix.is_empty() {
+                new_spans.push(Span::styled(suffix, span.style));
+            }
         }
 
         Line::from(new_spans)
@@ -231,5 +250,73 @@ impl TimelineSelection {
             }
         }
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_selection_lifecycle_and_single_click() {
+        let sel = TimelineSelection::new();
+        sel.timeline_area.set(Rect::new(0, 0, 80, 24));
+        *sel.cached_plain_lines.borrow_mut() = vec![
+            "Hello world from minicode".to_string(),
+            "Second line of testing".to_string(),
+        ];
+
+        // Initially no selection
+        assert!(!sel.has_selection());
+
+        // Single click (mouse down without drag)
+        sel.handle_mouse_down(0, 0, 0);
+        assert!(!sel.has_selection()); // start == end, not an active selection yet
+        let result = sel.handle_mouse_up(0, 0, 0);
+        assert_eq!(result, None);
+        assert!(!sel.has_selection()); // cleared on release
+
+        // Drag selection
+        sel.handle_mouse_down(0, 0, 0);
+        sel.handle_mouse_drag(5, 0, 0);
+        assert!(sel.has_selection());
+        let text = sel.handle_mouse_up(5, 0, 0);
+        assert_eq!(text, Some("Hello".to_string()));
+
+        // Backwards drag selection
+        sel.handle_mouse_down(11, 0, 0);
+        sel.handle_mouse_drag(6, 0, 0);
+        assert!(sel.has_selection());
+        let text = sel.handle_mouse_up(6, 0, 0);
+        assert_eq!(text, Some("world".to_string()));
+    }
+
+    #[test]
+    fn test_unicode_and_multiline_selection() {
+        let sel = TimelineSelection::new();
+        sel.timeline_area.set(Rect::new(0, 0, 80, 24));
+        *sel.cached_plain_lines.borrow_mut() = vec![
+            "• Read File src/main.rs".to_string(),
+            "  │ line 1 of code".to_string(),
+            "✨ Sparkles and features".to_string(),
+        ];
+
+        // Select "Read File" on line 0 (starts at visual column 2 because "• " has width 2)
+        sel.handle_mouse_down(2, 0, 0);
+        sel.handle_mouse_drag(11, 0, 0);
+        let text = sel.handle_mouse_up(11, 0, 0);
+        assert_eq!(text, Some("Read File".to_string()));
+
+        // Select across line 0 and line 1
+        sel.handle_mouse_down(2, 0, 0);
+        sel.handle_mouse_drag(8, 1, 0);
+        let multi = sel.handle_mouse_up(8, 1, 0);
+        assert_eq!(multi, Some("Read File src/main.rs\n  │ line".to_string()));
+
+        // Select text after 2-column emoji "✨ " (starts at visual column 3)
+        sel.handle_mouse_down(3, 2, 0);
+        sel.handle_mouse_drag(11, 2, 0);
+        let emoji_text = sel.handle_mouse_up(11, 2, 0);
+        assert_eq!(emoji_text, Some("Sparkles".to_string()));
     }
 }

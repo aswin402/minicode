@@ -1,18 +1,115 @@
 use std::io::Write;
+use std::process::{Command, Stdio};
 
-/// Copies text to the system clipboard using terminal OSC 52 escape sequences.
-/// Works natively across local terminals, SSH sessions, tmux, and all modern OS terminal emulators.
+/// Copies text to the system clipboard using native desktop utilities with OSC 52 fallback.
+/// On Linux: tries `wl-copy` (Wayland) or `xclip -selection clipboard` (X11).
+/// On macOS: tries `pbcopy`.
+/// On Windows: tries `powershell -command Set-Clipboard`.
+/// Always also sends the terminal OSC 52 sequence so remote SSH / tmux sessions work.
 pub fn copy_to_clipboard(text: &str) -> bool {
+    let mut native_copied = false;
+
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Try wl-copy first if on Wayland
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            if let Ok(mut child) = Command::new("wl-copy")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                    drop(stdin);
+                }
+                if child.wait().map(|s| s.success()).unwrap_or(false) {
+                    native_copied = true;
+                }
+            }
+        }
+
+        // 2. Also copy to xclip if DISPLAY is present or as fallback if Wayland was unavailable
+        if std::env::var_os("DISPLAY").is_some()
+            || (!native_copied && std::env::var_os("WAYLAND_DISPLAY").is_none())
+        {
+            if let Ok(mut child) = Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                    drop(stdin);
+                }
+                if child.wait().map(|s| s.success()).unwrap_or(false) {
+                    native_copied = true;
+                }
+            }
+
+            // Also copy to primary selection for X11 middle-click paste
+            if let Ok(mut child) = Command::new("xclip")
+                .args(["-selection", "primary"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                    drop(stdin);
+                }
+                let _ = child.wait();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(mut child) = Command::new("pbcopy")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+                drop(stdin);
+            }
+            if child.wait().map(|s| s.success()).unwrap_or(false) {
+                native_copied = true;
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(mut child) = Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Set-Clipboard", "-Value", text])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if child.wait().map(|s| s.success()).unwrap_or(false) {
+                native_copied = true;
+            }
+        }
+    }
+
+    // Always emit OSC 52 escape sequences for SSH, tmux, and terminals that support it
     let b64 = base64_encode(text.as_bytes());
-    // OSC 52 sequence: ESC ] 52 ; c ; <base64> BEL
     let osc52 = format!("\x1b]52;c;{}\x07", b64);
     let mut stdout = std::io::stdout();
-    if stdout.write_all(osc52.as_bytes()).is_ok() {
+    let osc52_sent = if stdout.write_all(osc52.as_bytes()).is_ok() {
         let _ = stdout.flush();
         true
     } else {
         false
-    }
+    };
+
+    native_copied || osc52_sent
 }
 
 /// Pure-Rust Base64 encoder (RFC 4648 standard)

@@ -94,8 +94,10 @@ pub const ONPKG_DOCS_DIR: &str = "onpkg_docs";
 pub const GIT_DIR_NAME: &str = ".git";
 
 // === Agent Loop Limits ===
-/// Maximum tool calling steps per turn to prevent infinite loops
-pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
+/// Maximum tool calling steps per turn before pausing (0 = unbounded continuous execution until task completion)
+pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 0;
+/// Default maximum auto-continue cycles when tool iteration limit is reached during active work
+pub const DEFAULT_MAX_AUTO_CONTINUES: usize = 5;
 /// Maximum API retry attempts for transient network or rate limit errors
 pub const DEFAULT_MAX_RETRIES: usize = 3;
 /// Exponential backoff baseline delay in seconds between retries
@@ -252,6 +254,8 @@ pub const TURN_STATUS_COMPLETE: &str = "complete";
 pub const TURN_STATUS_CANCELLED: &str = "cancelled";
 /// Turn completion status reported when the anti-thrashing circuit breaker tripped
 pub const TURN_STATUS_CIRCUIT_TRIPPED: &str = "circuit_tripped";
+/// Turn completion status reported when tool iteration limit was reached and paused
+pub const TURN_STATUS_ITERATION_LIMIT: &str = "iteration_limit";
 
 // === Smart Donut Truncator (Phase 88, 115) ===
 /// Standard line threshold before Smart Donut truncation activates (for standard/small context)
@@ -760,6 +764,8 @@ pub mod env_vars {
     pub const MINICODE_MAX_PARALLEL_TOOLS: &str = "MINICODE_MAX_PARALLEL_TOOLS";
     pub const MINICODE_COMPACT_TOOL_SCHEMAS: &str = "MINICODE_COMPACT_TOOL_SCHEMAS";
     pub const MINICODE_BROWSER: &str = "MINICODE_BROWSER";
+    pub const MINICODE_MAX_TOOL_ITERATIONS: &str = "MINICODE_MAX_TOOL_ITERATIONS";
+    pub const MINICODE_AUTO_CONTINUE: &str = "MINICODE_AUTO_CONTINUE";
 
     pub const OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
     pub const HOME: &str = "HOME";

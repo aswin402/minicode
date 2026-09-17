@@ -177,6 +177,16 @@ pub struct AgentConfig {
 
     #[serde(default = "default_true")]
     pub compact_tool_schemas: bool,
+
+    /// Maximum tool calling iterations per turn (0 = unbounded continuous autonomous execution)
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+
+    #[serde(default = "default_true")]
+    pub auto_continue: bool,
+
+    #[serde(default = "default_max_auto_continues")]
+    pub max_auto_continues: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -238,8 +248,19 @@ impl Default for AgentConfig {
             speculative_execution: true,
             max_parallel_tools: crate::constants::DEFAULT_MAX_PARALLEL_TOOLS,
             compact_tool_schemas: true,
+            max_tool_iterations: default_max_tool_iterations(),
+            auto_continue: true,
+            max_auto_continues: default_max_auto_continues(),
         }
     }
+}
+
+fn default_max_tool_iterations() -> usize {
+    crate::constants::DEFAULT_MAX_TOOL_ITERATIONS
+}
+
+fn default_max_auto_continues() -> usize {
+    crate::constants::DEFAULT_MAX_AUTO_CONTINUES
 }
 
 fn default_approval_policy() -> String {
@@ -476,6 +497,9 @@ pub struct RawAgentConfig {
     pub speculative_execution: Option<bool>,
     pub max_parallel_tools: Option<usize>,
     pub compact_tool_schemas: Option<bool>,
+    pub max_tool_iterations: Option<usize>,
+    pub auto_continue: Option<bool>,
+    pub max_auto_continues: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -751,6 +775,15 @@ impl Config {
         if let Some(compact_tool_schemas) = other.agent.compact_tool_schemas {
             self.agent.compact_tool_schemas = compact_tool_schemas;
         }
+        if let Some(max_iter) = other.agent.max_tool_iterations {
+            self.agent.max_tool_iterations = max_iter;
+        }
+        if let Some(ac) = other.agent.auto_continue {
+            self.agent.auto_continue = ac;
+        }
+        if let Some(mac) = other.agent.max_auto_continues {
+            self.agent.max_auto_continues = mac;
+        }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
         }
@@ -861,6 +894,14 @@ impl Config {
         if let Ok(compact) = std::env::var(env_vars::MINICODE_COMPACT_TOOL_SCHEMAS) {
             self.agent.compact_tool_schemas =
                 compact == "1" || compact.eq_ignore_ascii_case("true");
+        }
+        if let Ok(val_str) = std::env::var(env_vars::MINICODE_MAX_TOOL_ITERATIONS) {
+            if let Ok(val) = val_str.parse::<usize>() {
+                self.agent.max_tool_iterations = val;
+            }
+        }
+        if let Ok(ac_str) = std::env::var(env_vars::MINICODE_AUTO_CONTINUE) {
+            self.agent.auto_continue = ac_str == "1" || ac_str.eq_ignore_ascii_case("true");
         }
     }
 
@@ -1054,7 +1095,35 @@ mod tests {
         assert_eq!(config.provider.model, "gemini-2.5-pro");
         assert_eq!(config.agent.timeout, 30);
         assert_eq!(config.agent.map_tokens, 1024);
+        assert_eq!(config.agent.max_tool_iterations, 0);
+        assert!(config.agent.auto_continue);
+        assert_eq!(config.agent.max_auto_continues, 5);
         assert!(!config.ui.plain);
+    }
+
+    #[test]
+    fn test_agent_iteration_config_merge() {
+        let toml_str = r#"
+            [agent]
+            max_tool_iterations = 25
+            auto_continue = false
+            max_auto_continues = 2
+        "#;
+        let raw: RawConfig = toml::from_str(toml_str).unwrap();
+        let mut config = Config::default();
+        config.merge_raw(raw);
+        assert_eq!(config.agent.max_tool_iterations, 25);
+        assert!(!config.agent.auto_continue);
+        assert_eq!(config.agent.max_auto_continues, 2);
+
+        // Test explicit 0 (unbounded) merge
+        let unbounded_toml = r#"
+            [agent]
+            max_tool_iterations = 0
+        "#;
+        let raw_unbounded: RawConfig = toml::from_str(unbounded_toml).unwrap();
+        config.merge_raw(raw_unbounded);
+        assert_eq!(config.agent.max_tool_iterations, 0);
     }
 
     #[test]
