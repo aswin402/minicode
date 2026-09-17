@@ -1058,6 +1058,11 @@ pub const ARCH_FAN_OUT_THRESHOLD: usize = 15;
 /// Minimum architecture health score required to pass pre-completion verification
 pub const ARCH_MIN_HEALTH_SCORE: u32 = 70;
 
+// === Intent Anchoring & Execution Tracking (Phase 128) ===
+pub const DEFAULT_INTENT_PERSISTENCE_FILE: &str = ".minicode/intent_anchor.json";
+pub const DEFAULT_INTENT_DRIFT_WARNING_TURNS: usize = 4;
+pub const DEFAULT_INTENT_MAX_ITEMS: usize = 32;
+
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.

@@ -187,6 +187,9 @@ pub struct AgentConfig {
 
     #[serde(default = "default_max_auto_continues")]
     pub max_auto_continues: usize,
+
+    #[serde(default)]
+    pub intent: IntentConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -251,6 +254,7 @@ impl Default for AgentConfig {
             max_tool_iterations: default_max_tool_iterations(),
             auto_continue: true,
             max_auto_continues: default_max_auto_continues(),
+            intent: IntentConfig::default(),
         }
     }
 }
@@ -277,6 +281,44 @@ fn default_map_tokens() -> usize {
 
 fn default_warning_threshold() -> f32 {
     0.70
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntentConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_intent_persistence_file")]
+    pub persistence_file: String,
+    #[serde(default = "default_intent_drift_warning_turns")]
+    pub drift_warning_turns: usize,
+    #[serde(default = "default_true")]
+    pub auto_extract: bool,
+    #[serde(default = "default_intent_max_items")]
+    pub max_ledger_items: usize,
+}
+
+impl Default for IntentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            persistence_file: default_intent_persistence_file(),
+            drift_warning_turns: default_intent_drift_warning_turns(),
+            auto_extract: true,
+            max_ledger_items: default_intent_max_items(),
+        }
+    }
+}
+
+fn default_intent_persistence_file() -> String {
+    crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE.to_string()
+}
+
+fn default_intent_drift_warning_turns() -> usize {
+    crate::constants::DEFAULT_INTENT_DRIFT_WARNING_TURNS
+}
+
+fn default_intent_max_items() -> usize {
+    crate::constants::DEFAULT_INTENT_MAX_ITEMS
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -500,6 +542,7 @@ pub struct RawAgentConfig {
     pub max_tool_iterations: Option<usize>,
     pub auto_continue: Option<bool>,
     pub max_auto_continues: Option<usize>,
+    pub intent: Option<IntentConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -783,6 +826,9 @@ impl Config {
         }
         if let Some(mac) = other.agent.max_auto_continues {
             self.agent.max_auto_continues = mac;
+        }
+        if let Some(intent) = other.agent.intent {
+            self.agent.intent = intent;
         }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
