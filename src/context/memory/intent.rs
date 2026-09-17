@@ -77,7 +77,6 @@ impl IntentLedger {
     }
 
     /// Updates the status of an existing requirement item by ID.
-    /// Updates the status of an existing requirement item by ID.
     ///
     /// - If moved to `InProgress`, sets `active_item_id` to this item and resets drift counter
     ///   if transitioning from `Pending`.
@@ -186,13 +185,22 @@ impl IntentLedger {
 
         let (root_objective, start_idx) = match first_non_empty_idx {
             Some(idx) => {
-                let cleaned = clean_root_objective(raw_lines[idx]);
-                let obj = if cleaned.is_empty() {
-                    "General Assistance".to_string()
+                let first_line_trimmed = raw_lines[idx].trim();
+                if strip_checkbox_prefix(first_line_trimmed).is_some() {
+                    ("Complete prompt checklist".to_string(), idx)
+                } else if parse_numbered_item(first_line_trimmed).is_some()
+                    || strip_bullet_prefix(first_line_trimmed).is_some()
+                {
+                    ("Complete prompt tasks".to_string(), idx)
                 } else {
-                    cleaned
-                };
-                (obj, idx + 1)
+                    let cleaned = clean_root_objective(raw_lines[idx]);
+                    let obj = if cleaned.is_empty() {
+                        "General Assistance".to_string()
+                    } else {
+                        cleaned
+                    };
+                    (obj, idx + 1)
+                }
             }
             None => ("General Assistance".to_string(), 0),
         };
@@ -367,7 +375,7 @@ fn commit_draft(draft: Option<DraftItem>, collected: &mut Vec<RequirementItem>, 
 
         let mut is_dup = false;
         for existing in collected.iter_mut() {
-            if is_substring_title(&existing.title, &title) {
+            if is_duplicate_title(&existing.title, &title) {
                 is_dup = true;
                 if existing.description.is_none() && desc_text.is_some() {
                     existing.description = desc_text.clone();
@@ -401,7 +409,10 @@ fn clean_root_objective(line: &str) -> String {
     let without_hash = trimmed.trim_start_matches('#').trim();
     let mut cleaned = without_hash;
     for prefix in &["objective:", "goal:", "task:", "project:", "title:"] {
-        if cleaned.len() >= prefix.len() && cleaned[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        if cleaned.len() >= prefix.len()
+            && cleaned.is_char_boundary(prefix.len())
+            && cleaned[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
             cleaned = cleaned[prefix.len()..].trim();
             break;
         }
@@ -553,23 +564,41 @@ fn extract_related_files(text: &str) -> Vec<String> {
         ".yaml", ".yml", ".sql", ".sh", ".go", ".c", ".cpp", ".h",
     ];
 
+    let is_bracket_or_quote = |c: char| {
+        matches!(
+            c,
+            '\'' | '"' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+        )
+    };
+
     for word in text.split_whitespace() {
-        let cleaned = word.trim_matches(|c: char| {
-            c == '\''
-                || c == '"'
-                || c == '`'
-                || c == '('
-                || c == ')'
-                || c == '['
-                || c == ']'
-                || c == '{'
-                || c == '}'
-                || c == '<'
-                || c == '>'
-                || c == ','
-                || c == ';'
-                || c == ':'
-        });
+        let mut cleaned = word;
+
+        loop {
+            let prev = cleaned;
+            cleaned = cleaned.trim_matches(is_bracket_or_quote);
+
+            // Strip trailing sentence punctuation while preserving directory paths like "." or ".."
+            for punct in ['!', '?', ',', ';', ':'] {
+                if cleaned.len() > 1 {
+                    if let Some(stripped) = cleaned.strip_suffix(punct) {
+                        cleaned = stripped;
+                    }
+                }
+            }
+
+            if cleaned.len() > 1 && cleaned != ".." {
+                if let Some(stripped) = cleaned.strip_suffix('.') {
+                    cleaned = stripped;
+                }
+            }
+
+            cleaned = cleaned.trim_matches(is_bracket_or_quote);
+
+            if cleaned == prev {
+                break;
+            }
+        }
 
         if cleaned.is_empty() || cleaned.starts_with("http://") || cleaned.starts_with("https://") {
             continue;
@@ -583,7 +612,9 @@ fn extract_related_files(text: &str) -> Vec<String> {
             }
         });
 
-        let has_path_prefix = cleaned.starts_with("src/")
+        let has_path_prefix = cleaned == "."
+            || cleaned == ".."
+            || cleaned.starts_with("src/")
             || cleaned.starts_with("tests/")
             || cleaned.starts_with("docs/")
             || cleaned.starts_with("./")
@@ -601,6 +632,9 @@ fn extract_related_files(text: &str) -> Vec<String> {
 }
 
 fn is_valid_path_candidate(s: &str) -> bool {
+    if s == "." || s == ".." {
+        return true;
+    }
     if s.chars().all(|c| c.is_ascii_digit() || c == '.') {
         return false;
     }
@@ -608,38 +642,14 @@ fn is_valid_path_candidate(s: &str) -> bool {
         .all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-')
 }
 
-fn is_substring_title(a: &str, b: &str) -> bool {
-    let a_clean = a.trim();
-    let b_clean = b.trim();
-    if a_clean.eq_ignore_ascii_case(b_clean) {
-        return true;
-    }
-    let a_lower = a_clean.to_lowercase();
-    let b_lower = b_clean.to_lowercase();
-    let (shorter, longer) = if a_lower.len() <= b_lower.len() {
-        (&a_lower, &b_lower)
-    } else {
-        (&b_lower, &a_lower)
-    };
-    if shorter.len() < 3 {
-        return false;
-    }
-    if let Some(pos) = longer.find(shorter.as_str()) {
-        let before_ok = pos == 0
-            || longer[..pos]
-                .chars()
-                .last()
-                .is_none_or(|c| !c.is_alphanumeric());
-        let after_ok = pos + shorter.len() == longer.len()
-            || longer[pos + shorter.len()..]
-                .chars()
-                .next()
-                .is_none_or(|c| !c.is_alphanumeric());
-        if before_ok && after_ok {
-            return true;
-        }
-    }
-    false
+fn is_duplicate_title(a: &str, b: &str) -> bool {
+    let clean_a = strip_leading_enumeration(a.trim())
+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
+        .trim();
+    let clean_b = strip_leading_enumeration(b.trim())
+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
+        .trim();
+    clean_a.eq_ignore_ascii_case(clean_b)
 }
 
 #[cfg(test)]
@@ -889,23 +899,88 @@ Refactor core architecture
 # System Enhancements
 - Dashboard
 - 1. Dashboard
-- Dashboard with metrics
+- dashboard
 - Tasks
 - Users
 - Billing
 - Settings
 "#;
         let ledger = IntentLedger::from_prompt(prompt, 3);
-        // Dashboard, 1. Dashboard, Dashboard with metrics should deduplicate into 1 Dashboard item
+        // Dashboard, 1. Dashboard, dashboard should deduplicate into 1 Dashboard item
         assert!(ledger.items.len() <= 3);
         assert_eq!(
             ledger
                 .items
                 .iter()
-                .filter(|i| i.title.contains("Dashboard"))
+                .filter(|i| i.title.to_lowercase().contains("dashboard"))
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn test_utf8_char_boundary_emojis_and_international() {
+        let prompt = "💡 Build website with 🚀\n- [ ] 🦀 Rust backend in src/main.rs\n- [ ] 🎨 Frontend in src/ui.rs";
+        let ledger = IntentLedger::from_prompt(prompt, 16);
+        assert_eq!(ledger.root_objective, "💡 Build website with 🚀");
+        assert_eq!(ledger.items.len(), 2);
+        assert!(ledger.items[0].title.contains("🦀 Rust backend"));
+        assert!(ledger.items[0]
+            .related_files
+            .contains(&"src/main.rs".to_string()));
+        assert!(ledger.items[1].title.contains("🎨 Frontend"));
+
+        // Direct UTF-8 multi-byte slicing tests
+        assert_eq!(
+            clean_root_objective("💡 Build website with 🚀"),
+            "💡 Build website with 🚀"
+        );
+        assert_eq!(
+            clean_root_objective("Objective: 💡 Build website with 🚀"),
+            "💡 Build website with 🚀"
+        );
+        assert_eq!(clean_root_objective("🦀🦀🦀"), "🦀🦀🦀");
+        assert_eq!(
+            clean_root_objective("Task: 🚀 Ship Phase 2"),
+            "🚀 Ship Phase 2"
+        );
+        assert_eq!(clean_root_objective("你好世界"), "你好世界");
+    }
+
+    #[test]
+    fn test_checklist_first_prompt_preserves_first_item() {
+        let prompt = "- [ ] First task\n- [ ] Second task";
+        let ledger = IntentLedger::from_prompt(prompt, 16);
+        assert_eq!(ledger.root_objective, "Complete prompt checklist");
+        assert_eq!(ledger.items.len(), 2);
+        assert_eq!(ledger.items[0].title, "First task");
+        assert_eq!(ledger.items[0].status, RequirementStatus::Pending);
+        assert_eq!(ledger.items[1].title, "Second task");
+        assert_eq!(ledger.items[1].status, RequirementStatus::Pending);
+    }
+
+    #[test]
+    fn test_extract_related_files_trailing_punctuation() {
+        let text = "Check src/main.rs. Also see tests/app_test.rs! Did you update docs/spec.md? Or ../ and .";
+        let files = extract_related_files(text);
+        assert!(files.contains(&"src/main.rs".to_string()));
+        assert!(files.contains(&"tests/app_test.rs".to_string()));
+        assert!(files.contains(&"docs/spec.md".to_string()));
+        assert!(files.contains(&"../".to_string()));
+        assert!(files.contains(&".".to_string()));
+
+        let single = "Check src/main.rs.";
+        let single_files = extract_related_files(single);
+        assert_eq!(single_files, vec!["src/main.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_no_aggressive_substring_deduplication() {
+        let prompt = "1. User Service\n2. User Service Tests";
+        let ledger = IntentLedger::from_prompt(prompt, 16);
+        assert_eq!(ledger.items.len(), 2);
+        assert_eq!(ledger.items[0].title, "User Service");
+        assert_eq!(ledger.items[1].title, "User Service Tests");
     }
 
     #[test]
