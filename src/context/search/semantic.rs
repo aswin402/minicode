@@ -24,6 +24,8 @@ pub struct CodeChunk {
     pub binary_vector: Option<crate::context::search::quantize::BinaryVector128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polar_quant: Option<crate::context::search::quantize::PolarQuant4>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polar_quant_fixed: Option<crate::context::search::quantize::PolarQuant4Fixed>,
 }
 
 impl CodeChunk {
@@ -40,10 +42,22 @@ impl CodeChunk {
         })
     }
 
+    pub fn get_polar_quant_fixed(&self) -> crate::context::search::quantize::PolarQuant4Fixed {
+        self.polar_quant_fixed.unwrap_or_else(|| {
+            if let Some(ref pq) = self.polar_quant {
+                pq.clone().into()
+            } else {
+                crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&self.vector)
+            }
+        })
+    }
+
     /// Computes similarity score against an f32 query vector using 4-bit asymmetric dot product
     /// (or full vector cosine similarity if available).
     pub fn similarity_to_query(&self, query_vec: &[f32]) -> f32 {
-        if let Some(ref pq) = self.polar_quant {
+        if let Some(ref pqf) = self.polar_quant_fixed {
+            pqf.asymmetric_dot_product(query_vec)
+        } else if let Some(ref pq) = self.polar_quant {
             pq.asymmetric_dot_product(query_vec)
         } else if !self.vector.is_empty() {
             SemanticIndex::cosine_similarity(query_vec, &self.vector)
@@ -79,6 +93,7 @@ pub struct SemanticCache {
 pub struct SemanticIndex {
     pub chunks: Vec<CodeChunk>,
     pub file_hashes: HashMap<String, u64>,
+    pub mmap_index: Option<crate::context::search::mmap_index::MmapTurbovecIndex>,
 }
 
 impl Default for SemanticIndex {
@@ -92,6 +107,7 @@ impl SemanticIndex {
         Self {
             chunks: Vec::new(),
             file_hashes: HashMap::new(),
+            mmap_index: None,
         }
     }
 
@@ -220,6 +236,29 @@ impl SemanticIndex {
         }
 
         let query_vec = Self::embed(query);
+
+        // Fast path: use zero-copy memory map if available
+        if let Some(ref mmap) = self.mmap_index {
+            let top_k = mmap.search(&query_vec, limit);
+            let mut results = Vec::with_capacity(top_k.len());
+            for (idx, score) in top_k {
+                if score > 0.05 {
+                    if let Some(chunk) = self.chunks.get(idx) {
+                        results.push(SemanticSearchResult {
+                            file_path: chunk.file_path.clone(),
+                            start_line: chunk.start_line,
+                            end_line: chunk.end_line,
+                            similarity_score: score,
+                            snippet: chunk.content.clone(),
+                            symbol_name: chunk.symbol_name.clone(),
+                            symbol_kind: chunk.symbol_kind.clone(),
+                        });
+                    }
+                }
+            }
+            return results;
+        }
+
         let query_bin =
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
 
@@ -375,33 +414,140 @@ impl SemanticIndex {
             .collect()
     }
 
-    fn cache_path(workspace_root: &Path) -> PathBuf {
+    pub fn cache_path(workspace_root: &Path) -> PathBuf {
         workspace_root
             .join(".minicode")
             .join("cache")
             .join("semantic_index.json")
     }
 
+    #[allow(dead_code)]
+    pub fn binary_cache_path(workspace_root: &Path) -> PathBuf {
+        workspace_root
+            .join(".minicode")
+            .join("cache")
+            .join("semantic_index.bin")
+    }
+
+    #[allow(dead_code)]
+    pub fn hashes_cache_path(workspace_root: &Path) -> PathBuf {
+        workspace_root
+            .join(".minicode")
+            .join("cache")
+            .join("semantic_hashes.json")
+    }
+
     fn load_cache(&mut self, cache_path: &Path) {
+        let bin_path = cache_path.with_extension("bin");
+        let hashes_path = cache_path.with_file_name("semantic_hashes.json");
+
+        // 1. Load file hashes sidecar if present
+        if let Ok(bytes) = fs::read(&hashes_path) {
+            if let Ok(hashes) = serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
+                self.file_hashes = hashes;
+            }
+        }
+
+        // 2. Try loading binary mmap index
+        if bin_path.exists() {
+            if let Ok(mmap) = crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path)
+            {
+                let count = mmap.record_count();
+                let mut loaded_chunks = Vec::with_capacity(count);
+                for i in 0..count {
+                    if let Some(meta) = mmap.get_metadata(i) {
+                        let rec = mmap.get_record(i);
+                        let binary_vec = rec.map(|r| r.binary);
+                        let quant4 = rec.map(|r| r.quant4);
+                        loaded_chunks.push(CodeChunk {
+                            file_path: meta.file_path,
+                            start_line: meta.start_line,
+                            end_line: meta.end_line,
+                            content: meta.content,
+                            vector: Vec::new(),
+                            symbol_name: meta.symbol_name,
+                            symbol_kind: meta.symbol_kind,
+                            binary_vector: binary_vec,
+                            polar_quant: quant4.map(|q| q.into()),
+                            polar_quant_fixed: quant4,
+                        });
+                    }
+                }
+                self.chunks = loaded_chunks;
+                self.mmap_index = Some(mmap);
+                return;
+            }
+        }
+
+        // 3. Fallback: migrate from legacy JSON cache if it exists
         if let Ok(bytes) = fs::read(cache_path) {
             if let Ok(cache) = serde_json::from_slice::<SemanticCache>(&bytes) {
                 self.chunks = cache.chunks;
                 self.file_hashes = cache.file_hashes;
+                // Save hashes sidecar
+                if let Ok(hashes_bytes) = serde_json::to_vec(&self.file_hashes) {
+                    let _ = fs::write(&hashes_path, hashes_bytes);
+                }
+                // Migrate legacy json to binary format immediately
+                self.save_binary_cache(&bin_path);
+                // Clean up legacy json after successful migration
+                let _ = fs::remove_file(cache_path);
+                if let Ok(mmap) =
+                    crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path)
+                {
+                    self.mmap_index = Some(mmap);
+                }
             }
         }
     }
 
-    fn save_cache(&self, cache_path: &Path) {
+    fn save_cache(&mut self, cache_path: &Path) {
+        let bin_path = cache_path.with_extension("bin");
+        let hashes_path = cache_path.with_file_name("semantic_hashes.json");
+
         if let Some(parent) = cache_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let cache = SemanticCache {
-            file_hashes: self.file_hashes.clone(),
-            chunks: self.chunks.clone(),
-        };
-        if let Ok(bytes) = serde_json::to_vec(&cache) {
-            let _ = fs::write(cache_path, bytes);
+
+        // Release existing memory mapping before overwriting
+        self.mmap_index.take();
+
+        // Save file hashes sidecar
+        if let Ok(bytes) = serde_json::to_vec(&self.file_hashes) {
+            let _ = fs::write(&hashes_path, bytes);
         }
+
+        // Save binary index
+        self.save_binary_cache(&bin_path);
+
+        // Open newly created binary index into mmap
+        if let Ok(mmap) = crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path) {
+            self.mmap_index = Some(mmap);
+        }
+    }
+
+    pub fn save_binary_cache(&self, bin_path: &Path) {
+        use crate::context::search::mmap_index::{ChunkMetadata, MmapTurbovecIndex};
+        use crate::context::search::quantize::TurbovecRecord;
+
+        let mut records = Vec::with_capacity(self.chunks.len());
+        let mut metadata = Vec::with_capacity(self.chunks.len());
+
+        for chunk in &self.chunks {
+            let binary = chunk.get_binary_vector();
+            let quant4 = chunk.get_polar_quant_fixed();
+            records.push(TurbovecRecord { binary, quant4 });
+            metadata.push(ChunkMetadata {
+                file_path: chunk.file_path.clone(),
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
+                symbol_name: chunk.symbol_name.clone(),
+                symbol_kind: chunk.symbol_kind.clone(),
+                content: chunk.content.clone(),
+            });
+        }
+
+        let _ = MmapTurbovecIndex::create(bin_path, &records, &metadata);
     }
 }
 
@@ -436,8 +582,10 @@ pub fn chunk_source_code_ast(
 
                 let binary_vector =
                     crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
-                let polar_quant =
-                    crate::context::search::quantize::PolarQuant4::from_f32_slice(&vector);
+                let polar_quant_fixed =
+                    crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
+                let polar_quant: crate::context::search::quantize::PolarQuant4 =
+                    polar_quant_fixed.into();
                 chunks.push(CodeChunk {
                     file_path: file_path.to_string(),
                     start_line: start + 1,
@@ -448,6 +596,7 @@ pub fn chunk_source_code_ast(
                     symbol_kind: Some(sym.kind),
                     binary_vector: Some(binary_vector),
                     polar_quant: Some(polar_quant),
+                    polar_quant_fixed: Some(polar_quant_fixed),
                 });
             }
             return chunks;
@@ -477,7 +626,9 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
         let vector = SemanticIndex::embed(&chunk_text);
         let binary_vector =
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
-        let polar_quant = crate::context::search::quantize::PolarQuant4::from_f32_slice(&vector);
+        let polar_quant_fixed =
+            crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
+        let polar_quant: crate::context::search::quantize::PolarQuant4 = polar_quant_fixed.into();
 
         chunks.push(CodeChunk {
             file_path: file_path.to_string(),
@@ -489,6 +640,7 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
             symbol_kind: None,
             binary_vector: Some(binary_vector),
             polar_quant: Some(polar_quant),
+            polar_quant_fixed: Some(polar_quant_fixed),
         });
 
         if end == lines.len() {
@@ -588,5 +740,70 @@ mod tests {
         let sym_results = index.search_symbols("login", 5);
         assert!(!sym_results.is_empty());
         assert_eq!(sym_results[0].symbol_name.as_deref(), Some("login"));
+    }
+
+    #[test]
+    fn test_legacy_json_migration_and_binary_index() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let cache_dir = ws.join(".minicode").join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+
+        // 1. Create a legacy JSON cache
+        let legacy_json_path = cache_dir.join("semantic_index.json");
+        let bin_path = cache_dir.join("semantic_index.bin");
+        let hashes_path = cache_dir.join("semantic_hashes.json");
+
+        let chunk = CodeChunk {
+            file_path: "src/lib.rs".into(),
+            start_line: 1,
+            end_line: 10,
+            content: "pub fn authenticate_system() -> bool { true }".into(),
+            vector: SemanticIndex::embed("pub fn authenticate_system() -> bool { true }"),
+            symbol_name: Some("authenticate_system".into()),
+            symbol_kind: Some("function".into()),
+            binary_vector: None,
+            polar_quant: None,
+            polar_quant_fixed: None,
+        };
+
+        let mut file_hashes = HashMap::new();
+        file_hashes.insert("src/lib.rs".into(), 12345678);
+
+        let legacy_cache = SemanticCache {
+            file_hashes: file_hashes.clone(),
+            chunks: vec![chunk],
+        };
+
+        let json_bytes = serde_json::to_vec(&legacy_cache).unwrap();
+        fs::write(&legacy_json_path, json_bytes).unwrap();
+        assert!(legacy_json_path.exists());
+        assert!(!bin_path.exists());
+
+        // 2. Load index - should trigger migration
+        let mut index = SemanticIndex::new();
+        index.load_cache(&legacy_json_path);
+
+        // Verify JSON was deleted, and binary + hashes files were created
+        assert!(
+            !legacy_json_path.exists(),
+            "Legacy JSON should be removed after migration"
+        );
+        assert!(bin_path.exists(), "Binary index file must be created");
+        assert!(hashes_path.exists(), "Hashes sidecar file must be created");
+        assert_eq!(index.chunks.len(), 1);
+        assert_eq!(
+            index.chunks[0].symbol_name.as_deref(),
+            Some("authenticate_system")
+        );
+        assert!(
+            index.mmap_index.is_some(),
+            "Mmap index should be initialized"
+        );
+
+        // 3. Verify fast search works via mmap
+        let res = index.search("authenticate", 1);
+        assert!(!res.is_empty());
+        assert_eq!(res[0].file_path, "src/lib.rs");
     }
 }

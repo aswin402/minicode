@@ -24,9 +24,13 @@ impl ObservationPruner {
             tool_name,
             "run_command" | "execute_command" | "bash" | "sh" | "terminal"
         ) || raw_output.contains("error[")
+            || raw_output.contains("warning:")
             || raw_output.contains("panicked at")
+            || raw_output.contains("test result:")
+            || raw_output.contains("... ok")
+            || raw_output.contains("PASS")
             || raw_output.contains("Traceback (most recent call last)")
-            || raw_output.lines().count() > 25;
+            || raw_output.lines().count() > 15;
 
         if is_log_or_command {
             if let Some((pruned, _)) = LogPruner::prune(raw_output) {
@@ -73,6 +77,45 @@ mod tests {
 
         let result = ObservationPruner::prune_for_llm("run_command", &log);
         assert!(result.contains("lines collapsed"));
+        assert!(result.contains("Use retrieve_observation"));
+    }
+
+    #[test]
+    fn test_prune_for_llm_warning_cascade() {
+        let mut log = String::new();
+        for i in 0..10 {
+            log.push_str(&format!(
+                "warning: unused import: `crate::mod_{}::Helper`\n",
+                i
+            ));
+            log.push_str(&format!(" --> src/file_{}.rs:2:5\n", i));
+            log.push_str("  |\n");
+            log.push_str(&format!("2 | use crate::mod_{}::Helper;\n", i));
+            log.push_str("  |     ^^^^^^^^^^^^^^^^^^^^^^^\n");
+        }
+        log.push_str("error[E0425]: cannot find value `foo` in this scope\n");
+        log.push_str(" --> src/main.rs:12:5\n");
+
+        let result = ObservationPruner::prune_for_llm("run_command", &log);
+        assert!(result.contains("compiler warnings collapsed"));
+        assert!(result.contains("error[E0425]"));
+        assert!(result.contains("Use retrieve_observation"));
+    }
+
+    #[test]
+    fn test_prune_for_llm_test_runner_flood() {
+        let mut log = String::new();
+        log.push_str("running 50 tests\n");
+        for i in 0..49 {
+            log.push_str(&format!("test module::test_{} ... ok\n", i));
+        }
+        log.push_str("test module::test_failed ... FAILED\n");
+        log.push_str("test result: FAILED. 49 passed; 1 failed;\n");
+
+        let result = ObservationPruner::prune_for_llm("run_command", &log);
+        assert!(result.contains("passing tests collapsed"));
+        assert!(result.contains("test module::test_failed ... FAILED"));
+        assert!(result.contains("test result: FAILED"));
         assert!(result.contains("Use retrieve_observation"));
     }
 

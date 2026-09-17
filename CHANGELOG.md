@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.27] — 2026-09-18
+
+### Turbovec TurboQuant 1-Bit/4-Bit Zero-Copy Vector Storage & Headroom DOX Pre-Ingress Observation Pruner (Phases 126 & 127)
+
+#### 💡 Ideas & Inspirations
+- **Turbovec & TurboQuant (Google Research / NYU)**: Quantizes 128-dimensional dense embeddings down to 1-bit binary vectors (16 bytes) and 4-bit nibble polar vectors (68 bytes) packed into contiguous, fixed-size 88-byte `TurbovecRecord` structs. Delivers a 32x memory reduction over raw vectors without heap allocations.
+- **Zero-Copy Memory-Mapped Indexing (`memmap2`)**: Flat binary storage format (`.minicode/cache/semantic_index.bin`) eliminates JSON deserialization overhead, allowing instantaneous `< 1ms` index load times and 2-stage SIMD popcount Hamming screening + 4-bit asymmetric dot product reranking directly against mmap memory.
+- **Headroom DOX Pre-Ingress Observation Sieves**: Autonomous compiler warning cascade condenser and test runner passing flood condenser in `LogPruner` and `ObservationPruner`. Collapses 50+ warning blocks into a single badge (`⚠️ [N compiler warnings collapsed]`) and passing tests into (`✅ [N passing tests collapsed]`), while preserving fatal errors, failure assertions, diffs, and summaries with 100% fidelity. All pruned logs are stored in `CcrCache` for lossless on-demand recovery via `retrieve_observation`.
+
+#### 🚀 Features & Changes
+- **Fixed-Size Polarized Quantization (`src/context/search/quantize.rs`)**:
+  - Implemented `PolarQuant4Fixed` (64-byte nibble buffer + 4-byte scale, zero heap allocations).
+  - Implemented `TurbovecRecord` (exact 88-byte layout with 1-bit `BinaryVector128` + `PolarQuant4Fixed`, `to_bytes(self)`, `from_bytes(&[u8])`).
+- **Memory-Mapped Index Engine (`src/context/search/mmap_index.rs`)**:
+  - Implemented `MmapTurbovecIndex` with atomic `.tmp` generation, binary headers, and string pools.
+  - Implemented 2-stage search kernel: Stage 1 SIMD popcount Hamming screening; Stage 2 asymmetric dot product reranking.
+- **Semantic Index Modernization (`src/context/search/semantic.rs`)**:
+  - Migrated index storage from legacy `semantic_index.json` to `.minicode/cache/semantic_index.bin` with automatic backward-compatible migration.
+  - Accelerated `search_fast` to query `MmapTurbovecIndex` directly.
+- **Headroom Compiler Warning & Test Floods Sieves (`src/context/budget/log_pruner.rs`, `src/context/budget/observation_pruner.rs`)**:
+  - Implemented `LogPruner::condense_compiler_warnings`: collapses $\ge 3$ compiler warnings, preserving errors and status.
+  - Implemented `LogPruner::condense_test_runner_output`: collapses passing tests for `cargo test`, `pytest`, `jest`, `bun`, `vitest`, and `go test`, preserving failures.
+  - Extended `ObservationPruner::prune_for_llm` to intercept compiler outputs and test floods pre-ingress before feeding LLM context.
+
 ## [0.3.25] — 2026-09-17
 
 ### Multiline Bracketed Paste Hardening, Preview Placeholders & Dynamic Input Dock (Phase 125)

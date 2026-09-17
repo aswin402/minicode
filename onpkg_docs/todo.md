@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 125 (v0.3.25) Multiline Bracketed Paste Hardening, Preview Placeholders & Dynamic Input Dock | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 127 (v0.3.27) Turbovec TurboQuant 1-Bit Zero-Copy Memory & Headroom DOX Ingress Pruner | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1819,4 +1819,17 @@
 - [x] 125.7: Format multiline user prompts in timeline (`src/ui/view.rs`) with clean `› ` prefix on first line and indented continuation lines
 - [x] 125.8: Write comprehensive unit tests in `src/ui/input.rs` and 5 integration tests in `tests/integration_multiline_paste.rs`
 - [x] 125.9: Pass all quality gates (`cargo check -j 1`, `cargo test -j 1`, `cargo clippy -j 1 -- -D warnings`, `cargo fmt --check`), recompile release binary via `./localupdate.sh`, and verify
+
+### Phase 126: Turbovec TurboQuant 1-Bit Vector Memory & Zero-Copy Mmap (v0.3.27)
+- [x] 126.1: Implement fixed-size `PolarQuant4Fixed` (64-byte inline nibbles + 4-byte scale) and contiguous 88-byte `TurbovecRecord` in `src/context/search/quantize.rs` with zero heap allocations and custom serde
+- [x] 126.2: Implement `MmapTurbovecIndex` in `src/context/search/mmap_index.rs` with `memmap2`, atomic temporary writes, binary file headers, string pools, and 2-stage search (SIMD popcount Hamming screening + 4-bit asymmetric dot product reranking)
+- [x] 126.3: Upgrade `SemanticIndex` in `src/context/search/semantic.rs` to persist to `.minicode/cache/semantic_index.bin`, automatically migrate legacy `semantic_index.json`, and query `MmapTurbovecIndex` directly for sub-millisecond AST retrieval
+- [x] 126.4: Pass all unit tests in `src/context/search/quantize.rs`, `src/context/search/mmap_index.rs`, and `src/context/search/semantic.rs`
+
+### Phase 127: Headroom DOX Ingress Observation Pruner (v0.3.27)
+- [x] 127.1: Implement `LogPruner::condense_compiler_warnings` in `src/context/budget/log_pruner.rs` to collapse $\ge 3$ compiler warnings into a single badge while isolating and preserving fatal compiler errors with 100% fidelity
+- [x] 127.2: Implement `LogPruner::condense_test_runner_output` in `src/context/budget/log_pruner.rs` to collapse passing test outputs (`cargo test`, `pytest`, `jest`, `bun`, `vitest`, `go test`) into a concise badge while preserving failure assertions, diffs, and summaries
+- [x] 127.3: Extend `ObservationPruner::prune_for_llm` in `src/context/budget/observation_pruner.rs` to intercept compiler outputs and test floods pre-ingress before feeding LLM context, with lossless retrieval via `CcrCache`
+- [x] 127.4: Write comprehensive unit and integration tests in `src/context/budget/log_pruner.rs`, `src/context/budget/observation_pruner.rs`, and `tests/integration_context_engine_v2.rs`
+- [x] 127.5: Pass targeted test suite, zero clippy warnings (`cargo clippy -j 1 -- -D warnings`), clean formatting (`cargo fmt --check`), and deploy global binary via `./localupdate.sh`
 

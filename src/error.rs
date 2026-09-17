@@ -169,6 +169,9 @@ pub enum ContextError {
 
     #[error("OKF knowledge catalog error: {0}")]
     Okf(String),
+
+    #[error("Vector index error: {0}")]
+    VectorIndex(String),
 }
 
 #[derive(Error, Debug)]

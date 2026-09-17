@@ -33,20 +33,30 @@ impl LogPruner {
     }
 
     /// Prunes large logs, compiler outputs, or stacktraces.
-    /// If significant compression is achieved (>= 200 bytes and >= 25%), caches
-    /// the lossless original into `CcrCache` and returns `(pruned_log, ccr_id)`.
+    /// If significant compression is achieved (>= 150 bytes and >= 20%, or structural warnings/tests collapsed),
+    /// caches the lossless original into `CcrCache` and returns `(pruned_log, ccr_id)`.
     pub fn prune(raw_log: &str) -> Option<(String, String)> {
         let cleaned = Self::strip_ansi(raw_log);
         let lines: Vec<&str> = cleaned.lines().collect();
 
-        if lines.len() < 15 && cleaned.len() < 1200 {
+        let has_warning = cleaned.contains("warning:") || cleaned.contains(" - warning TS");
+        let has_tests = cleaned.contains("... ok") || cleaned.contains("PASS");
+        if lines.len() < 10 && cleaned.len() < 800 && !has_warning && !has_tests {
             return None;
         }
 
-        // 1. Collapse repetitive build & progress lines
-        let collapsed_lines = Self::collapse_repetitive_lines(&lines);
+        // 1. Condense compiler warning cascades
+        let (lines_after_warnings, warnings_collapsed) = Self::condense_compiler_warnings(&lines);
+        let str_lines1: Vec<&str> = lines_after_warnings.iter().map(|s| s.as_str()).collect();
 
-        // 2. Fold external runtime stacktrace frames
+        // 2. Condense test runner passing floods
+        let (lines_after_tests, tests_collapsed) = Self::condense_test_runner_output(&str_lines1);
+        let str_lines2: Vec<&str> = lines_after_tests.iter().map(|s| s.as_str()).collect();
+
+        // 3. Collapse repetitive build & progress lines
+        let collapsed_lines = Self::collapse_repetitive_lines(&str_lines2);
+
+        // 4. Fold external runtime stacktrace frames
         let folded_lines = Self::fold_runtime_stack_frames(&collapsed_lines);
 
         let mut pruned = folded_lines.join("\n");
@@ -55,18 +65,237 @@ impl LogPruner {
         let original_len = raw_log.len();
         let pruned_len = pruned.len();
 
-        // Check if compression saved significant context (> 200 bytes and > 25% savings)
-        if original_len > pruned_len + 200 && (original_len - pruned_len) * 100 / original_len >= 25
-        {
+        let has_structural_reduction = warnings_collapsed > 0 || tests_collapsed > 0;
+        let meets_threshold = (original_len > pruned_len + 150
+            && (original_len - pruned_len) * 100 / original_len >= 20)
+            || (has_structural_reduction && original_len > pruned_len + 100);
+
+        if meets_threshold {
             let ccr_id = CcrCache::store(raw_log);
-            pruned.push_str(&format!(
-                "\n\n[Log pruned: {} bytes -> {} bytes. Use retrieve_observation(id=\"{}\") for full raw output.]",
-                original_len, pruned_len, ccr_id
+            let mut summary_badge = format!(
+                "\n\n[Log pruned: {} bytes -> {} bytes",
+                original_len, pruned_len
+            );
+            if warnings_collapsed > 0 {
+                summary_badge.push_str(&format!(" (collapsed {} warnings)", warnings_collapsed));
+            }
+            if tests_collapsed > 0 {
+                summary_badge.push_str(&format!(" (collapsed {} passing tests)", tests_collapsed));
+            }
+            summary_badge.push_str(&format!(
+                ". Use retrieve_observation(id=\"{}\") for full raw output.]",
+                ccr_id
             ));
+            pruned.push_str(&summary_badge);
             Some((pruned, ccr_id))
         } else {
             None
         }
+    }
+
+    /// Condenses compiler warning cascades (e.g. rustc, tsc, gcc) into a single badge,
+    /// while preserving all error diagnostics, syntax errors, and build status intact.
+    pub fn condense_compiler_warnings(lines: &[&str]) -> (Vec<String>, usize) {
+        #[allow(dead_code)]
+        enum Diag {
+            Warning(Vec<String>),
+            Error(Vec<String>),
+            Other(String),
+        }
+
+        let mut diags: Vec<Diag> = Vec::new();
+        let mut i = 0;
+        let mut warning_count = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+            if Self::is_warning_header(line) {
+                warning_count += 1;
+                let mut block = vec![line.to_string()];
+                i += 1;
+                while i < lines.len() {
+                    let next = lines[i];
+                    if Self::is_warning_header(next)
+                        || Self::is_error_header(next)
+                        || Self::is_summary_line(next)
+                    {
+                        break;
+                    }
+                    if Self::is_diagnostic_continuation(next)
+                        || (next.trim().is_empty()
+                            && i + 1 < lines.len()
+                            && Self::is_diagnostic_continuation(lines[i + 1]))
+                    {
+                        block.push(next.to_string());
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                diags.push(Diag::Warning(block));
+            } else if Self::is_error_header(line) {
+                let mut block = vec![line.to_string()];
+                i += 1;
+                while i < lines.len() {
+                    let next = lines[i];
+                    if Self::is_warning_header(next)
+                        || Self::is_error_header(next)
+                        || Self::is_summary_line(next)
+                    {
+                        break;
+                    }
+                    if Self::is_diagnostic_continuation(next)
+                        || (next.trim().is_empty()
+                            && i + 1 < lines.len()
+                            && Self::is_diagnostic_continuation(lines[i + 1]))
+                    {
+                        block.push(next.to_string());
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                diags.push(Diag::Error(block));
+            } else {
+                diags.push(Diag::Other(line.to_string()));
+                i += 1;
+            }
+        }
+
+        if warning_count >= 3 {
+            let mut out = Vec::new();
+            let mut inserted_badge = false;
+            for diag in diags {
+                match diag {
+                    Diag::Warning(_) => {
+                        if !inserted_badge {
+                            out.push(format!(
+                                "⚠️  [{} compiler warnings collapsed — original cached in CCR]",
+                                warning_count
+                            ));
+                            inserted_badge = true;
+                        }
+                    }
+                    Diag::Error(err_lines) => {
+                        out.extend(err_lines);
+                    }
+                    Diag::Other(l) => {
+                        let trimmed = l.trim();
+                        if trimmed.starts_with("warning: `") && trimmed.contains("warnings") {
+                            continue;
+                        }
+                        out.push(l);
+                    }
+                }
+            }
+            (out, warning_count)
+        } else {
+            (lines.iter().map(|s| s.to_string()).collect(), 0)
+        }
+    }
+
+    fn is_warning_header(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with("warning:")
+            || trimmed.starts_with("warning[")
+            || trimmed.starts_with("warn:")
+            || trimmed.contains(" - warning TS")
+            || (trimmed.contains(": warning:") && !trimmed.contains("error"))
+    }
+
+    fn is_error_header(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with("error:")
+            || trimmed.starts_with("error[")
+            || trimmed.starts_with("error TS")
+            || trimmed.contains(" - error TS")
+            || trimmed.contains(": error:")
+            || trimmed.contains(": fatal error:")
+            || trimmed.starts_with("SyntaxError:")
+            || trimmed.starts_with("TypeError:")
+            || trimmed.starts_with("ReferenceError:")
+            || trimmed.starts_with("panicked at")
+            || trimmed.starts_with("panic:")
+    }
+
+    fn is_summary_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with("Finished ")
+            || trimmed.starts_with("error: could not compile")
+            || trimmed.starts_with("test result:")
+            || trimmed.starts_with("failures:")
+    }
+
+    fn is_diagnostic_continuation(line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        line.starts_with("  --> ")
+            || line.starts_with(" --> ")
+            || line.starts_with("   |")
+            || line.starts_with("  |")
+            || line.starts_with(" |")
+            || line.starts_with("  = ")
+            || line.starts_with("   = ")
+            || line.starts_with("    ")
+            || trimmed.starts_with('^')
+            || trimmed.starts_with('|')
+            || trimmed.starts_with("help:")
+            || trimmed.starts_with("note:")
+    }
+
+    /// Condenses high-volume test runner passing outputs (e.g. `cargo test`, `pytest`, `jest`, `vitest`)
+    /// into concise badges while preserving all failed tests, assertions, stack traces, and test summaries.
+    pub fn condense_test_runner_output(lines: &[&str]) -> (Vec<String>, usize) {
+        let mut total_passing = 0;
+        for line in lines {
+            if Self::is_passing_test_line(line) {
+                total_passing += 1;
+            }
+        }
+
+        if total_passing < 4 {
+            return (lines.iter().map(|s| s.to_string()).collect(), 0);
+        }
+
+        let mut result = Vec::new();
+        let mut i = 0;
+        let mut collapsed_count = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+            if Self::is_passing_test_line(line) {
+                let start = i;
+                while i < lines.len() && Self::is_passing_test_line(lines[i]) {
+                    i += 1;
+                }
+                let span = i - start;
+                if span >= 3 || total_passing >= 5 {
+                    result.push(format!("✅  [{} passing tests collapsed]", span));
+                    collapsed_count += span;
+                } else {
+                    result.extend(lines[start..i].iter().map(|l| l.to_string()));
+                }
+            } else {
+                result.push(line.to_string());
+                i += 1;
+            }
+        }
+
+        (result, collapsed_count)
+    }
+
+    fn is_passing_test_line(line: &str) -> bool {
+        let trimmed = line.trim();
+        // cargo test
+        (trimmed.starts_with("test ") && (trimmed.ends_with("... ok") || trimmed.ends_with("... OK")))
+        // pytest
+        || (trimmed.ends_with("PASSED") || (trimmed.contains(" PASSED [") && trimmed.ends_with('%')) || (trimmed.contains("::") && trimmed.contains(" PASSED")))
+        // jest / vitest / bun
+        || (trimmed.starts_with("✓ ") || trimmed.starts_with("✔ ") || trimmed.starts_with("PASS ") || (trimmed.contains(" PASS ") && !trimmed.contains("FAIL")))
+        // go test
+        || trimmed.starts_with("--- PASS:")
     }
 
     /// Collapses consecutive repetitive lines (e.g. `Compiling ...`, `Downloaded ...`, or progress bars).
@@ -275,5 +504,70 @@ mod tests {
         // Lossless retrieval verification
         let retrieved = CcrCache::retrieve(&ccr_id, None, None).unwrap();
         assert_eq!(retrieved, log);
+    }
+
+    #[test]
+    fn test_condense_compiler_warnings() {
+        let mut lines = Vec::new();
+        for i in 0..30 {
+            lines.push(format!("warning: unused variable: `var_{}`", i));
+            lines.push(format!("  --> src/file_{}.rs:10:9", i));
+            lines.push("   |".to_string());
+            lines.push(format!("10 |     let var_{} = 42;", i));
+            lines.push("   |         ^^^^^^ help: prefix with underscore".to_string());
+            lines.push("   =".to_string());
+            lines.push("   = note: `#[warn(unused_variables)]` on by default".to_string());
+            lines.push("".to_string());
+        }
+        lines.push("error[E0382]: use of moved value: `target`".to_string());
+        lines.push("  --> src/main.rs:99:15".to_string());
+        lines.push("   |".to_string());
+        lines.push("99 |     let y = target;".to_string());
+        lines.push("   |             ^^^^^^ value moved here".to_string());
+        lines.push("error: could not compile `minicode` due to 1 previous error".to_string());
+
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let (condensed, collapsed_count) = LogPruner::condense_compiler_warnings(&line_refs);
+
+        assert_eq!(collapsed_count, 30);
+        let joined = condensed.join("\n");
+        assert!(joined.contains("30 compiler warnings collapsed"));
+        assert!(joined.contains("error[E0382]: use of moved value: `target`"));
+        assert!(joined.contains("src/main.rs:99:15"));
+        assert!(joined.contains("99 |     let y = target;"));
+        assert!(!joined.contains("unused variable: `var_0`"));
+        assert!(!joined.contains("unused variable: `var_29`"));
+    }
+
+    #[test]
+    fn test_condense_test_runner_output() {
+        let mut lines = Vec::new();
+        lines.push("running 149 tests".to_string());
+        for i in 0..148 {
+            lines.push(format!("test context::module::test_{} ... ok", i));
+        }
+        lines.push("test context::module::test_failure ... FAILED".to_string());
+        lines.push("".to_string());
+        lines.push("failures:".to_string());
+        lines.push("---- context::module::test_failure stdout ----".to_string());
+        lines.push("thread 'test_failure' panicked at src/lib.rs:50:5:".to_string());
+        lines.push("assertion `left == right` failed: expected true, got false".to_string());
+        lines.push("failures:".to_string());
+        lines.push("    context::module::test_failure".to_string());
+        lines.push(
+            "test result: FAILED. 148 passed; 1 failed; 0 ignored; 0 measured; finished in 0.15s"
+                .to_string(),
+        );
+
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let (condensed, collapsed_count) = LogPruner::condense_test_runner_output(&line_refs);
+
+        assert_eq!(collapsed_count, 148);
+        let joined = condensed.join("\n");
+        assert!(joined.contains("148 passing tests collapsed"));
+        assert!(joined.contains("test context::module::test_failure ... FAILED"));
+        assert!(joined.contains("assertion `left == right` failed"));
+        assert!(joined.contains("test result: FAILED. 148 passed; 1 failed"));
+        assert!(!joined.contains("test context::module::test_0 ... ok"));
     }
 }

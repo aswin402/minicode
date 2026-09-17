@@ -685,3 +685,84 @@ async fn test_agent_loop_prune_context_proactive_thought_stripping() {
         Some("Recent reasoning 4")
     );
 }
+
+#[test]
+fn test_turbovec_zero_copy_and_observation_pruning_integration() {
+    use minicode::context::budget::ObservationPruner;
+    use minicode::context::ccr_cache::CcrCache;
+    use minicode::context::search::mmap_index::{ChunkMetadata, MmapTurbovecIndex};
+    use minicode::context::search::quantize::TurbovecRecord;
+    use minicode::context::search::semantic::SemanticIndex;
+
+    let temp = TempDir::new().unwrap();
+    let bin_path = temp.path().join("index.bin");
+
+    // 1. Generate Turbovec records with orthogonal SemanticIndex embeddings
+    let mut records = Vec::new();
+    let mut metadata = Vec::new();
+
+    for i in 0..20 {
+        let content = format!("fn process_worker_task_{}() {{ run_worker({}); }}", i, i);
+        let vec = SemanticIndex::embed(&content);
+        records.push(TurbovecRecord::from_f32_with_wht(&vec));
+        metadata.push(ChunkMetadata {
+            file_path: format!("src/worker_{}.rs", i),
+            start_line: 1,
+            end_line: 15,
+            symbol_name: Some(format!("process_worker_task_{}", i)),
+            symbol_kind: Some("function".to_string()),
+            content,
+        });
+    }
+
+    // 2. Persist binary index and search via mmap
+    MmapTurbovecIndex::create(&bin_path, &records, &metadata).expect("create binary index");
+    let index = MmapTurbovecIndex::open(&bin_path).expect("open mmap index");
+    assert_eq!(index.record_count(), 20);
+
+    let query = SemanticIndex::embed("process_worker_task_7 run_worker");
+    let results = index.search(&query, 3);
+    assert!(!results.is_empty());
+    assert_eq!(results[0].0, 7);
+    let meta7 = index.get_metadata(7).expect("meta 7 exists");
+    assert_eq!(meta7.symbol_name.as_deref(), Some("process_worker_task_7"));
+
+    // 3. Test Headroom DOX pre-ingress observation pruning for warning cascades
+    let mut warn_log = String::new();
+    for i in 0..15 {
+        warn_log.push_str(&format!(
+            "warning: unused import `dep_{}`\n --> src/lib.rs:{}:5\n",
+            i, i
+        ));
+    }
+    warn_log.push_str("error[E0308]: mismatched types\n --> src/lib.rs:100:9\n");
+
+    let pruned_warn = ObservationPruner::prune_for_llm("run_command", &warn_log);
+    assert!(pruned_warn.contains("compiler warnings collapsed"));
+    assert!(pruned_warn.contains("error[E0308]"));
+    assert!(pruned_warn.contains("Use retrieve_observation"));
+
+    // Lossless retrieval
+    if let Some(start) = pruned_warn.find("id=\"") {
+        let id_part = &pruned_warn[start + 4..];
+        if let Some(end) = id_part.find('"') {
+            let id = &id_part[..end];
+            let retrieved = CcrCache::retrieve(id, None, None).expect("lossless ccr retrieval");
+            assert_eq!(retrieved, warn_log);
+        }
+    }
+
+    // 4. Test Headroom DOX pre-ingress observation pruning for test runner outputs
+    let mut test_log = String::new();
+    test_log.push_str("running 40 tests\n");
+    for i in 0..39 {
+        test_log.push_str(&format!("test core::test_{} ... ok\n", i));
+    }
+    test_log.push_str("test core::test_boom ... FAILED\n");
+    test_log.push_str("test result: FAILED. 39 passed; 1 failed;\n");
+
+    let pruned_tests = ObservationPruner::prune_for_llm("run_command", &test_log);
+    assert!(pruned_tests.contains("passing tests collapsed"));
+    assert!(pruned_tests.contains("test core::test_boom ... FAILED"));
+    assert!(pruned_tests.contains("test result: FAILED"));
+}

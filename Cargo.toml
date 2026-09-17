@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.3.25"
+version = "0.3.27"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -42,6 +42,7 @@ similar = { version = "2.6", features = ["inline"] }
 # Code Search & File Traversal (walkdir intentionally excluded — use ignore crate)
 ignore = "0.4"
 regex = "1.10"
+memmap2 = "0.9"
 
 # AST Parsing & Graph Engineering (ALL tree-sitter crates MUST share same ABI version)
 tree-sitter = "0.23"

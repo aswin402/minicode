@@ -3,6 +3,7 @@ pub mod fusion;
 pub mod hybrid;
 pub mod index;
 pub mod intent_filter;
+pub mod mmap_index;
 pub mod okf;
 pub mod quantize;
 pub mod recall;
