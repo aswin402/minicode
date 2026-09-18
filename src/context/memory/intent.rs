@@ -30,6 +30,8 @@ pub struct RequirementItem {
     #[serde(default)]
     pub related_files: Vec<String>,
     #[serde(default)]
+    pub touched_files: Vec<String>,
+    #[serde(default)]
     pub created_turn: usize,
     #[serde(default)]
     pub updated_turn: usize,
@@ -69,6 +71,7 @@ impl IntentLedger {
             description: description.map(|d| d.to_string()),
             status: RequirementStatus::Pending,
             related_files,
+            touched_files: Vec::new(),
             created_turn: 0,
             updated_turn: 0,
         };
@@ -263,6 +266,111 @@ impl IntentLedger {
         Ok(ledger)
     }
 
+    /// Loads an existing ledger from disk or creates a new one from prompt.
+    pub fn load_or_create(workspace_dir: &std::path::Path, prompt: &str, max_items: usize) -> Self {
+        let path = workspace_dir.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        if path.exists() {
+            if let Ok(ledger) = Self::load_from_disk(&path) {
+                return ledger;
+            }
+        }
+        Self::from_prompt(prompt, max_items)
+    }
+
+    /// Updates requirement item statuses based on file system actions taken by tools.
+    /// If an item's related files match any created or modified files, advances its status.
+    /// Returns the number of items whose status or activity was updated.
+    pub fn update_from_file_activity(
+        &mut self,
+        files_created: &[String],
+        files_modified: &[String],
+        current_turn: usize,
+    ) -> usize {
+        let all_touched: Vec<&str> = files_created
+            .iter()
+            .chain(files_modified.iter())
+            .map(|s| s.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+
+        if all_touched.is_empty() {
+            return 0;
+        }
+
+        let mut updated_count = 0;
+
+        for item in &mut self.items {
+            if item.related_files.is_empty() {
+                continue;
+            }
+
+            let mut newly_matched = false;
+            for rf in &item.related_files {
+                if all_touched.iter().any(|f| path_matches(rf, f)) {
+                    if !item.touched_files.contains(rf) {
+                        item.touched_files.push(rf.clone());
+                    }
+                    newly_matched = true;
+                }
+            }
+
+            if !newly_matched {
+                continue;
+            }
+
+            // Check if all related files are touched
+            let all_touched_matched = item.related_files.iter().all(|rf| {
+                item.touched_files.contains(rf) || all_touched.iter().any(|f| path_matches(rf, f))
+            });
+
+            let mut transitioned = false;
+
+            if all_touched_matched {
+                if item.status != RequirementStatus::Completed {
+                    item.status = RequirementStatus::Completed;
+                    transitioned = true;
+                }
+            } else if item.status == RequirementStatus::Pending {
+                item.status = RequirementStatus::InProgress;
+                transitioned = true;
+            }
+
+            if transitioned || newly_matched {
+                item.updated_turn = current_turn;
+                updated_count += 1;
+            }
+
+            if transitioned {
+                match item.status {
+                    RequirementStatus::Completed | RequirementStatus::InProgress => {
+                        self.consecutive_turns_without_progress = 0;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Keep active_item_id in sync
+        if let Some(ref active_id) = self.active_item_id.clone() {
+            if let Some(active_item) = self.get_item(active_id) {
+                if active_item.status == RequirementStatus::Completed {
+                    self.active_item_id = None;
+                }
+            }
+        }
+        if self.active_item_id.is_none() {
+            if let Some(in_prog) = self
+                .items
+                .iter()
+                .find(|i| i.status == RequirementStatus::InProgress)
+            {
+                self.active_item_id = Some(in_prog.id.clone());
+            }
+        }
+
+        updated_count
+    }
+
     /// Dynamically extracts the root objective and actionable requirement items
     /// from a freeform user prompt across diverse formatting styles (headers, checklists, numbered lists, bullet points).
     pub fn from_prompt(prompt: &str, max_items: usize) -> Self {
@@ -415,6 +523,7 @@ impl IntentLedger {
                 description: None,
                 status: RequirementStatus::Pending,
                 related_files,
+                touched_files: Vec::new(),
                 created_turn: 0,
                 updated_turn: 0,
             });
@@ -483,6 +592,7 @@ fn commit_draft(draft: Option<DraftItem>, collected: &mut Vec<RequirementItem>, 
                 description: desc_text,
                 status: item.status,
                 related_files,
+                touched_files: Vec::new(),
                 created_turn: 0,
                 updated_turn: 0,
             };
@@ -737,6 +847,37 @@ fn is_duplicate_title(a: &str, b: &str) -> bool {
         .trim_matches(|c| c == '*' || c == '_' || c == '`')
         .trim();
     clean_a.eq_ignore_ascii_case(clean_b)
+}
+
+fn normalize_path_for_match(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let trimmed = s.trim();
+    let without_dot = trimmed.strip_prefix("./").unwrap_or(trimmed);
+    without_dot.trim_start_matches('/').to_string()
+}
+
+fn path_matches(related: &str, file: &str) -> bool {
+    let r = normalize_path_for_match(related);
+    let f = normalize_path_for_match(file);
+    if r.is_empty() || f.is_empty() {
+        return false;
+    }
+    if r == f {
+        return true;
+    }
+    if r.ends_with(&f) {
+        let prefix_len = r.len() - f.len();
+        if prefix_len == 0 || r.as_bytes()[prefix_len - 1] == b'/' {
+            return true;
+        }
+    }
+    if f.ends_with(&r) {
+        let prefix_len = f.len() - r.len();
+        if prefix_len == 0 || f.as_bytes()[prefix_len - 1] == b'/' {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1186,5 +1327,90 @@ Refactor core architecture
         assert!(block.contains("[x] Completed item"));
         assert!(block.contains("[!] Blocked item"));
         assert!(block.contains("[s] Skipped item"));
+    }
+
+    #[test]
+    fn test_update_from_file_activity() {
+        let mut ledger = IntentLedger::new("Test Activity");
+        let id1 = ledger.add_item(
+            "Dashboard",
+            None,
+            vec!["src/pages/Dashboard.tsx".to_string()],
+        );
+        let id2 = ledger.add_item(
+            "Backend and Models",
+            None,
+            vec!["src/models.rs".to_string(), "src/backend.rs".to_string()],
+        );
+
+        ledger.consecutive_turns_without_progress = 4;
+
+        // Turn 1: Write Dashboard.tsx -> Dashboard has 1 related file, matches, becomes Completed
+        let updated =
+            ledger.update_from_file_activity(&["src/pages/Dashboard.tsx".to_string()], &[], 1);
+        assert_eq!(updated, 1);
+        assert_eq!(
+            ledger.get_item(&id1).unwrap().status,
+            RequirementStatus::Completed
+        );
+        assert_eq!(ledger.get_item(&id1).unwrap().updated_turn, 1);
+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
+
+        // Turn 2: Write src/models.rs (1 of 2 related files for item 2)
+        // Item 2 moves from Pending to InProgress
+        ledger.consecutive_turns_without_progress = 2;
+        let updated = ledger.update_from_file_activity(&["src/models.rs".to_string()], &[], 2);
+        assert_eq!(updated, 1);
+        assert_eq!(
+            ledger.get_item(&id2).unwrap().status,
+            RequirementStatus::InProgress
+        );
+        assert_eq!(ledger.get_item(&id2).unwrap().updated_turn, 2);
+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
+        assert_eq!(ledger.active_item_id, Some(id2.clone()));
+
+        // Turn 3: Modifying unrelated file does nothing
+        let updated = ledger.update_from_file_activity(&[], &["README.md".to_string()], 3);
+        assert_eq!(updated, 0);
+        assert_eq!(
+            ledger.get_item(&id2).unwrap().status,
+            RequirementStatus::InProgress
+        );
+
+        // Turn 4: Write src/backend.rs (2nd of 2 files) -> item 2 becomes Completed!
+        let updated = ledger.update_from_file_activity(&[], &["src/backend.rs".to_string()], 4);
+        assert_eq!(updated, 1);
+        assert_eq!(
+            ledger.get_item(&id2).unwrap().status,
+            RequirementStatus::Completed
+        );
+        assert_eq!(ledger.get_item(&id2).unwrap().updated_turn, 4);
+        assert_eq!(ledger.active_item_id, None);
+        assert_eq!(ledger.completed_count(), 2);
+    }
+
+    #[test]
+    fn test_load_or_create() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("intent_load_or_create_{}", uuid::Uuid::new_v4()));
+        let prompt = "# Project X\n- [ ] Task 1";
+
+        // When file does not exist on disk, creates from prompt
+        let ledger1 = IntentLedger::load_or_create(&temp_dir, prompt, 10);
+        assert_eq!(ledger1.root_objective, "Project X");
+        assert_eq!(ledger1.items.len(), 1);
+
+        // Save ledger to disk
+        let disk_path = temp_dir.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        ledger1
+            .save_to_disk(&disk_path)
+            .expect("Failed to save ledger");
+
+        // When file exists on disk, loads existing ledger
+        let ledger2 = IntentLedger::load_or_create(&temp_dir, "Different Prompt", 10);
+        assert_eq!(ledger2.root_objective, "Project X");
+        assert_eq!(ledger2.items.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

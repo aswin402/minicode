@@ -21,9 +21,8 @@ impl SyntaxGuard {
             "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
             "py" => Some(tree_sitter_python::LANGUAGE.into()),
             "js" | "jsx" | "mjs" | "cjs" => Some(tree_sitter_javascript::LANGUAGE.into()),
-            "ts" | "tsx" | "mts" | "cts" => {
-                Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-            }
+            "ts" | "mts" | "cts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+            "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
             _ => None,
         }
     }

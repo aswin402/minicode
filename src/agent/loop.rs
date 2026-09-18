@@ -43,6 +43,8 @@ pub struct AgentLoop {
     pub speculative_executor: crate::agent::speculative::SpeculativeExecutor,
     /// Cumulative tokens expended across all turns in this session.
     pub cumulative_tokens_used: usize,
+    /// Living intent anchor and execution ledger.
+    pub intent_ledger: Option<crate::context::memory::intent::IntentLedger>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -94,6 +96,13 @@ impl AgentLoop {
             config.agent.parallel_tools,
         );
 
+        let intent_path = workspace_root.join(&config.agent.intent.persistence_file);
+        let intent_ledger = if config.agent.intent.enabled && intent_path.exists() {
+            crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path).ok()
+        } else {
+            None
+        };
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -112,6 +121,7 @@ impl AgentLoop {
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
             speculative_executor,
             cumulative_tokens_used: 0,
+            intent_ledger,
             _active_guard: active_guard,
         }
     }
@@ -174,6 +184,20 @@ impl AgentLoop {
     #[must_use]
     pub fn active_working_set(&self) -> &std::collections::VecDeque<String> {
         &self.active_working_set
+    }
+
+    /// Returns the living execution ledger and goal anchor, if active.
+    #[allow(dead_code)]
+    pub fn intent_ledger(&self) -> Option<&crate::context::memory::intent::IntentLedger> {
+        self.intent_ledger.as_ref()
+    }
+
+    /// Returns a mutable reference to the living execution ledger, if active.
+    #[allow(dead_code)]
+    pub fn intent_ledger_mut(
+        &mut self,
+    ) -> Option<&mut crate::context::memory::intent::IntentLedger> {
+        self.intent_ledger.as_mut()
     }
 
     /// Records a file path into the active working set (Zone 3 Recency).
@@ -324,6 +348,28 @@ impl AgentLoop {
             self.compactor.set_working_context(user_prompt);
         }
 
+        // Initialize intent ledger from user prompt if enabled, missing, and auto_extract is on
+        if self.config.agent.intent.enabled
+            && self.intent_ledger.is_none()
+            && self.config.agent.intent.auto_extract
+        {
+            let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
+                user_prompt,
+                self.config.agent.intent.max_ledger_items,
+            );
+            let persistence_path = self
+                .workspace_root
+                .join(&self.config.agent.intent.persistence_file);
+            if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                tracing::warn!(
+                    error = %e,
+                    path = %persistence_path.display(),
+                    "Failed to persist initial intent ledger"
+                );
+            }
+            self.intent_ledger = Some(ledger);
+        }
+
         // 1. Prune/compact conversation context if approaching budget
         let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
@@ -356,7 +402,11 @@ impl AgentLoop {
             &working_set_vec,
             git_status.as_ref(),
             Some(&context_budget),
-            None,
+            if self.config.agent.intent.enabled {
+                self.intent_ledger.as_ref()
+            } else {
+                None
+            },
         );
 
         let prompt_with_context = if recency_block.trim().is_empty() {
@@ -465,6 +515,7 @@ impl AgentLoop {
         let mut last_cached_prompt_tokens: usize = 0;
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
+        let mut items_progressed_this_turn = false;
 
         let mut max_iterations = self.config.agent.max_tool_iterations;
         let mut auto_continues_remaining = if self.config.agent.auto_continue {
@@ -1038,6 +1089,14 @@ impl AgentLoop {
                                 }
                             }
 
+                            // Check whether the target file already existed before dispatch
+                            let file_existed_before = tool_call
+                                .arguments
+                                .get("path")
+                                .and_then(|p| p.as_str())
+                                .map(|p| self.workspace_root.join(p).exists())
+                                .unwrap_or(false);
+
                             // Snapshot file content before dispatch for inline diff preview
                             let file_before: Option<String> =
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
@@ -1245,6 +1304,38 @@ impl AgentLoop {
                                 tracing::warn!("Failed to persist ToolResult event: {}", e);
                             }
                             event_sender.send(res_event)?;
+
+                            if tool_result.success
+                                && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
+                            {
+                                if let Some(path_str) =
+                                    tool_call.arguments.get("path").and_then(|p| p.as_str())
+                                {
+                                    let (created, modified) = if file_existed_before {
+                                        (Vec::new(), vec![path_str.to_string()])
+                                    } else {
+                                        (vec![path_str.to_string()], Vec::new())
+                                    };
+                                    if let Some(ref mut ledger) = self.intent_ledger {
+                                        let updated = ledger.update_from_file_activity(
+                                            &created, &modified, turn_id,
+                                        );
+                                        if updated > 0 {
+                                            items_progressed_this_turn = true;
+                                        }
+                                        let persistence_path = self
+                                            .workspace_root
+                                            .join(&self.config.agent.intent.persistence_file);
+                                        if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                                            tracing::warn!(
+                                                error = %e,
+                                                path = %persistence_path.display(),
+                                                "Failed to persist intent ledger after tool execution"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
 
                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
                             let output_for_llm =
@@ -1518,6 +1609,22 @@ impl AgentLoop {
             let _ = prog_mem.save(&self.workspace_root);
         }
 
+        if let Some(ref mut ledger) = self.intent_ledger {
+            if !items_progressed_this_turn {
+                ledger.consecutive_turns_without_progress += 1;
+            }
+            let persistence_path = self
+                .workspace_root
+                .join(&self.config.agent.intent.persistence_file);
+            if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                tracing::warn!(
+                    error = %e,
+                    path = %persistence_path.display(),
+                    "Failed to persist intent ledger at turn end"
+                );
+            }
+        }
+
         let turn = Turn {
             turn_id,
             user_prompt: user_prompt.to_string(),
@@ -1656,6 +1763,14 @@ impl AgentLoop {
 
         self.current_turn_id = max_turn_id;
         self.cumulative_tokens_used = total_tokens;
+
+        let intent_path = self
+            .workspace_root
+            .join(&self.config.agent.intent.persistence_file);
+        if self.config.agent.intent.enabled && intent_path.exists() {
+            self.intent_ledger =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path).ok();
+        }
 
         if let Some(first_prompt) = first_turn_prompt {
             self.compactor.set_working_context(&first_prompt);
