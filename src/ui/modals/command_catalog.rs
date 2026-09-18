@@ -73,6 +73,20 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/plan add auth middleware",
     },
     CommandCatalogItem {
+        name: "/goal",
+        category: "Agent & Automation",
+        shortcut: "",
+        description: "Inspect, manage, or execute the active Goal Anchor and Living Execution Ledger",
+        example: "/goal | /goal add <item> | /goal done <id> | /goal reset | /goal run <prompt>",
+    },
+    CommandCatalogItem {
+        name: "/intent",
+        category: "Agent & Automation",
+        shortcut: "",
+        description: "Inspect, manage, or execute the active Goal Anchor and Living Execution Ledger",
+        example: "/intent | /intent add <item> | /intent done <id> | /intent reset | /intent run <prompt>",
+    },
+    CommandCatalogItem {
         name: "/explore",
         category: "Code & Inspection",
         shortcut: "Ctrl+E",

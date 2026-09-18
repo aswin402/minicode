@@ -16,6 +16,104 @@ pub enum CommandAction {
     Exit,
 }
 
+/// Parsed goal or intent slash command action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalSubcommand {
+    /// Inspect the active goal and living execution ledger (/goal or /intent).
+    Show,
+    /// Add a new requirement item to the ledger (/goal add <task>).
+    Add(String),
+    /// Mark a requirement item completed by 1-based index or ID (/goal done <id>).
+    Done(String),
+    /// Reset the active goal anchor and execution ledger (/goal reset).
+    Reset,
+    /// Execute autonomously with freeform or explicit goal prompt (/goal run <prompt> or /goal <prompt>).
+    Run(String),
+}
+
+/// Parses a user input prompt into a `GoalSubcommand` if it begins with `/goal` or `/intent`.
+pub fn parse_goal_command(input: &str) -> Option<GoalSubcommand> {
+    let trimmed = input.trim();
+    let remainder = if trimmed == "/goal" {
+        ""
+    } else if let Some(rest) = trimmed.strip_prefix("/goal ") {
+        rest.trim()
+    } else if trimmed == "/intent" {
+        ""
+    } else if let Some(rest) = trimmed.strip_prefix("/intent ") {
+        rest.trim()
+    } else {
+        return None;
+    };
+
+    if remainder.is_empty() {
+        return Some(GoalSubcommand::Show);
+    }
+
+    if remainder == "reset" {
+        return Some(GoalSubcommand::Reset);
+    }
+
+    if remainder == "add" {
+        return Some(GoalSubcommand::Add(String::new()));
+    }
+    if let Some(rest) = remainder.strip_prefix("add ") {
+        return Some(GoalSubcommand::Add(rest.trim().to_string()));
+    }
+
+    if remainder == "done" {
+        return Some(GoalSubcommand::Done(String::new()));
+    }
+    if let Some(rest) = remainder.strip_prefix("done ") {
+        return Some(GoalSubcommand::Done(rest.trim().to_string()));
+    }
+
+    if remainder == "run" {
+        return Some(GoalSubcommand::Run(String::new()));
+    }
+    if let Some(rest) = remainder.strip_prefix("run ") {
+        return Some(GoalSubcommand::Run(rest.trim().to_string()));
+    }
+
+    Some(GoalSubcommand::Run(remainder.to_string()))
+}
+
+/// Formats an `IntentLedger` into a user-friendly timeline status message.
+pub fn format_ledger_timeline(ledger: &crate::context::memory::intent::IntentLedger) -> String {
+    let mut out = format!("🎯 Active Goal: {}\n", ledger.root_objective);
+    out.push_str(&format!(
+        "📋 Living Execution Ledger ({}/{} completed):\n",
+        ledger.completed_count(),
+        ledger.total_count()
+    ));
+
+    if ledger.items.is_empty() {
+        out.push_str("   (No tracked requirement items)\n");
+    } else {
+        for (idx, item) in ledger.items.iter().enumerate() {
+            let marker = match item.status {
+                crate::context::memory::intent::RequirementStatus::Completed => "[x]",
+                crate::context::memory::intent::RequirementStatus::InProgress => "[-]",
+                crate::context::memory::intent::RequirementStatus::Blocked => "[!]",
+                crate::context::memory::intent::RequirementStatus::Skipped => "[s]",
+                crate::context::memory::intent::RequirementStatus::Pending => "[ ]",
+            };
+            let title_line = match &item.description {
+                Some(desc) if !desc.trim().is_empty() => {
+                    format!("{}. {} ({})", idx + 1, item.title.trim(), desc.trim())
+                }
+                _ => format!("{}. {}", idx + 1, item.title.trim()),
+            };
+            out.push_str(&format!("   {} {}\n", marker, title_line));
+        }
+    }
+
+    out.push_str(
+        "💡 Commands: /goal add <task> | /goal done <index> | /goal reset | /goal run <prompt>",
+    );
+    out
+}
+
 impl<'a> App<'a> {
     /// Handles user submitted text, routing to slash commands or background agent execution
     pub async fn handle_command_or_prompt(
@@ -147,21 +245,221 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/goal" || prompt.starts_with("/goal ") {
-            let query = prompt.trim_start_matches("/goal").trim();
-            let goal_prompt = if query.is_empty() {
-                "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
-            } else {
-                format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", query)
-            };
-            self.timeline.add_user_message(prompt.to_string());
-            self.is_working = true;
-            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-            self.work_start = Some(Instant::now());
-            let cancel = tokio_util::sync::CancellationToken::new();
-            self.cancel_token = Some(cancel.clone());
-            let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
-            return Ok(CommandAction::Continue);
+        if let Some(cmd) = parse_goal_command(prompt) {
+            match cmd {
+                GoalSubcommand::Show => {
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    if persistence_path.exists() {
+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
+                            &persistence_path,
+                        ) {
+                            Ok(ledger) => {
+                                self.timeline.add_status(format_ledger_timeline(&ledger));
+                            }
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to load goal anchor: {}", e));
+                            }
+                        }
+                    } else {
+                        self.timeline.add_status(
+                            "ℹ No active goal anchor found. Start a task or use /goal add <task>"
+                                .to_string(),
+                        );
+                    }
+                    return Ok(CommandAction::Continue);
+                }
+                GoalSubcommand::Add(text) => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        self.timeline
+                            .add_status("⚠️ Usage: /goal add <task description>".to_string());
+                        return Ok(CommandAction::Continue);
+                    }
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    let mut ledger = if persistence_path.exists() {
+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
+                            &persistence_path,
+                        ) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to load existing intent ledger, initializing new one"
+                                );
+                                crate::context::memory::intent::IntentLedger::new(trimmed)
+                            }
+                        }
+                    } else {
+                        crate::context::memory::intent::IntentLedger::new(trimmed)
+                    };
+                    if ledger.root_objective.trim().is_empty() {
+                        ledger.root_objective = trimmed.to_string();
+                    }
+                    let item_id = ledger.add_item(trimmed, None, vec![]);
+                    match ledger.save_to_disk(&persistence_path) {
+                        Ok(_) => {
+                            self.timeline.add_status(format!(
+                                "✔ Added requirement #{}: \"{}\" (id: {})",
+                                ledger.items.len(),
+                                trimmed,
+                                item_id
+                            ));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Failed to save updated ledger: {}", e));
+                        }
+                    }
+                    return Ok(CommandAction::Continue);
+                }
+                GoalSubcommand::Done(target) => {
+                    let trimmed = target.trim();
+                    if trimmed.is_empty() {
+                        self.timeline.add_status(
+                            "⚠️ Usage: /goal done <index_or_id> (e.g. /goal done 1)".to_string(),
+                        );
+                        return Ok(CommandAction::Continue);
+                    }
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    if !persistence_path.exists() {
+                        self.timeline.add_status(
+                            "ℹ No active goal anchor found. Start a task or use /goal add <task>"
+                                .to_string(),
+                        );
+                        return Ok(CommandAction::Continue);
+                    }
+                    let mut ledger =
+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
+                            &persistence_path,
+                        ) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to load intent ledger: {}", e));
+                                return Ok(CommandAction::Continue);
+                            }
+                        };
+                    let resolved = if let Ok(idx) = trimmed.parse::<usize>() {
+                        if idx >= 1 && idx <= ledger.items.len() {
+                            Some((
+                                ledger.items[idx - 1].id.clone(),
+                                ledger.items[idx - 1].title.clone(),
+                            ))
+                        } else {
+                            self.timeline.add_status(format!(
+                                "⚠️ Invalid requirement index {}. Ledger currently has {} item(s).",
+                                idx,
+                                ledger.items.len()
+                            ));
+                            return Ok(CommandAction::Continue);
+                        }
+                    } else {
+                        ledger
+                            .items
+                            .iter()
+                            .find(|item| item.id == trimmed || item.id.starts_with(trimmed))
+                            .map(|item| (item.id.clone(), item.title.clone()))
+                    };
+                    match resolved {
+                        Some((id, title)) => {
+                            ledger.set_status(
+                                &id,
+                                crate::context::memory::intent::RequirementStatus::Completed,
+                            );
+                            match ledger.save_to_disk(&persistence_path) {
+                                Ok(_) => {
+                                    self.timeline.add_status(format!(
+                                        "✔ Marked requirement \"{}\" as completed ({}/{} completed)",
+                                        title,
+                                        ledger.completed_count(),
+                                        ledger.total_count()
+                                    ));
+                                }
+                                Err(e) => {
+                                    self.timeline.add_status(format!(
+                                        "✗ Failed to save updated ledger: {}",
+                                        e
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            self.timeline.add_status(format!(
+                                "⚠️ No requirement found matching '{}'. Use /goal to inspect active items.",
+                                trimmed
+                            ));
+                        }
+                    }
+                    return Ok(CommandAction::Continue);
+                }
+                GoalSubcommand::Reset => {
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    if persistence_path.exists() {
+                        match std::fs::remove_file(&persistence_path) {
+                            Ok(_) => {
+                                self.timeline.add_status(
+                                    "✔ Reset goal anchor and execution ledger.".to_string(),
+                                );
+                            }
+                            Err(e) => {
+                                self.timeline
+                                    .add_status(format!("✗ Failed to remove intent anchor: {}", e));
+                            }
+                        }
+                    } else {
+                        self.timeline.add_status(
+                            "ℹ No active goal anchor or execution ledger found to reset."
+                                .to_string(),
+                        );
+                    }
+                    return Ok(CommandAction::Continue);
+                }
+                GoalSubcommand::Run(query) => {
+                    let trimmed = query.trim();
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    if !trimmed.is_empty() {
+                        let max_items = self.config.agent.intent.max_ledger_items;
+                        let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
+                            trimmed, max_items,
+                        );
+                        if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                            tracing::warn!(
+                                error = %e,
+                                path = %persistence_path.display(),
+                                "Failed to persist goal intent ledger"
+                            );
+                        }
+                    }
+                    let goal_prompt = if trimmed.is_empty() {
+                        "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
+                    } else {
+                        format!(
+                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
+                            trimmed
+                        )
+                    };
+                    self.timeline.add_user_message(prompt.to_string());
+                    self.last_user_prompt = Some(prompt.to_string());
+                    self.is_working = true;
+                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
+                    self.work_start = Some(Instant::now());
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    self.cancel_token = Some(cancel.clone());
+                    let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
+                    return Ok(CommandAction::Continue);
+                }
+            }
         }
 
         if prompt == "/diff" || prompt == "/diffs" {
@@ -1323,5 +1621,249 @@ impl<'a> App<'a> {
         }
 
         Ok(CommandAction::Continue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::context::memory::intent::{IntentLedger, RequirementStatus};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_parse_goal_command_show() {
+        assert_eq!(parse_goal_command("/goal"), Some(GoalSubcommand::Show));
+        assert_eq!(parse_goal_command("/intent"), Some(GoalSubcommand::Show));
+        assert_eq!(parse_goal_command("/goal   "), Some(GoalSubcommand::Show));
+        assert_eq!(parse_goal_command("/intent   "), Some(GoalSubcommand::Show));
+    }
+
+    #[test]
+    fn test_parse_goal_command_add() {
+        assert_eq!(
+            parse_goal_command("/goal add Build authentication"),
+            Some(GoalSubcommand::Add("Build authentication".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent add Build authentication"),
+            Some(GoalSubcommand::Add("Build authentication".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/goal add"),
+            Some(GoalSubcommand::Add(String::new()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent add"),
+            Some(GoalSubcommand::Add(String::new()))
+        );
+    }
+
+    #[test]
+    fn test_parse_goal_command_done() {
+        assert_eq!(
+            parse_goal_command("/goal done 1"),
+            Some(GoalSubcommand::Done("1".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent done 2"),
+            Some(GoalSubcommand::Done("2".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/goal done req-1234"),
+            Some(GoalSubcommand::Done("req-1234".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/goal done"),
+            Some(GoalSubcommand::Done(String::new()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent done"),
+            Some(GoalSubcommand::Done(String::new()))
+        );
+    }
+
+    #[test]
+    fn test_parse_goal_command_reset() {
+        assert_eq!(
+            parse_goal_command("/goal reset"),
+            Some(GoalSubcommand::Reset)
+        );
+        assert_eq!(
+            parse_goal_command("/intent reset"),
+            Some(GoalSubcommand::Reset)
+        );
+        assert_eq!(
+            parse_goal_command("/goal reset   "),
+            Some(GoalSubcommand::Reset)
+        );
+    }
+
+    #[test]
+    fn test_parse_goal_command_run() {
+        assert_eq!(
+            parse_goal_command("/goal run Ship release"),
+            Some(GoalSubcommand::Run("Ship release".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent run Ship release"),
+            Some(GoalSubcommand::Run("Ship release".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/goal run"),
+            Some(GoalSubcommand::Run(String::new()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent run"),
+            Some(GoalSubcommand::Run(String::new()))
+        );
+        // Freeform prompt
+        assert_eq!(
+            parse_goal_command("/goal Ship release"),
+            Some(GoalSubcommand::Run("Ship release".to_string()))
+        );
+        assert_eq!(
+            parse_goal_command("/intent Ship release"),
+            Some(GoalSubcommand::Run("Ship release".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_goal_command_non_goal() {
+        assert_eq!(parse_goal_command("/help"), None);
+        assert_eq!(parse_goal_command("/plan"), None);
+        assert_eq!(parse_goal_command("/new"), None);
+        assert_eq!(parse_goal_command("hello minicode"), None);
+    }
+
+    #[test]
+    fn test_format_ledger_timeline() {
+        let mut ledger = IntentLedger::new("E-Commerce Store");
+        let id1 = ledger.add_item("Dashboard", Some("metrics cards"), vec![]);
+        let id2 = ledger.add_item("Customers Page", Some("search, filter"), vec![]);
+        let _id3 = ledger.add_item("Support Tickets", None, vec![]);
+
+        ledger.set_status(&id1, RequirementStatus::Completed);
+        ledger.set_status(&id2, RequirementStatus::InProgress);
+
+        let formatted = format_ledger_timeline(&ledger);
+        assert!(formatted.contains("🎯 Active Goal: E-Commerce Store"));
+        assert!(formatted.contains("📋 Living Execution Ledger (1/3 completed):"));
+        assert!(formatted.contains("[x] 1. Dashboard (metrics cards)"));
+        assert!(formatted.contains("[-] 2. Customers Page (search, filter)"));
+        assert!(formatted.contains("[ ] 3. Support Tickets"));
+        assert!(formatted.contains(
+            "💡 Commands: /goal add <task> | /goal done <index> | /goal reset | /goal run <prompt>"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_goal_commands_end_to_end() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut app = App::new(dir.path(), config);
+        let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+        // 1. /goal when no ledger exists
+        let action = app
+            .handle_command_or_prompt("/goal", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        let last_status = app.timeline.entries.last().unwrap();
+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
+            assert!(msg.contains("No active goal anchor found"));
+        } else {
+            panic!("Expected SystemStatus timeline entry");
+        }
+
+        // 2. /goal add
+        let action = app
+            .handle_command_or_prompt("/goal add First Task", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        let persistence_file = dir.path().join(".minicode/intent_anchor.json");
+        assert!(persistence_file.exists());
+
+        // 3. /intent add
+        let action = app
+            .handle_command_or_prompt("/intent add Second Task", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+
+        // 4. /goal (display active ledger)
+        let action = app
+            .handle_command_or_prompt("/goal", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        let last_status = app.timeline.entries.last().unwrap();
+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
+            assert!(msg.contains("Living Execution Ledger (0/2 completed)"));
+            assert!(msg.contains("[ ] 1. First Task"));
+            assert!(msg.contains("[ ] 2. Second Task"));
+        } else {
+            panic!("Expected SystemStatus timeline entry");
+        }
+
+        // 5. /goal done 1
+        let action = app
+            .handle_command_or_prompt("/goal done 1", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+
+        // Verify done in loaded file
+        let ledger = IntentLedger::load_from_disk(&persistence_file).unwrap();
+        assert_eq!(ledger.completed_count(), 1);
+        assert_eq!(ledger.items[0].status, RequirementStatus::Completed);
+
+        // 6. /intent done 2
+        let action = app
+            .handle_command_or_prompt("/intent done 2", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        let ledger = IntentLedger::load_from_disk(&persistence_file).unwrap();
+        assert_eq!(ledger.completed_count(), 2);
+
+        // 7. /goal done invalid index
+        let action = app
+            .handle_command_or_prompt("/goal done 99", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        let last_status = app.timeline.entries.last().unwrap();
+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
+            assert!(msg.contains("Invalid requirement index 99"));
+        } else {
+            panic!("Expected SystemStatus timeline entry");
+        }
+
+        // 8. /intent reset
+        let action = app
+            .handle_command_or_prompt("/intent reset", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        assert!(!persistence_file.exists());
+
+        // 9. /goal run Launch new site
+        let action = app
+            .handle_command_or_prompt("/goal run Launch new site", None, &control_tx)
+            .await
+            .unwrap();
+        assert_eq!(action, CommandAction::Continue);
+        assert!(persistence_file.exists());
+
+        let cmd = control_rx.try_recv().unwrap();
+        if let AgentCommand::Prompt(prompt_text, _) = cmd {
+            assert!(prompt_text.contains("<!-- GOAL -->"));
+            assert!(prompt_text.contains("Launch new site"));
+        } else {
+            panic!("Expected AgentCommand::Prompt");
+        }
     }
 }

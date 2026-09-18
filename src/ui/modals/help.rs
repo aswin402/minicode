@@ -22,6 +22,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         )]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("  /goal, /intent", Style::default().fg(theme.success)),
+            Span::styled(
+                "Inspect, manage, or execute Goal Anchor and Execution Ledger",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /model     ", Style::default().fg(theme.success)),
             Span::styled(
                 "Choose LLM model & provider interactively",
