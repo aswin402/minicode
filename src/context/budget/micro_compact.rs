@@ -66,10 +66,35 @@ fn is_read_tool(name: &str) -> bool {
         || n.starts_with("view_")
 }
 
-/// Normalizes a file path for comparison by trimming whitespace and removing leading `./`.
-fn normalize_path_for_compare(p: &str) -> &str {
-    let trimmed = p.trim();
-    trimmed.strip_prefix("./").unwrap_or(trimmed)
+/// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
+/// stripping leading `./`, and trimming leading `/`.
+pub fn normalize_path_for_compare(path: &str) -> String {
+    let s = path.trim().replace('\\', "/");
+    let mut s = s.as_str();
+    loop {
+        if let Some(stripped) = s.strip_prefix("./") {
+            s = stripped;
+        } else if let Some(stripped) = s.strip_prefix('/') {
+            s = stripped;
+        } else {
+            break;
+        }
+    }
+    s.to_string()
+}
+
+#[derive(Debug, Clone)]
+struct CompactToolMeta {
+    name: String,
+    target_path: Option<String>,
+    query: Option<String>,
+}
+
+fn is_compacted_receipt(content: &str) -> bool {
+    content.starts_with('[')
+        && (content.contains("Use retrieve_observation(id=\"")
+            || content.contains("superseded by")
+            || content.contains("successfully applied,"))
 }
 
 /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
@@ -77,7 +102,8 @@ fn normalize_path_for_compare(p: &str) -> &str {
 pub struct MicroCompactor;
 
 impl MicroCompactor {
-    /// Compacts messages by identifying superseded file reads outside the preserved recent turn window.
+    /// Compacts messages by identifying superseded file reads, duplicate consecutive reads,
+    /// and large historical mutation echoes outside the preserved recent turn window.
     ///
     /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
     /// all messages across the conversation are eligible for compaction.
@@ -91,7 +117,11 @@ impl MicroCompactor {
         }
 
         let cutoff = Self::calculate_cutoff(messages, preserve_recent_turns);
-        Self::compact_superseded_reads(messages, cutoff, &mut metrics);
+        if cutoff == 0 {
+            return metrics;
+        }
+
+        Self::compact_stale_observations(messages, cutoff, &mut metrics);
 
         metrics
     }
@@ -201,72 +231,71 @@ impl MicroCompactor {
         }
     }
 
-    /// Identifies superseded file reads outside the preserved window and replaces them with
-    /// concise 1-line CCR receipts.
-    fn compact_superseded_reads(
+    /// Identifies and condenses stale tool observations outside the preserved window:
+    /// 1. Duplicate consecutive reads (superseded by subsequent read without modifications in between).
+    /// 2. Superseded reads (stale read observations superseded by subsequent file modifications).
+    /// 3. Historical mutation echoes (verbose diffs or write echoes > 256 bytes).
+    fn compact_stale_observations(
         messages: &mut [Message],
         cutoff: usize,
         metrics: &mut MicroCompactMetrics,
     ) {
-        if cutoff == 0 {
-            return;
-        }
-
-        // Pass 1: Build map of modified files across the entire conversation
-        // and map tool calls by ID for metadata extraction.
+        // Pass 1a: Build map of lightweight tool metadata and indexed mutations across the conversation
+        let mut tool_calls_by_id: HashMap<String, CompactToolMeta> = HashMap::new();
         let mut mutations: HashMap<String, Vec<usize>> = HashMap::new();
-        let mut tool_calls_by_id: HashMap<String, ToolCall> = HashMap::new();
+        let mut reads: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (idx, msg) in messages.iter().enumerate() {
             if let Some(ref calls) = msg.tool_calls {
                 for call in calls {
-                    tool_calls_by_id.insert(call.id.clone(), call.clone());
-                    if is_mutation_tool(&call.name) {
-                        if let Some(target_path) = Self::extract_target_path(call) {
-                            let norm = normalize_path_for_compare(&target_path);
-                            mutations.entry(norm.to_string()).or_default().push(idx);
+                    let target_path = Self::extract_target_path(call);
+                    let query = Self::extract_search_query(call);
+                    let meta = CompactToolMeta {
+                        name: call.name.clone(),
+                        target_path,
+                        query,
+                    };
+                    if is_mutation_tool(&meta.name) {
+                        if let Some(ref tp) = meta.target_path {
+                            let norm = normalize_path_for_compare(tp);
+                            mutations.entry(norm).or_default().push(idx);
                         }
                     }
+                    tool_calls_by_id.insert(call.id.clone(), meta);
                 }
             }
         }
 
-        // Pass 2: Inspect tool result messages outside the preserved recent window
-        for i in 0..cutoff {
-            if messages[i].role != Role::Tool {
+        // Pass 1b: Index tool result message operations (reads and mutations)
+        for (idx, msg) in messages.iter().enumerate() {
+            if msg.role != Role::Tool {
                 continue;
             }
 
-            // If already a condensed receipt, skip
-            if messages[i].content.starts_with("[read_file:") {
-                continue;
-            }
-
-            let tool_call = messages[i]
+            let tool_meta = msg
                 .tool_call_id
                 .as_deref()
                 .and_then(|id| tool_calls_by_id.get(id));
 
-            let tool_name = messages[i]
+            let tool_name = msg
                 .tool_name
                 .as_deref()
-                .or_else(|| tool_call.map(|tc| tc.name.as_str()));
+                .or_else(|| tool_meta.map(|m| m.name.as_str()));
 
             let Some(tname) = tool_name else {
                 continue;
             };
 
-            if !is_read_tool(tname) {
-                continue;
-            }
-
-            let target_path = tool_call.and_then(Self::extract_target_path).or_else(|| {
-                // Fallback: search backwards for preceding assistant message
-                for prev_idx in (0..i).rev() {
+            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
+                for prev_idx in (0..idx).rev() {
                     let prev = &messages[prev_idx];
                     if prev.role == Role::Assistant {
                         if let Some(ref calls) = prev.tool_calls {
-                            if let Some(c) = calls.iter().find(|c| is_read_tool(&c.name)) {
+                            if let Some(c) = calls.iter().find(|c| {
+                                c.name == tname
+                                    || is_read_tool(&c.name)
+                                    || is_mutation_tool(&c.name)
+                            }) {
                                 return Self::extract_target_path(c);
                             }
                         }
@@ -276,27 +305,144 @@ impl MicroCompactor {
                 None
             });
 
-            let Some(path) = target_path else {
+            if let Some(path) = target_path {
+                let norm = normalize_path_for_compare(&path);
+                if is_read_tool(tname) {
+                    reads.entry(norm.clone()).or_default().push(idx);
+                }
+                if is_mutation_tool(tname) {
+                    mutations.entry(norm).or_default().push(idx);
+                }
+            }
+        }
+
+        // Pass 2: Condense observations outside the preserved recent window
+        for i in 0..cutoff {
+            if messages[i].role != Role::Tool {
+                continue;
+            }
+
+            let tool_meta = messages[i]
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| tool_calls_by_id.get(id));
+
+            let tool_name = messages[i]
+                .tool_name
+                .as_deref()
+                .or_else(|| tool_meta.map(|m| m.name.as_str()));
+
+            let Some(tname) = tool_name else {
                 continue;
             };
 
-            let norm = normalize_path_for_compare(&path);
-            let is_superseded = mutations
-                .get(norm)
-                .map(|indices| indices.iter().any(|&mut_idx| mut_idx > i))
-                .unwrap_or(false);
+            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
+                for prev_idx in (0..i).rev() {
+                    let prev = &messages[prev_idx];
+                    if prev.role == Role::Assistant {
+                        if let Some(ref calls) = prev.tool_calls {
+                            if let Some(c) = calls.iter().find(|c| {
+                                c.name == tname
+                                    || is_read_tool(&c.name)
+                                    || is_mutation_tool(&c.name)
+                            }) {
+                                return Self::extract_target_path(c);
+                            }
+                        }
+                        break;
+                    }
+                }
+                None
+            });
 
-            if is_superseded {
-                let line_count = messages[i].content.lines().count();
-                let ccr_id = CcrCache::store(&messages[i].content);
-                let receipt = format!(
-                    "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
-                    path, line_count, ccr_id
-                );
-                let chars_saved = messages[i].content.len().saturating_sub(receipt.len());
-                metrics.tokens_saved_estimate += chars_saved / 4;
-                messages[i].content = receipt;
-                metrics.superseded_reads_compacted += 1;
+            if is_read_tool(tname) {
+                if is_compacted_receipt(&messages[i].content)
+                    || messages[i].content.starts_with("[read_file:")
+                {
+                    continue;
+                }
+
+                // Prevent negative compression: do not replace if raw output <= 128 bytes
+                if messages[i].content.len() <= 128 {
+                    continue;
+                }
+
+                let Some(path) = target_path else {
+                    continue;
+                };
+
+                let norm = normalize_path_for_compare(&path);
+
+                // Check duplicate read: subsequent read of same path without any mutation between
+                let next_read_idx = reads
+                    .get(&norm)
+                    .and_then(|indices| indices.iter().copied().find(|&read_idx| read_idx > i));
+
+                let has_mutation_before_next_read = if let Some(next_r) = next_read_idx {
+                    mutations
+                        .get(&norm)
+                        .map(|indices| indices.iter().any(|&m_idx| m_idx > i && m_idx < next_r))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                if next_read_idx.is_some() && !has_mutation_before_next_read {
+                    let raw_len = messages[i].content.len();
+                    let ccr_id = CcrCache::store(&messages[i].content);
+                    let receipt = format!(
+                        "[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]",
+                        path, ccr_id
+                    );
+                    let chars_saved = raw_len.saturating_sub(receipt.len());
+                    metrics.tokens_saved_estimate += chars_saved / 4;
+                    messages[i].content = receipt;
+                    metrics.duplicate_reads_compacted += 1;
+                    continue;
+                }
+
+                // Check superseded read: subsequent mutation to this file exists
+                let is_superseded = mutations
+                    .get(&norm)
+                    .map(|indices| indices.iter().any(|&m_idx| m_idx > i))
+                    .unwrap_or(false);
+
+                if is_superseded {
+                    let raw_len = messages[i].content.len();
+                    let line_count = messages[i].content.lines().count();
+                    let ccr_id = CcrCache::store(&messages[i].content);
+                    let receipt = format!(
+                        "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
+                        path, line_count, ccr_id
+                    );
+                    let chars_saved = raw_len.saturating_sub(receipt.len());
+                    metrics.tokens_saved_estimate += chars_saved / 4;
+                    messages[i].content = receipt;
+                    metrics.superseded_reads_compacted += 1;
+                    continue;
+                }
+            } else if is_mutation_tool(tname) {
+                if is_compacted_receipt(&messages[i].content)
+                    || messages[i].content.starts_with(&format!("[{tname}:"))
+                {
+                    continue;
+                }
+
+                // Historical mutation echo: condense outputs larger than 256 bytes
+                if messages[i].content.len() > 256 {
+                    let path = target_path.unwrap_or_else(|| "file".to_string());
+                    let raw_len = messages[i].content.len();
+                    let ccr_id = CcrCache::store(&messages[i].content);
+                    let receipt = format!(
+                        "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
+                        tname, path, raw_len, ccr_id
+                    );
+                    let chars_saved = raw_len.saturating_sub(receipt.len());
+                    metrics.tokens_saved_estimate += chars_saved / 4;
+                    messages[i].content = receipt;
+                    metrics.mutation_echoes_compacted += 1;
+                    continue;
+                }
             }
         }
     }
@@ -650,5 +796,332 @@ mod tests {
         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
         assert_eq!(metrics.superseded_reads_compacted, 0);
         assert_eq!(messages[2].content, receipt);
+    }
+
+    #[test]
+    fn test_duplicate_consecutive_reads() {
+        let lines_50 = (1..=50)
+            .map(|i| format!("pub fn line_{i}() -> usize {{ {i} }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Turn 1: read_file("src/main.rs") (50 lines)
+            Message::user("Read main.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", &lines_50),
+            // Turn 2: User asks question, assistant answers
+            Message::user("What does it do?"),
+            Message::assistant("It defines 50 functions."),
+            // Turn 3: read_file("src/main.rs") (50 lines)
+            Message::user("Read main.rs again"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r2", "read_file", &lines_50),
+            // Turn 4: Recent turn
+            Message::user("Recent question"),
+            Message::assistant("Recent answer"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.duplicate_reads_compacted, 1);
+        assert_eq!(metrics.superseded_reads_compacted, 0);
+        assert!(metrics.tokens_saved_estimate > 0);
+
+        // Assert Turn 1 read is condensed with "superseded by subsequent read"
+        assert!(
+            messages[2]
+                .content
+                .contains("superseded by subsequent read"),
+            "Turn 1 read should be condensed with 'superseded by subsequent read', got: {}",
+            messages[2].content
+        );
+        assert!(
+            messages[2].content.starts_with("[read_file: src/main.rs (superseded by subsequent read. Use retrieve_observation(id=\"ccr_"),
+            "Unexpected receipt format: {}",
+            messages[2].content
+        );
+
+        // Assert Turn 3 read is preserved
+        assert_eq!(
+            messages[7].content, lines_50,
+            "Turn 3 read must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_historical_mutation_echo_condensation() {
+        // Turn 1: write_file("src/main.rs") returning 500 bytes of unified diff / echo
+        let echo_500 = "x".repeat(500);
+
+        let mut messages = vec![
+            // Turn 1
+            Message::user("Update main.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", &echo_500),
+            // Turn 2: User prompt + assistant action
+            Message::user("Next step"),
+            Message::assistant("Done"),
+            // Turn 3: Recent turn
+            Message::user("Recent check"),
+            Message::assistant("All good"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.mutation_echoes_compacted, 1);
+        assert!(metrics.tokens_saved_estimate > 0);
+
+        // Assert Turn 1 mutation output is condensed to [write_file: src/main.rs (successfully applied, 500 bytes...)]
+        let compacted = &messages[2].content;
+        assert!(
+            compacted.starts_with("[write_file: src/main.rs (successfully applied, 500 bytes. Use retrieve_observation(id=\"ccr_"),
+            "Expected mutation echo receipt, got: {compacted}"
+        );
+
+        // Assert raw 500 bytes is retrievable via CcrCache::retrieve
+        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
+        let id_end = compacted[id_start..]
+            .find('"')
+            .expect("closing quote should be in receipt")
+            + id_start;
+        let ccr_id = &compacted[id_start..id_end];
+
+        let retrieved = CcrCache::retrieve(ccr_id, None, None);
+        assert_eq!(
+            retrieved,
+            Some(echo_500),
+            "Raw 500 bytes must be losslessly retrievable from CCR cache"
+        );
+    }
+
+    #[test]
+    fn test_no_negative_compression_on_tiny_output() {
+        let tiny_read = "let a = 1;"; // 10 bytes <= 128
+        let tiny_write = "ok"; // 2 bytes <= 256
+
+        let mut messages = vec![
+            Message::user("Read small"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "tiny.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", tiny_read),
+            Message::user("Write small"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "tiny.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", tiny_write),
+            Message::user("Recent"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.total_compacted(), 0);
+        assert_eq!(
+            messages[2].content, tiny_read,
+            "Tiny read must not be replaced"
+        );
+        assert_eq!(
+            messages[5].content, tiny_write,
+            "Tiny write must not be replaced"
+        );
+    }
+
+    #[test]
+    fn test_cross_platform_path_normalization() {
+        let lines_50 = (1..=50)
+            .map(|i| format!("fn f_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Turn 1: Windows-style path with backslashes
+            Message::user("Read file"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src\\main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", &lines_50),
+            // Turn 2: Unix-style path modifying same file
+            Message::user("Modify file"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", "ok"),
+            // Turn 3: Recent turn
+            Message::user("Recent"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.superseded_reads_compacted, 1);
+        assert!(messages[2].content.contains("superseded by modification"));
+    }
+
+    #[test]
+    fn test_normalize_path_for_compare_variants() {
+        assert_eq!(normalize_path_for_compare("src\\main.rs"), "src/main.rs");
+        assert_eq!(normalize_path_for_compare("./src/main.rs"), "src/main.rs");
+        assert_eq!(normalize_path_for_compare("/src/main.rs"), "src/main.rs");
+        assert_eq!(normalize_path_for_compare(".\\src\\main.rs"), "src/main.rs");
+        assert_eq!(normalize_path_for_compare("\\src\\main.rs"), "src/main.rs");
+        assert_eq!(normalize_path_for_compare("src/main.rs"), "src/main.rs");
+        assert_eq!(
+            normalize_path_for_compare("  ./src\\main.rs  "),
+            "src/main.rs"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_read_with_normalized_paths() {
+        let lines_50 = (1..=50)
+            .map(|i| format!("fn norm_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            Message::user("Read 1"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": ".\\src\\main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", &lines_50),
+            Message::user("Question"),
+            Message::assistant("Answer"),
+            Message::user("Read 2"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "/src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r2", "read_file", &lines_50),
+            Message::user("Recent"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.duplicate_reads_compacted, 1);
+        assert!(messages[2]
+            .content
+            .contains("superseded by subsequent read"));
+    }
+
+    #[test]
+    fn test_duplicate_read_with_mutation_between_not_compacted_as_duplicate() {
+        let lines_50 = (1..=50)
+            .map(|i| format!("fn inter_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            Message::user("Read 1"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", &lines_50),
+            Message::user("Write"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", "ok"),
+            Message::user("Read 2"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r2", "read_file", &lines_50),
+            Message::user("Recent"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.duplicate_reads_compacted, 0);
+        assert_eq!(metrics.superseded_reads_compacted, 1);
+        assert!(messages[2].content.contains("superseded by modification"));
+    }
+
+    #[test]
+    fn test_mutation_echo_recent_turn_preserved() {
+        let echo_500 = "y".repeat(500);
+
+        let mut messages = vec![
+            Message::user("Recent write"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", &echo_500),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.mutation_echoes_compacted, 0);
+        assert_eq!(messages[2].content, echo_500);
     }
 }
