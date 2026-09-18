@@ -57,6 +57,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /resume    ", Style::default().fg(theme.success)),
+            Span::styled(
+                "Browse & reload past workspace session history",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /commands  ", Style::default().fg(theme.success)),
             Span::styled(
                 "Open interactive command catalog & keybindings cheatsheet",
@@ -117,6 +124,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             Span::styled("  Home / End ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Scroll directly to top / bottom of timeline",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Ctrl+H     ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Browse and resume past sessions (/resume)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),

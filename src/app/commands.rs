@@ -1403,18 +1403,73 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/sessions" || prompt == "/history" {
+        if prompt == "/resume"
+            || prompt.starts_with("/resume ")
+            || prompt == "/sessions"
+            || prompt.starts_with("/sessions ")
+            || prompt == "/history"
+            || prompt.starts_with("/history ")
+        {
             let store = crate::session::store::SessionStore::with_workspace(&self.workspace_root);
-            match store.list_sessions_rich() {
-                Ok(sessions) => {
-                    let initial_summary = sessions
-                        .first()
-                        .and_then(|s| store.get_session_summary(&s.id).ok());
-                    self.modal = ModalState::new_session_browser(sessions, initial_summary);
+            let arg = if let Some(rest) = prompt.strip_prefix("/resume ") {
+                rest.trim()
+            } else if let Some(rest) = prompt.strip_prefix("/sessions ") {
+                rest.trim()
+            } else if let Some(rest) = prompt.strip_prefix("/history ") {
+                rest.trim()
+            } else {
+                ""
+            };
+
+            if arg.is_empty() || arg == "list" {
+                match store.list_sessions_rich() {
+                    Ok(sessions) => {
+                        let initial_summary = sessions
+                            .first()
+                            .and_then(|s| store.get_session_summary(&s.id).ok());
+                        self.modal = ModalState::new_session_browser(sessions, initial_summary);
+                    }
+                    Err(e) => {
+                        self.timeline
+                            .add_status(format!("✗ Failed to list sessions: {}", e));
+                    }
                 }
-                Err(e) => {
-                    self.timeline
-                        .add_status(format!("✗ Failed to list sessions: {}", e));
+            } else {
+                let target_id = if arg == "last" || arg == "latest" {
+                    match store.get_last_session_id() {
+                        Some(id) => id,
+                        None => {
+                            self.timeline.add_status(
+                                "ℹ No previous sessions found in this workspace to resume"
+                                    .to_string(),
+                            );
+                            return Ok(CommandAction::Continue);
+                        }
+                    }
+                } else {
+                    arg.to_string()
+                };
+
+                match store.load_session(&target_id) {
+                    Ok(events) => {
+                        let count = events.len();
+                        self.timeline.entries.clear();
+                        self.hydrate_session(&events);
+                        let _ = control_tx.send(AgentCommand::HydrateSession {
+                            session_id: target_id.clone(),
+                            events,
+                        });
+                        self.timeline.add_status(format!(
+                            "✔ Resumed session '{}' and restored agent memory ({} events)",
+                            target_id, count
+                        ));
+                    }
+                    Err(e) => {
+                        self.timeline.add_status(format!(
+                            "✗ Failed to resume session '{}': {}",
+                            target_id, e
+                        ));
+                    }
                 }
             }
             return Ok(CommandAction::Continue);

@@ -12,6 +12,8 @@ fn test_intent_matcher_direct_slash_commands() {
         ("/diff", AgentIntent::GitDiff),
         ("/history", AgentIntent::SessionHistory),
         ("/sessions", AgentIntent::SessionHistory),
+        ("/resume", AgentIntent::SessionHistory),
+        ("/resume session_abc", AgentIntent::SessionHistory),
         ("/undo", AgentIntent::UndoRollback),
         ("/map", AgentIntent::RepoMap),
         ("/compact", AgentIntent::ContextCompact),
@@ -133,6 +135,8 @@ fn test_intent_matcher_session_history_and_undo() {
         "view previous session history",
         "browse session history",
         "open chat history",
+        "resume session",
+        "resume previous session",
     ];
 
     for q in history_queries {

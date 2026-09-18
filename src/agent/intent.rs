@@ -59,7 +59,7 @@ impl AgentIntent {
             Self::CodeReview => Some("/review"),
             Self::GitDiff => Some("/diff"),
             Self::CodeExplore => Some("/explore"),
-            Self::SessionHistory => Some("/history"),
+            Self::SessionHistory => Some("/resume"),
             Self::UndoRollback => Some("/undo"),
             Self::RepoMap => Some("/map"),
             Self::ContextCompact => Some("/compact"),
@@ -167,12 +167,24 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
         });
     }
 
-    if lower == "/history" || lower == "/sessions" || lower.starts_with("/sessions ") {
+    if lower == "/resume"
+        || lower.starts_with("/resume ")
+        || lower == "/history"
+        || lower == "/sessions"
+        || lower.starts_with("/sessions ")
+    {
+        let query = trimmed
+            .strip_prefix("/resume")
+            .or_else(|| trimmed.strip_prefix("/sessions"))
+            .or_else(|| trimmed.strip_prefix("/history"))
+            .unwrap_or("")
+            .trim()
+            .to_string();
         return Some(IntentMatch {
             intent: AgentIntent::SessionHistory,
             confidence: clamp_confidence(1.0),
-            query: String::new(),
-            suggested_command: Some("/history".to_string()),
+            query,
+            suggested_command: Some("/resume".to_string()),
         });
     }
 
@@ -334,7 +346,7 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
     }
 
     // Session History & Previous Transcripts
-    if (lower.contains("past session")
+    if ((lower.contains("past session")
         || lower.contains("previous session")
         || lower.contains("session history")
         || lower.contains("chat history"))
@@ -342,13 +354,18 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
             || lower.contains("view")
             || lower.contains("list")
             || lower.contains("browse")
-            || lower.contains("open"))
+            || lower.contains("open")))
+        || lower.starts_with("resume session")
+        || lower.starts_with("resume previous")
+        || lower.starts_with("resume past")
+        || lower == "resume"
+        || lower == "continue session"
     {
         return Some(IntentMatch {
             intent: AgentIntent::SessionHistory,
-            confidence: clamp_confidence(0.88),
+            confidence: clamp_confidence(0.90),
             query: String::new(),
-            suggested_command: Some("/history".to_string()),
+            suggested_command: Some("/resume".to_string()),
         });
     }
 

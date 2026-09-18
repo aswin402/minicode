@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 129 (v0.3.30) Human-Centric Slash Commands & Autocomplete Streamlining | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 130 (v0.3.31) Unify Session History & Resumption into `/resume` | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1847,5 +1847,13 @@
 - [x] 129.3: Align inline palette autocomplete popup `PALETTE_COMMANDS` in `src/ui/input.rs` and `src/ui/modals/help.rs` to match the exact streamlined command set and keyboard shortcuts
 - [x] 129.4: Preserve backwards-compatible fallback routing in `src/app/commands.rs` so legacy invocations and natural language queries dispatch seamlessly without errors
 - [x] 129.5: Pass targeted integration and unit tests (`integration_onpkg_tools`, `integration_git_diff_review`, `integration_intent_routing`, `ui::input::tests`), zero clippy warnings, clean formatting, and compile release via `./localupdate.sh` (v0.3.30)
+
+### Phase 130: Unify Session History & Resumption into `/resume` (v0.3.31)
+- [x] 130.1: Implement `/resume` in `src/app/commands.rs` supporting visual session browser modal (`/resume` or `/resume list`), quick hydration of latest session (`/resume last` / `/resume latest`), and specific session hydration (`/resume <session_id>`) with legacy aliases (`/sessions`, `/history`)
+- [x] 130.2: Register `/resume` with `Ctrl+H` shortcut under `History & Sessions` in `COMMAND_CATALOG_ITEMS` (`src/ui/modals/command_catalog.rs`)
+- [x] 130.3: Register `/resume` in quick palette autocomplete `PALETTE_COMMANDS` (`src/ui/input.rs`) and cheatsheet (`src/ui/modals/help.rs`)
+- [x] 130.4: Update autonomous intent router (`src/agent/intent.rs`) to map `/resume` and natural language queries ("resume session", "resume previous session") to `AgentIntent::SessionHistory`
+- [x] 130.5: Pass targeted integration tests (`tests/integration_intent_routing.rs`, `src/ui/input.rs`), zero clippy warnings, format clean, and compile release via `./localupdate.sh` (v0.3.31)
+
 
 
