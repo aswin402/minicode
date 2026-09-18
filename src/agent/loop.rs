@@ -1362,7 +1362,9 @@ impl AgentLoop {
                             ));
 
                             if tool_result.success
-                                && crate::context::budget::micro_compact::is_mutation_tool(&tool_call.name)
+                                && crate::context::budget::micro_compact::is_mutation_tool(
+                                    &tool_call.name,
+                                )
                             {
                                 let micro_metrics =
                                     crate::context::budget::MicroCompactor::compact_messages(

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 130 (v0.3.31) Unify Session History & Resumption into `/resume` | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 131 (v0.3.32) Semantic Micro-Compaction of Tool Observations | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1854,6 +1854,15 @@
 - [x] 130.3: Register `/resume` in quick palette autocomplete `PALETTE_COMMANDS` (`src/ui/input.rs`) and cheatsheet (`src/ui/modals/help.rs`)
 - [x] 130.4: Update autonomous intent router (`src/agent/intent.rs`) to map `/resume` and natural language queries ("resume session", "resume previous session") to `AgentIntent::SessionHistory`
 - [x] 130.5: Pass targeted integration tests (`tests/integration_intent_routing.rs`, `src/ui/input.rs`), zero clippy warnings, format clean, and compile release via `./localupdate.sh` (v0.3.31)
+
+### Phase 131: Semantic Micro-Compaction of Tool Observations (v0.3.32)
+- [x] 131.1: Implement `MicroCompactor` engine in `src/context/budget/micro_compact.rs` with dynamic schema-agnostic argument extraction (`PATH_KEYS`, `QUERY_KEYS`), turn cutoff calculations, and `MicroCompactMetrics` tracking
+- [x] 131.2: Implement superseded read condensation (replacing historical reads with 1-line receipts backed by lossless `CcrCache::store`) and duplicate consecutive read condensation
+- [x] 131.3: Implement historical mutation echo condensation (>256 bytes) and bulky search/grep observation condensation (>25 lines or >300 bytes) with negative compression prevention guards
+- [x] 131.4: Wire `MicroCompactor` into `AgentLoop` in `src/agent/loop.rs` at turn start (`execute_turn`) and post-file mutation hook with active turn preservation
+- [x] 131.5: Pass all 20 unit tests in `src/context/budget/micro_compact.rs` and 4 comprehensive integration tests in `tests/integration_micro_compaction.rs`
+- [x] 131.6: Pass all quality gates (`cargo clippy -j 1 --bin minicode -- -D warnings`, `cargo fmt --check`), recompile global binary via `./localupdate.sh`, and validate in real-world autonomous execution (v0.3.32)
+
 
 
 

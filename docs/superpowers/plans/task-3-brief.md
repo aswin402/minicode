@@ -1,70 +1,66 @@
-# Task 3 Brief: Living Execution Ledger Prompt Rendering & Drift Detection
+# Task 3 Brief: Bulky Search/Grep Result Condensation
 
-## Goal
-Implement compact, token-efficient prompt rendering (`to_prompt_block`), drift detection (`check_drift`), and progress counting (`completed_count`, `total_count`) in `IntentLedger`, and wire `IntentLedger` into `PromptBuilder::build_recency_context` in `src/agent/prompt.rs`.
+## Overview
+Extend `MicroCompactor` in `src/context/budget/micro_compact.rs` to detect and condense historical bulky search and grep observations (>25 lines or >300 bytes) outside the preserved recent turn window, and implement the Task 2 Reviewer suggestions (zero-allocation receipt prefix checking and shared backward scan helper).
 
-## Files to Touch
-- Modify: `src/context/memory/intent.rs`
-- Modify: `src/agent/prompt.rs`
-- Test: `src/context/memory/intent.rs` (inline `mod tests`)
+## Files
+- Modify: `src/context/budget/micro_compact.rs`
+- Test: `src/context/budget/micro_compact.rs` (inline unit tests)
+
+## Constraints
+1. **Targeted Tests ONLY**: `cargo test -j 1 --lib context::budget::micro_compact::tests`. NEVER run the full test suite.
+2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
+3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
+4. **Lossless CCR**: Use `CcrCache::store(&raw_output)` before replacing content.
+5. **Preserve recent turns**: If `preserve_recent_turns > 0`, the tool results belonging to the last `preserve_recent_turns` turns MUST remain 100% untouched.
 
 ## Detailed Requirements
 
-### 1. Methods in `src/context/memory/intent.rs`
-Implement:
-```rust
-impl IntentLedger {
-    /// Returns the number of completed requirement items.
-    pub fn completed_count(&self) -> usize { ... }
+### 1. Task 2 Reviewer Refinements
+- **Zero-allocation receipt prefix check**:
+  Instead of allocating temporary formatted strings, check if a message starts with `[` followed by the tool name and `:` without heap allocations:
+  ```rust
+  fn is_already_receipt(content: &str, tool_name: &str) -> bool {
+      content
+          .strip_prefix('[')
+          .and_then(|s| s.strip_prefix(tool_name))
+          .map(|s| s.starts_with(':'))
+          .unwrap_or(false)
+  }
+  ```
+- **Helper for Backward Resolution**:
+  Deduplicate the backwards search for tool call metadata into a helper function:
+  `resolve_tool_call_meta(messages: &[Message], idx: usize, tool_meta_by_id: &HashMap<String, CompactToolMeta>) -> Option<CompactToolMeta>`
 
-    /// Returns the total number of tracked requirement items.
-    pub fn total_count(&self) -> usize { ... }
+### 2. Search & Grep Observation Condensation
+- For each tool result message in `messages` where:
+  - `idx < cutoff` (outside the preserved recent turn window).
+  - `tool_name` is in `["grep_search", "find_by_name", "file_search", "glob", "grep", "search"]` or contains `grep` or `search`.
+  - Not already a receipt (`!is_already_receipt(&msg.content, &tname)`).
+  - Line count `lines().count() > 25` OR byte length `content.len() > 300`:
+    - Extract query using `meta.query.as_deref().unwrap_or("...")`.
+    - Store full raw search output in `CcrCache::store(&msg.content)`.
+    - Replace `msg.content` with:
+      `format!("[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]", tname, query, line_count, ccr_id)`
+    - Increment `metrics.search_results_compacted`.
+    - Add estimated saved tokens (`(raw_len - receipt_len) / 4`) to `metrics.tokens_saved_estimate`.
 
-    /// Checks if consecutive turns without progress exceed the drift threshold.
-    /// If so, returns a high-priority course-correction reminder string.
-    pub fn check_drift(&self, threshold: usize) -> Option<String> { ... }
+## Unit Tests to Implement
+1. `test_historical_search_result_condensation`:
+   - Turn 1: `grep_search(query="AuthService")` returning 80 lines of matches (>1000 bytes).
+   - Turn 2: User prompt + assistant action.
+   - Turn 3: Recent turn.
+   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
+   - Assert Turn 1 is condensed to `[grep_search: query "AuthService" returned 80 lines. Use retrieve_observation(id="ccr_...")]`.
+   - Assert raw 80 lines is losslessly retrievable via `CcrCache::retrieve`.
+   - Assert `metrics.search_results_compacted == 1`.
+2. `test_recent_search_result_uncompacted`:
+   - Search in the most recent turn remains uncompacted.
+3. `test_small_search_result_uncompacted`:
+   - A search result with only 3 lines / 100 bytes is not condensed (negative compression prevention).
 
-    /// Renders the immutable root goal anchor and the living execution ledger
-    /// into a compact, token-efficient XML prompt block for LLM context injection.
-    pub fn to_prompt_block(&self) -> String { ... }
-}
-```
-
-Format of `to_prompt_block`:
-```xml
-  <goal_anchor>
-    <root_objective>Build AgentBench — a sandbox website designed specifically for testing AI agents.</root_objective>
-  </goal_anchor>
-  <execution_ledger progress="2/7 completed">
-    [x] Dashboard (metrics cards, activity feed)
-    [x] Mock Database & Schemas
-    [-] Customers Page (search, filter, pagination)
-    [ ] Support Tickets (ticket submission, status badges)
-    [ ] Orders Management (order table, detail modal)
-    [ ] Analytics & Reports (revenue graphs)
-    [ ] Settings & Profile (theme toggle, preferences)
-  </execution_ledger>
-```
-Status markers:
-- `Completed`: `[x]`
-- `InProgress`: `[-]`
-- `Blocked`: `[!]`
-- `Skipped`: `[s]`
-- `Pending`: `[ ]`
-
-Format of `check_drift`:
-If `self.consecutive_turns_without_progress >= threshold && self.total_count() > self.completed_count()`:
-Returns:
-`format!("⚠️ Task Drift Warning: {} turns have passed without requirement progress (completed {}/{}). Active task: {}. Do not get distracted by tangential edits; focus on completing remaining requirements.", self.consecutive_turns_without_progress, self.completed_count(), self.total_count(), active_title)`
-
-### 2. Wiring into `src/agent/prompt.rs`
-In `PromptBuilder::build_recency_context`:
-Add `intent_ledger: Option<&crate::context::memory::intent::IntentLedger>` parameter (or handle `None` gracefully).
-Inject the `<goal_anchor>` and `<execution_ledger>` right into Zone 1 of recency context (e.g. after working set or alongside working memory), and if `intent_ledger.and_then(|l| l.check_drift(drift_threshold))` yields a warning, inject `<intent_focus>` at the tail of recency context!
-Note: Also update any existing callers of `build_recency_context` in `src/agent/loop.rs` and `src/agent/prompt.rs` tests to pass `None` for now so everything compiles.
-
-### 3. Verification Constraints
-- Strict: ONLY run targeted test: `cargo test -j 1 --lib context::memory::intent::tests` and `cargo test -j 1 --lib agent::prompt::tests`.
-- Zero clippy warnings: `cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Zero non-test unwraps, pure safe Rust, clean formatting.
-- TDD: write unit tests for `to_prompt_block`, `check_drift`, and prompt builder injection.
+## Success Criteria
+- Targeted test passes: `cargo test -j 1 --lib context::budget::micro_compact::tests`
+- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
+- Code formatting passes: `cargo fmt --check`
+- Commit with message: `feat(budget): condense historical search and grep observations`

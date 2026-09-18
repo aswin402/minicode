@@ -1,856 +1,717 @@
-a19d14d fix(intent): resolve UTF-8 char boundary slicing, checklist-first parsing, and file path punctuation
-d66fc8d feat(intent): implement dynamic requirement parser for diverse prompt structures
- src/context/memory/intent.rs | 750 ++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 743 insertions(+), 7 deletions(-)
-diff --git a/src/context/memory/intent.rs b/src/context/memory/intent.rs
-index 9db3111..3da5775 100644
---- a/src/context/memory/intent.rs
-+++ b/src/context/memory/intent.rs
-@@ -71,57 +71,69 @@ impl IntentLedger {
-             related_files,
-             created_turn: 0,
-             updated_turn: 0,
-         };
-         self.items.push(item);
-         id
-     }
+71c8667 feat(budget): add duplicate read and historical mutation echo compaction
+
+--- STAT ---
+
+ src/context/budget/micro_compact.rs | 583 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 528 insertions(+), 55 deletions(-)
+
+--- DIFF ---
+
+diff --git a/src/context/budget/micro_compact.rs b/src/context/budget/micro_compact.rs
+index de9d3d2..2093f1a 100644
+--- a/src/context/budget/micro_compact.rs
++++ b/src/context/budget/micro_compact.rs
+@@ -59,46 +59,76 @@ fn is_mutation_tool(name: &str) -> bool {
+ }
  
-     /// Updates the status of an existing requirement item by ID.
-     ///
--    /// - If moved to `InProgress`, sets `active_item_id` to this item and resets drift counter.
--    /// - If moved to `Completed`, clears `active_item_id` (if matching) and resets drift counter.
-+    /// - If moved to `InProgress`, sets `active_item_id` to this item and resets drift counter
-+    ///   if transitioning from `Pending`.
-+    /// - If moved to `Completed`, clears `active_item_id` (if matching) and resets drift counter
-+    ///   if transitioning from a non-`Completed` state.
-     /// - If moved to any other status, clears `active_item_id` if it was pointing to this item.
-     ///
-     /// Returns `true` if the item was found and updated, or `false` otherwise.
-     pub fn set_status(&mut self, id: &str, status: RequirementStatus) -> bool {
-         let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
-             return false;
-         };
-+        let old_status = item.status;
-         item.status = status;
-         match status {
-             RequirementStatus::InProgress => {
-                 self.active_item_id = Some(id.to_string());
--                self.consecutive_turns_without_progress = 0;
-+                if old_status == RequirementStatus::Pending {
-+                    self.consecutive_turns_without_progress = 0;
-+                }
-             }
-             RequirementStatus::Completed => {
-                 if self.active_item_id.as_deref() == Some(id) {
-                     self.active_item_id = None;
-                 }
--                self.consecutive_turns_without_progress = 0;
-+                if old_status != RequirementStatus::Completed {
-+                    self.consecutive_turns_without_progress = 0;
-+                }
-             }
-             RequirementStatus::Pending
-             | RequirementStatus::Blocked
-             | RequirementStatus::Skipped => {
-                 if self.active_item_id.as_deref() == Some(id) {
-                     self.active_item_id = None;
-                 }
-             }
-         }
-         true
-     }
+ /// Returns true if the tool name indicates a file read operation.
+ fn is_read_tool(name: &str) -> bool {
+     let n = name.to_ascii_lowercase();
+     matches!(n.as_str(), "read_file" | "view_file" | "cat")
+         || n.starts_with("read_")
+         || n.starts_with("view_")
+ }
  
-     /// Retrieves an immutable reference to a requirement item by ID.
-     pub fn get_item(&self, id: &str) -> Option<&RequirementItem> {
-         self.items.iter().find(|item| item.id == id)
-     }
- 
-+    /// Retrieves a mutable reference to a requirement item by ID.
-+    pub fn get_item_mut(&mut self, id: &str) -> Option<&mut RequirementItem> {
-+        self.items.iter_mut().find(|item| item.id == id)
+-/// Normalizes a file path for comparison by trimming whitespace and removing leading `./`.
+-fn normalize_path_for_compare(p: &str) -> &str {
+-    let trimmed = p.trim();
+-    trimmed.strip_prefix("./").unwrap_or(trimmed)
++/// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
++/// stripping leading `./`, and trimming leading `/`.
++pub fn normalize_path_for_compare(path: &str) -> String {
++    let s = path.trim().replace('\\', "/");
++    let mut s = s.as_str();
++    loop {
++        if let Some(stripped) = s.strip_prefix("./") {
++            s = stripped;
++        } else if let Some(stripped) = s.strip_prefix('/') {
++            s = stripped;
++        } else {
++            break;
++        }
 +    }
++    s.to_string()
++}
 +
-     /// Atomically persists the `IntentLedger` to disk via a temporary file and rename.
-     pub fn save_to_disk(&self, path: &std::path::Path) -> std::io::Result<()> {
-         if let Some(parent) = path.parent() {
-             if !parent.as_os_str().is_empty() {
-                 std::fs::create_dir_all(parent)?;
-             }
-         }
-         let json = serde_json::to_string_pretty(self)
-             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
++#[derive(Debug, Clone)]
++struct CompactToolMeta {
++    name: String,
++    target_path: Option<String>,
++    query: Option<String>,
++}
++
++fn is_compacted_receipt(content: &str) -> bool {
++    content.starts_with('[')
++        && (content.contains("Use retrieve_observation(id=\"")
++            || content.contains("superseded by")
++            || content.contains("successfully applied,"))
+ }
  
-@@ -136,34 +148,515 @@ impl IntentLedger {
-                 path.with_file_name(fname_os)
-             }
-             None => path.with_extension(format!(
-                 "tmp.{}.{}",
-                 std::process::id(),
-                 uuid::Uuid::new_v4().simple()
-             )),
-         };
+ /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
+ /// tool observations in conversation history, backed by lossless CCR recovery cache.
+ pub struct MicroCompactor;
  
-         std::fs::write(&tmp_path, json)?;
--        if let Err(e) = std::fs::rename(&tmp_path, path) {
--            let _ = std::fs::remove_file(&tmp_path);
--            return Err(e);
-+        if let Err(rename_err) = std::fs::rename(&tmp_path, path) {
-+            if let Err(e) = std::fs::remove_file(&tmp_path) {
-+                tracing::warn!(
-+                    error = %e,
-+                    path = %tmp_path.display(),
-+                    "Failed to clean up temporary intent ledger file"
-+                );
-+            }
-+            return Err(rename_err);
+ impl MicroCompactor {
+-    /// Compacts messages by identifying superseded file reads outside the preserved recent turn window.
++    /// Compacts messages by identifying superseded file reads, duplicate consecutive reads,
++    /// and large historical mutation echoes outside the preserved recent turn window.
+     ///
+     /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
+     /// all messages across the conversation are eligible for compaction.
+     pub fn compact_messages(
+         messages: &mut [Message],
+         preserve_recent_turns: usize,
+     ) -> MicroCompactMetrics {
+         let mut metrics = MicroCompactMetrics::default();
+         if messages.is_empty() {
+             return metrics;
          }
-         Ok(())
+ 
+         let cutoff = Self::calculate_cutoff(messages, preserve_recent_turns);
+-        Self::compact_superseded_reads(messages, cutoff, &mut metrics);
++        if cutoff == 0 {
++            return metrics;
++        }
++
++        Self::compact_stale_observations(messages, cutoff, &mut metrics);
+ 
+         metrics
      }
  
-     /// Loads and deserializes an `IntentLedger` from disk.
-     pub fn load_from_disk(path: &std::path::Path) -> std::io::Result<Self> {
-         let content = std::fs::read_to_string(path)?;
-         let ledger = serde_json::from_str::<Self>(&content)
-             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-         Ok(ledger)
+     /// Dynamically extracts target file path from a tool call's arguments.
+     #[must_use]
+     pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
+         let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
+             for key in PATH_KEYS {
+                 if let Some(val) = obj.get(*key) {
+@@ -194,116 +224,232 @@ impl MicroCompactor {
+                 })
+                 .collect();
+             if preserve_recent_turns >= assistant_indices.len() {
+                 0
+             } else {
+                 assistant_indices[assistant_indices.len() - preserve_recent_turns]
+             }
+         }
      }
-+
-+    /// Dynamically extracts the root objective and actionable requirement items
-+    /// from a freeform user prompt across diverse formatting styles (headers, checklists, numbered lists, bullet points).
-+    pub fn from_prompt(prompt: &str, max_items: usize) -> Self {
-+        let cap = if max_items == 0 { 32 } else { max_items };
-+        let raw_lines: Vec<&str> = prompt.lines().collect();
-+        let first_non_empty_idx = raw_lines.iter().position(|l| !l.trim().is_empty());
-+
-+        let (root_objective, start_idx) = match first_non_empty_idx {
-+            Some(idx) => {
-+                let first_line_trimmed = raw_lines[idx].trim();
-+                if strip_checkbox_prefix(first_line_trimmed).is_some() {
-+                    ("Complete prompt checklist".to_string(), idx)
-+                } else if parse_numbered_item(first_line_trimmed).is_some()
-+                    || strip_bullet_prefix(first_line_trimmed).is_some()
-+                {
-+                    ("Complete prompt tasks".to_string(), idx)
-+                } else {
-+                    let cleaned = clean_root_objective(raw_lines[idx]);
-+                    let obj = if cleaned.is_empty() {
-+                        "General Assistance".to_string()
-+                    } else {
-+                        cleaned
+ 
+-    /// Identifies superseded file reads outside the preserved window and replaces them with
+-    /// concise 1-line CCR receipts.
+-    fn compact_superseded_reads(
++    /// Identifies and condenses stale tool observations outside the preserved window:
++    /// 1. Duplicate consecutive reads (superseded by subsequent read without modifications in between).
++    /// 2. Superseded reads (stale read observations superseded by subsequent file modifications).
++    /// 3. Historical mutation echoes (verbose diffs or write echoes > 256 bytes).
++    fn compact_stale_observations(
+         messages: &mut [Message],
+         cutoff: usize,
+         metrics: &mut MicroCompactMetrics,
+     ) {
+-        if cutoff == 0 {
+-            return;
+-        }
+-
+-        // Pass 1: Build map of modified files across the entire conversation
+-        // and map tool calls by ID for metadata extraction.
++        // Pass 1a: Build map of lightweight tool metadata and indexed mutations across the conversation
++        let mut tool_calls_by_id: HashMap<String, CompactToolMeta> = HashMap::new();
+         let mut mutations: HashMap<String, Vec<usize>> = HashMap::new();
+-        let mut tool_calls_by_id: HashMap<String, ToolCall> = HashMap::new();
++        let mut reads: HashMap<String, Vec<usize>> = HashMap::new();
+ 
+         for (idx, msg) in messages.iter().enumerate() {
+             if let Some(ref calls) = msg.tool_calls {
+                 for call in calls {
+-                    tool_calls_by_id.insert(call.id.clone(), call.clone());
+-                    if is_mutation_tool(&call.name) {
+-                        if let Some(target_path) = Self::extract_target_path(call) {
+-                            let norm = normalize_path_for_compare(&target_path);
+-                            mutations.entry(norm.to_string()).or_default().push(idx);
++                    let target_path = Self::extract_target_path(call);
++                    let query = Self::extract_search_query(call);
++                    let meta = CompactToolMeta {
++                        name: call.name.clone(),
++                        target_path,
++                        query,
 +                    };
-+                    (obj, idx + 1)
-+                }
-+            }
-+            None => ("General Assistance".to_string(), 0),
-+        };
++                    if is_mutation_tool(&meta.name) {
++                        if let Some(ref tp) = meta.target_path {
++                            let norm = normalize_path_for_compare(tp);
++                            mutations.entry(norm).or_default().push(idx);
+                         }
+                     }
++                    tool_calls_by_id.insert(call.id.clone(), meta);
+                 }
+             }
+         }
+ 
+-        // Pass 2: Inspect tool result messages outside the preserved recent window
+-        for i in 0..cutoff {
+-            if messages[i].role != Role::Tool {
++        // Pass 1b: Index tool result message operations (reads and mutations)
++        for (idx, msg) in messages.iter().enumerate() {
++            if msg.role != Role::Tool {
+                 continue;
+             }
+ 
+-            // If already a condensed receipt, skip
+-            if messages[i].content.starts_with("[read_file:") {
++            let tool_meta = msg
++                .tool_call_id
++                .as_deref()
++                .and_then(|id| tool_calls_by_id.get(id));
 +
-+        let mut ledger = Self::new(&root_objective);
-+        let mut draft: Option<DraftItem> = None;
-+        let mut collected_items: Vec<RequirementItem> = Vec::new();
++            let tool_name = msg
++                .tool_name
++                .as_deref()
++                .or_else(|| tool_meta.map(|m| m.name.as_str()));
 +
-+        for line in &raw_lines[start_idx..] {
-+            let trimmed = line.trim();
-+            if trimmed.is_empty() {
-+                continue;
-+            }
-+
-+            // 1. Checkbox item
-+            if let Some((rest, is_checked)) = strip_checkbox_prefix(trimmed) {
-+                commit_draft(draft.take(), &mut collected_items, cap);
-+                let status = if is_checked {
-+                    RequirementStatus::Completed
-+                } else {
-+                    RequirementStatus::Pending
-+                };
-+                let (title, desc_line) = parse_title_and_desc(rest);
-+                let mut desc_lines = Vec::new();
-+                if let Some(d) = desc_line {
-+                    desc_lines.push(d);
-+                }
-+                draft = Some(DraftItem {
-+                    title: title.to_string(),
-+                    description_lines: desc_lines,
-+                    status,
-+                    from_header: false,
-+                });
-+                continue;
-+            }
-+
-+            // 2. Header line
-+            if let Some((_level, header_text)) = parse_header(trimmed) {
-+                commit_draft(draft.take(), &mut collected_items, cap);
-+                if is_container_header(header_text) {
-+                    draft = None;
-+                } else {
-+                    let cleaned_title = strip_leading_enumeration(header_text)
-+                        .trim_matches(|c| c == '*' || c == '_' || c == '`')
-+                        .trim();
-+                    draft = Some(DraftItem {
-+                        title: cleaned_title.to_string(),
-+                        description_lines: Vec::new(),
-+                        status: RequirementStatus::Pending,
-+                        from_header: true,
-+                    });
-+                }
-+                continue;
-+            }
-+
-+            // 3. Numbered list item
-+            if let Some(rest) = parse_numbered_item(trimmed) {
-+                let is_indented = line.starts_with("  ") || line.starts_with('\t');
-+                if is_indented && draft.is_some() {
-+                    if let Some(ref mut d) = draft {
-+                        d.description_lines.push(trimmed.to_string());
-+                    }
-+                    continue;
-+                }
-+
-+                commit_draft(draft.take(), &mut collected_items, cap);
-+                let (title, desc_line) = parse_title_and_desc(rest);
-+                let mut desc_lines = Vec::new();
-+                if let Some(d) = desc_line {
-+                    desc_lines.push(d);
-+                }
-+                draft = Some(DraftItem {
-+                    title: title.to_string(),
-+                    description_lines: desc_lines,
-+                    status: RequirementStatus::Pending,
-+                    from_header: false,
-+                });
-+                continue;
-+            }
-+
-+            // 4. Bullet list item
-+            if let Some(rest) = strip_bullet_prefix(trimmed) {
-+                let is_indented = line.starts_with("  ") || line.starts_with('\t');
-+                if (is_indented || draft.as_ref().is_some_and(|d| d.from_header)) && draft.is_some()
-+                {
-+                    if let Some(ref mut d) = draft {
-+                        d.description_lines.push(trimmed.to_string());
-+                    }
-+                    continue;
-+                }
-+
-+                commit_draft(draft.take(), &mut collected_items, cap);
-+                let (title, desc_line) = parse_title_and_desc(rest);
-+                let mut desc_lines = Vec::new();
-+                if let Some(d) = desc_line {
-+                    desc_lines.push(d);
-+                }
-+                draft = Some(DraftItem {
-+                    title: title.to_string(),
-+                    description_lines: desc_lines,
-+                    status: RequirementStatus::Pending,
-+                    from_header: false,
-+                });
-+                continue;
-+            }
-+
-+            // 5. Plain / description line
-+            if let Some(ref mut d) = draft {
-+                d.description_lines.push(trimmed.to_string());
-+            }
-+        }
-+
-+        commit_draft(draft.take(), &mut collected_items, cap);
-+
-+        if collected_items.is_empty() {
-+            let title = if root_objective == "General Assistance" {
-+                "General Assistance".to_string()
-+            } else {
-+                format!("Complete objective: {}", root_objective)
++            let Some(tname) = tool_name else {
+                 continue;
 +            };
-+            let related_files = extract_related_files(&root_objective);
-+            ledger.items.push(RequirementItem {
-+                id: format!("req-{}", uuid::Uuid::new_v4().simple()),
-+                title,
-+                description: None,
-+                status: RequirementStatus::Pending,
-+                related_files,
-+                created_turn: 0,
-+                updated_turn: 0,
-+            });
-+        } else {
-+            ledger.items = collected_items;
-+        }
 +
-+        ledger
-+    }
-+}
-+
-+struct DraftItem {
-+    title: String,
-+    description_lines: Vec<String>,
-+    status: RequirementStatus,
-+    from_header: bool,
-+}
-+
-+fn commit_draft(draft: Option<DraftItem>, collected: &mut Vec<RequirementItem>, max_items: usize) {
-+    if let Some(item) = draft {
-+        let title = item.title.trim().to_string();
-+        if title.is_empty() {
-+            return;
-+        }
-+
-+        let desc_text = if item.description_lines.is_empty() {
-+            None
-+        } else {
-+            let joined = item.description_lines.join("\n").trim().to_string();
-+            if joined.is_empty() {
++            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
++                for prev_idx in (0..idx).rev() {
++                    let prev = &messages[prev_idx];
++                    if prev.role == Role::Assistant {
++                        if let Some(ref calls) = prev.tool_calls {
++                            if let Some(c) = calls.iter().find(|c| {
++                                c.name == tname
++                                    || is_read_tool(&c.name)
++                                    || is_mutation_tool(&c.name)
++                            }) {
++                                return Self::extract_target_path(c);
++                            }
++                        }
++                        break;
++                    }
++                }
 +                None
-+            } else {
-+                Some(joined)
-+            }
-+        };
++            });
 +
-+        let mut related_files = extract_related_files(&title);
-+        if let Some(ref desc) = desc_text {
-+            for f in extract_related_files(desc) {
-+                if !related_files.contains(&f) {
-+                    related_files.push(f);
++            if let Some(path) = target_path {
++                let norm = normalize_path_for_compare(&path);
++                if is_read_tool(tname) {
++                    reads.entry(norm.clone()).or_default().push(idx);
 +                }
-+            }
-+        }
-+
-+        let mut is_dup = false;
-+        for existing in collected.iter_mut() {
-+            if is_duplicate_title(&existing.title, &title) {
-+                is_dup = true;
-+                if existing.description.is_none() && desc_text.is_some() {
-+                    existing.description = desc_text.clone();
++                if is_mutation_tool(tname) {
++                    mutations.entry(norm).or_default().push(idx);
 +                }
-+                for f in &related_files {
-+                    if !existing.related_files.contains(f) {
-+                        existing.related_files.push(f.clone());
-+                    }
+             }
++        }
+ 
+-            let tool_call = messages[i]
++        // Pass 2: Condense observations outside the preserved recent window
++        for i in 0..cutoff {
++            if messages[i].role != Role::Tool {
++                continue;
++            }
++
++            let tool_meta = messages[i]
+                 .tool_call_id
+                 .as_deref()
+                 .and_then(|id| tool_calls_by_id.get(id));
+ 
+             let tool_name = messages[i]
+                 .tool_name
+                 .as_deref()
+-                .or_else(|| tool_call.map(|tc| tc.name.as_str()));
++                .or_else(|| tool_meta.map(|m| m.name.as_str()));
+ 
+             let Some(tname) = tool_name else {
+                 continue;
+             };
+ 
+-            if !is_read_tool(tname) {
+-                continue;
+-            }
+-
+-            let target_path = tool_call.and_then(Self::extract_target_path).or_else(|| {
+-                // Fallback: search backwards for preceding assistant message
++            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
+                 for prev_idx in (0..i).rev() {
+                     let prev = &messages[prev_idx];
+                     if prev.role == Role::Assistant {
+                         if let Some(ref calls) = prev.tool_calls {
+-                            if let Some(c) = calls.iter().find(|c| is_read_tool(&c.name)) {
++                            if let Some(c) = calls.iter().find(|c| {
++                                c.name == tname
++                                    || is_read_tool(&c.name)
++                                    || is_mutation_tool(&c.name)
++                            }) {
+                                 return Self::extract_target_path(c);
+                             }
+                         }
+                         break;
+                     }
+                 }
+                 None
+             });
+ 
+-            let Some(path) = target_path else {
+-                continue;
+-            };
++            if is_read_tool(tname) {
++                if is_compacted_receipt(&messages[i].content)
++                    || messages[i].content.starts_with("[read_file:")
++                {
++                    continue;
 +                }
-+                break;
-+            }
-+        }
 +
-+        if !is_dup && collected.len() < max_items {
-+            let req = RequirementItem {
-+                id: format!("req-{}", uuid::Uuid::new_v4().simple()),
-+                title,
-+                description: desc_text,
-+                status: item.status,
-+                related_files,
-+                created_turn: 0,
-+                updated_turn: 0,
-+            };
-+            collected.push(req);
-+        }
-+    }
-+}
-+
-+fn clean_root_objective(line: &str) -> String {
-+    let trimmed = line.trim();
-+    let without_hash = trimmed.trim_start_matches('#').trim();
-+    let mut cleaned = without_hash;
-+    for prefix in &["objective:", "goal:", "task:", "project:", "title:"] {
-+        if cleaned.len() >= prefix.len()
-+            && cleaned.is_char_boundary(prefix.len())
-+            && cleaned[..prefix.len()].eq_ignore_ascii_case(prefix)
-+        {
-+            cleaned = cleaned[prefix.len()..].trim();
-+            break;
-+        }
-+    }
-+    let cleaned = cleaned
-+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
-+        .trim();
-+    cleaned.to_string()
-+}
-+
-+fn strip_leading_enumeration(s: &str) -> &str {
-+    let trimmed = s.trim_start();
-+    let chars = trimmed.char_indices();
-+    let mut seen_digit = false;
-+    for (i, c) in chars {
-+        if c.is_ascii_digit() {
-+            seen_digit = true;
-+        } else if seen_digit && (c == '.' || c == ')' || c == ':' || c == '-') {
-+            let rest = &trimmed[i + c.len_utf8()..];
-+            return rest.trim_start();
-+        } else {
-+            break;
-+        }
-+    }
-+    trimmed
-+}
-+
-+fn strip_checkbox_prefix(s: &str) -> Option<(&str, bool)> {
-+    let trimmed = s.trim_start();
-+    for prefix in &["- [ ]", "* [ ]", "+ [ ]", "- []", "* []", "+ []"] {
-+        if let Some(rest) = trimmed.strip_prefix(prefix) {
-+            return Some((rest.trim_start(), false));
-+        }
-+    }
-+    for prefix in &["- [x]", "* [x]", "+ [x]", "- [X]", "* [X]", "+ [X]"] {
-+        if let Some(rest) = trimmed.strip_prefix(prefix) {
-+            return Some((rest.trim_start(), true));
-+        }
-+    }
-+    None
-+}
-+
-+fn strip_bullet_prefix(s: &str) -> Option<&str> {
-+    let trimmed = s.trim_start();
-+    if trimmed.starts_with("---") || trimmed.starts_with("***") || trimmed.starts_with("___") {
-+        return None;
-+    }
-+    for prefix in &["- ", "* ", "+ "] {
-+        if let Some(rest) = trimmed.strip_prefix(prefix) {
-+            return Some(rest.trim_start());
-+        }
-+    }
-+    None
-+}
-+
-+fn parse_header(s: &str) -> Option<(usize, &str)> {
-+    let trimmed = s.trim_start();
-+    if !trimmed.starts_with('#') {
-+        return None;
-+    }
-+    let level = trimmed.chars().take_while(|c| *c == '#').count();
-+    let rest = &trimmed[level..];
-+    if rest.starts_with(' ') || rest.starts_with('\t') {
-+        Some((level, rest.trim()))
-+    } else {
-+        None
-+    }
-+}
-+
-+fn parse_numbered_item(s: &str) -> Option<&str> {
-+    let trimmed = s.trim_start();
-+    let chars = trimmed.char_indices();
-+    let mut seen_digit = false;
-+    for (i, c) in chars {
-+        if c.is_ascii_digit() {
-+            seen_digit = true;
-+        } else if seen_digit && (c == '.' || c == ')') {
-+            let rest = &trimmed[i + c.len_utf8()..];
-+            if rest.starts_with(' ') || rest.starts_with('\t') {
-+                return Some(rest.trim_start());
-+            } else {
-+                return None;
-+            }
-+        } else {
-+            return None;
-+        }
-+    }
-+    None
-+}
-+
-+fn is_container_header(title: &str) -> bool {
-+    let norm = title.trim().trim_end_matches(':').to_lowercase();
-+    let stripped = strip_leading_enumeration(&norm).to_lowercase();
-+    matches!(
-+        stripped.as_str(),
-+        "pages"
-+            | "page"
-+            | "requirements"
-+            | "requirement"
-+            | "acceptance criteria"
-+            | "acceptance test criteria"
-+            | "criteria"
-+            | "tasks"
-+            | "task list"
-+            | "features"
-+            | "key features"
-+            | "deliverables"
-+            | "specifications"
-+            | "specs"
-+            | "overview"
-+            | "scope"
-+            | "goals"
-+            | "milestones"
-+            | "checklist"
-+            | "todo"
-+            | "to-do"
-+            | "instructions"
-+            | "details"
-+            | "notes"
-+            | "subtasks"
-+            | "sub-tasks"
-+    )
-+}
-+
-+fn parse_title_and_desc(s: &str) -> (&str, Option<String>) {
-+    let clean = strip_leading_enumeration(s)
-+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
-+        .trim();
-+
-+    if let Some((left, right)) = clean.split_once(": ") {
-+        let left_trim = left.trim();
-+        let right_trim = right.trim();
-+        if left_trim.len() >= 3
-+            && left_trim.len() <= 40
-+            && !left_trim.contains('/')
-+            && !left_trim.ends_with(".rs")
-+            && !left_trim.ends_with(".ts")
-+        {
-+            return (left_trim, Some(right_trim.to_string()));
-+        }
-+    }
-+    (clean, None)
-+}
-+
-+fn extract_related_files(text: &str) -> Vec<String> {
-+    let mut files = Vec::new();
-+    let known_extensions = [
-+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".json", ".toml", ".css", ".html", ".md",
-+        ".yaml", ".yml", ".sql", ".sh", ".go", ".c", ".cpp", ".h",
-+    ];
-+
-+    let is_bracket_or_quote = |c: char| {
-+        matches!(
-+            c,
-+            '\'' | '"' | '`' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
-+        )
-+    };
-+
-+    for word in text.split_whitespace() {
-+        let mut cleaned = word;
-+
-+        loop {
-+            let prev = cleaned;
-+            cleaned = cleaned.trim_matches(is_bracket_or_quote);
-+
-+            // Strip trailing sentence punctuation while preserving directory paths like "." or ".."
-+            for punct in ['!', '?', ',', ';', ':'] {
-+                if cleaned.len() > 1 {
-+                    if let Some(stripped) = cleaned.strip_suffix(punct) {
-+                        cleaned = stripped;
-+                    }
++                // Prevent negative compression: do not replace if raw output <= 128 bytes
++                if messages[i].content.len() <= 128 {
++                    continue;
 +                }
-+            }
 +
-+            if cleaned.len() > 1 && cleaned != ".." {
-+                if let Some(stripped) = cleaned.strip_suffix('.') {
-+                    cleaned = stripped;
++                let Some(path) = target_path else {
++                    continue;
++                };
++
++                let norm = normalize_path_for_compare(&path);
++
++                // Check duplicate read: subsequent read of same path without any mutation between
++                let next_read_idx = reads
++                    .get(&norm)
++                    .and_then(|indices| indices.iter().copied().find(|&read_idx| read_idx > i));
++
++                let has_mutation_before_next_read = if let Some(next_r) = next_read_idx {
++                    mutations
++                        .get(&norm)
++                        .map(|indices| indices.iter().any(|&m_idx| m_idx > i && m_idx < next_r))
++                        .unwrap_or(false)
++                } else {
++                    false
++                };
++
++                if next_read_idx.is_some() && !has_mutation_before_next_read {
++                    let raw_len = messages[i].content.len();
++                    let ccr_id = CcrCache::store(&messages[i].content);
++                    let receipt = format!(
++                        "[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]",
++                        path, ccr_id
++                    );
++                    let chars_saved = raw_len.saturating_sub(receipt.len());
++                    metrics.tokens_saved_estimate += chars_saved / 4;
++                    messages[i].content = receipt;
++                    metrics.duplicate_reads_compacted += 1;
++                    continue;
 +                }
-+            }
 +
-+            cleaned = cleaned.trim_matches(is_bracket_or_quote);
++                // Check superseded read: subsequent mutation to this file exists
++                let is_superseded = mutations
++                    .get(&norm)
++                    .map(|indices| indices.iter().any(|&m_idx| m_idx > i))
++                    .unwrap_or(false);
 +
-+            if cleaned == prev {
-+                break;
-+            }
-+        }
-+
-+        if cleaned.is_empty() || cleaned.starts_with("http://") || cleaned.starts_with("https://") {
-+            continue;
-+        }
-+
-+        let has_known_ext = known_extensions.iter().any(|ext| {
-+            if let Some(pos) = cleaned.rfind(ext) {
-+                pos + ext.len() == cleaned.len() && pos > 0
-+            } else {
-+                false
-+            }
-+        });
-+
-+        let has_path_prefix = cleaned == "."
-+            || cleaned == ".."
-+            || cleaned.starts_with("src/")
-+            || cleaned.starts_with("tests/")
-+            || cleaned.starts_with("docs/")
-+            || cleaned.starts_with("./")
-+            || cleaned.starts_with("../")
-+            || (cleaned.starts_with('/') && cleaned.contains('.') && cleaned.len() > 2);
-+
-+        if (has_known_ext || has_path_prefix) && is_valid_path_candidate(cleaned) {
-+            let path_str = cleaned.to_string();
-+            if !files.contains(&path_str) {
-+                files.push(path_str);
-+            }
-+        }
-+    }
-+    files
-+}
-+
-+fn is_valid_path_candidate(s: &str) -> bool {
-+    if s == "." || s == ".." {
-+        return true;
-+    }
-+    if s.chars().all(|c| c.is_ascii_digit() || c == '.') {
-+        return false;
-+    }
-+    s.chars()
-+        .all(|c| c.is_alphanumeric() || c == '/' || c == '.' || c == '_' || c == '-')
-+}
-+
-+fn is_duplicate_title(a: &str, b: &str) -> bool {
-+    let clean_a = strip_leading_enumeration(a.trim())
-+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
-+        .trim();
-+    let clean_b = strip_leading_enumeration(b.trim())
-+        .trim_matches(|c| c == '*' || c == '_' || c == '`')
-+        .trim();
-+    clean_a.eq_ignore_ascii_case(clean_b)
++                if is_superseded {
++                    let raw_len = messages[i].content.len();
++                    let line_count = messages[i].content.lines().count();
++                    let ccr_id = CcrCache::store(&messages[i].content);
++                    let receipt = format!(
++                        "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
++                        path, line_count, ccr_id
++                    );
++                    let chars_saved = raw_len.saturating_sub(receipt.len());
++                    metrics.tokens_saved_estimate += chars_saved / 4;
++                    messages[i].content = receipt;
++                    metrics.superseded_reads_compacted += 1;
++                    continue;
++                }
++            } else if is_mutation_tool(tname) {
++                if is_compacted_receipt(&messages[i].content)
++                    || messages[i].content.starts_with(&format!("[{tname}:"))
++                {
++                    continue;
++                }
+ 
+-            let norm = normalize_path_for_compare(&path);
+-            let is_superseded = mutations
+-                .get(norm)
+-                .map(|indices| indices.iter().any(|&mut_idx| mut_idx > i))
+-                .unwrap_or(false);
+-
+-            if is_superseded {
+-                let line_count = messages[i].content.lines().count();
+-                let ccr_id = CcrCache::store(&messages[i].content);
+-                let receipt = format!(
+-                    "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
+-                    path, line_count, ccr_id
+-                );
+-                let chars_saved = messages[i].content.len().saturating_sub(receipt.len());
+-                metrics.tokens_saved_estimate += chars_saved / 4;
+-                messages[i].content = receipt;
+-                metrics.superseded_reads_compacted += 1;
++                // Historical mutation echo: condense outputs larger than 256 bytes
++                if messages[i].content.len() > 256 {
++                    let path = target_path.unwrap_or_else(|| "file".to_string());
++                    let raw_len = messages[i].content.len();
++                    let ccr_id = CcrCache::store(&messages[i].content);
++                    let receipt = format!(
++                        "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
++                        tname, path, raw_len, ccr_id
++                    );
++                    let chars_saved = raw_len.saturating_sub(receipt.len());
++                    metrics.tokens_saved_estimate += chars_saved / 4;
++                    messages[i].content = receipt;
++                    metrics.mutation_echoes_compacted += 1;
++                    continue;
++                }
+             }
+         }
+     }
  }
  
  #[cfg(test)]
  mod tests {
      use super::*;
- 
-     #[test]
-     fn test_intent_ledger_lifecycle() {
-         let mut ledger = IntentLedger::new("Build AgentBench sandbox website");
-         assert_eq!(ledger.root_objective, "Build AgentBench sandbox website");
-@@ -276,11 +769,254 @@ mod tests {
+     use crate::agent::types::ToolCall;
+     use serde_json::json;
+@@ -644,11 +790,338 @@ mod tests {
+             ),
+             Message::tool_result("call_w1", "write_file", "ok"),
+             Message::user("Next turn"),
+             Message::assistant("Done"),
          ];
  
-         for (status, json_str) in statuses {
-             let serialized = serde_json::to_string(&status).expect("Serialization failed");
-             assert_eq!(serialized, json_str);
-             let deserialized: RequirementStatus =
-                 serde_json::from_str(json_str).expect("Deserialization failed");
-             assert_eq!(deserialized, status);
-         }
+         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+         assert_eq!(metrics.superseded_reads_compacted, 0);
+         assert_eq!(messages[2].content, receipt);
      }
 +
 +    #[test]
-+    fn test_dynamic_prompt_requirement_extraction() {
-+        let complex_prompt = r#"
-+Build a modern, realistic web application called AgentBench.
-+### Pages
-+#### 1. Dashboard
-+Show total customers, open tickets, monthly revenue.
-+#### 2. Customers
-+Customer list with search and filter.
-+#### 3. Tickets
-+Support ticket queue.
-+"#;
-+        let ledger = IntentLedger::from_prompt(complex_prompt, 16);
-+        assert_eq!(
-+            ledger.root_objective,
-+            "Build a modern, realistic web application called AgentBench."
++    fn test_duplicate_consecutive_reads() {
++        let lines_50 = (1..=50)
++            .map(|i| format!("pub fn line_{i}() -> usize {{ {i} }}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            // Turn 1: read_file("src/main.rs") (50 lines)
++            Message::user("Read main.rs"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r1".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r1", "read_file", &lines_50),
++            // Turn 2: User asks question, assistant answers
++            Message::user("What does it do?"),
++            Message::assistant("It defines 50 functions."),
++            // Turn 3: read_file("src/main.rs") (50 lines)
++            Message::user("Read main.rs again"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r2".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r2", "read_file", &lines_50),
++            // Turn 4: Recent turn
++            Message::user("Recent question"),
++            Message::assistant("Recent answer"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.duplicate_reads_compacted, 1);
++        assert_eq!(metrics.superseded_reads_compacted, 0);
++        assert!(metrics.tokens_saved_estimate > 0);
++
++        // Assert Turn 1 read is condensed with "superseded by subsequent read"
++        assert!(
++            messages[2]
++                .content
++                .contains("superseded by subsequent read"),
++            "Turn 1 read should be condensed with 'superseded by subsequent read', got: {}",
++            messages[2].content
 +        );
-+        assert!(ledger.items.len() >= 3);
-+        assert!(ledger.items.iter().any(|i| i.title.contains("Dashboard")));
-+        assert!(ledger.items.iter().any(|i| i.title.contains("Customers")));
-+        assert!(ledger.items.iter().any(|i| i.title.contains("Tickets")));
-+
-+        let dash = ledger
-+            .items
-+            .iter()
-+            .find(|i| i.title.contains("Dashboard"))
-+            .unwrap();
-+        assert!(dash.description.is_some());
-+        assert!(dash
-+            .description
-+            .as_ref()
-+            .unwrap()
-+            .contains("total customers"));
-+    }
-+
-+    #[test]
-+    fn test_prompt_checkbox_parsing_and_status() {
-+        let prompt = r#"
-+# Database & API Setup
-+- [ ] Setup database schema in src/db/schema.rs
-+- [x] Configure auth routes in src/api/auth.ts
-+- [ ] Add rate limiting
-+"#;
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(ledger.root_objective, "Database & API Setup");
-+        assert_eq!(ledger.items.len(), 3);
-+
-+        let db_item = &ledger.items[0];
-+        assert_eq!(db_item.status, RequirementStatus::Pending);
-+        assert!(db_item
-+            .related_files
-+            .contains(&"src/db/schema.rs".to_string()));
-+
-+        let auth_item = &ledger.items[1];
-+        assert_eq!(auth_item.status, RequirementStatus::Completed);
-+        assert!(auth_item
-+            .related_files
-+            .contains(&"src/api/auth.ts".to_string()));
-+
-+        let rate_item = &ledger.items[2];
-+        assert_eq!(rate_item.status, RequirementStatus::Pending);
-+    }
-+
-+    #[test]
-+    fn test_prompt_numbered_and_bullet_lists() {
-+        let prompt = r#"
-+Refactor core architecture
-+1. Create models in src/models.rs
-+2. Write tests in tests/model_test.rs
-+* Build UI in src/ui/dashboard.tsx
-+"#;
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(ledger.root_objective, "Refactor core architecture");
-+        assert_eq!(ledger.items.len(), 3);
-+
-+        assert!(ledger.items[0].title.contains("Create models"));
-+        assert!(ledger.items[0]
-+            .related_files
-+            .contains(&"src/models.rs".to_string()));
-+
-+        assert!(ledger.items[1].title.contains("Write tests"));
-+        assert!(ledger.items[1]
-+            .related_files
-+            .contains(&"tests/model_test.rs".to_string()));
-+
-+        assert!(ledger.items[2].title.contains("Build UI"));
-+        assert!(ledger.items[2]
-+            .related_files
-+            .contains(&"src/ui/dashboard.tsx".to_string()));
-+    }
-+
-+    #[test]
-+    fn test_single_sentence_and_empty_prompts() {
-+        // Single sentence
-+        let prompt = "Refactor error handling to use thiserror in src/error.rs";
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(
-+            ledger.root_objective,
-+            "Refactor error handling to use thiserror in src/error.rs"
++        assert!(
++            messages[2].content.starts_with("[read_file: src/main.rs (superseded by subsequent read. Use retrieve_observation(id=\"ccr_"),
++            "Unexpected receipt format: {}",
++            messages[2].content
 +        );
-+        assert_eq!(ledger.items.len(), 1);
-+        assert_eq!(
-+            ledger.items[0].title,
-+            "Complete objective: Refactor error handling to use thiserror in src/error.rs"
-+        );
-+        assert!(ledger.items[0]
-+            .related_files
-+            .contains(&"src/error.rs".to_string()));
 +
-+        // Empty prompt
-+        let empty_ledger = IntentLedger::from_prompt("   \n\t  ", 16);
-+        assert_eq!(empty_ledger.root_objective, "General Assistance");
-+        assert_eq!(empty_ledger.items.len(), 1);
-+        assert_eq!(empty_ledger.items[0].title, "General Assistance");
-+    }
-+
-+    #[test]
-+    fn test_deduplication_and_capping() {
-+        let prompt = r#"
-+# System Enhancements
-+- Dashboard
-+- 1. Dashboard
-+- dashboard
-+- Tasks
-+- Users
-+- Billing
-+- Settings
-+"#;
-+        let ledger = IntentLedger::from_prompt(prompt, 3);
-+        // Dashboard, 1. Dashboard, dashboard should deduplicate into 1 Dashboard item
-+        assert!(ledger.items.len() <= 3);
++        // Assert Turn 3 read is preserved
 +        assert_eq!(
-+            ledger
-+                .items
-+                .iter()
-+                .filter(|i| i.title.to_lowercase().contains("dashboard"))
-+                .count(),
-+            1
++            messages[7].content, lines_50,
++            "Turn 3 read must be preserved"
 +        );
 +    }
 +
 +    #[test]
-+    fn test_utf8_char_boundary_emojis_and_international() {
-+        let prompt = "💡 Build website with 🚀\n- [ ] 🦀 Rust backend in src/main.rs\n- [ ] 🎨 Frontend in src/ui.rs";
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(ledger.root_objective, "💡 Build website with 🚀");
-+        assert_eq!(ledger.items.len(), 2);
-+        assert!(ledger.items[0].title.contains("🦀 Rust backend"));
-+        assert!(ledger.items[0]
-+            .related_files
-+            .contains(&"src/main.rs".to_string()));
-+        assert!(ledger.items[1].title.contains("🎨 Frontend"));
++    fn test_historical_mutation_echo_condensation() {
++        // Turn 1: write_file("src/main.rs") returning 500 bytes of unified diff / echo
++        let echo_500 = "x".repeat(500);
 +
-+        // Direct UTF-8 multi-byte slicing tests
++        let mut messages = vec![
++            // Turn 1
++            Message::user("Update main.rs"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_w1".into(),
++                    name: "write_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_w1", "write_file", &echo_500),
++            // Turn 2: User prompt + assistant action
++            Message::user("Next step"),
++            Message::assistant("Done"),
++            // Turn 3: Recent turn
++            Message::user("Recent check"),
++            Message::assistant("All good"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.mutation_echoes_compacted, 1);
++        assert!(metrics.tokens_saved_estimate > 0);
++
++        // Assert Turn 1 mutation output is condensed to [write_file: src/main.rs (successfully applied, 500 bytes...)]
++        let compacted = &messages[2].content;
++        assert!(
++            compacted.starts_with("[write_file: src/main.rs (successfully applied, 500 bytes. Use retrieve_observation(id=\"ccr_"),
++            "Expected mutation echo receipt, got: {compacted}"
++        );
++
++        // Assert raw 500 bytes is retrievable via CcrCache::retrieve
++        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
++        let id_end = compacted[id_start..]
++            .find('"')
++            .expect("closing quote should be in receipt")
++            + id_start;
++        let ccr_id = &compacted[id_start..id_end];
++
++        let retrieved = CcrCache::retrieve(ccr_id, None, None);
 +        assert_eq!(
-+            clean_root_objective("💡 Build website with 🚀"),
-+            "💡 Build website with 🚀"
++            retrieved,
++            Some(echo_500),
++            "Raw 500 bytes must be losslessly retrievable from CCR cache"
++        );
++    }
++
++    #[test]
++    fn test_no_negative_compression_on_tiny_output() {
++        let tiny_read = "let a = 1;"; // 10 bytes <= 128
++        let tiny_write = "ok"; // 2 bytes <= 256
++
++        let mut messages = vec![
++            Message::user("Read small"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r1".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "tiny.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r1", "read_file", tiny_read),
++            Message::user("Write small"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_w1".into(),
++                    name: "write_file".into(),
++                    arguments: json!({"path": "tiny.rs"}),
++                }],
++            ),
++            Message::tool_result("call_w1", "write_file", tiny_write),
++            Message::user("Recent"),
++            Message::assistant("Done"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.total_compacted(), 0);
++        assert_eq!(
++            messages[2].content, tiny_read,
++            "Tiny read must not be replaced"
 +        );
 +        assert_eq!(
-+            clean_root_objective("Objective: 💡 Build website with 🚀"),
-+            "💡 Build website with 🚀"
++            messages[5].content, tiny_write,
++            "Tiny write must not be replaced"
 +        );
-+        assert_eq!(clean_root_objective("🦀🦀🦀"), "🦀🦀🦀");
++    }
++
++    #[test]
++    fn test_cross_platform_path_normalization() {
++        let lines_50 = (1..=50)
++            .map(|i| format!("fn f_{i}() {{}}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            // Turn 1: Windows-style path with backslashes
++            Message::user("Read file"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r1".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "src\\main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r1", "read_file", &lines_50),
++            // Turn 2: Unix-style path modifying same file
++            Message::user("Modify file"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_w1".into(),
++                    name: "write_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_w1", "write_file", "ok"),
++            // Turn 3: Recent turn
++            Message::user("Recent"),
++            Message::assistant("Done"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.superseded_reads_compacted, 1);
++        assert!(messages[2].content.contains("superseded by modification"));
++    }
++
++    #[test]
++    fn test_normalize_path_for_compare_variants() {
++        assert_eq!(normalize_path_for_compare("src\\main.rs"), "src/main.rs");
++        assert_eq!(normalize_path_for_compare("./src/main.rs"), "src/main.rs");
++        assert_eq!(normalize_path_for_compare("/src/main.rs"), "src/main.rs");
++        assert_eq!(normalize_path_for_compare(".\\src\\main.rs"), "src/main.rs");
++        assert_eq!(normalize_path_for_compare("\\src\\main.rs"), "src/main.rs");
++        assert_eq!(normalize_path_for_compare("src/main.rs"), "src/main.rs");
 +        assert_eq!(
-+            clean_root_objective("Task: 🚀 Ship Phase 2"),
-+            "🚀 Ship Phase 2"
++            normalize_path_for_compare("  ./src\\main.rs  "),
++            "src/main.rs"
 +        );
-+        assert_eq!(clean_root_objective("你好世界"), "你好世界");
 +    }
 +
 +    #[test]
-+    fn test_checklist_first_prompt_preserves_first_item() {
-+        let prompt = "- [ ] First task\n- [ ] Second task";
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(ledger.root_objective, "Complete prompt checklist");
-+        assert_eq!(ledger.items.len(), 2);
-+        assert_eq!(ledger.items[0].title, "First task");
-+        assert_eq!(ledger.items[0].status, RequirementStatus::Pending);
-+        assert_eq!(ledger.items[1].title, "Second task");
-+        assert_eq!(ledger.items[1].status, RequirementStatus::Pending);
++    fn test_duplicate_read_with_normalized_paths() {
++        let lines_50 = (1..=50)
++            .map(|i| format!("fn norm_{i}() {{}}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            Message::user("Read 1"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r1".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": ".\\src\\main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r1", "read_file", &lines_50),
++            Message::user("Question"),
++            Message::assistant("Answer"),
++            Message::user("Read 2"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r2".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "/src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r2", "read_file", &lines_50),
++            Message::user("Recent"),
++            Message::assistant("Done"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        assert_eq!(metrics.duplicate_reads_compacted, 1);
++        assert!(messages[2]
++            .content
++            .contains("superseded by subsequent read"));
 +    }
 +
 +    #[test]
-+    fn test_extract_related_files_trailing_punctuation() {
-+        let text = "Check src/main.rs. Also see tests/app_test.rs! Did you update docs/spec.md? Or ../ and .";
-+        let files = extract_related_files(text);
-+        assert!(files.contains(&"src/main.rs".to_string()));
-+        assert!(files.contains(&"tests/app_test.rs".to_string()));
-+        assert!(files.contains(&"docs/spec.md".to_string()));
-+        assert!(files.contains(&"../".to_string()));
-+        assert!(files.contains(&".".to_string()));
++    fn test_duplicate_read_with_mutation_between_not_compacted_as_duplicate() {
++        let lines_50 = (1..=50)
++            .map(|i| format!("fn inter_{i}() {{}}"))
++            .collect::<Vec<_>>()
++            .join("\n");
 +
-+        let single = "Check src/main.rs.";
-+        let single_files = extract_related_files(single);
-+        assert_eq!(single_files, vec!["src/main.rs".to_string()]);
++        let mut messages = vec![
++            Message::user("Read 1"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r1".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r1", "read_file", &lines_50),
++            Message::user("Write"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_w1".into(),
++                    name: "write_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_w1", "write_file", "ok"),
++            Message::user("Read 2"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_r2".into(),
++                    name: "read_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_r2", "read_file", &lines_50),
++            Message::user("Recent"),
++            Message::assistant("Done"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        assert_eq!(metrics.duplicate_reads_compacted, 0);
++        assert_eq!(metrics.superseded_reads_compacted, 1);
++        assert!(messages[2].content.contains("superseded by modification"));
 +    }
 +
 +    #[test]
-+    fn test_no_aggressive_substring_deduplication() {
-+        let prompt = "1. User Service\n2. User Service Tests";
-+        let ledger = IntentLedger::from_prompt(prompt, 16);
-+        assert_eq!(ledger.items.len(), 2);
-+        assert_eq!(ledger.items[0].title, "User Service");
-+        assert_eq!(ledger.items[1].title, "User Service Tests");
-+    }
++    fn test_mutation_echo_recent_turn_preserved() {
++        let echo_500 = "y".repeat(500);
 +
-+    #[test]
-+    fn test_get_item_mut_and_drift_reset_semantics() {
-+        let mut ledger = IntentLedger::new("Test drift semantics");
-+        let id1 = ledger.add_item("Task 1", None, vec![]);
-+        let id2 = ledger.add_item("Task 2", None, vec![]);
++        let mut messages = vec![
++            Message::user("Recent write"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_w1".into(),
++                    name: "write_file".into(),
++                    arguments: json!({"path": "src/main.rs"}),
++                }],
++            ),
++            Message::tool_result("call_w1", "write_file", &echo_500),
++        ];
 +
-+        // get_item_mut
-+        let item_mut = ledger.get_item_mut(&id1).expect("Item should exist");
-+        item_mut.title = "Task 1 Modified".to_string();
-+        assert_eq!(ledger.get_item(&id1).unwrap().title, "Task 1 Modified");
-+
-+        ledger.consecutive_turns_without_progress = 5;
-+
-+        // Pending -> InProgress: resets drift
-+        assert!(ledger.set_status(&id1, RequirementStatus::InProgress));
-+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
-+
-+        // InProgress -> InProgress: should NOT reset drift
-+        ledger.consecutive_turns_without_progress = 3;
-+        assert!(ledger.set_status(&id1, RequirementStatus::InProgress));
-+        assert_eq!(ledger.consecutive_turns_without_progress, 3);
-+
-+        // InProgress -> Completed: resets drift
-+        assert!(ledger.set_status(&id1, RequirementStatus::Completed));
-+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
-+
-+        // Completed -> Completed: should NOT reset drift
-+        ledger.consecutive_turns_without_progress = 4;
-+        assert!(ledger.set_status(&id1, RequirementStatus::Completed));
-+        assert_eq!(ledger.consecutive_turns_without_progress, 4);
-+
-+        // id2: Pending -> Completed: resets drift
-+        ledger.consecutive_turns_without_progress = 2;
-+        assert!(ledger.set_status(&id2, RequirementStatus::Completed));
-+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        assert_eq!(metrics.mutation_echoes_compacted, 0);
++        assert_eq!(messages[2].content, echo_500);
 +    }
  }

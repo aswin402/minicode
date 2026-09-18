@@ -1,87 +1,68 @@
-# Task 4 Brief: Autonomous Progress Tracking & Auto-Advance in Agent Loop
+# Task 4 Brief: Wire Micro-Compactor into AgentLoop Lifecycle & Integration Testing
 
-## Goal
-Wire `IntentLedger` into `AgentLoop` in `src/agent/loop.rs` so that user goals and checklists are automatically initialized from user prompts, persisted to `.minicode/intent_anchor.json`, and autonomously advanced as files are created and modified during tool execution.
+## Overview
+Wire `MicroCompactor` into `src/agent/loop.rs` during the turn execution lifecycle, and create a comprehensive integration test suite in `tests/integration_micro_compaction.rs`.
 
-## Files to Touch
-- Modify: `src/context/memory/intent.rs` (add `update_from_file_activity`)
-- Modify: `src/agent/loop.rs` (wire `intent_ledger` state, initialization, recency context passing, file activity updates, turn-end drift increments, and disk persistence)
-- Create: `tests/integration_intent_tracking.rs`
+## Files
+- Modify: `src/agent/loop.rs`
+- Create: `tests/integration_micro_compaction.rs`
+
+## Constraints
+1. **Targeted Tests ONLY**:
+   - `cargo test -j 1 --test integration_micro_compaction`
+   - `cargo test -j 1 --lib context::budget::micro_compact::tests`
+   NEVER run the full test suite.
+2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
+3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
+4. **Preserve active turn**: Pass `preserve_recent_turns = 2` (or at least 1) so the current turn's tool observations are never altered.
+5. **Lossless retrieval**: Verify all compacted observations are retrievable via `CcrCache::retrieve`.
 
 ## Detailed Requirements
 
-### 1. `src/context/memory/intent.rs`
-Implement `update_from_file_activity`:
-```rust
-impl IntentLedger {
-    /// Updates requirement item statuses based on file system actions taken by tools.
-    /// If an item's related files match any created or modified files, advances its status.
-    /// Returns the number of items whose status or activity was updated.
-    pub fn update_from_file_activity(
-        &mut self,
-        files_created: &[String],
-        files_modified: &[String],
-        current_turn: usize,
-    ) -> usize
-```
-Matching heuristic:
-- Matches if `related_file == created_or_modified_file` OR if `related_file.ends_with(path)` OR `path.ends_with(related_file)` (normalizing slashes).
-- If all related files for a requirement are touched, mark `Completed`. If at least one is touched and status was `Pending`, mark `InProgress`.
-- If an item transitions to `Completed` or `InProgress`, reset `self.consecutive_turns_without_progress = 0`.
-- Update `item.updated_turn = current_turn`.
+### 1. Wiring into `src/agent/loop.rs`
+- In `AgentLoop::execute_turn`:
+  - Before building recency context / prompt (around line 374 before or alongside `self.prune_context()`):
+    ```rust
+    let micro_metrics = crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
+    if micro_metrics.tokens_saved_estimate > 0 {
+        tracing::info!(
+            superseded_reads = micro_metrics.superseded_reads_compacted,
+            duplicate_reads = micro_metrics.duplicate_reads_compacted,
+            mutation_echoes = micro_metrics.mutation_echoes_compacted,
+            search_results = micro_metrics.search_results_compacted,
+            tokens_saved = micro_metrics.tokens_saved_estimate,
+            "Applied semantic micro-compaction to conversation history"
+        );
+    }
+    ```
+  - Inside the tool execution loop, after executing a file mutation tool (`write_file`, `patch_file`, `replace_file_content`):
+    If the mutation succeeded, trigger `MicroCompactor::compact_messages(&mut self.messages, 2);` so that any prior `read_file` for that file is immediately compacted before the next model call in that turn.
 
-Also implement:
-```rust
-impl IntentLedger {
-    /// Loads an existing ledger from disk or creates a new one from prompt.
-    pub fn load_or_create(workspace_dir: &std::path::Path, prompt: &str, max_items: usize) -> Self
-}
-```
+### 2. Integration Test (`tests/integration_micro_compaction.rs`)
+Write comprehensive integration tests:
+1. `test_end_to_end_multi_turn_micro_compaction`:
+   - Simulate a realistic 4-turn coding conversation:
+     - Turn 1: `read_file` on `src/service.rs` (300 lines of code)
+     - Turn 2: `grep_search` for `handle_request` (50 lines of matches)
+     - Turn 3: `patch_file` on `src/service.rs` (succeeds)
+     - Turn 4: `cargo test` in active turn
+   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
+   - Assert Turn 1 `read_file` is condensed as superseded by modification, and points to a `ccr_` ID.
+   - Assert Turn 2 `grep_search` is condensed as historical search, and points to a `ccr_` ID.
+   - Assert Turn 4 `cargo test` is in the active turn and is 100% UNTOUCHED.
+   - Assert `CcrCache::retrieve` on both CCR IDs recovers the exact raw text verbatim.
+2. `test_multi_file_mutation_and_selective_compaction`:
+   - Read `file_a.rs` and `file_b.rs`.
+   - Modify only `file_a.rs`.
+   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
+   - Assert `file_a.rs` read is compacted (superseded).
+   - Assert `file_b.rs` read is NOT compacted (since it was never modified).
+3. `test_cumulative_tokens_saved_metric`:
+   - Verify `metrics.tokens_saved_estimate > 0` and matches expected formula `(raw_len - receipt_len) / 4`.
 
-### 2. `src/agent/loop.rs`
-1. Add field to `AgentLoop`:
-   ```rust
-   intent_ledger: Option<crate::context::memory::intent::IntentLedger>,
-   ```
-2. In `AgentLoop::new`:
-   Attempt to load existing ledger from `.minicode/intent_anchor.json` via `IntentLedger::load_from_disk`.
-3. In `AgentLoop::execute_turn`:
-   - If `self.config.agent.intent.enabled`:
-     - If `self.intent_ledger.is_none()` && `self.config.agent.intent.auto_extract`:
-       - `self.intent_ledger = Some(IntentLedger::from_prompt(user_prompt, self.config.agent.intent.max_ledger_items));`
-       - Persist to disk using `.minicode/intent_anchor.json`.
-     - Pass `self.intent_ledger.as_ref()` to `PromptBuilder::build_recency_context`.
-4. In tool execution handling (after tool results are processed):
-   - When `write_file`, `patch_file`, or file modifications occur:
-     - If `let Some(ref mut ledger) = self.intent_ledger`:
-       - Call `ledger.update_from_file_activity(&created_files, &modified_files, turn.turn_id)`.
-       - Persist ledger to disk.
-5. At turn end:
-   - If `let Some(ref mut ledger) = self.intent_ledger`:
-     - If no items progressed this turn, increment `ledger.consecutive_turns_without_progress += 1`.
-     - Persist ledger to disk.
-6. Provide public getter:
-   ```rust
-   pub fn intent_ledger(&self) -> Option<&crate::context::memory::intent::IntentLedger> {
-       self.intent_ledger.as_ref()
-   }
-   pub fn intent_ledger_mut(&mut self) -> Option<&mut crate::context::memory::intent::IntentLedger> {
-       self.intent_ledger.as_mut()
-   }
-   ```
-
-### 3. Integration Test `tests/integration_intent_tracking.rs`
-Write integration test with `MockProvider`:
-- Initialize `AgentLoop` in a temp dir.
-- Prompt: `"Build AgentBench\n#### 1. Dashboard\nCreate src/pages/Dashboard.tsx\n#### 2. Settings\nCreate src/pages/Settings.tsx"`.
-- Mock response: invokes `write_file(path="src/pages/Dashboard.tsx", content="export const Dashboard = () => <div>Dashboard</div>;")`.
-- Assert `agent.intent_ledger().is_some()`.
-- Assert Dashboard requirement is marked `Completed`.
-- Assert `.minicode/intent_anchor.json` was written to disk and can be deserialized.
-
-### 4. Verification Constraints
-- Strict: ONLY run targeted tests:
-  `cargo test -j 1 --test integration_intent_tracking`
-  `cargo test -j 1 --lib context::memory::intent::tests`
-- Zero clippy warnings: `cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Zero non-test unwraps, pure safe Rust, clean formatting.
+## Success Criteria
+- Targeted integration tests pass: `cargo test -j 1 --test integration_micro_compaction`
+- Unit tests pass: `cargo test -j 1 --lib context::budget::micro_compact::tests`
+- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
+- Code formatting passes: `cargo fmt --check`
+- Commit with message: `feat(agent): wire semantic micro-compactor into agent loop execution lifecycle`

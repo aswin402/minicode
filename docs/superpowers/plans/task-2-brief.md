@@ -1,52 +1,83 @@
-# Task 2 Brief: Dynamic, Non-Hardcoded Requirement Extractor
+# Task 2 Brief: Duplicate Read & Historical Mutation Echo Condensation
 
-## Goal
-Implement a robust, dynamic requirement extractor `IntentLedger::from_prompt(prompt: &str, max_items: usize) -> IntentLedger` in `src/context/memory/intent.rs` that automatically parses any user prompt into a root objective and actionable requirement items without any hardcoding. Also incorporate the minor suggestions from the Task 1 review.
+## Overview
+Extend `MicroCompactor` in `src/context/budget/micro_compact.rs` to detect and condense duplicate consecutive reads and historical large mutation echoes (>2 turns old), while also implementing the Reviewer's optimization suggestions (lightweight metadata, cross-platform path normalization, and preventing negative compression).
 
-## Files to Touch
-- Modify: `src/context/memory/intent.rs`
-- Test: `src/context/memory/intent.rs` (inline `mod tests`)
+## Files
+- Modify: `src/context/budget/micro_compact.rs`
+- Test: `src/context/budget/micro_compact.rs` (inline unit tests)
+
+## Constraints
+1. **Targeted Tests ONLY**: `cargo test -j 1 --lib context::budget::micro_compact::tests`. NEVER run the full test suite.
+2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
+3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
+4. **Lossless CCR**: Use `CcrCache::store(&raw_output)` before replacing content.
+5. **Preserve recent turns**: If `preserve_recent_turns > 0`, the tool results belonging to the last `preserve_recent_turns` turns MUST remain 100% untouched.
 
 ## Detailed Requirements
 
-### 1. Dynamic Requirement Extraction Heuristics (NO hardcoded benchmark names!)
-Implement:
-```rust
-impl IntentLedger {
-    /// Dynamically extracts the root objective and actionable requirement items
-    /// from a freeform user prompt across diverse formatting styles (headers, checklists, numbered lists, bullet points).
-    pub fn from_prompt(prompt: &str, max_items: usize) -> Self
-```
+### 1. Address Task 1 Reviewer Suggestions
+- **Lightweight Tool Metadata**:
+  Do NOT clone full `ToolCall` structs (which contain heavy `arguments: serde_json::Value`). Instead define a lightweight internal struct:
+  ```rust
+  #[derive(Debug, Clone)]
+  struct CompactToolMeta {
+      name: String,
+      target_path: Option<String>,
+      query: Option<String>,
+  }
+  ```
+  Extract `target_path` and `query` once during Pass 1 and store only `CompactToolMeta`.
+- **Cross-Platform Path Normalization**:
+  In `normalize_path_for_compare(path: &str) -> String`:
+  Replace all `\\` with `/`, strip leading `./`, and trim leading `/` so Windows and Unix paths compare identically.
+- **Prevent Negative Compression**:
+  Never replace a tool output if `msg.content.len() <= 128` (or if raw content is shorter than the receipt template), because replacing a 30-byte observation with a 130-byte receipt would inflate the context window!
 
-The algorithm must handle:
-1. **Root Objective Extraction:**
-   - Scan for the first non-empty line or header (e.g. `# ...` or `Build a ...`).
-   - Clean markdown formatting and strip outer delimiters.
-   - If prompt is empty/whitespace, fall back to "General Assistance".
-2. **Requirement Item Parsing:**
-   - Detect sections and items via line prefixes:
-     - Markdown sub-headers: `### `, `#### `, `## `
-     - Checkbox items: `- [ ]`, `* [ ]`, `+ [ ]`, `- [x]`, `* [x]`
-     - Numbered list items: `1. `, `2. `, `1) `, `2) `
-     - Bullet list items: `* `, `- `, `+ `
-   - When a header like `#### 1. Dashboard` is found, set title = "Dashboard" and collect subsequent description lines (e.g. "Show: Total customers, open tickets...") into `item.description`.
-   - When a bullet or numbered line is found, use it as title/description.
-   - **Related Files Extraction:**
-     - Scan item title and description for file paths or code extensions (`.rs`, `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.json`, `.toml`, `.css`, `src/...`, `/...`).
-     - Populate `related_files` dynamically.
-   - **Deduplication & Capping:**
-     - Deduplicate items with identical or sub-string titles.
-     - Cap to `max_items` (default 32).
-   - **Single-Sentence / Short Prompt Handling:**
-     - If no explicit items or sub-sections are found in the prompt, synthesize a single requirement item matching the root objective (e.g. "Complete objective: <root_objective>").
+### 2. Duplicate Read Condensation
+- If a file `path` was read in message $i$, and read again in message $j > i$ WITHOUT any modifying tool call (`write_file`, `patch_file`, etc.) between $i$ and $j$:
+  - Message $i$ is redundant (message $j$ has the same or fresher content).
+  - If message $i$ is outside the preserved recent turn window and longer than 128 bytes:
+    - Store message $i$'s raw content in `CcrCache::store`.
+    - Replace message $i$'s content with:
+      `format!("[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]", path, ccr_id)`
+    - Increment `metrics.duplicate_reads_compacted`.
+    - Estimate tokens saved and add to `metrics.tokens_saved_estimate`.
 
-### 2. Helper & Reviewer Improvements
-- Add `pub fn get_item_mut(&mut self, id: &str) -> Option<&mut RequirementItem>`.
-- In `set_status`: Only reset `consecutive_turns_without_progress = 0` if transitioning to `Completed` from a non-`Completed` state (or from `Pending` to `InProgress`).
-- In `save_to_disk`: If `std::fs::remove_file(&tmp_path)` fails in error cleanup, log a warning: `tracing::warn!(error = %e, path = %tmp_path.display(), "Failed to clean up temporary intent ledger file");`.
+### 3. Historical Mutation Echo Condensation
+- When a file writing tool (`write_file`, `patch_file`, `replace_file_content`, `edit_file`) executes, its tool output often contains a large diff, the echoed new content, or verbose confirmation (> 256 bytes).
+- For such mutation tool results that are outside the preserved recent turn window:
+  - If the output is already a condensed receipt (`starts_with("[write_file:")` or `starts_with("[patch_file:")`), skip.
+  - If `content.len() > 256`:
+    - Store raw output in `CcrCache::store`.
+    - Replace with:
+      `format!("[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]", tool_name, path, content.len(), ccr_id)`
+    - Increment `metrics.mutation_echoes_compacted`.
+    - Add saved tokens to `metrics.tokens_saved_estimate`.
 
-### 3. Verification Constraints
-- Strict: ONLY run targeted test: `cargo test -j 1 --lib context::memory::intent::tests`
-- Zero clippy warnings: `cargo clippy -j 1 --bin minicode -- -D warnings`
-- Zero non-test unwraps, pure safe Rust, clean formatting.
-- TDD: write tests covering markdown headers, checkboxes, numbered lists, single-sentence prompts, and file extraction.
+## Unit Tests to Implement
+1. `test_duplicate_consecutive_reads`:
+   - Turn 1: `read_file("src/main.rs")` (50 lines)
+   - Turn 2: User asks question, assistant answers
+   - Turn 3: `read_file("src/main.rs")` (50 lines)
+   - Turn 4: Recent turn
+   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
+   - Assert Turn 1 read is condensed with `superseded by subsequent read`.
+   - Assert Turn 3 read is preserved (or preserved because within recent window).
+2. `test_historical_mutation_echo_condensation`:
+   - Turn 1: `write_file("src/main.rs")` returning 500 bytes of unified diff / echo.
+   - Turn 2: User prompt + assistant action
+   - Turn 3: Recent turn
+   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
+   - Assert Turn 1 mutation output is condensed to `[write_file: src/main.rs (successfully applied, 500 bytes...)]`.
+   - Assert raw 500 bytes is retrievable via `CcrCache::retrieve`.
+3. `test_no_negative_compression_on_tiny_output`:
+   - A tool result of `"ok"` or 20 bytes is NOT replaced with a 130-byte receipt.
+4. `test_cross_platform_path_normalization`:
+   - `read_file` with `"src\\main.rs"` is recognized as superseded by `write_file` with `"src/main.rs"`.
+
+## Success Criteria
+- Targeted test passes: `cargo test -j 1 --lib context::budget::micro_compact::tests`
+- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
+- Code formatting passes: `cargo fmt --check`
+- Commit with message: `feat(budget): add duplicate read and historical mutation echo compaction`

@@ -1,399 +1,559 @@
-diff --git a/src/agent/loop.rs b/src/agent/loop.rs
-index edaab6d..649f608 100644
---- a/src/agent/loop.rs
-+++ b/src/agent/loop.rs
-@@ -356,6 +356,7 @@ impl AgentLoop {
-             &working_set_vec,
-             git_status.as_ref(),
-             Some(&context_budget),
-+            None,
-         );
+8679f82 feat(budget): condense historical search and grep observations
+
+--- STAT ---
+
+ src/context/budget/micro_compact.rs | 397 ++++++++++++++++++++++++++++++------
+ 1 file changed, 334 insertions(+), 63 deletions(-)
+
+--- DIFF ---
+
+diff --git a/src/context/budget/micro_compact.rs b/src/context/budget/micro_compact.rs
+index 2093f1a..b2cf4d3 100644
+--- a/src/context/budget/micro_compact.rs
++++ b/src/context/budget/micro_compact.rs
+@@ -59,20 +59,30 @@ fn is_mutation_tool(name: &str) -> bool {
+ }
  
-         let prompt_with_context = if recency_block.trim().is_empty() {
-diff --git a/src/agent/prompt.rs b/src/agent/prompt.rs
-index 6731406..381f50a 100644
---- a/src/agent/prompt.rs
-+++ b/src/agent/prompt.rs
-@@ -165,6 +165,7 @@ impl PromptBuilder {
-         active_working_set: &[String],
-         git_status: Option<&crate::git::GitStatus>,
-         context_budget: Option<&crate::context::budget::ContextBudget>,
-+        intent_ledger: Option<&crate::context::memory::intent::IntentLedger>,
-     ) -> String {
-         let mut recency = String::new();
-         recency.push_str("\n\n<workspace_context>\n");
-@@ -227,13 +228,21 @@ impl PromptBuilder {
-             recency.push_str("  </active_working_set>\n");
-         }
+ /// Returns true if the tool name indicates a file read operation.
+ fn is_read_tool(name: &str) -> bool {
+     let n = name.to_ascii_lowercase();
+     matches!(n.as_str(), "read_file" | "view_file" | "cat")
+         || n.starts_with("read_")
+         || n.starts_with("view_")
+ }
  
-+        // 5. Living Execution Ledger & Goal Anchor (<goal_anchor>, <execution_ledger>)
-+        if let Some(ledger) = intent_ledger {
-+            let ledger_block = ledger.to_prompt_block();
-+            if !ledger_block.trim().is_empty() {
-+                recency.push_str(&ledger_block);
-+            }
-+        }
++/// Returns true if the tool name indicates a search or grep operation.
++fn is_search_tool(name: &str) -> bool {
++    let n = name.to_ascii_lowercase();
++    matches!(
++        n.as_str(),
++        "grep_search" | "find_by_name" | "file_search" | "glob" | "grep" | "search"
++    ) || n.contains("grep")
++        || n.contains("search")
++}
 +
-         // === KV-CACHE ANCHOR DELIMITER ===
-         // Delimits invariant/slowly-evolving context from volatile turn-by-turn state
-         recency.push_str("  <!-- KV_CACHE_ANCHOR -->\n");
+ /// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
+ /// stripping leading `./`, and trimming leading `/`.
+ pub fn normalize_path_for_compare(path: &str) -> String {
+     let s = path.trim().replace('\\', "/");
+     let mut s = s.as_str();
+     loop {
+         if let Some(stripped) = s.strip_prefix("./") {
+             s = stripped;
+         } else if let Some(stripped) = s.strip_prefix('/') {
+             s = stripped;
+@@ -90,20 +100,83 @@ struct CompactToolMeta {
+     query: Option<String>,
+ }
  
-         // === ZONE B: VOLATILE PER-TURN STATE ===
+ fn is_compacted_receipt(content: &str) -> bool {
+     content.starts_with('[')
+         && (content.contains("Use retrieve_observation(id=\"")
+             || content.contains("superseded by")
+             || content.contains("successfully applied,"))
+ }
  
--        // 5. Active Workspace Transaction (if one is open)
-+        // 6. Active Workspace Transaction (if one is open)
-         if let Ok(Some(active_tx)) =
-             crate::session::transaction::TransactionManager::get_active(workspace_dir)
-         {
-@@ -245,7 +254,7 @@ impl PromptBuilder {
-             ));
-         }
++fn is_already_receipt(content: &str, tool_name: &str) -> bool {
++    content
++        .strip_prefix('[')
++        .and_then(|s| s.strip_prefix(tool_name))
++        .map(|s| s.starts_with(':'))
++        .unwrap_or(false)
++}
++
++fn resolve_tool_call_meta(
++    messages: &[Message],
++    idx: usize,
++    tool_meta_by_id: &HashMap<String, CompactToolMeta>,
++) -> Option<CompactToolMeta> {
++    if idx >= messages.len() {
++        return None;
++    }
++
++    let msg = &messages[idx];
++
++    if let Some(meta) = msg
++        .tool_call_id
++        .as_deref()
++        .and_then(|id| tool_meta_by_id.get(id))
++    {
++        return Some(meta.clone());
++    }
++
++    let expected_name = msg.tool_name.as_deref();
++
++    for prev_idx in (0..idx).rev() {
++        let prev = &messages[prev_idx];
++        if prev.role == Role::Assistant {
++            if let Some(ref calls) = prev.tool_calls {
++                let matched_call = if let Some(tname) = expected_name {
++                    calls.iter().find(|c| {
++                        c.name == tname
++                            || (is_read_tool(&c.name) && is_read_tool(tname))
++                            || (is_mutation_tool(&c.name) && is_mutation_tool(tname))
++                            || (is_search_tool(&c.name) && is_search_tool(tname))
++                    })
++                } else {
++                    calls.first()
++                };
++
++                if let Some(c) = matched_call {
++                    return Some(CompactToolMeta {
++                        name: expected_name.unwrap_or(&c.name).to_string(),
++                        target_path: MicroCompactor::extract_target_path(c),
++                        query: MicroCompactor::extract_search_query(c),
++                    });
++                }
++            }
++            break;
++        }
++    }
++
++    expected_name.map(|tname| CompactToolMeta {
++        name: tname.to_string(),
++        target_path: None,
++        query: None,
++    })
++}
++
+ /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
+ /// tool observations in conversation history, backed by lossless CCR recovery cache.
+ pub struct MicroCompactor;
  
--        // 6. Git Status & Active Branch
-+        // 7. Git Status & Active Branch
-         if let Some(status) = git_status {
-             recency.push_str(&format!(
-                 "  <git_status branch=\"{}\" clean=\"{}\">\n",
-@@ -282,7 +291,7 @@ impl PromptBuilder {
-             recency.push_str("  </git_status>\n");
-         }
- 
--        // 7. Dynamic Memory Anchor (active objective, key decisions, blockers)
-+        // 8. Dynamic Memory Anchor (active objective, key decisions, blockers)
-         if let Some(anchor) = memory_anchor {
-             if !anchor.trim().is_empty() {
-                 recency.push_str("  <task_anchor>\n");
-@@ -291,11 +300,20 @@ impl PromptBuilder {
+ impl MicroCompactor {
+     /// Compacts messages by identifying superseded file reads, duplicate consecutive reads,
+     /// and large historical mutation echoes outside the preserved recent turn window.
+     ///
+     /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
+     /// all messages across the conversation are eligible for compaction.
+@@ -265,116 +338,63 @@ impl MicroCompactor {
+                 }
              }
          }
  
--        // 8. Context Budget & Headroom Bar (most volatile, placed at tail to avoid invalidating KV prefix)
-+        // 9. Context Budget & Headroom Bar (most volatile, placed at tail to avoid invalidating KV prefix)
-         if let Some(budget) = context_budget {
-             recency.push_str(&budget.to_prompt_block());
+         // Pass 1b: Index tool result message operations (reads and mutations)
+         for (idx, msg) in messages.iter().enumerate() {
+             if msg.role != Role::Tool {
+                 continue;
+             }
+ 
+-            let tool_meta = msg
+-                .tool_call_id
+-                .as_deref()
+-                .and_then(|id| tool_calls_by_id.get(id));
+-
+-            let tool_name = msg
+-                .tool_name
+-                .as_deref()
+-                .or_else(|| tool_meta.map(|m| m.name.as_str()));
+-
+-            let Some(tname) = tool_name else {
++            let Some(meta) = resolve_tool_call_meta(messages, idx, &tool_calls_by_id) else {
+                 continue;
+             };
+ 
+-            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
+-                for prev_idx in (0..idx).rev() {
+-                    let prev = &messages[prev_idx];
+-                    if prev.role == Role::Assistant {
+-                        if let Some(ref calls) = prev.tool_calls {
+-                            if let Some(c) = calls.iter().find(|c| {
+-                                c.name == tname
+-                                    || is_read_tool(&c.name)
+-                                    || is_mutation_tool(&c.name)
+-                            }) {
+-                                return Self::extract_target_path(c);
+-                            }
+-                        }
+-                        break;
+-                    }
+-                }
+-                None
+-            });
++            let tname = &meta.name;
+ 
+-            if let Some(path) = target_path {
++            if let Some(path) = meta.target_path {
+                 let norm = normalize_path_for_compare(&path);
+                 if is_read_tool(tname) {
+                     reads.entry(norm.clone()).or_default().push(idx);
+                 }
+                 if is_mutation_tool(tname) {
+                     mutations.entry(norm).or_default().push(idx);
+                 }
+             }
          }
  
-+        // 10. Intent Course-Correction Drift Warning (<intent_focus>)
-+        if let Some(drift_warning) = intent_ledger
-+            .and_then(|l| l.check_drift(crate::constants::DEFAULT_INTENT_DRIFT_WARNING_TURNS))
-+        {
-+            recency.push_str("  <intent_focus>\n");
-+            recency.push_str(&format!("    {}\n", drift_warning.trim()));
-+            recency.push_str("  </intent_focus>\n");
-+        }
-+
-         recency.push_str("</workspace_context>");
-         recency
-     }
-@@ -422,6 +440,7 @@ mod tests {
-             &active_set,
-             Some(&status),
-             Some(&budget),
-+            None,
-         );
+         // Pass 2: Condense observations outside the preserved recent window
+         for i in 0..cutoff {
+             if messages[i].role != Role::Tool {
+                 continue;
+             }
  
-         assert!(recency.contains("<workspace_context>"));
-@@ -449,4 +468,52 @@ mod tests {
-         assert!(active_set_pos < anchor_marker_pos);
-         assert!(anchor_marker_pos < budget_pos);
+-            let tool_meta = messages[i]
+-                .tool_call_id
+-                .as_deref()
+-                .and_then(|id| tool_calls_by_id.get(id));
+-
+-            let tool_name = messages[i]
+-                .tool_name
+-                .as_deref()
+-                .or_else(|| tool_meta.map(|m| m.name.as_str()));
+-
+-            let Some(tname) = tool_name else {
++            let Some(meta) = resolve_tool_call_meta(messages, i, &tool_calls_by_id) else {
+                 continue;
+             };
+ 
+-            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
+-                for prev_idx in (0..i).rev() {
+-                    let prev = &messages[prev_idx];
+-                    if prev.role == Role::Assistant {
+-                        if let Some(ref calls) = prev.tool_calls {
+-                            if let Some(c) = calls.iter().find(|c| {
+-                                c.name == tname
+-                                    || is_read_tool(&c.name)
+-                                    || is_mutation_tool(&c.name)
+-                            }) {
+-                                return Self::extract_target_path(c);
+-                            }
+-                        }
+-                        break;
+-                    }
+-                }
+-                None
+-            });
++            let tname = &meta.name;
+ 
+             if is_read_tool(tname) {
+                 if is_compacted_receipt(&messages[i].content)
+-                    || messages[i].content.starts_with("[read_file:")
++                    || is_already_receipt(&messages[i].content, tname)
++                    || is_already_receipt(&messages[i].content, "read_file")
+                 {
+                     continue;
+                 }
+ 
+                 // Prevent negative compression: do not replace if raw output <= 128 bytes
+                 if messages[i].content.len() <= 128 {
+                     continue;
+                 }
+ 
+-                let Some(path) = target_path else {
++                let Some(path) = meta.target_path else {
+                     continue;
+                 };
+ 
+                 let norm = normalize_path_for_compare(&path);
+ 
+                 // Check duplicate read: subsequent read of same path without any mutation between
+                 let next_read_idx = reads
+                     .get(&norm)
+                     .and_then(|indices| indices.iter().copied().find(|&read_idx| read_idx > i));
+ 
+@@ -416,40 +436,64 @@ impl MicroCompactor {
+                         path, line_count, ccr_id
+                     );
+                     let chars_saved = raw_len.saturating_sub(receipt.len());
+                     metrics.tokens_saved_estimate += chars_saved / 4;
+                     messages[i].content = receipt;
+                     metrics.superseded_reads_compacted += 1;
+                     continue;
+                 }
+             } else if is_mutation_tool(tname) {
+                 if is_compacted_receipt(&messages[i].content)
+-                    || messages[i].content.starts_with(&format!("[{tname}:"))
++                    || is_already_receipt(&messages[i].content, tname)
+                 {
+                     continue;
+                 }
+ 
+                 // Historical mutation echo: condense outputs larger than 256 bytes
+                 if messages[i].content.len() > 256 {
+-                    let path = target_path.unwrap_or_else(|| "file".to_string());
++                    let path = meta.target_path.unwrap_or_else(|| "file".to_string());
+                     let raw_len = messages[i].content.len();
+                     let ccr_id = CcrCache::store(&messages[i].content);
+                     let receipt = format!(
+                         "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
+                         tname, path, raw_len, ccr_id
+                     );
+                     let chars_saved = raw_len.saturating_sub(receipt.len());
+                     metrics.tokens_saved_estimate += chars_saved / 4;
+                     messages[i].content = receipt;
+                     metrics.mutation_echoes_compacted += 1;
+                     continue;
+                 }
++            } else if is_search_tool(tname) {
++                if is_compacted_receipt(&messages[i].content)
++                    || is_already_receipt(&messages[i].content, tname)
++                {
++                    continue;
++                }
++
++                let line_count = messages[i].content.lines().count();
++                let raw_len = messages[i].content.len();
++
++                // Condense historical bulky search and grep observations (>25 lines or >300 bytes)
++                if line_count > 25 || raw_len > 300 {
++                    let query = meta.query.as_deref().unwrap_or("...");
++                    let ccr_id = CcrCache::store(&messages[i].content);
++                    let receipt = format!(
++                        "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
++                        tname, query, line_count, ccr_id
++                    );
++                    let chars_saved = raw_len.saturating_sub(receipt.len());
++                    metrics.tokens_saved_estimate += chars_saved / 4;
++                    messages[i].content = receipt;
++                    metrics.search_results_compacted += 1;
++                    continue;
++                }
+             }
+         }
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::agent::types::ToolCall;
+     use serde_json::json;
+@@ -1117,11 +1161,238 @@ mod tests {
+                     arguments: json!({"path": "src/main.rs"}),
+                 }],
+             ),
+             Message::tool_result("call_w1", "write_file", &echo_500),
+         ];
+ 
+         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+         assert_eq!(metrics.mutation_echoes_compacted, 0);
+         assert_eq!(messages[2].content, echo_500);
      }
 +
 +    #[test]
-+    fn test_build_recency_context_with_intent_ledger_and_drift() {
-+        let temp_dir = std::env::temp_dir();
-+        let mut ledger =
-+            crate::context::memory::intent::IntentLedger::new("Build AgentBench sandbox");
-+        let id = ledger.add_item("Dashboard metrics", None, vec![]);
-+        ledger.set_status(
-+            &id,
-+            crate::context::memory::intent::RequirementStatus::InProgress,
-+        );
++    fn test_historical_search_result_condensation() {
++        // Turn 1: grep_search(query="AuthService") returning 80 lines of matches (>1000 bytes)
++        let search_output_80 = (1..=80)
++            .map(|i| format!("src/auth/service.rs:{i}:    let user_{i} = AuthService::find({i});"))
++            .collect::<Vec<_>>()
++            .join("\n");
++        assert!(search_output_80.len() > 1000);
++        assert_eq!(search_output_80.lines().count(), 80);
 +
-+        // Without drift
-+        let recency =
-+            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
-+        assert!(recency.contains("<goal_anchor>"));
-+        assert!(recency.contains("<root_objective>Build AgentBench sandbox</root_objective>"));
-+        assert!(recency.contains("<execution_ledger progress=\"0/1 completed\">"));
-+        assert!(recency.contains("[-] Dashboard metrics"));
-+        assert!(!recency.contains("<intent_focus>"));
++        let mut messages = vec![
++            // Turn 1: grep_search(query="AuthService")
++            Message::user("Find references to AuthService"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_grep_1".into(),
++                    name: "grep_search".into(),
++                    arguments: json!({"query": "AuthService"}),
++                }],
++            ),
++            Message::tool_result("call_grep_1", "grep_search", &search_output_80),
++            // Turn 2: User prompt + assistant action
++            Message::user("Now refactor AuthService"),
++            Message::assistant("I will refactor it now."),
++            // Turn 3: Recent turn
++            Message::user("Recent check"),
++            Message::assistant("All set."),
++        ];
 +
-+        // With drift
-+        ledger.consecutive_turns_without_progress = 6;
-+        let recency_drift =
-+            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
-+        assert!(recency_drift.contains("<intent_focus>"));
-+        assert!(recency_drift.contains("⚠️ Task Drift Warning"));
-+        assert!(recency_drift.contains("Dashboard metrics"));
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
 +
-+        // Verify order: <goal_anchor> in Zone 1 (before KV_CACHE_ANCHOR), <intent_focus> at tail (after KV_CACHE_ANCHOR)
-+        let anchor_pos = recency_drift
-+            .find("<goal_anchor>")
-+            .expect("must contain goal_anchor");
-+        let kv_pos = recency_drift
-+            .find("<!-- KV_CACHE_ANCHOR -->")
-+            .expect("must contain KV_CACHE_ANCHOR");
-+        let focus_pos = recency_drift
-+            .find("<intent_focus>")
-+            .expect("must contain intent_focus");
++        assert_eq!(metrics.search_results_compacted, 1);
++        assert!(metrics.tokens_saved_estimate > 0);
++
++        // Assert Turn 1 is condensed to [grep_search: query "AuthService" returned 80 lines. Use retrieve_observation(id="ccr_...")]
++        let compacted = &messages[2].content;
 +        assert!(
-+            anchor_pos < kv_pos,
-+            "goal_anchor must be in Zone 1 before KV_CACHE_ANCHOR"
++            compacted.starts_with("[grep_search: query \"AuthService\" returned 80 lines. Use retrieve_observation(id=\"ccr_"),
++            "Expected search receipt format, got: {compacted}"
 +        );
 +        assert!(
-+            kv_pos < focus_pos,
-+            "intent_focus must be at tail after KV_CACHE_ANCHOR"
++            compacted.ends_with("for full matches]"),
++            "Expected receipt to end with 'for full matches]', got: {compacted}"
 +        );
++
++        // Extract ccr_id from receipt
++        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
++        let id_end = compacted[id_start..]
++            .find('"')
++            .expect("closing quote should be in receipt")
++            + id_start;
++        let ccr_id = &compacted[id_start..id_end];
++
++        // Assert raw 80 lines is losslessly retrievable via CcrCache::retrieve
++        let retrieved = CcrCache::retrieve(ccr_id, None, None);
++        assert_eq!(
++            retrieved,
++            Some(search_output_80),
++            "Original 80 lines must be losslessly retrievable from CCR cache"
++        );
++    }
++
++    #[test]
++    fn test_recent_search_result_uncompacted() {
++        let search_output_80 = (1..=80)
++            .map(|i| format!("src/search.rs:{i}: match_{i}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            // Turn 1
++            Message::user("Hello"),
++            Message::assistant("Hi there"),
++            // Turn 2 (Recent turn)
++            Message::user("Search for matches"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_grep_recent".into(),
++                    name: "grep_search".into(),
++                    arguments: json!({"query": "match"}),
++                }],
++            ),
++            Message::tool_result("call_grep_recent", "grep_search", &search_output_80),
++        ];
++
++        // preserve_recent_turns = 1 should preserve Turn 2 completely
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.search_results_compacted, 0);
++        assert_eq!(
++            messages[4].content, search_output_80,
++            "Search result in recent turn must remain 100% untouched"
++        );
++    }
++
++    #[test]
++    fn test_small_search_result_uncompacted() {
++        // A search result with only 3 lines / 100 bytes is not condensed (negative compression prevention)
++        let small_search = "file1.rs:1: match\nfile2.rs:2: match\nfile3.rs:3: match";
++        assert_eq!(small_search.lines().count(), 3);
++        assert!(small_search.len() < 300);
++
++        let mut messages = vec![
++            // Turn 1: Small search
++            Message::user("Search for match"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_grep_small".into(),
++                    name: "grep_search".into(),
++                    arguments: json!({"query": "match"}),
++                }],
++            ),
++            Message::tool_result("call_grep_small", "grep_search", small_search),
++            // Turn 2: User prompt + assistant action
++            Message::user("Continue"),
++            Message::assistant("Okay"),
++            // Turn 3: Recent turn
++            Message::user("Recent"),
++            Message::assistant("Done"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.search_results_compacted, 0);
++        assert_eq!(
++            messages[2].content, small_search,
++            "Small search result (<=25 lines and <=300 bytes) must not be condensed"
++        );
++    }
++
++    #[test]
++    fn test_find_by_name_pattern_search_result_condensation() {
++        let file_list_40 = (1..=40)
++            .map(|i| format!("src/models/model_{i}.rs"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            // Turn 1: find_by_name(pattern="*.rs")
++            Message::user("Find all rust files"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_find_1".into(),
++                    name: "find_by_name".into(),
++                    arguments: json!({"pattern": "*.rs"}),
++                }],
++            ),
++            Message::tool_result("call_find_1", "find_by_name", &file_list_40),
++            // Turn 2
++            Message::user("Next"),
++            Message::assistant("Done"),
++            // Turn 3: Recent turn
++            Message::user("Recent"),
++            Message::assistant("Finished"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++
++        assert_eq!(metrics.search_results_compacted, 1);
++        let compacted = &messages[2].content;
++        assert!(
++            compacted.starts_with("[find_by_name: query \"*.rs\" returned 40 lines. Use retrieve_observation(id=\"ccr_"),
++            "Expected find_by_name receipt format, got: {compacted}"
++        );
++    }
++
++    #[test]
++    fn test_search_missing_query_fallback() {
++        let raw_30_lines = (1..=30)
++            .map(|i| format!("line {i}"))
++            .collect::<Vec<_>>()
++            .join("\n");
++
++        let mut messages = vec![
++            Message::user("Search"),
++            Message::assistant_with_tools(
++                "",
++                vec![ToolCall {
++                    id: "call_search_no_query".into(),
++                    name: "grep".into(),
++                    arguments: json!({}),
++                }],
++            ),
++            Message::tool_result("call_search_no_query", "grep", &raw_30_lines),
++            Message::user("Next"),
++            Message::assistant("Done"),
++            Message::user("Recent"),
++            Message::assistant("Finished"),
++        ];
++
++        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        assert_eq!(metrics.search_results_compacted, 1);
++        assert!(messages[2]
++            .content
++            .contains("query \"...\" returned 30 lines"));
++    }
++
++    #[test]
++    fn test_is_already_receipt() {
++        assert!(is_already_receipt("[read_file: src/main.rs]", "read_file"));
++        assert!(is_already_receipt(
++            "[write_file: src/main.rs (successfully applied)]",
++            "write_file"
++        ));
++        assert!(is_already_receipt(
++            "[grep_search: query \"AuthService\" returned 80 lines]",
++            "grep_search"
++        ));
++        assert!(!is_already_receipt(
++            "[read_file: src/main.rs]",
++            "write_file"
++        ));
++        assert!(!is_already_receipt(
++            "read_file: not in brackets",
++            "read_file"
++        ));
++        assert!(!is_already_receipt(
++            "[read_file_extra: not colon]",
++            "read_file"
++        ));
++        assert!(!is_already_receipt("", "read_file"));
 +    }
  }
-diff --git a/src/context/memory/intent.rs b/src/context/memory/intent.rs
-index 3da5775..36e49d6 100644
---- a/src/context/memory/intent.rs
-+++ b/src/context/memory/intent.rs
-@@ -127,6 +127,93 @@ impl IntentLedger {
-         self.items.iter_mut().find(|item| item.id == id)
-     }
- 
-+    /// Returns the number of completed requirement items.
-+    pub fn completed_count(&self) -> usize {
-+        self.items
-+            .iter()
-+            .filter(|item| item.status == RequirementStatus::Completed)
-+            .count()
-+    }
-+
-+    /// Returns the total number of tracked requirement items.
-+    pub fn total_count(&self) -> usize {
-+        self.items.len()
-+    }
-+
-+    /// Checks if consecutive turns without progress exceed the drift threshold.
-+    /// If so, returns a high-priority course-correction reminder string.
-+    pub fn check_drift(&self, threshold: usize) -> Option<String> {
-+        if self.consecutive_turns_without_progress >= threshold
-+            && self.total_count() > self.completed_count()
-+        {
-+            let active_title = self
-+                .active_item_id
-+                .as_deref()
-+                .and_then(|id| self.get_item(id))
-+                .map(|item| item.title.as_str())
-+                .or_else(|| {
-+                    self.items
-+                        .iter()
-+                        .find(|item| item.status == RequirementStatus::InProgress)
-+                        .map(|item| item.title.as_str())
-+                })
-+                .or_else(|| {
-+                    self.items
-+                        .iter()
-+                        .find(|item| item.status == RequirementStatus::Pending)
-+                        .map(|item| item.title.as_str())
-+                })
-+                .unwrap_or("None (select next requirement)");
-+
-+            Some(format!(
-+                "⚠️ Task Drift Warning: {} turns have passed without requirement progress (completed {}/{}). Active task: {}. Do not get distracted by tangential edits; focus on completing remaining requirements.",
-+                self.consecutive_turns_without_progress,
-+                self.completed_count(),
-+                self.total_count(),
-+                active_title
-+            ))
-+        } else {
-+            None
-+        }
-+    }
-+
-+    /// Renders the immutable root goal anchor and the living execution ledger
-+    /// into a compact, token-efficient XML prompt block for LLM context injection.
-+    pub fn to_prompt_block(&self) -> String {
-+        if self.root_objective.trim().is_empty() && self.items.is_empty() {
-+            return String::new();
-+        }
-+
-+        let mut block = String::with_capacity(512);
-+        if !self.root_objective.trim().is_empty() {
-+            block.push_str("  <goal_anchor>\n");
-+            block.push_str(&format!(
-+                "    <root_objective>{}</root_objective>\n",
-+                self.root_objective.trim()
-+            ));
-+            block.push_str("  </goal_anchor>\n");
-+        }
-+
-+        block.push_str(&format!(
-+            "  <execution_ledger progress=\"{}/{} completed\">\n",
-+            self.completed_count(),
-+            self.total_count()
-+        ));
-+        for item in &self.items {
-+            let marker = match item.status {
-+                RequirementStatus::Completed => "[x]",
-+                RequirementStatus::InProgress => "[-]",
-+                RequirementStatus::Blocked => "[!]",
-+                RequirementStatus::Skipped => "[s]",
-+                RequirementStatus::Pending => "[ ]",
-+            };
-+            block.push_str(&format!("    {} {}\n", marker, item.title.trim()));
-+        }
-+        block.push_str("  </execution_ledger>\n");
-+
-+        block
-+    }
-+
-     /// Atomically persists the `IntentLedger` to disk via a temporary file and rename.
-     pub fn save_to_disk(&self, path: &std::path::Path) -> std::io::Result<()> {
-         if let Some(parent) = path.parent() {
-@@ -1019,4 +1106,85 @@ Refactor core architecture
-         assert!(ledger.set_status(&id2, RequirementStatus::Completed));
-         assert_eq!(ledger.consecutive_turns_without_progress, 0);
-     }
-+
-+    #[test]
-+    fn test_intent_ledger_prompt_block_and_drift() {
-+        let mut ledger = IntentLedger::new("Implement authentication system");
-+        assert_eq!(ledger.completed_count(), 0);
-+        assert_eq!(ledger.total_count(), 0);
-+
-+        let id1 = ledger.add_item(
-+            "JWT token generation",
-+            None,
-+            vec!["src/auth/jwt.rs".to_string()],
-+        );
-+        let id2 = ledger.add_item(
-+            "Login endpoint",
-+            None,
-+            vec!["src/routes/login.rs".to_string()],
-+        );
-+        assert_eq!(ledger.completed_count(), 0);
-+        assert_eq!(ledger.total_count(), 2);
-+
-+        let block = ledger.to_prompt_block();
-+        assert!(block.contains("<goal_anchor>"));
-+        assert!(block.contains("<root_objective>Implement authentication system</root_objective>"));
-+        assert!(block.contains("<execution_ledger progress=\"0/2 completed\">"));
-+        assert!(block.contains("[ ] JWT token generation"));
-+        assert!(block.contains("[ ] Login endpoint"));
-+
-+        ledger.set_status(&id1, RequirementStatus::InProgress);
-+        let block_in_progress = ledger.to_prompt_block();
-+        assert!(block_in_progress.contains("[-] JWT token generation"));
-+
-+        ledger.set_status(&id1, RequirementStatus::Completed);
-+        assert_eq!(ledger.completed_count(), 1);
-+        let block_completed = ledger.to_prompt_block();
-+        assert!(block_completed.contains("<execution_ledger progress=\"1/2 completed\">"));
-+        assert!(block_completed.contains("[x] JWT token generation"));
-+
-+        // Drift test: 5 turns with 1 completed item (1 remaining)
-+        ledger.consecutive_turns_without_progress = 5;
-+        let warning = ledger.check_drift(4);
-+        assert!(warning.is_some());
-+        let warning_msg = warning.unwrap();
-+        assert!(warning_msg.contains(
-+            "⚠️ Task Drift Warning: 5 turns have passed without requirement progress (completed 1/2)."
-+        ));
-+        assert!(warning_msg.contains("Active task: Login endpoint"));
-+        assert!(warning_msg.contains(
-+            "Do not get distracted by tangential edits; focus on completing remaining requirements."
-+        ));
-+
-+        // When turns < threshold, no drift
-+        assert!(ledger.check_drift(6).is_none());
-+
-+        // When all items completed, no drift warning even if turns exceed threshold
-+        ledger.set_status(&id2, RequirementStatus::Completed);
-+        assert_eq!(ledger.completed_count(), 2);
-+        ledger.consecutive_turns_without_progress = 10;
-+        assert!(ledger.check_drift(4).is_none());
-+    }
-+
-+    #[test]
-+    fn test_intent_ledger_status_markers() {
-+        let mut ledger = IntentLedger::new("Test status markers");
-+        let _id_pend = ledger.add_item("Pending item", None, vec![]);
-+        let id_prog = ledger.add_item("InProgress item", None, vec![]);
-+        let id_comp = ledger.add_item("Completed item", None, vec![]);
-+        let id_block = ledger.add_item("Blocked item", None, vec![]);
-+        let id_skip = ledger.add_item("Skipped item", None, vec![]);
-+
-+        ledger.set_status(&id_prog, RequirementStatus::InProgress);
-+        ledger.set_status(&id_comp, RequirementStatus::Completed);
-+        ledger.set_status(&id_block, RequirementStatus::Blocked);
-+        ledger.set_status(&id_skip, RequirementStatus::Skipped);
-+
-+        let block = ledger.to_prompt_block();
-+        assert!(block.contains("[ ] Pending item"));
-+        assert!(block.contains("[-] InProgress item"));
-+        assert!(block.contains("[x] Completed item"));
-+        assert!(block.contains("[!] Blocked item"));
-+        assert!(block.contains("[s] Skipped item"));
-+    }
- }
-diff --git a/tests/integration_context_budget_donut.rs b/tests/integration_context_budget_donut.rs
-index e05608a..a36332c 100644
---- a/tests/integration_context_budget_donut.rs
-+++ b/tests/integration_context_budget_donut.rs
-@@ -54,8 +54,14 @@ fn test_context_budget_recency_context_injection() {
-     let budget = ContextBudget::new(42_500, 128_000, 68_000);
-     let working_set = vec!["src/lib.rs".to_string()];
- 
--    let recency =
--        PromptBuilder::build_recency_context(workspace, None, &working_set, None, Some(&budget));
-+    let recency = PromptBuilder::build_recency_context(
-+        workspace,
-+        None,
-+        &working_set,
-+        None,
-+        Some(&budget),
-+        None,
-+    );
- 
-     assert!(recency.contains("<workspace_context>"));
-     assert!(recency.contains("<context_budget used=\"42500\" limit=\"128000\""));
-diff --git a/tests/integration_context_engine_v2.rs b/tests/integration_context_engine_v2.rs
-index 1381dfc..1351aad 100644
---- a/tests/integration_context_engine_v2.rs
-+++ b/tests/integration_context_engine_v2.rs
-@@ -416,7 +416,7 @@ fn test_prompt_no_double_nested_progressive_memory() {
-     mem.add_l2_fact("engine", "Tokio multi-threaded", "test", 1.0);
-     mem.save(root).unwrap();
- 
--    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None);
-+    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None, None);
- 
-     // Invariant: <progressive_memory> must appear exactly once, not nested
-     assert!(
-@@ -590,6 +590,7 @@ fn test_recency_context_kv_cache_prefix_alignment() {
-         &active_set,
-         Some(&git_status),
-         Some(&budget),
-+        None,
-     );
- 
-     // Verify presence of structural elements
-diff --git a/tests/integration_prompt_ergonomics.rs b/tests/integration_prompt_ergonomics.rs
-index 184fab6..bad4033 100644
---- a/tests/integration_prompt_ergonomics.rs
-+++ b/tests/integration_prompt_ergonomics.rs
-@@ -79,7 +79,7 @@ fn test_recency_inverted_turn_assembly_structure() {
- 
-     let budget = ContextBudget::new(10_000, 128_000, 25_000);
-     let recency_block =
--        PromptBuilder::build_recency_context(workspace, None, &[], None, Some(&budget));
-+        PromptBuilder::build_recency_context(workspace, None, &[], None, Some(&budget), None);
- 
-     let user_prompt = "Implement graceful shutdown";
- 
-diff --git a/tests/integration_tri_zone_prompts.rs b/tests/integration_tri_zone_prompts.rs
-index 552d68b..65fb636 100644
---- a/tests/integration_tri_zone_prompts.rs
-+++ b/tests/integration_tri_zone_prompts.rs
-@@ -85,6 +85,7 @@ fn test_recency_context_formats_git_and_working_set() {
-         &working_set,
-         Some(&git_status),
-         Some(&budget),
-+        None,
-     );
- 
-     assert!(recency.contains("<workspace_context>"));
