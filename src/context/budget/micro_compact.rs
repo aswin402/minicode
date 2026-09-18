@@ -1,0 +1,654 @@
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::agent::types::{Message, Role, ToolCall};
+use crate::context::budget::ccr_cache::CcrCache;
+
+/// Metrics tracking semantic micro-compaction savings and operations performed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MicroCompactMetrics {
+    pub superseded_reads_compacted: usize,
+    pub duplicate_reads_compacted: usize,
+    pub mutation_echoes_compacted: usize,
+    pub search_results_compacted: usize,
+    pub tokens_saved_estimate: usize,
+}
+
+impl MicroCompactMetrics {
+    /// Total number of tool results compacted across all micro-compaction rules.
+    #[must_use]
+    pub fn total_compacted(&self) -> usize {
+        self.superseded_reads_compacted
+            + self.duplicate_reads_compacted
+            + self.mutation_echoes_compacted
+            + self.search_results_compacted
+    }
+}
+
+/// Dynamic key names for target file path extraction from tool call arguments.
+const PATH_KEYS: &[&str] = &[
+    "path",
+    "target_file",
+    "file_path",
+    "file",
+    "TargetFile",
+    "AbsolutePath",
+    "target",
+];
+
+/// Dynamic key names for search query extraction from tool call arguments.
+const QUERY_KEYS: &[&str] = &["query", "pattern", "term", "regex", "Query", "Pattern"];
+
+/// Returns true if the tool name indicates a file mutation operation.
+fn is_mutation_tool(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "write_file"
+            | "patch_file"
+            | "replace_file_content"
+            | "edit_file"
+            | "repair_patch"
+            | "write_to_file"
+    ) || n.starts_with("write_")
+        || n.starts_with("patch_")
+        || n.starts_with("edit_")
+}
+
+/// Returns true if the tool name indicates a file read operation.
+fn is_read_tool(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(n.as_str(), "read_file" | "view_file" | "cat")
+        || n.starts_with("read_")
+        || n.starts_with("view_")
+}
+
+/// Normalizes a file path for comparison by trimming whitespace and removing leading `./`.
+fn normalize_path_for_compare(p: &str) -> &str {
+    let trimmed = p.trim();
+    trimmed.strip_prefix("./").unwrap_or(trimmed)
+}
+
+/// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
+/// tool observations in conversation history, backed by lossless CCR recovery cache.
+pub struct MicroCompactor;
+
+impl MicroCompactor {
+    /// Compacts messages by identifying superseded file reads outside the preserved recent turn window.
+    ///
+    /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
+    /// all messages across the conversation are eligible for compaction.
+    pub fn compact_messages(
+        messages: &mut [Message],
+        preserve_recent_turns: usize,
+    ) -> MicroCompactMetrics {
+        let mut metrics = MicroCompactMetrics::default();
+        if messages.is_empty() {
+            return metrics;
+        }
+
+        let cutoff = Self::calculate_cutoff(messages, preserve_recent_turns);
+        Self::compact_superseded_reads(messages, cutoff, &mut metrics);
+
+        metrics
+    }
+
+    /// Dynamically extracts target file path from a tool call's arguments.
+    #[must_use]
+    pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
+        let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
+            for key in PATH_KEYS {
+                if let Some(val) = obj.get(*key) {
+                    if let Some(s) = val.as_str() {
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        if let Some(obj) = tool_call.arguments.as_object() {
+            if let Some(path) = check_obj(obj) {
+                return Some(path);
+            }
+        } else if let Some(s) = tool_call.arguments.as_str() {
+            if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
+            {
+                if let Some(path) = check_obj(&obj) {
+                    return Some(path);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Dynamically extracts search query or pattern from a tool call's arguments.
+    #[must_use]
+    pub fn extract_search_query(tool_call: &ToolCall) -> Option<String> {
+        let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
+            for key in QUERY_KEYS {
+                if let Some(val) = obj.get(*key) {
+                    if let Some(s) = val.as_str() {
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        if let Some(obj) = tool_call.arguments.as_object() {
+            if let Some(query) = check_obj(obj) {
+                return Some(query);
+            }
+        } else if let Some(s) = tool_call.arguments.as_str() {
+            if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
+            {
+                if let Some(query) = check_obj(&obj) {
+                    return Some(query);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Calculates the message index cutoff before which messages are eligible for compaction.
+    /// Messages at or after `cutoff` belong to the preserved recent turns and are left untouched.
+    fn calculate_cutoff(messages: &[Message], preserve_recent_turns: usize) -> usize {
+        if preserve_recent_turns == 0 {
+            return messages.len();
+        }
+
+        let user_indices: Vec<usize> = messages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| if m.role == Role::User { Some(i) } else { None })
+            .collect();
+
+        if !user_indices.is_empty() {
+            if preserve_recent_turns >= user_indices.len() {
+                0
+            } else {
+                user_indices[user_indices.len() - preserve_recent_turns]
+            }
+        } else {
+            let assistant_indices: Vec<usize> = messages
+                .iter()
+                .enumerate()
+                .filter_map(|(i, m)| {
+                    if m.role == Role::Assistant {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if preserve_recent_turns >= assistant_indices.len() {
+                0
+            } else {
+                assistant_indices[assistant_indices.len() - preserve_recent_turns]
+            }
+        }
+    }
+
+    /// Identifies superseded file reads outside the preserved window and replaces them with
+    /// concise 1-line CCR receipts.
+    fn compact_superseded_reads(
+        messages: &mut [Message],
+        cutoff: usize,
+        metrics: &mut MicroCompactMetrics,
+    ) {
+        if cutoff == 0 {
+            return;
+        }
+
+        // Pass 1: Build map of modified files across the entire conversation
+        // and map tool calls by ID for metadata extraction.
+        let mut mutations: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut tool_calls_by_id: HashMap<String, ToolCall> = HashMap::new();
+
+        for (idx, msg) in messages.iter().enumerate() {
+            if let Some(ref calls) = msg.tool_calls {
+                for call in calls {
+                    tool_calls_by_id.insert(call.id.clone(), call.clone());
+                    if is_mutation_tool(&call.name) {
+                        if let Some(target_path) = Self::extract_target_path(call) {
+                            let norm = normalize_path_for_compare(&target_path);
+                            mutations.entry(norm.to_string()).or_default().push(idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Inspect tool result messages outside the preserved recent window
+        for i in 0..cutoff {
+            if messages[i].role != Role::Tool {
+                continue;
+            }
+
+            // If already a condensed receipt, skip
+            if messages[i].content.starts_with("[read_file:") {
+                continue;
+            }
+
+            let tool_call = messages[i]
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| tool_calls_by_id.get(id));
+
+            let tool_name = messages[i]
+                .tool_name
+                .as_deref()
+                .or_else(|| tool_call.map(|tc| tc.name.as_str()));
+
+            let Some(tname) = tool_name else {
+                continue;
+            };
+
+            if !is_read_tool(tname) {
+                continue;
+            }
+
+            let target_path = tool_call.and_then(Self::extract_target_path).or_else(|| {
+                // Fallback: search backwards for preceding assistant message
+                for prev_idx in (0..i).rev() {
+                    let prev = &messages[prev_idx];
+                    if prev.role == Role::Assistant {
+                        if let Some(ref calls) = prev.tool_calls {
+                            if let Some(c) = calls.iter().find(|c| is_read_tool(&c.name)) {
+                                return Self::extract_target_path(c);
+                            }
+                        }
+                        break;
+                    }
+                }
+                None
+            });
+
+            let Some(path) = target_path else {
+                continue;
+            };
+
+            let norm = normalize_path_for_compare(&path);
+            let is_superseded = mutations
+                .get(norm)
+                .map(|indices| indices.iter().any(|&mut_idx| mut_idx > i))
+                .unwrap_or(false);
+
+            if is_superseded {
+                let line_count = messages[i].content.lines().count();
+                let ccr_id = CcrCache::store(&messages[i].content);
+                let receipt = format!(
+                    "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
+                    path, line_count, ccr_id
+                );
+                let chars_saved = messages[i].content.len().saturating_sub(receipt.len());
+                metrics.tokens_saved_estimate += chars_saved / 4;
+                messages[i].content = receipt;
+                metrics.superseded_reads_compacted += 1;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::ToolCall;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_target_path_various_schemas() {
+        let tc1 = ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "foo.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc1),
+            Some("foo.rs".to_string())
+        );
+
+        let tc2 = ToolCall {
+            id: "2".into(),
+            name: "patch_file".into(),
+            arguments: json!({"target_file": "bar.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc2),
+            Some("bar.rs".to_string())
+        );
+
+        let tc3 = ToolCall {
+            id: "3".into(),
+            name: "view_file".into(),
+            arguments: json!({"file_path": "baz.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc3),
+            Some("baz.rs".to_string())
+        );
+
+        let tc4 = ToolCall {
+            id: "4".into(),
+            name: "replace_file_content".into(),
+            arguments: json!({"TargetFile": "qux.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc4),
+            Some("qux.rs".to_string())
+        );
+
+        let tc5 = ToolCall {
+            id: "5".into(),
+            name: "read_file".into(),
+            arguments: json!({"AbsolutePath": "/project/src/main.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc5),
+            Some("/project/src/main.rs".to_string())
+        );
+
+        let tc6 = ToolCall {
+            id: "6".into(),
+            name: "read_file".into(),
+            arguments: json!({"file": "data.json"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc6),
+            Some("data.json".to_string())
+        );
+
+        let tc7 = ToolCall {
+            id: "7".into(),
+            name: "read_file".into(),
+            arguments: json!({"target": "target.txt"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc7),
+            Some("target.txt".to_string())
+        );
+
+        let tc_empty = ToolCall {
+            id: "8".into(),
+            name: "read_file".into(),
+            arguments: json!({}),
+        };
+        assert_eq!(MicroCompactor::extract_target_path(&tc_empty), None);
+
+        let tc_blank = ToolCall {
+            id: "9".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "   "}),
+        };
+        assert_eq!(MicroCompactor::extract_target_path(&tc_blank), None);
+
+        // Stringified JSON arguments
+        let tc_str = ToolCall {
+            id: "10".into(),
+            name: "read_file".into(),
+            arguments: json!("{\"path\": \"nested.rs\"}"),
+        };
+        assert_eq!(
+            MicroCompactor::extract_target_path(&tc_str),
+            Some("nested.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_search_query() {
+        let tc1 = ToolCall {
+            id: "1".into(),
+            name: "grep_search".into(),
+            arguments: json!({"query": "fn main"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc1),
+            Some("fn main".to_string())
+        );
+
+        let tc2 = ToolCall {
+            id: "2".into(),
+            name: "find_by_name".into(),
+            arguments: json!({"pattern": "*.rs"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc2),
+            Some("*.rs".to_string())
+        );
+
+        let tc3 = ToolCall {
+            id: "3".into(),
+            name: "search".into(),
+            arguments: json!({"term": "micro_compact"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc3),
+            Some("micro_compact".to_string())
+        );
+
+        let tc4 = ToolCall {
+            id: "4".into(),
+            name: "search".into(),
+            arguments: json!({"regex": "^pub fn"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc4),
+            Some("^pub fn".to_string())
+        );
+
+        let tc5 = ToolCall {
+            id: "5".into(),
+            name: "search".into(),
+            arguments: json!({"Query": "UpperQuery"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc5),
+            Some("UpperQuery".to_string())
+        );
+
+        let tc6 = ToolCall {
+            id: "6".into(),
+            name: "search".into(),
+            arguments: json!({"Pattern": "UpperPattern"}),
+        };
+        assert_eq!(
+            MicroCompactor::extract_search_query(&tc6),
+            Some("UpperPattern".to_string())
+        );
+
+        let tc_none = ToolCall {
+            id: "7".into(),
+            name: "search".into(),
+            arguments: json!({}),
+        };
+        assert_eq!(MicroCompactor::extract_search_query(&tc_none), None);
+    }
+
+    #[test]
+    fn test_superseded_file_read_compaction() {
+        let original_50_lines = (1..=50)
+            .map(|i| format!("pub fn line_{i}() -> usize {{ {i} }}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Message 0: User "Edit main.rs"
+            Message::user("Edit main.rs"),
+            // Message 1: Assistant calls read_file(path="src/main.rs")
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_read_1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            // Message 2: Tool result with 50 lines of code
+            Message::tool_result("call_read_1", "read_file", &original_50_lines),
+            // Message 3: Assistant calls write_file(path="src/main.rs")
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_write_1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            // Message 4: Tool result "ok"
+            Message::tool_result("call_write_1", "write_file", "ok"),
+            // Message 5: User "Now test it"
+            Message::user("Now test it"),
+            // Message 6: Assistant "Testing"
+            Message::assistant("Testing"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.superseded_reads_compacted, 1);
+        assert!(metrics.tokens_saved_estimate > 0);
+
+        // Assert Message 2 was replaced with receipt containing [read_file: src/main.rs and ccr_.
+        let compacted_content = &messages[2].content;
+        assert!(
+            compacted_content.starts_with("[read_file: src/main.rs (50 lines read, superseded by modification. Use retrieve_observation(id=\"ccr_"),
+            "Expected receipt format, got: {compacted_content}"
+        );
+
+        // Extract ccr_id from receipt
+        let id_start = compacted_content
+            .find("id=\"")
+            .expect("id=\" should be in receipt")
+            + 4;
+        let id_end = compacted_content[id_start..]
+            .find('"')
+            .expect("closing quote should be in receipt")
+            + id_start;
+        let ccr_id = &compacted_content[id_start..id_end];
+
+        // Assert CcrCache::retrieve(&ccr_id, None, None) returns the original 50 lines.
+        let retrieved = CcrCache::retrieve(ccr_id, None, None);
+        assert_eq!(
+            retrieved,
+            Some(original_50_lines),
+            "Original content must be retrieved losslessly from CCR cache"
+        );
+    }
+
+    #[test]
+    fn test_recent_turn_preserved_uncompacted() {
+        let code = (1..=30)
+            .map(|i| format!("let x_{i} = {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Turn 1
+            Message::user("Modify foo.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "foo.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", "ok"),
+            // Turn 2 (Most recent turn)
+            Message::user("Check foo.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "foo.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", &code),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w2".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "foo.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w2", "write_file", "ok"),
+        ];
+
+        // preserve_recent_turns = 1 should preserve Turn 2 completely
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.superseded_reads_compacted, 0);
+        assert_eq!(
+            messages[5].content, code,
+            "Tool result in recent turn must remain 100% untouched"
+        );
+    }
+
+    #[test]
+    fn test_non_superseded_read_uncompacted() {
+        let code = "fn read_only() {}\n";
+        let mut messages = vec![
+            Message::user("Read bar.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "bar.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", code),
+            Message::user("Next turn"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.superseded_reads_compacted, 0);
+        assert_eq!(messages[2].content, code);
+    }
+
+    #[test]
+    fn test_already_compacted_read_skipped() {
+        let receipt = "[read_file: src/main.rs (10 lines read, superseded by modification. Use retrieve_observation(id=\"ccr_dummy\") for raw content)]";
+        let mut messages = vec![
+            Message::user("Edit main.rs"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_r1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_r1", "read_file", receipt),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_w1".into(),
+                    name: "write_file".into(),
+                    arguments: json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_w1", "write_file", "ok"),
+            Message::user("Next turn"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.superseded_reads_compacted, 0);
+        assert_eq!(messages[2].content, receipt);
+    }
+}

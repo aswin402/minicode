@@ -9,7 +9,10 @@ pub mod donut;
 pub mod flaky;
 pub mod json_crusher;
 pub mod log_pruner;
+pub mod micro_compact;
 pub mod observation_pruner;
 
 pub use budget::*;
+#[allow(unused_imports)]
+pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
 pub use observation_pruner::ObservationPruner;
