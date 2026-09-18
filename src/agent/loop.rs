@@ -356,6 +356,7 @@ impl AgentLoop {
             &working_set_vec,
             git_status.as_ref(),
             Some(&context_budget),
+            None,
         );
 
         let prompt_with_context = if recency_block.trim().is_empty() {

@@ -79,7 +79,7 @@ fn test_recency_inverted_turn_assembly_structure() {
 
     let budget = ContextBudget::new(10_000, 128_000, 25_000);
     let recency_block =
-        PromptBuilder::build_recency_context(workspace, None, &[], None, Some(&budget));
+        PromptBuilder::build_recency_context(workspace, None, &[], None, Some(&budget), None);
 
     let user_prompt = "Implement graceful shutdown";
 

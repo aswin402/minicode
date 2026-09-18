@@ -54,8 +54,14 @@ fn test_context_budget_recency_context_injection() {
     let budget = ContextBudget::new(42_500, 128_000, 68_000);
     let working_set = vec!["src/lib.rs".to_string()];
 
-    let recency =
-        PromptBuilder::build_recency_context(workspace, None, &working_set, None, Some(&budget));
+    let recency = PromptBuilder::build_recency_context(
+        workspace,
+        None,
+        &working_set,
+        None,
+        Some(&budget),
+        None,
+    );
 
     assert!(recency.contains("<workspace_context>"));
     assert!(recency.contains("<context_budget used=\"42500\" limit=\"128000\""));

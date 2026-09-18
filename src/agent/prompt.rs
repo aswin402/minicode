@@ -165,6 +165,7 @@ impl PromptBuilder {
         active_working_set: &[String],
         git_status: Option<&crate::git::GitStatus>,
         context_budget: Option<&crate::context::budget::ContextBudget>,
+        intent_ledger: Option<&crate::context::memory::intent::IntentLedger>,
     ) -> String {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
@@ -227,13 +228,21 @@ impl PromptBuilder {
             recency.push_str("  </active_working_set>\n");
         }
 
+        // 5. Living Execution Ledger & Goal Anchor (<goal_anchor>, <execution_ledger>)
+        if let Some(ledger) = intent_ledger {
+            let ledger_block = ledger.to_prompt_block();
+            if !ledger_block.trim().is_empty() {
+                recency.push_str(&ledger_block);
+            }
+        }
+
         // === KV-CACHE ANCHOR DELIMITER ===
         // Delimits invariant/slowly-evolving context from volatile turn-by-turn state
         recency.push_str("  <!-- KV_CACHE_ANCHOR -->\n");
 
         // === ZONE B: VOLATILE PER-TURN STATE ===
 
-        // 5. Active Workspace Transaction (if one is open)
+        // 6. Active Workspace Transaction (if one is open)
         if let Ok(Some(active_tx)) =
             crate::session::transaction::TransactionManager::get_active(workspace_dir)
         {
@@ -245,7 +254,7 @@ impl PromptBuilder {
             ));
         }
 
-        // 6. Git Status & Active Branch
+        // 7. Git Status & Active Branch
         if let Some(status) = git_status {
             recency.push_str(&format!(
                 "  <git_status branch=\"{}\" clean=\"{}\">\n",
@@ -282,7 +291,7 @@ impl PromptBuilder {
             recency.push_str("  </git_status>\n");
         }
 
-        // 7. Dynamic Memory Anchor (active objective, key decisions, blockers)
+        // 8. Dynamic Memory Anchor (active objective, key decisions, blockers)
         if let Some(anchor) = memory_anchor {
             if !anchor.trim().is_empty() {
                 recency.push_str("  <task_anchor>\n");
@@ -291,9 +300,18 @@ impl PromptBuilder {
             }
         }
 
-        // 8. Context Budget & Headroom Bar (most volatile, placed at tail to avoid invalidating KV prefix)
+        // 9. Context Budget & Headroom Bar (most volatile, placed at tail to avoid invalidating KV prefix)
         if let Some(budget) = context_budget {
             recency.push_str(&budget.to_prompt_block());
+        }
+
+        // 10. Intent Course-Correction Drift Warning (<intent_focus>)
+        if let Some(drift_warning) = intent_ledger
+            .and_then(|l| l.check_drift(crate::constants::DEFAULT_INTENT_DRIFT_WARNING_TURNS))
+        {
+            recency.push_str("  <intent_focus>\n");
+            recency.push_str(&format!("    {}\n", drift_warning.trim()));
+            recency.push_str("  </intent_focus>\n");
         }
 
         recency.push_str("</workspace_context>");
@@ -422,6 +440,7 @@ mod tests {
             &active_set,
             Some(&status),
             Some(&budget),
+            None,
         );
 
         assert!(recency.contains("<workspace_context>"));
@@ -448,5 +467,53 @@ mod tests {
             .expect("must contain context_budget");
         assert!(active_set_pos < anchor_marker_pos);
         assert!(anchor_marker_pos < budget_pos);
+    }
+
+    #[test]
+    fn test_build_recency_context_with_intent_ledger_and_drift() {
+        let temp_dir = std::env::temp_dir();
+        let mut ledger =
+            crate::context::memory::intent::IntentLedger::new("Build AgentBench sandbox");
+        let id = ledger.add_item("Dashboard metrics", None, vec![]);
+        ledger.set_status(
+            &id,
+            crate::context::memory::intent::RequirementStatus::InProgress,
+        );
+
+        // Without drift
+        let recency =
+            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
+        assert!(recency.contains("<goal_anchor>"));
+        assert!(recency.contains("<root_objective>Build AgentBench sandbox</root_objective>"));
+        assert!(recency.contains("<execution_ledger progress=\"0/1 completed\">"));
+        assert!(recency.contains("[-] Dashboard metrics"));
+        assert!(!recency.contains("<intent_focus>"));
+
+        // With drift
+        ledger.consecutive_turns_without_progress = 6;
+        let recency_drift =
+            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
+        assert!(recency_drift.contains("<intent_focus>"));
+        assert!(recency_drift.contains("⚠️ Task Drift Warning"));
+        assert!(recency_drift.contains("Dashboard metrics"));
+
+        // Verify order: <goal_anchor> in Zone 1 (before KV_CACHE_ANCHOR), <intent_focus> at tail (after KV_CACHE_ANCHOR)
+        let anchor_pos = recency_drift
+            .find("<goal_anchor>")
+            .expect("must contain goal_anchor");
+        let kv_pos = recency_drift
+            .find("<!-- KV_CACHE_ANCHOR -->")
+            .expect("must contain KV_CACHE_ANCHOR");
+        let focus_pos = recency_drift
+            .find("<intent_focus>")
+            .expect("must contain intent_focus");
+        assert!(
+            anchor_pos < kv_pos,
+            "goal_anchor must be in Zone 1 before KV_CACHE_ANCHOR"
+        );
+        assert!(
+            kv_pos < focus_pos,
+            "intent_focus must be at tail after KV_CACHE_ANCHOR"
+        );
     }
 }

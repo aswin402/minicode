@@ -416,7 +416,7 @@ fn test_prompt_no_double_nested_progressive_memory() {
     mem.add_l2_fact("engine", "Tokio multi-threaded", "test", 1.0);
     mem.save(root).unwrap();
 
-    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None);
+    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None, None);
 
     // Invariant: <progressive_memory> must appear exactly once, not nested
     assert!(
@@ -590,6 +590,7 @@ fn test_recency_context_kv_cache_prefix_alignment() {
         &active_set,
         Some(&git_status),
         Some(&budget),
+        None,
     );
 
     // Verify presence of structural elements

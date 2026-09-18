@@ -127,6 +127,93 @@ impl IntentLedger {
         self.items.iter_mut().find(|item| item.id == id)
     }
 
+    /// Returns the number of completed requirement items.
+    pub fn completed_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.status == RequirementStatus::Completed)
+            .count()
+    }
+
+    /// Returns the total number of tracked requirement items.
+    pub fn total_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Checks if consecutive turns without progress exceed the drift threshold.
+    /// If so, returns a high-priority course-correction reminder string.
+    pub fn check_drift(&self, threshold: usize) -> Option<String> {
+        if self.consecutive_turns_without_progress >= threshold
+            && self.total_count() > self.completed_count()
+        {
+            let active_title = self
+                .active_item_id
+                .as_deref()
+                .and_then(|id| self.get_item(id))
+                .map(|item| item.title.as_str())
+                .or_else(|| {
+                    self.items
+                        .iter()
+                        .find(|item| item.status == RequirementStatus::InProgress)
+                        .map(|item| item.title.as_str())
+                })
+                .or_else(|| {
+                    self.items
+                        .iter()
+                        .find(|item| item.status == RequirementStatus::Pending)
+                        .map(|item| item.title.as_str())
+                })
+                .unwrap_or("None (select next requirement)");
+
+            Some(format!(
+                "⚠️ Task Drift Warning: {} turns have passed without requirement progress (completed {}/{}). Active task: {}. Do not get distracted by tangential edits; focus on completing remaining requirements.",
+                self.consecutive_turns_without_progress,
+                self.completed_count(),
+                self.total_count(),
+                active_title
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Renders the immutable root goal anchor and the living execution ledger
+    /// into a compact, token-efficient XML prompt block for LLM context injection.
+    pub fn to_prompt_block(&self) -> String {
+        if self.root_objective.trim().is_empty() && self.items.is_empty() {
+            return String::new();
+        }
+
+        let mut block = String::with_capacity(512);
+        if !self.root_objective.trim().is_empty() {
+            block.push_str("  <goal_anchor>\n");
+            block.push_str(&format!(
+                "    <root_objective>{}</root_objective>\n",
+                self.root_objective.trim()
+            ));
+            block.push_str("  </goal_anchor>\n");
+        }
+
+        block.push_str(&format!(
+            "  <execution_ledger progress=\"{}/{} completed\">\n",
+            self.completed_count(),
+            self.total_count()
+        ));
+        for item in &self.items {
+            let marker = match item.status {
+                RequirementStatus::Completed => "[x]",
+                RequirementStatus::InProgress => "[-]",
+                RequirementStatus::Blocked => "[!]",
+                RequirementStatus::Skipped => "[s]",
+                RequirementStatus::Pending => "[ ]",
+            };
+            block.push_str(&format!("    {} {}\n", marker, item.title.trim()));
+        }
+        block.push_str("  </execution_ledger>\n");
+
+        block
+    }
+
     /// Atomically persists the `IntentLedger` to disk via a temporary file and rename.
     pub fn save_to_disk(&self, path: &std::path::Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
@@ -1018,5 +1105,86 @@ Refactor core architecture
         ledger.consecutive_turns_without_progress = 2;
         assert!(ledger.set_status(&id2, RequirementStatus::Completed));
         assert_eq!(ledger.consecutive_turns_without_progress, 0);
+    }
+
+    #[test]
+    fn test_intent_ledger_prompt_block_and_drift() {
+        let mut ledger = IntentLedger::new("Implement authentication system");
+        assert_eq!(ledger.completed_count(), 0);
+        assert_eq!(ledger.total_count(), 0);
+
+        let id1 = ledger.add_item(
+            "JWT token generation",
+            None,
+            vec!["src/auth/jwt.rs".to_string()],
+        );
+        let id2 = ledger.add_item(
+            "Login endpoint",
+            None,
+            vec!["src/routes/login.rs".to_string()],
+        );
+        assert_eq!(ledger.completed_count(), 0);
+        assert_eq!(ledger.total_count(), 2);
+
+        let block = ledger.to_prompt_block();
+        assert!(block.contains("<goal_anchor>"));
+        assert!(block.contains("<root_objective>Implement authentication system</root_objective>"));
+        assert!(block.contains("<execution_ledger progress=\"0/2 completed\">"));
+        assert!(block.contains("[ ] JWT token generation"));
+        assert!(block.contains("[ ] Login endpoint"));
+
+        ledger.set_status(&id1, RequirementStatus::InProgress);
+        let block_in_progress = ledger.to_prompt_block();
+        assert!(block_in_progress.contains("[-] JWT token generation"));
+
+        ledger.set_status(&id1, RequirementStatus::Completed);
+        assert_eq!(ledger.completed_count(), 1);
+        let block_completed = ledger.to_prompt_block();
+        assert!(block_completed.contains("<execution_ledger progress=\"1/2 completed\">"));
+        assert!(block_completed.contains("[x] JWT token generation"));
+
+        // Drift test: 5 turns with 1 completed item (1 remaining)
+        ledger.consecutive_turns_without_progress = 5;
+        let warning = ledger.check_drift(4);
+        assert!(warning.is_some());
+        let warning_msg = warning.unwrap();
+        assert!(warning_msg.contains(
+            "⚠️ Task Drift Warning: 5 turns have passed without requirement progress (completed 1/2)."
+        ));
+        assert!(warning_msg.contains("Active task: Login endpoint"));
+        assert!(warning_msg.contains(
+            "Do not get distracted by tangential edits; focus on completing remaining requirements."
+        ));
+
+        // When turns < threshold, no drift
+        assert!(ledger.check_drift(6).is_none());
+
+        // When all items completed, no drift warning even if turns exceed threshold
+        ledger.set_status(&id2, RequirementStatus::Completed);
+        assert_eq!(ledger.completed_count(), 2);
+        ledger.consecutive_turns_without_progress = 10;
+        assert!(ledger.check_drift(4).is_none());
+    }
+
+    #[test]
+    fn test_intent_ledger_status_markers() {
+        let mut ledger = IntentLedger::new("Test status markers");
+        let _id_pend = ledger.add_item("Pending item", None, vec![]);
+        let id_prog = ledger.add_item("InProgress item", None, vec![]);
+        let id_comp = ledger.add_item("Completed item", None, vec![]);
+        let id_block = ledger.add_item("Blocked item", None, vec![]);
+        let id_skip = ledger.add_item("Skipped item", None, vec![]);
+
+        ledger.set_status(&id_prog, RequirementStatus::InProgress);
+        ledger.set_status(&id_comp, RequirementStatus::Completed);
+        ledger.set_status(&id_block, RequirementStatus::Blocked);
+        ledger.set_status(&id_skip, RequirementStatus::Skipped);
+
+        let block = ledger.to_prompt_block();
+        assert!(block.contains("[ ] Pending item"));
+        assert!(block.contains("[-] InProgress item"));
+        assert!(block.contains("[x] Completed item"));
+        assert!(block.contains("[!] Blocked item"));
+        assert!(block.contains("[s] Skipped item"));
     }
 }
