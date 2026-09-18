@@ -66,6 +66,16 @@ fn is_read_tool(name: &str) -> bool {
         || n.starts_with("view_")
 }
 
+/// Returns true if the tool name indicates a search or grep operation.
+fn is_search_tool(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "grep_search" | "find_by_name" | "file_search" | "glob" | "grep" | "search"
+    ) || n.contains("grep")
+        || n.contains("search")
+}
+
 /// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
 /// stripping leading `./`, and trimming leading `/`.
 pub fn normalize_path_for_compare(path: &str) -> String {
@@ -95,6 +105,69 @@ fn is_compacted_receipt(content: &str) -> bool {
         && (content.contains("Use retrieve_observation(id=\"")
             || content.contains("superseded by")
             || content.contains("successfully applied,"))
+}
+
+fn is_already_receipt(content: &str, tool_name: &str) -> bool {
+    content
+        .strip_prefix('[')
+        .and_then(|s| s.strip_prefix(tool_name))
+        .map(|s| s.starts_with(':'))
+        .unwrap_or(false)
+}
+
+fn resolve_tool_call_meta(
+    messages: &[Message],
+    idx: usize,
+    tool_meta_by_id: &HashMap<String, CompactToolMeta>,
+) -> Option<CompactToolMeta> {
+    if idx >= messages.len() {
+        return None;
+    }
+
+    let msg = &messages[idx];
+
+    if let Some(meta) = msg
+        .tool_call_id
+        .as_deref()
+        .and_then(|id| tool_meta_by_id.get(id))
+    {
+        return Some(meta.clone());
+    }
+
+    let expected_name = msg.tool_name.as_deref();
+
+    for prev_idx in (0..idx).rev() {
+        let prev = &messages[prev_idx];
+        if prev.role == Role::Assistant {
+            if let Some(ref calls) = prev.tool_calls {
+                let matched_call = if let Some(tname) = expected_name {
+                    calls.iter().find(|c| {
+                        c.name == tname
+                            || (is_read_tool(&c.name) && is_read_tool(tname))
+                            || (is_mutation_tool(&c.name) && is_mutation_tool(tname))
+                            || (is_search_tool(&c.name) && is_search_tool(tname))
+                    })
+                } else {
+                    calls.first()
+                };
+
+                if let Some(c) = matched_call {
+                    return Some(CompactToolMeta {
+                        name: expected_name.unwrap_or(&c.name).to_string(),
+                        target_path: MicroCompactor::extract_target_path(c),
+                        query: MicroCompactor::extract_search_query(c),
+                    });
+                }
+            }
+            break;
+        }
+    }
+
+    expected_name.map(|tname| CompactToolMeta {
+        name: tname.to_string(),
+        target_path: None,
+        query: None,
+    })
 }
 
 /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
@@ -272,40 +345,13 @@ impl MicroCompactor {
                 continue;
             }
 
-            let tool_meta = msg
-                .tool_call_id
-                .as_deref()
-                .and_then(|id| tool_calls_by_id.get(id));
-
-            let tool_name = msg
-                .tool_name
-                .as_deref()
-                .or_else(|| tool_meta.map(|m| m.name.as_str()));
-
-            let Some(tname) = tool_name else {
+            let Some(meta) = resolve_tool_call_meta(messages, idx, &tool_calls_by_id) else {
                 continue;
             };
 
-            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
-                for prev_idx in (0..idx).rev() {
-                    let prev = &messages[prev_idx];
-                    if prev.role == Role::Assistant {
-                        if let Some(ref calls) = prev.tool_calls {
-                            if let Some(c) = calls.iter().find(|c| {
-                                c.name == tname
-                                    || is_read_tool(&c.name)
-                                    || is_mutation_tool(&c.name)
-                            }) {
-                                return Self::extract_target_path(c);
-                            }
-                        }
-                        break;
-                    }
-                }
-                None
-            });
+            let tname = &meta.name;
 
-            if let Some(path) = target_path {
+            if let Some(path) = meta.target_path {
                 let norm = normalize_path_for_compare(&path);
                 if is_read_tool(tname) {
                     reads.entry(norm.clone()).or_default().push(idx);
@@ -322,42 +368,16 @@ impl MicroCompactor {
                 continue;
             }
 
-            let tool_meta = messages[i]
-                .tool_call_id
-                .as_deref()
-                .and_then(|id| tool_calls_by_id.get(id));
-
-            let tool_name = messages[i]
-                .tool_name
-                .as_deref()
-                .or_else(|| tool_meta.map(|m| m.name.as_str()));
-
-            let Some(tname) = tool_name else {
+            let Some(meta) = resolve_tool_call_meta(messages, i, &tool_calls_by_id) else {
                 continue;
             };
 
-            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
-                for prev_idx in (0..i).rev() {
-                    let prev = &messages[prev_idx];
-                    if prev.role == Role::Assistant {
-                        if let Some(ref calls) = prev.tool_calls {
-                            if let Some(c) = calls.iter().find(|c| {
-                                c.name == tname
-                                    || is_read_tool(&c.name)
-                                    || is_mutation_tool(&c.name)
-                            }) {
-                                return Self::extract_target_path(c);
-                            }
-                        }
-                        break;
-                    }
-                }
-                None
-            });
+            let tname = &meta.name;
 
             if is_read_tool(tname) {
                 if is_compacted_receipt(&messages[i].content)
-                    || messages[i].content.starts_with("[read_file:")
+                    || is_already_receipt(&messages[i].content, tname)
+                    || is_already_receipt(&messages[i].content, "read_file")
                 {
                     continue;
                 }
@@ -367,7 +387,7 @@ impl MicroCompactor {
                     continue;
                 }
 
-                let Some(path) = target_path else {
+                let Some(path) = meta.target_path else {
                     continue;
                 };
 
@@ -423,14 +443,14 @@ impl MicroCompactor {
                 }
             } else if is_mutation_tool(tname) {
                 if is_compacted_receipt(&messages[i].content)
-                    || messages[i].content.starts_with(&format!("[{tname}:"))
+                    || is_already_receipt(&messages[i].content, tname)
                 {
                     continue;
                 }
 
                 // Historical mutation echo: condense outputs larger than 256 bytes
                 if messages[i].content.len() > 256 {
-                    let path = target_path.unwrap_or_else(|| "file".to_string());
+                    let path = meta.target_path.unwrap_or_else(|| "file".to_string());
                     let raw_len = messages[i].content.len();
                     let ccr_id = CcrCache::store(&messages[i].content);
                     let receipt = format!(
@@ -441,6 +461,30 @@ impl MicroCompactor {
                     metrics.tokens_saved_estimate += chars_saved / 4;
                     messages[i].content = receipt;
                     metrics.mutation_echoes_compacted += 1;
+                    continue;
+                }
+            } else if is_search_tool(tname) {
+                if is_compacted_receipt(&messages[i].content)
+                    || is_already_receipt(&messages[i].content, tname)
+                {
+                    continue;
+                }
+
+                let line_count = messages[i].content.lines().count();
+                let raw_len = messages[i].content.len();
+
+                // Condense historical bulky search and grep observations (>25 lines or >300 bytes)
+                if line_count > 25 || raw_len > 300 {
+                    let query = meta.query.as_deref().unwrap_or("...");
+                    let ccr_id = CcrCache::store(&messages[i].content);
+                    let receipt = format!(
+                        "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
+                        tname, query, line_count, ccr_id
+                    );
+                    let chars_saved = raw_len.saturating_sub(receipt.len());
+                    metrics.tokens_saved_estimate += chars_saved / 4;
+                    messages[i].content = receipt;
+                    metrics.search_results_compacted += 1;
                     continue;
                 }
             }
@@ -1123,5 +1167,232 @@ mod tests {
         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
         assert_eq!(metrics.mutation_echoes_compacted, 0);
         assert_eq!(messages[2].content, echo_500);
+    }
+
+    #[test]
+    fn test_historical_search_result_condensation() {
+        // Turn 1: grep_search(query="AuthService") returning 80 lines of matches (>1000 bytes)
+        let search_output_80 = (1..=80)
+            .map(|i| format!("src/auth/service.rs:{i}:    let user_{i} = AuthService::find({i});"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(search_output_80.len() > 1000);
+        assert_eq!(search_output_80.lines().count(), 80);
+
+        let mut messages = vec![
+            // Turn 1: grep_search(query="AuthService")
+            Message::user("Find references to AuthService"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_grep_1".into(),
+                    name: "grep_search".into(),
+                    arguments: json!({"query": "AuthService"}),
+                }],
+            ),
+            Message::tool_result("call_grep_1", "grep_search", &search_output_80),
+            // Turn 2: User prompt + assistant action
+            Message::user("Now refactor AuthService"),
+            Message::assistant("I will refactor it now."),
+            // Turn 3: Recent turn
+            Message::user("Recent check"),
+            Message::assistant("All set."),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.search_results_compacted, 1);
+        assert!(metrics.tokens_saved_estimate > 0);
+
+        // Assert Turn 1 is condensed to [grep_search: query "AuthService" returned 80 lines. Use retrieve_observation(id="ccr_...")]
+        let compacted = &messages[2].content;
+        assert!(
+            compacted.starts_with("[grep_search: query \"AuthService\" returned 80 lines. Use retrieve_observation(id=\"ccr_"),
+            "Expected search receipt format, got: {compacted}"
+        );
+        assert!(
+            compacted.ends_with("for full matches]"),
+            "Expected receipt to end with 'for full matches]', got: {compacted}"
+        );
+
+        // Extract ccr_id from receipt
+        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
+        let id_end = compacted[id_start..]
+            .find('"')
+            .expect("closing quote should be in receipt")
+            + id_start;
+        let ccr_id = &compacted[id_start..id_end];
+
+        // Assert raw 80 lines is losslessly retrievable via CcrCache::retrieve
+        let retrieved = CcrCache::retrieve(ccr_id, None, None);
+        assert_eq!(
+            retrieved,
+            Some(search_output_80),
+            "Original 80 lines must be losslessly retrievable from CCR cache"
+        );
+    }
+
+    #[test]
+    fn test_recent_search_result_uncompacted() {
+        let search_output_80 = (1..=80)
+            .map(|i| format!("src/search.rs:{i}: match_{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Turn 1
+            Message::user("Hello"),
+            Message::assistant("Hi there"),
+            // Turn 2 (Recent turn)
+            Message::user("Search for matches"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_grep_recent".into(),
+                    name: "grep_search".into(),
+                    arguments: json!({"query": "match"}),
+                }],
+            ),
+            Message::tool_result("call_grep_recent", "grep_search", &search_output_80),
+        ];
+
+        // preserve_recent_turns = 1 should preserve Turn 2 completely
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.search_results_compacted, 0);
+        assert_eq!(
+            messages[4].content, search_output_80,
+            "Search result in recent turn must remain 100% untouched"
+        );
+    }
+
+    #[test]
+    fn test_small_search_result_uncompacted() {
+        // A search result with only 3 lines / 100 bytes is not condensed (negative compression prevention)
+        let small_search = "file1.rs:1: match\nfile2.rs:2: match\nfile3.rs:3: match";
+        assert_eq!(small_search.lines().count(), 3);
+        assert!(small_search.len() < 300);
+
+        let mut messages = vec![
+            // Turn 1: Small search
+            Message::user("Search for match"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_grep_small".into(),
+                    name: "grep_search".into(),
+                    arguments: json!({"query": "match"}),
+                }],
+            ),
+            Message::tool_result("call_grep_small", "grep_search", small_search),
+            // Turn 2: User prompt + assistant action
+            Message::user("Continue"),
+            Message::assistant("Okay"),
+            // Turn 3: Recent turn
+            Message::user("Recent"),
+            Message::assistant("Done"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.search_results_compacted, 0);
+        assert_eq!(
+            messages[2].content, small_search,
+            "Small search result (<=25 lines and <=300 bytes) must not be condensed"
+        );
+    }
+
+    #[test]
+    fn test_find_by_name_pattern_search_result_condensation() {
+        let file_list_40 = (1..=40)
+            .map(|i| format!("src/models/model_{i}.rs"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            // Turn 1: find_by_name(pattern="*.rs")
+            Message::user("Find all rust files"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_find_1".into(),
+                    name: "find_by_name".into(),
+                    arguments: json!({"pattern": "*.rs"}),
+                }],
+            ),
+            Message::tool_result("call_find_1", "find_by_name", &file_list_40),
+            // Turn 2
+            Message::user("Next"),
+            Message::assistant("Done"),
+            // Turn 3: Recent turn
+            Message::user("Recent"),
+            Message::assistant("Finished"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+        assert_eq!(metrics.search_results_compacted, 1);
+        let compacted = &messages[2].content;
+        assert!(
+            compacted.starts_with("[find_by_name: query \"*.rs\" returned 40 lines. Use retrieve_observation(id=\"ccr_"),
+            "Expected find_by_name receipt format, got: {compacted}"
+        );
+    }
+
+    #[test]
+    fn test_search_missing_query_fallback() {
+        let raw_30_lines = (1..=30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut messages = vec![
+            Message::user("Search"),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_search_no_query".into(),
+                    name: "grep".into(),
+                    arguments: json!({}),
+                }],
+            ),
+            Message::tool_result("call_search_no_query", "grep", &raw_30_lines),
+            Message::user("Next"),
+            Message::assistant("Done"),
+            Message::user("Recent"),
+            Message::assistant("Finished"),
+        ];
+
+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+        assert_eq!(metrics.search_results_compacted, 1);
+        assert!(messages[2]
+            .content
+            .contains("query \"...\" returned 30 lines"));
+    }
+
+    #[test]
+    fn test_is_already_receipt() {
+        assert!(is_already_receipt("[read_file: src/main.rs]", "read_file"));
+        assert!(is_already_receipt(
+            "[write_file: src/main.rs (successfully applied)]",
+            "write_file"
+        ));
+        assert!(is_already_receipt(
+            "[grep_search: query \"AuthService\" returned 80 lines]",
+            "grep_search"
+        ));
+        assert!(!is_already_receipt(
+            "[read_file: src/main.rs]",
+            "write_file"
+        ));
+        assert!(!is_already_receipt(
+            "read_file: not in brackets",
+            "read_file"
+        ));
+        assert!(!is_already_receipt(
+            "[read_file_extra: not colon]",
+            "read_file"
+        ));
+        assert!(!is_already_receipt("", "read_file"));
     }
 }
