@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 127 (v0.3.27) Turbovec TurboQuant 1-Bit Zero-Copy Memory & Headroom DOX Ingress Pruner | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 128 (v0.3.29) Pi/OhMyPi Intent Anchoring & Living Execution Ledger | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1832,4 +1832,12 @@
 - [x] 127.3: Extend `ObservationPruner::prune_for_llm` in `src/context/budget/observation_pruner.rs` to intercept compiler outputs and test floods pre-ingress before feeding LLM context, with lossless retrieval via `CcrCache`
 - [x] 127.4: Write comprehensive unit and integration tests in `src/context/budget/log_pruner.rs`, `src/context/budget/observation_pruner.rs`, and `tests/integration_context_engine_v2.rs`
 - [x] 127.5: Pass targeted test suite, zero clippy warnings (`cargo clippy -j 1 -- -D warnings`), clean formatting (`cargo fmt --check`), and deploy global binary via `./localupdate.sh`
+ 
+### Phase 128: Pi/OhMyPi Intent Anchoring & Living Execution Ledger (v0.3.29)
+- [x] 128.1: Define `RequirementStatus`, `RequirementItem`, and `IntentLedger` in `src/context/memory/intent.rs` with `IntentConfig` in `src/config.rs` and atomic disk persistence
+- [x] 128.2: Implement dynamic requirement extractor `IntentLedger::from_prompt` supporting diverse formatting styles (headers, checklists, numbered lists, bullet items) with zero hardcoded benchmark assumptions
+- [x] 128.3: Implement token-efficient prompt rendering (`to_prompt_block`) and drift warning (`check_drift`) in `IntentLedger`, wired into `PromptBuilder::build_recency_context` in Zone 1 (KV-cache stable) with `<intent_focus>` at tail
+- [x] 128.4: Wire `IntentLedger` into `AgentLoop` in `src/agent/loop.rs`: first-turn prompt extraction, tool file activity auto-advancement (`write_file`, `patch_file`), turn-end drift increments, and disk persistence
+- [x] 128.5: Implement interactive `/goal` and `/intent` slash commands in `src/app/commands.rs` (show, add, done with 1-based index or ID, reset, run), and register in command catalog & help modal
+- [x] 128.6: Pass all targeted unit and integration tests (19 intent tests, 2 integration tests, 8 commands tests, 5 prompt tests), clean clippy with zero warnings, format clean, and bump version to `v0.3.29`
 
