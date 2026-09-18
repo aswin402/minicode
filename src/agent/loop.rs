@@ -371,6 +371,18 @@ impl AgentLoop {
         }
 
         // 1. Prune/compact conversation context if approaching budget
+        let micro_metrics =
+            crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
+        if micro_metrics.tokens_saved_estimate > 0 {
+            tracing::info!(
+                superseded_reads = micro_metrics.superseded_reads_compacted,
+                duplicate_reads = micro_metrics.duplicate_reads_compacted,
+                mutation_echoes = micro_metrics.mutation_echoes_compacted,
+                search_results = micro_metrics.search_results_compacted,
+                tokens_saved = micro_metrics.tokens_saved_estimate,
+                "Applied semantic micro-compaction to conversation history"
+            );
+        }
         let compaction_metrics = self.prune_context();
         let message_index = self.messages.len();
 
@@ -1345,9 +1357,31 @@ impl AgentLoop {
                                 );
                             self.messages.push(Message::tool_result(
                                 tool_call.id,
-                                tool_call.name,
+                                tool_call.name.clone(),
                                 output_for_llm,
                             ));
+
+                            if tool_result.success
+                                && (FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
+                                    || tool_call.name == "replace_file_content"
+                                    || tool_call.name == "edit_file")
+                            {
+                                let micro_metrics =
+                                    crate::context::budget::MicroCompactor::compact_messages(
+                                        &mut self.messages,
+                                        2,
+                                    );
+                                if micro_metrics.tokens_saved_estimate > 0 {
+                                    tracing::info!(
+                                        superseded_reads = micro_metrics.superseded_reads_compacted,
+                                        duplicate_reads = micro_metrics.duplicate_reads_compacted,
+                                        mutation_echoes = micro_metrics.mutation_echoes_compacted,
+                                        search_results = micro_metrics.search_results_compacted,
+                                        tokens_saved = micro_metrics.tokens_saved_estimate,
+                                        "Applied semantic micro-compaction after file mutation"
+                                    );
+                                }
+                            }
 
                             turn_tool_results.push(tool_result);
                             if circuit_tripped {

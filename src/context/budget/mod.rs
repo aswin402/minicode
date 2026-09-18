@@ -14,5 +14,7 @@ pub mod observation_pruner;
 
 pub use budget::*;
 #[allow(unused_imports)]
+pub use ccr_cache::CcrCache;
+#[allow(unused_imports)]
 pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
 pub use observation_pruner::ObservationPruner;

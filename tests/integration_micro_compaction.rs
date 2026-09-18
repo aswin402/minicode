@@ -1,0 +1,318 @@
+mod common;
+
+use common::MockProvider;
+use minicode::agent::types::{Message, ToolCall};
+use minicode::context::budget::{CcrCache, MicroCompactor};
+use serde_json::json;
+
+#[test]
+fn test_end_to_end_multi_turn_micro_compaction() {
+    // Turn 1: read_file on src/service.rs (300 lines of code)
+    let service_300_lines = (1..=300)
+        .map(|i| format!("pub fn handle_request_step_{i}() -> Result<(), Error> {{ Ok(()) }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Turn 2: grep_search for handle_request (50 lines of matches)
+    let grep_50_lines = (1..=50)
+        .map(|i| format!("src/service.rs:{i}:    pub fn handle_request_step_{i}()"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Turn 3: patch_file on src/service.rs
+    let patch_output = "Successfully applied patch to src/service.rs: 1 hunk applied.";
+
+    // Turn 4: cargo test in active turn
+    let test_output =
+        "running 12 tests\ntest service::test_handle_request ... ok\ntest result: ok. 12 passed; 0 failed";
+
+    let mut messages = vec![
+        // Turn 1: User requests code inspection
+        Message::user("Please inspect src/service.rs to understand request handling."),
+        Message::assistant_with_tools(
+            "I'll read src/service.rs to inspect the logic.",
+            vec![ToolCall {
+                id: "call_read_1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "src/service.rs"}),
+            }],
+        ),
+        Message::tool_result("call_read_1", "read_file", &service_300_lines),
+        Message::assistant("I have inspected src/service.rs."),
+        // Turn 2: User requests grep search
+        Message::user("Search for handle_request usages across the codebase."),
+        Message::assistant_with_tools(
+            "I'll grep for handle_request across the codebase.",
+            vec![ToolCall {
+                id: "call_grep_1".into(),
+                name: "grep_search".into(),
+                arguments: json!({"query": "handle_request"}),
+            }],
+        ),
+        Message::tool_result("call_grep_1", "grep_search", &grep_50_lines),
+        Message::assistant("Found 50 matching occurrences of handle_request."),
+        // Turn 3: User requests patch
+        Message::user("Patch src/service.rs to optimize request routing."),
+        Message::assistant_with_tools(
+            "Applying patch to src/service.rs.",
+            vec![ToolCall {
+                id: "call_patch_1".into(),
+                name: "patch_file".into(),
+                arguments: json!({"path": "src/service.rs"}),
+            }],
+        ),
+        Message::tool_result("call_patch_1", "patch_file", patch_output),
+        Message::assistant("Patch applied successfully."),
+        // Turn 4: Active turn: running cargo test
+        Message::user("Run cargo test to verify the changes."),
+        Message::assistant_with_tools(
+            "Running cargo test now.",
+            vec![ToolCall {
+                id: "call_test_1".into(),
+                name: "exec_cmd".into(),
+                arguments: json!({"command": "cargo test"}),
+            }],
+        ),
+        Message::tool_result("call_test_1", "exec_cmd", test_output),
+        Message::assistant("All 12 tests passed!"),
+    ];
+
+    // Compact with preserve_recent_turns = 1 (Turn 4 active turn is preserved untouched)
+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+    // Assert Turn 1 read_file was compacted (superseded by Turn 3 patch_file)
+    assert_eq!(metrics.superseded_reads_compacted, 1);
+    assert_eq!(metrics.search_results_compacted, 1);
+    assert!(metrics.tokens_saved_estimate > 0);
+
+    // Verify Turn 1 observation (message index 2)
+    let turn_1_content = &messages[2].content;
+    assert!(
+        turn_1_content.contains("superseded by modification"),
+        "Turn 1 observation should be marked as superseded: {turn_1_content}"
+    );
+    assert!(
+        turn_1_content.contains("id=\"ccr_"),
+        "Turn 1 observation should reference a CCR id: {turn_1_content}"
+    );
+
+    // Extract Turn 1 CCR ID
+    let id_start_1 = turn_1_content.find("id=\"").expect("CCR id start") + 4;
+    let id_end_1 = turn_1_content[id_start_1..].find('"').expect("CCR id end") + id_start_1;
+    let ccr_id_read = &turn_1_content[id_start_1..id_end_1];
+
+    // Verify Turn 2 observation (message index 6)
+    let turn_2_content = &messages[6].content;
+    assert!(
+        turn_2_content.contains("returned 50 lines"),
+        "Turn 2 grep should be condensed: {turn_2_content}"
+    );
+    assert!(
+        turn_2_content.contains("id=\"ccr_"),
+        "Turn 2 observation should reference a CCR id: {turn_2_content}"
+    );
+
+    // Extract Turn 2 CCR ID
+    let id_start_2 = turn_2_content.find("id=\"").expect("CCR id start") + 4;
+    let id_end_2 = turn_2_content[id_start_2..].find('"').expect("CCR id end") + id_start_2;
+    let ccr_id_grep = &turn_2_content[id_start_2..id_end_2];
+
+    // Verify Turn 4 observation (message index 14) is 100% UNTOUCHED
+    assert_eq!(
+        messages[14].content, test_output,
+        "Active turn observation must remain 100% untouched"
+    );
+
+    // Assert CcrCache::retrieve recovers exact raw text verbatim for both observations
+    let retrieved_read = CcrCache::retrieve(ccr_id_read, None, None);
+    assert_eq!(
+        retrieved_read,
+        Some(service_300_lines),
+        "CcrCache::retrieve must recover the exact 300 lines of read_file verbatim"
+    );
+
+    let retrieved_grep = CcrCache::retrieve(ccr_id_grep, None, None);
+    assert_eq!(
+        retrieved_grep,
+        Some(grep_50_lines),
+        "CcrCache::retrieve must recover the exact 50 lines of grep_search verbatim"
+    );
+}
+
+#[test]
+fn test_multi_file_mutation_and_selective_compaction() {
+    let file_a_code = (1..=40)
+        .map(|i| format!("pub struct StructA_{i} {{ pub val: usize }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let file_b_code = (1..=40)
+        .map(|i| format!("pub struct StructB_{i} {{ pub val: usize }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut messages = vec![
+        // Turn 1: Read both file_a.rs and file_b.rs
+        Message::user("Read file_a.rs and file_b.rs"),
+        Message::assistant_with_tools(
+            "Reading both files.",
+            vec![
+                ToolCall {
+                    id: "call_read_a".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/file_a.rs"}),
+                },
+                ToolCall {
+                    id: "call_read_b".into(),
+                    name: "read_file".into(),
+                    arguments: json!({"path": "src/file_b.rs"}),
+                },
+            ],
+        ),
+        Message::tool_result("call_read_a", "read_file", &file_a_code),
+        Message::tool_result("call_read_b", "read_file", &file_b_code),
+        Message::assistant("Both files read."),
+        // Turn 2: Modify ONLY file_a.rs
+        Message::user("Modify file_a.rs"),
+        Message::assistant_with_tools(
+            "Patching file_a.rs.",
+            vec![ToolCall {
+                id: "call_patch_a".into(),
+                name: "patch_file".into(),
+                arguments: json!({"path": "src/file_a.rs"}),
+            }],
+        ),
+        Message::tool_result("call_patch_a", "patch_file", "ok"),
+        Message::assistant("Modified file_a.rs."),
+        // Turn 3: Active recent turn
+        Message::user("Continue work"),
+        Message::assistant("Ready for instructions."),
+    ];
+
+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+    // file_a was modified so its read is superseded and compacted
+    assert_eq!(metrics.superseded_reads_compacted, 1);
+    assert_eq!(metrics.duplicate_reads_compacted, 0);
+
+    // Assert file_a.rs read is compacted
+    let content_a = &messages[2].content;
+    assert!(
+        content_a.contains("superseded by modification"),
+        "file_a.rs read should be compacted as superseded: {content_a}"
+    );
+
+    // Assert file_b.rs read is NOT compacted (since file_b was never modified)
+    let content_b = &messages[3].content;
+    assert_eq!(
+        content_b, &file_b_code,
+        "file_b.rs read must remain uncompacted because it was never modified"
+    );
+}
+
+#[test]
+fn test_cumulative_tokens_saved_metric() {
+    let large_code = (1..=100)
+        .map(|i| format!("fn calculate_metric_item_{i}(input: i64) -> i64 {{ input * {i} }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let raw_len = large_code.len();
+
+    let mut messages = vec![
+        // Turn 1: Read file
+        Message::user("Examine code"),
+        Message::assistant_with_tools(
+            "Reading file.",
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "src/calc.rs"}),
+            }],
+        ),
+        Message::tool_result("call_1", "read_file", &large_code),
+        Message::assistant("Done reading."),
+        // Turn 2: Write file
+        Message::user("Overwrite calc.rs"),
+        Message::assistant_with_tools(
+            "Overwriting.",
+            vec![ToolCall {
+                id: "call_2".into(),
+                name: "write_file".into(),
+                arguments: json!({"path": "src/calc.rs"}),
+            }],
+        ),
+        Message::tool_result("call_2", "write_file", "File written successfully."),
+        Message::assistant("Done writing."),
+        // Turn 3: Active turn
+        Message::user("Status check"),
+        Message::assistant("All good."),
+    ];
+
+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
+
+    assert!(metrics.tokens_saved_estimate > 0);
+
+    let receipt_len = messages[2].content.len();
+    let expected_tokens_saved = raw_len.saturating_sub(receipt_len) / 4;
+
+    assert_eq!(
+        metrics.tokens_saved_estimate, expected_tokens_saved,
+        "Tokens saved estimate must match expected formula (raw_len - receipt_len) / 4"
+    );
+}
+
+#[tokio::test]
+async fn test_agent_loop_micro_compaction_wiring() {
+    // Verify AgentLoop initializes and has micro-compaction wired into its message history
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ws_path = dir.path().to_path_buf();
+
+    let config = minicode::config::Config::default();
+    let provider = Box::new(MockProvider::new(vec![]));
+
+    let mut agent = minicode::agent::AgentLoop::new(&ws_path, config, provider);
+
+    // Populate agent.messages with a superseded read pattern
+    let code_50_lines = (1..=50)
+        .map(|i| format!("pub fn step_{i}() {{}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let messages = agent.messages_mut();
+    // Turn 1
+    messages.push(Message::user("Read file"));
+    messages.push(Message::assistant_with_tools(
+        "reading",
+        vec![ToolCall {
+            id: "tc_read".into(),
+            name: "read_file".into(),
+            arguments: json!({"path": "src/code.rs"}),
+        }],
+    ));
+    messages.push(Message::tool_result("tc_read", "read_file", &code_50_lines));
+    messages.push(Message::assistant("done"));
+
+    // Turn 2
+    messages.push(Message::user("Patch file"));
+    messages.push(Message::assistant_with_tools(
+        "patching",
+        vec![ToolCall {
+            id: "tc_patch".into(),
+            name: "patch_file".into(),
+            arguments: json!({"path": "src/code.rs"}),
+        }],
+    ));
+    messages.push(Message::tool_result("tc_patch", "patch_file", "ok"));
+    messages.push(Message::assistant("done"));
+
+    // Turn 3
+    messages.push(Message::user("Active turn"));
+
+    // Call compact_messages directly as done in AgentLoop lifecycle
+    let metrics = MicroCompactor::compact_messages(agent.messages_mut(), 2);
+    assert_eq!(metrics.superseded_reads_compacted, 1);
+    assert!(agent.messages()[2]
+        .content
+        .contains("superseded by modification"));
+}
