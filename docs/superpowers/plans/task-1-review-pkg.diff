@@ -1,0 +1,500 @@
+742291d feat(intent): define IntentLedger data structures and configuration (Phase 128)
+ src/config.rs                |  46 +++++++
+ src/constants.rs             |   5 +
+ src/context/memory/intent.rs | 286 +++++++++++++++++++++++++++++++++++++++++++
+ src/context/memory/mod.rs    |   3 +
+ 4 files changed, 340 insertions(+)
+diff --git a/src/config.rs b/src/config.rs
+index 8d583f3..07e2b4f 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -180,20 +180,23 @@ pub struct AgentConfig {
+ 
+     /// Maximum tool calling iterations per turn (0 = unbounded continuous autonomous execution)
+     #[serde(default = "default_max_tool_iterations")]
+     pub max_tool_iterations: usize,
+ 
+     #[serde(default = "default_true")]
+     pub auto_continue: bool,
+ 
+     #[serde(default = "default_max_auto_continues")]
+     pub max_auto_continues: usize,
++
++    #[serde(default)]
++    pub intent: IntentConfig,
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+ #[serde(rename_all = "snake_case")]
+ pub enum ToolFilterMode {
+     #[default]
+     Dynamic,
+     CoreOnly,
+     Full,
+ }
+@@ -244,20 +247,21 @@ impl Default for AgentConfig {
+             tool_mode: default_tool_mode(),
+             syntax_barrier: true,
+             auto_lint: true,
+             parallel_tools: true,
+             speculative_execution: true,
+             max_parallel_tools: crate::constants::DEFAULT_MAX_PARALLEL_TOOLS,
+             compact_tool_schemas: true,
+             max_tool_iterations: default_max_tool_iterations(),
+             auto_continue: true,
+             max_auto_continues: default_max_auto_continues(),
++            intent: IntentConfig::default(),
+         }
+     }
+ }
+ 
+ fn default_max_tool_iterations() -> usize {
+     crate::constants::DEFAULT_MAX_TOOL_ITERATIONS
+ }
+ 
+ fn default_max_auto_continues() -> usize {
+     crate::constants::DEFAULT_MAX_AUTO_CONTINUES
+@@ -272,20 +276,58 @@ fn default_timeout_secs() -> u64 {
+ }
+ 
+ fn default_map_tokens() -> usize {
+     1024
+ }
+ 
+ fn default_warning_threshold() -> f32 {
+     0.70
+ }
+ 
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct IntentConfig {
++    #[serde(default = "default_true")]
++    pub enabled: bool,
++    #[serde(default = "default_intent_persistence_file")]
++    pub persistence_file: String,
++    #[serde(default = "default_intent_drift_warning_turns")]
++    pub drift_warning_turns: usize,
++    #[serde(default = "default_true")]
++    pub auto_extract: bool,
++    #[serde(default = "default_intent_max_items")]
++    pub max_ledger_items: usize,
++}
++
++impl Default for IntentConfig {
++    fn default() -> Self {
++        Self {
++            enabled: true,
++            persistence_file: default_intent_persistence_file(),
++            drift_warning_turns: default_intent_drift_warning_turns(),
++            auto_extract: true,
++            max_ledger_items: default_intent_max_items(),
++        }
++    }
++}
++
++fn default_intent_persistence_file() -> String {
++    crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE.to_string()
++}
++
++fn default_intent_drift_warning_turns() -> usize {
++    crate::constants::DEFAULT_INTENT_DRIFT_WARNING_TURNS
++}
++
++fn default_intent_max_items() -> usize {
++    crate::constants::DEFAULT_INTENT_MAX_ITEMS
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ pub struct UiConfig {
+     #[serde(default = "default_theme")]
+     pub theme: String,
+ 
+     #[serde(default = "default_animation")]
+     pub animation: String,
+ 
+     #[serde(default)]
+     pub plain: bool,
+@@ -493,20 +535,21 @@ pub struct RawAgentConfig {
+     pub tool_mode: Option<ToolFilterMode>,
+     pub syntax_barrier: Option<bool>,
+     pub auto_lint: Option<bool>,
+     pub parallel_tools: Option<bool>,
+     pub speculative_execution: Option<bool>,
+     pub max_parallel_tools: Option<usize>,
+     pub compact_tool_schemas: Option<bool>,
+     pub max_tool_iterations: Option<usize>,
+     pub auto_continue: Option<bool>,
+     pub max_auto_continues: Option<usize>,
++    pub intent: Option<IntentConfig>,
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ pub struct RawUiConfig {
+     pub plain: Option<bool>,
+     pub theme: Option<String>,
+     pub animation: Option<String>,
+     pub max_width: Option<usize>,
+     pub show_cost: Option<bool>,
+ }
+@@ -777,20 +820,23 @@ impl Config {
+         }
+         if let Some(max_iter) = other.agent.max_tool_iterations {
+             self.agent.max_tool_iterations = max_iter;
+         }
+         if let Some(ac) = other.agent.auto_continue {
+             self.agent.auto_continue = ac;
+         }
+         if let Some(mac) = other.agent.max_auto_continues {
+             self.agent.max_auto_continues = mac;
+         }
++        if let Some(intent) = other.agent.intent {
++            self.agent.intent = intent;
++        }
+         if let Some(plain) = other.ui.plain {
+             self.ui.plain = plain;
+         }
+         if let Some(theme) = other.ui.theme {
+             self.ui.theme = theme;
+         }
+         if let Some(animation) = other.ui.animation {
+             self.ui.animation = animation;
+         }
+         if let Some(max_width) = other.ui.max_width {
+diff --git a/src/constants.rs b/src/constants.rs
+index 99bb294..9028fe8 100644
+--- a/src/constants.rs
++++ b/src/constants.rs
+@@ -1051,20 +1051,25 @@ pub const QUARANTINE_FILE_NAME: &str = "quarantine.json";
+ pub const MAX_COMMIT_SUMMARY_LEN: usize = 72;
+ 
+ // === Architectural Governance (Phase 105) ===
+ /// Maximum permitted LOC before a source file is flagged as a high-complexity God File
+ pub const ARCH_GOD_FILE_LOC_THRESHOLD: usize = 1_000;
+ /// Outgoing import threshold before a source file is flagged as a Fan-Out spike
+ pub const ARCH_FAN_OUT_THRESHOLD: usize = 15;
+ /// Minimum architecture health score required to pass pre-completion verification
+ pub const ARCH_MIN_HEALTH_SCORE: u32 = 70;
+ 
++// === Intent Anchoring & Execution Tracking (Phase 128) ===
++pub const DEFAULT_INTENT_PERSISTENCE_FILE: &str = ".minicode/intent_anchor.json";
++pub const DEFAULT_INTENT_DRIFT_WARNING_TURNS: usize = 4;
++pub const DEFAULT_INTENT_MAX_ITEMS: usize = 32;
++
+ // === Automated Tool Count Validation ===
+ // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
+ // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.
+ #[cfg(test)]
+ mod tool_count_validation {
+     use super::*;
+ 
+     #[test]
+     fn total_tool_count_matches_registry() {
+         let actual = crate::tools::ToolRegistry::get_tool_schemas().len();
+diff --git a/src/context/memory/intent.rs b/src/context/memory/intent.rs
+new file mode 100644
+index 0000000..9db3111
+--- /dev/null
++++ b/src/context/memory/intent.rs
+@@ -0,0 +1,286 @@
++//! Intent Anchoring & Execution Tracking (Phase 128).
++//!
++//! Provides data structures (`RequirementStatus`, `RequirementItem`, `IntentLedger`)
++//! and persistence methods for goal anchoring and execution tracking.
++#![allow(dead_code)]
++
++use serde::{Deserialize, Serialize};
++
++/// Execution status of an individual requirement or goal item.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
++#[serde(rename_all = "snake_case")]
++pub enum RequirementStatus {
++    #[default]
++    Pending,
++    InProgress,
++    Completed,
++    Blocked,
++    Skipped,
++}
++
++/// An individual granular requirement or sub-task tracked within an `IntentLedger`.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
++pub struct RequirementItem {
++    pub id: String,
++    pub title: String,
++    #[serde(default)]
++    pub description: Option<String>,
++    #[serde(default)]
++    pub status: RequirementStatus,
++    #[serde(default)]
++    pub related_files: Vec<String>,
++    #[serde(default)]
++    pub created_turn: usize,
++    #[serde(default)]
++    pub updated_turn: usize,
++}
++
++/// Living execution ledger that maintains the root goal anchor, active items, and drift telemetry.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
++pub struct IntentLedger {
++    pub root_objective: String,
++    pub items: Vec<RequirementItem>,
++    pub active_item_id: Option<String>,
++    pub consecutive_turns_without_progress: usize,
++}
++
++impl IntentLedger {
++    /// Creates a new `IntentLedger` initialized with the given root objective.
++    pub fn new(root_objective: &str) -> Self {
++        Self {
++            root_objective: root_objective.to_string(),
++            items: Vec::new(),
++            active_item_id: None,
++            consecutive_turns_without_progress: 0,
++        }
++    }
++
++    /// Appends a new requirement item to the ledger and returns its generated ID.
++    pub fn add_item(
++        &mut self,
++        title: &str,
++        description: Option<&str>,
++        related_files: Vec<String>,
++    ) -> String {
++        let id = format!("req-{}", uuid::Uuid::new_v4().simple());
++        let item = RequirementItem {
++            id: id.clone(),
++            title: title.to_string(),
++            description: description.map(|d| d.to_string()),
++            status: RequirementStatus::Pending,
++            related_files,
++            created_turn: 0,
++            updated_turn: 0,
++        };
++        self.items.push(item);
++        id
++    }
++
++    /// Updates the status of an existing requirement item by ID.
++    ///
++    /// - If moved to `InProgress`, sets `active_item_id` to this item and resets drift counter.
++    /// - If moved to `Completed`, clears `active_item_id` (if matching) and resets drift counter.
++    /// - If moved to any other status, clears `active_item_id` if it was pointing to this item.
++    ///
++    /// Returns `true` if the item was found and updated, or `false` otherwise.
++    pub fn set_status(&mut self, id: &str, status: RequirementStatus) -> bool {
++        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
++            return false;
++        };
++        item.status = status;
++        match status {
++            RequirementStatus::InProgress => {
++                self.active_item_id = Some(id.to_string());
++                self.consecutive_turns_without_progress = 0;
++            }
++            RequirementStatus::Completed => {
++                if self.active_item_id.as_deref() == Some(id) {
++                    self.active_item_id = None;
++                }
++                self.consecutive_turns_without_progress = 0;
++            }
++            RequirementStatus::Pending
++            | RequirementStatus::Blocked
++            | RequirementStatus::Skipped => {
++                if self.active_item_id.as_deref() == Some(id) {
++                    self.active_item_id = None;
++                }
++            }
++        }
++        true
++    }
++
++    /// Retrieves an immutable reference to a requirement item by ID.
++    pub fn get_item(&self, id: &str) -> Option<&RequirementItem> {
++        self.items.iter().find(|item| item.id == id)
++    }
++
++    /// Atomically persists the `IntentLedger` to disk via a temporary file and rename.
++    pub fn save_to_disk(&self, path: &std::path::Path) -> std::io::Result<()> {
++        if let Some(parent) = path.parent() {
++            if !parent.as_os_str().is_empty() {
++                std::fs::create_dir_all(parent)?;
++            }
++        }
++        let json = serde_json::to_string_pretty(self)
++            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
++
++        let tmp_path = match path.file_name() {
++            Some(fname) => {
++                let mut fname_os = fname.to_os_string();
++                fname_os.push(format!(
++                    ".tmp.{}.{}",
++                    std::process::id(),
++                    uuid::Uuid::new_v4().simple()
++                ));
++                path.with_file_name(fname_os)
++            }
++            None => path.with_extension(format!(
++                "tmp.{}.{}",
++                std::process::id(),
++                uuid::Uuid::new_v4().simple()
++            )),
++        };
++
++        std::fs::write(&tmp_path, json)?;
++        if let Err(e) = std::fs::rename(&tmp_path, path) {
++            let _ = std::fs::remove_file(&tmp_path);
++            return Err(e);
++        }
++        Ok(())
++    }
++
++    /// Loads and deserializes an `IntentLedger` from disk.
++    pub fn load_from_disk(path: &std::path::Path) -> std::io::Result<Self> {
++        let content = std::fs::read_to_string(path)?;
++        let ledger = serde_json::from_str::<Self>(&content)
++            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
++        Ok(ledger)
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn test_intent_ledger_lifecycle() {
++        let mut ledger = IntentLedger::new("Build AgentBench sandbox website");
++        assert_eq!(ledger.root_objective, "Build AgentBench sandbox website");
++        assert_eq!(ledger.items.len(), 0);
++
++        let id = ledger.add_item(
++            "Dashboard with metrics cards",
++            Some("Render revenue and activity"),
++            vec!["src/pages/Dashboard.tsx".to_string()],
++        );
++        assert_eq!(ledger.items.len(), 1);
++        assert_eq!(ledger.items[0].status, RequirementStatus::Pending);
++
++        assert!(ledger.get_item(&id).is_some());
++        assert_eq!(
++            ledger.get_item(&id).unwrap().title,
++            "Dashboard with metrics cards"
++        );
++
++        ledger.set_status(&id, RequirementStatus::InProgress);
++        assert_eq!(ledger.items[0].status, RequirementStatus::InProgress);
++        assert_eq!(ledger.active_item_id, Some(id.clone()));
++
++        ledger.set_status(&id, RequirementStatus::Completed);
++        assert_eq!(ledger.items[0].status, RequirementStatus::Completed);
++        assert_eq!(ledger.active_item_id, None);
++    }
++
++    #[test]
++    fn test_intent_ledger_status_and_drift_reset() {
++        let mut ledger = IntentLedger::new("Test objective");
++        let id1 = ledger.add_item("Task 1", None, vec![]);
++        let id2 = ledger.add_item("Task 2", None, vec![]);
++
++        ledger.consecutive_turns_without_progress = 5;
++
++        // InProgress resets drift counter
++        assert!(ledger.set_status(&id1, RequirementStatus::InProgress));
++        assert_eq!(ledger.consecutive_turns_without_progress, 0);
++        assert_eq!(ledger.active_item_id, Some(id1.clone()));
++
++        // Blocked clears active_item_id without resetting drift counter
++        ledger.consecutive_turns_without_progress = 3;
++        assert!(ledger.set_status(&id1, RequirementStatus::Blocked));
++        assert_eq!(ledger.consecutive_turns_without_progress, 3);
++        assert_eq!(ledger.active_item_id, None);
++
++        // Setting id2 to InProgress sets active_item_id to id2
++        assert!(ledger.set_status(&id2, RequirementStatus::InProgress));
++        assert_eq!(ledger.active_item_id, Some(id2.clone()));
++        assert_eq!(ledger.consecutive_turns_without_progress, 0);
++
++        // Non-existent id returns false
++        assert!(!ledger.set_status("non-existent-id", RequirementStatus::Completed));
++        assert!(ledger.get_item("non-existent-id").is_none());
++    }
++
++    #[test]
++    fn test_intent_ledger_persistence_roundtrip() {
++        let temp_dir = std::env::temp_dir().join(format!("intent_test_{}", uuid::Uuid::new_v4()));
++        let file_path = temp_dir.join(".minicode").join("intent_anchor.json");
++
++        let mut ledger = IntentLedger::new("Persistent Root Objective");
++        let id1 = ledger.add_item(
++            "Feature A",
++            Some("Description A"),
++            vec!["src/a.rs".to_string()],
++        );
++        ledger.set_status(&id1, RequirementStatus::InProgress);
++
++        ledger
++            .save_to_disk(&file_path)
++            .expect("Failed to save ledger to disk");
++        assert!(file_path.exists());
++
++        let loaded =
++            IntentLedger::load_from_disk(&file_path).expect("Failed to load ledger from disk");
++        assert_eq!(loaded, ledger);
++
++        let _ = std::fs::remove_dir_all(&temp_dir);
++    }
++
++    #[test]
++    fn test_intent_config_defaults() {
++        let config = crate::config::IntentConfig::default();
++        assert!(config.enabled);
++        assert_eq!(
++            config.persistence_file,
++            crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE
++        );
++        assert_eq!(
++            config.drift_warning_turns,
++            crate::constants::DEFAULT_INTENT_DRIFT_WARNING_TURNS
++        );
++        assert!(config.auto_extract);
++        assert_eq!(
++            config.max_ledger_items,
++            crate::constants::DEFAULT_INTENT_MAX_ITEMS
++        );
++    }
++
++    #[test]
++    fn test_requirement_status_serde() {
++        let statuses = vec![
++            (RequirementStatus::Pending, "\"pending\""),
++            (RequirementStatus::InProgress, "\"in_progress\""),
++            (RequirementStatus::Completed, "\"completed\""),
++            (RequirementStatus::Blocked, "\"blocked\""),
++            (RequirementStatus::Skipped, "\"skipped\""),
++        ];
++
++        for (status, json_str) in statuses {
++            let serialized = serde_json::to_string(&status).expect("Serialization failed");
++            assert_eq!(serialized, json_str);
++            let deserialized: RequirementStatus =
++                serde_json::from_str(json_str).expect("Deserialization failed");
++            assert_eq!(deserialized, status);
++        }
++    }
++}
+diff --git a/src/context/memory/mod.rs b/src/context/memory/mod.rs
+index 7f90b5f..6aec7b0 100644
+--- a/src/context/memory/mod.rs
++++ b/src/context/memory/mod.rs
+@@ -1,9 +1,12 @@
+ pub mod checkpoint;
+ pub mod decay;
+ pub mod episodic;
++pub mod intent;
+ #[allow(clippy::module_inception)]
+ pub mod memory;
+ pub mod progressive_memory;
+ pub mod working_memory;
+ 
++#[allow(unused_imports)]
++pub use intent::*;
+ pub use memory::*;

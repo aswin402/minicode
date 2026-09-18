@@ -1,0 +1,930 @@
+80d16fe feat(intent): auto-advance execution ledger from tool activity and persist session anchor
+ src/agent/loop.rs                    | 117 +++++++++++++++++-
+ src/context/ast/syntax_guard.rs      |   5 +-
+ src/context/memory/intent.rs         | 226 +++++++++++++++++++++++++++++++++++
+ tests/integration_intent_tracking.rs | 171 ++++++++++++++++++++++++++
+ 4 files changed, 515 insertions(+), 4 deletions(-)
+diff --git a/src/agent/loop.rs b/src/agent/loop.rs
+index 649f608..ac71f1e 100644
+--- a/src/agent/loop.rs
++++ b/src/agent/loop.rs
+@@ -36,20 +36,22 @@ pub struct AgentLoop {
+     /// Smart 4-tier progressive context auto-compactor with memory anchor.
+     compactor: crate::context::auto_compact::AutoCompactor,
+     /// Active working set tracking recently accessed/modified files (Zone 3 Recency).
+     active_working_set: std::collections::VecDeque<String>,
+     /// Algorithmic stuck detector halting repetitive tool loops.
+     pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
+     /// Speculative early dispatch and parallel execution engine for read-only tools.
+     pub speculative_executor: crate::agent::speculative::SpeculativeExecutor,
+     /// Cumulative tokens expended across all turns in this session.
+     pub cumulative_tokens_used: usize,
++    /// Living intent anchor and execution ledger.
++    pub intent_ledger: Option<crate::context::memory::intent::IntentLedger>,
+     /// RAII Guard registering this active agent process in the runtime registry.
+     _active_guard: Option<crate::logging::ActiveSessionGuard>,
+ }
+ 
+ impl AgentLoop {
+     pub fn new(workspace_root: &Path, config: Config, provider: Box<dyn Provider>) -> Self {
+         Self::with_session(workspace_root, config, provider, None)
+     }
+ 
+     pub fn with_session(
+@@ -87,38 +89,46 @@ impl AgentLoop {
+ 
+         crate::context::budget::donut::set_active_context_limit(compactor.model_token_limit());
+ 
+         let speculative_executor = crate::agent::speculative::SpeculativeExecutor::new(
+             workspace_root.to_path_buf(),
+             config.agent.max_parallel_tools,
+             config.agent.speculative_execution,
+             config.agent.parallel_tools,
+         );
+ 
++        let intent_path = workspace_root.join(&config.agent.intent.persistence_file);
++        let intent_ledger = if config.agent.intent.enabled && intent_path.exists() {
++            crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path).ok()
++        } else {
++            None
++        };
++
+         Self {
+             workspace_root: workspace_root.to_path_buf(),
+             config,
+             provider,
+             session_store,
+             session_id,
+             backup_manager: BackupManager::new(workspace_root),
+             mcp_client,
+             tool_pipeline: crate::tools::middleware::ToolPipeline::default(),
+             messages: Vec::new(),
+             current_turn_id: 0,
+             pending_approvals: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+             interactive_approvals: true,
+             compactor,
+             active_working_set: std::collections::VecDeque::with_capacity(10),
+             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
+             speculative_executor,
+             cumulative_tokens_used: 0,
++            intent_ledger,
+             _active_guard: active_guard,
+         }
+     }
+ 
+     /// Returns a handle to the in-flight approval registry for hosts (TUI/NDJSON).
+     pub fn approval_registry(&self) -> super::types::ApprovalRegistry {
+         self.pending_approvals.clone()
+     }
+ 
+     /// Disables blocking approval waits (headless mode): dangerous tools are
+@@ -169,20 +179,34 @@ impl AgentLoop {
+         self.compactor.anchor()
+     }
+ 
+     /// Returns the active working set of accessed files.
+     #[allow(dead_code)]
+     #[must_use]
+     pub fn active_working_set(&self) -> &std::collections::VecDeque<String> {
+         &self.active_working_set
+     }
+ 
++    /// Returns the living execution ledger and goal anchor, if active.
++    #[allow(dead_code)]
++    pub fn intent_ledger(&self) -> Option<&crate::context::memory::intent::IntentLedger> {
++        self.intent_ledger.as_ref()
++    }
++
++    /// Returns a mutable reference to the living execution ledger, if active.
++    #[allow(dead_code)]
++    pub fn intent_ledger_mut(
++        &mut self,
++    ) -> Option<&mut crate::context::memory::intent::IntentLedger> {
++        self.intent_ledger.as_mut()
++    }
++
+     /// Records a file path into the active working set (Zone 3 Recency).
+     pub fn record_file_access(&mut self, file_path: &str) {
+         let trimmed = file_path.trim();
+         if trimmed.is_empty() {
+             return;
+         }
+         self.active_working_set.retain(|p| p != trimmed);
+         self.active_working_set.push_front(trimmed.to_string());
+         if self.active_working_set.len() > 10 {
+             self.active_working_set.pop_back();
+@@ -317,20 +341,42 @@ impl AgentLoop {
+         let turn_id = self.current_turn_id;
+ 
+         // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
+         let model_token_limit = self.compactor.model_token_limit();
+         crate::context::budget::donut::set_active_context_limit(model_token_limit);
+ 
+         if turn_id == 1 {
+             self.compactor.set_working_context(user_prompt);
+         }
+ 
++        // Initialize intent ledger from user prompt if enabled, missing, and auto_extract is on
++        if self.config.agent.intent.enabled
++            && self.intent_ledger.is_none()
++            && self.config.agent.intent.auto_extract
++        {
++            let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
++                user_prompt,
++                self.config.agent.intent.max_ledger_items,
++            );
++            let persistence_path = self
++                .workspace_root
++                .join(&self.config.agent.intent.persistence_file);
++            if let Err(e) = ledger.save_to_disk(&persistence_path) {
++                tracing::warn!(
++                    error = %e,
++                    path = %persistence_path.display(),
++                    "Failed to persist initial intent ledger"
++                );
++            }
++            self.intent_ledger = Some(ledger);
++        }
++
+         // 1. Prune/compact conversation context if approaching budget
+         let compaction_metrics = self.prune_context();
+         let message_index = self.messages.len();
+ 
+         // 2. Build Tri-Zone context:
+         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
+         let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+ 
+         // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor, context budget)
+         let git_service = crate::git::GitService::new(self.workspace_root.clone());
+@@ -349,21 +395,25 @@ impl AgentLoop {
+         let recency_block = PromptBuilder::build_recency_context(
+             &self.workspace_root,
+             if anchor_block.is_empty() {
+                 None
+             } else {
+                 Some(&anchor_block)
+             },
+             &working_set_vec,
+             git_status.as_ref(),
+             Some(&context_budget),
+-            None,
++            if self.config.agent.intent.enabled {
++                self.intent_ledger.as_ref()
++            } else {
++                None
++            },
+         );
+ 
+         let prompt_with_context = if recency_block.trim().is_empty() {
+             format!("<user_request>\n{}\n</user_request>", user_prompt.trim())
+         } else {
+             format!(
+                 "{}\n\n<user_request>\n{}\n</user_request>",
+                 recency_block.trim(),
+                 user_prompt.trim()
+             )
+@@ -458,20 +508,21 @@ impl AgentLoop {
+         }
+         event_sender.send(start_event)?;
+ 
+         let mut turn_response = String::new();
+         let mut turn_tool_calls = Vec::new();
+         let mut turn_tool_results = Vec::new();
+         let mut last_prompt_tokens: usize = 0;
+         let mut last_cached_prompt_tokens: usize = 0;
+         let mut cumulative_completion_tokens: usize = 0;
+         let mut turn_files_modified = Vec::new();
++        let mut items_progressed_this_turn = false;
+ 
+         let mut max_iterations = self.config.agent.max_tool_iterations;
+         let mut auto_continues_remaining = if self.config.agent.auto_continue {
+             self.config.agent.max_auto_continues
+         } else {
+             0
+         };
+         let mut iteration = 0;
+         let mut heal_attempts = 0;
+         let mut was_cancelled = false;
+@@ -1031,20 +1082,28 @@ impl AgentLoop {
+                                         &event_sender,
+                                         turn_id,
+                                         &tool_call,
+                                         reason,
+                                         &mut turn_tool_results,
+                                     );
+                                     continue;
+                                 }
+                             }
+ 
++                            // Check whether the target file already existed before dispatch
++                            let file_existed_before = tool_call
++                                .arguments
++                                .get("path")
++                                .and_then(|p| p.as_str())
++                                .map(|p| self.workspace_root.join(p).exists())
++                                .unwrap_or(false);
++
+                             // Snapshot file content before dispatch for inline diff preview
+                             let file_before: Option<String> =
+                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                                     match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                                         Some(rel) => {
+                                             let full_path = self.workspace_root.join(rel);
+                                             match tokio::fs::metadata(&full_path).await {
+                                                 Ok(meta)
+                                                     if meta.len()
+                                                         <= crate::constants::MAX_DIFF_SNAPSHOT_BYTES
+@@ -1239,20 +1298,52 @@ impl AgentLoop {
+                                 duration_ms: tool_result.duration_ms,
+                             };
+                             if let Err(e) = self
+                                 .session_store
+                                 .append_event(&self.session_id, &res_event)
+                             {
+                                 tracing::warn!("Failed to persist ToolResult event: {}", e);
+                             }
+                             event_sender.send(res_event)?;
+ 
++                            if tool_result.success
++                                && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
++                            {
++                                if let Some(path_str) =
++                                    tool_call.arguments.get("path").and_then(|p| p.as_str())
++                                {
++                                    let (created, modified) = if file_existed_before {
++                                        (Vec::new(), vec![path_str.to_string()])
++                                    } else {
++                                        (vec![path_str.to_string()], Vec::new())
++                                    };
++                                    if let Some(ref mut ledger) = self.intent_ledger {
++                                        let updated = ledger.update_from_file_activity(
++                                            &created, &modified, turn_id,
++                                        );
++                                        if updated > 0 {
++                                            items_progressed_this_turn = true;
++                                        }
++                                        let persistence_path = self
++                                            .workspace_root
++                                            .join(&self.config.agent.intent.persistence_file);
++                                        if let Err(e) = ledger.save_to_disk(&persistence_path) {
++                                            tracing::warn!(
++                                                error = %e,
++                                                path = %persistence_path.display(),
++                                                "Failed to persist intent ledger after tool execution"
++                                            );
++                                        }
++                                    }
++                                }
++                            }
++
+                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
+                             let output_for_llm =
+                                 crate::context::budget::ObservationPruner::prune_for_llm(
+                                     &tool_call.name,
+                                     &tool_result.output,
+                                 );
+                             self.messages.push(Message::tool_result(
+                                 tool_call.id,
+                                 tool_call.name,
+                                 output_for_llm,
+@@ -1511,20 +1602,36 @@ impl AgentLoop {
+                 prog_mem.record_l1_anchor(
+                     &format!("Modified {} files", turn_files_modified.len()),
+                     &turn_files_modified,
+                     user_prompt,
+                     &format!("turn_{}", turn_id),
+                 );
+             }
+             let _ = prog_mem.save(&self.workspace_root);
+         }
+ 
++        if let Some(ref mut ledger) = self.intent_ledger {
++            if !items_progressed_this_turn {
++                ledger.consecutive_turns_without_progress += 1;
++            }
++            let persistence_path = self
++                .workspace_root
++                .join(&self.config.agent.intent.persistence_file);
++            if let Err(e) = ledger.save_to_disk(&persistence_path) {
++                tracing::warn!(
++                    error = %e,
++                    path = %persistence_path.display(),
++                    "Failed to persist intent ledger at turn end"
++                );
++            }
++        }
++
+         let turn = Turn {
+             turn_id,
+             user_prompt: user_prompt.to_string(),
+             assistant_response: turn_response,
+             tool_calls: turn_tool_calls,
+             tool_results: turn_tool_results,
+             tokens_used: turn_tokens_used,
+             files_modified: turn_files_modified,
+         };
+ 
+@@ -1650,20 +1757,28 @@ impl AgentLoop {
+             self.messages
+                 .push(Message::assistant_with_tools(clean, pending_tool_calls));
+         } else if !current_delta.is_empty() {
+             let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+             self.messages.push(Message::assistant(clean));
+         }
+ 
+         self.current_turn_id = max_turn_id;
+         self.cumulative_tokens_used = total_tokens;
+ 
++        let intent_path = self
++            .workspace_root
++            .join(&self.config.agent.intent.persistence_file);
++        if self.config.agent.intent.enabled && intent_path.exists() {
++            self.intent_ledger =
++                crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path).ok();
++        }
++
+         if let Some(first_prompt) = first_turn_prompt {
+             self.compactor.set_working_context(&first_prompt);
+         }
+ 
+         tracing::info!(
+             session_id = %self.session_id,
+             turns = self.current_turn_id,
+             messages = self.messages.len(),
+             working_set = self.active_working_set.len(),
+             "Successfully hydrated AgentLoop from session history"
+diff --git a/src/context/ast/syntax_guard.rs b/src/context/ast/syntax_guard.rs
+index 5abc0d6..0a080d8 100644
+--- a/src/context/ast/syntax_guard.rs
++++ b/src/context/ast/syntax_guard.rs
+@@ -14,23 +14,22 @@ pub struct SyntaxErrorDetail {
+ /// In-memory AST pre-write barrier that prevents syntax-breaking edits from corrupting disk files.
+ pub struct SyntaxGuard;
+ 
+ impl SyntaxGuard {
+     /// Maps a file extension to its corresponding Tree-sitter Language definition.
+     pub fn language_for_extension(ext: &str) -> Option<Language> {
+         match ext {
+             "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
+             "py" => Some(tree_sitter_python::LANGUAGE.into()),
+             "js" | "jsx" | "mjs" | "cjs" => Some(tree_sitter_javascript::LANGUAGE.into()),
+-            "ts" | "tsx" | "mts" | "cts" => {
+-                Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+-            }
++            "ts" | "mts" | "cts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
++            "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
+             _ => None,
+         }
+     }
+ 
+     /// Maps a file path to its corresponding Tree-sitter Language definition.
+     pub fn language_for_path(path: &Path) -> Option<Language> {
+         let ext = path.extension().and_then(|e| e.to_str())?;
+         Self::language_for_extension(ext)
+     }
+ 
+diff --git a/src/context/memory/intent.rs b/src/context/memory/intent.rs
+index 36e49d6..d4e5138 100644
+--- a/src/context/memory/intent.rs
++++ b/src/context/memory/intent.rs
+@@ -23,20 +23,22 @@ pub enum RequirementStatus {
+ pub struct RequirementItem {
+     pub id: String,
+     pub title: String,
+     #[serde(default)]
+     pub description: Option<String>,
+     #[serde(default)]
+     pub status: RequirementStatus,
+     #[serde(default)]
+     pub related_files: Vec<String>,
+     #[serde(default)]
++    pub touched_files: Vec<String>,
++    #[serde(default)]
+     pub created_turn: usize,
+     #[serde(default)]
+     pub updated_turn: usize,
+ }
+ 
+ /// Living execution ledger that maintains the root goal anchor, active items, and drift telemetry.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+ pub struct IntentLedger {
+     pub root_objective: String,
+     pub items: Vec<RequirementItem>,
+@@ -62,20 +64,21 @@ impl IntentLedger {
+         description: Option<&str>,
+         related_files: Vec<String>,
+     ) -> String {
+         let id = format!("req-{}", uuid::Uuid::new_v4().simple());
+         let item = RequirementItem {
+             id: id.clone(),
+             title: title.to_string(),
+             description: description.map(|d| d.to_string()),
+             status: RequirementStatus::Pending,
+             related_files,
++            touched_files: Vec::new(),
+             created_turn: 0,
+             updated_turn: 0,
+         };
+         self.items.push(item);
+         id
+     }
+ 
+     /// Updates the status of an existing requirement item by ID.
+     ///
+     /// - If moved to `InProgress`, sets `active_item_id` to this item and resets drift counter
+@@ -256,20 +259,125 @@ impl IntentLedger {
+     }
+ 
+     /// Loads and deserializes an `IntentLedger` from disk.
+     pub fn load_from_disk(path: &std::path::Path) -> std::io::Result<Self> {
+         let content = std::fs::read_to_string(path)?;
+         let ledger = serde_json::from_str::<Self>(&content)
+             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+         Ok(ledger)
+     }
+ 
++    /// Loads an existing ledger from disk or creates a new one from prompt.
++    pub fn load_or_create(workspace_dir: &std::path::Path, prompt: &str, max_items: usize) -> Self {
++        let path = workspace_dir.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
++        if path.exists() {
++            if let Ok(ledger) = Self::load_from_disk(&path) {
++                return ledger;
++            }
++        }
++        Self::from_prompt(prompt, max_items)
++    }
++
++    /// Updates requirement item statuses based on file system actions taken by tools.
++    /// If an item's related files match any created or modified files, advances its status.
++    /// Returns the number of items whose status or activity was updated.
++    pub fn update_from_file_activity(
++        &mut self,
++        files_created: &[String],
++        files_modified: &[String],
++        current_turn: usize,
++    ) -> usize {
++        let all_touched: Vec<&str> = files_created
++            .iter()
++            .chain(files_modified.iter())
++            .map(|s| s.as_str())
++            .filter(|s| !s.trim().is_empty())
++            .collect();
++
++        if all_touched.is_empty() {
++            return 0;
++        }
++
++        let mut updated_count = 0;
++
++        for item in &mut self.items {
++            if item.related_files.is_empty() {
++                continue;
++            }
++
++            let mut newly_matched = false;
++            for rf in &item.related_files {
++                if all_touched.iter().any(|f| path_matches(rf, f)) {
++                    if !item.touched_files.contains(rf) {
++                        item.touched_files.push(rf.clone());
++                    }
++                    newly_matched = true;
++                }
++            }
++
++            if !newly_matched {
++                continue;
++            }
++
++            // Check if all related files are touched
++            let all_touched_matched = item.related_files.iter().all(|rf| {
++                item.touched_files.contains(rf) || all_touched.iter().any(|f| path_matches(rf, f))
++            });
++
++            let mut transitioned = false;
++
++            if all_touched_matched {
++                if item.status != RequirementStatus::Completed {
++                    item.status = RequirementStatus::Completed;
++                    transitioned = true;
++                }
++            } else if item.status == RequirementStatus::Pending {
++                item.status = RequirementStatus::InProgress;
++                transitioned = true;
++            }
++
++            if transitioned || newly_matched {
++                item.updated_turn = current_turn;
++                updated_count += 1;
++            }
++
++            if transitioned {
++                match item.status {
++                    RequirementStatus::Completed | RequirementStatus::InProgress => {
++                        self.consecutive_turns_without_progress = 0;
++                    }
++                    _ => {}
++                }
++            }
++        }
++
++        // Keep active_item_id in sync
++        if let Some(ref active_id) = self.active_item_id.clone() {
++            if let Some(active_item) = self.get_item(active_id) {
++                if active_item.status == RequirementStatus::Completed {
++                    self.active_item_id = None;
++                }
++            }
++        }
++        if self.active_item_id.is_none() {
++            if let Some(in_prog) = self
++                .items
++                .iter()
++                .find(|i| i.status == RequirementStatus::InProgress)
++            {
++                self.active_item_id = Some(in_prog.id.clone());
++            }
++        }
++
++        updated_count
++    }
++
+     /// Dynamically extracts the root objective and actionable requirement items
+     /// from a freeform user prompt across diverse formatting styles (headers, checklists, numbered lists, bullet points).
+     pub fn from_prompt(prompt: &str, max_items: usize) -> Self {
+         let cap = if max_items == 0 { 32 } else { max_items };
+         let raw_lines: Vec<&str> = prompt.lines().collect();
+         let first_non_empty_idx = raw_lines.iter().position(|l| !l.trim().is_empty());
+ 
+         let (root_objective, start_idx) = match first_non_empty_idx {
+             Some(idx) => {
+                 let first_line_trimmed = raw_lines[idx].trim();
+@@ -408,20 +516,21 @@ impl IntentLedger {
+             } else {
+                 format!("Complete objective: {}", root_objective)
+             };
+             let related_files = extract_related_files(&root_objective);
+             ledger.items.push(RequirementItem {
+                 id: format!("req-{}", uuid::Uuid::new_v4().simple()),
+                 title,
+                 description: None,
+                 status: RequirementStatus::Pending,
+                 related_files,
++                touched_files: Vec::new(),
+                 created_turn: 0,
+                 updated_turn: 0,
+             });
+         } else {
+             ledger.items = collected_items;
+         }
+ 
+         ledger
+     }
+ }
+@@ -476,20 +585,21 @@ fn commit_draft(draft: Option<DraftItem>, collected: &mut Vec<RequirementItem>,
+             }
+         }
+ 
+         if !is_dup && collected.len() < max_items {
+             let req = RequirementItem {
+                 id: format!("req-{}", uuid::Uuid::new_v4().simple()),
+                 title,
+                 description: desc_text,
+                 status: item.status,
+                 related_files,
++                touched_files: Vec::new(),
+                 created_turn: 0,
+                 updated_turn: 0,
+             };
+             collected.push(req);
+         }
+     }
+ }
+ 
+ fn clean_root_objective(line: &str) -> String {
+     let trimmed = line.trim();
+@@ -732,20 +842,51 @@ fn is_valid_path_candidate(s: &str) -> bool {
+ fn is_duplicate_title(a: &str, b: &str) -> bool {
+     let clean_a = strip_leading_enumeration(a.trim())
+         .trim_matches(|c| c == '*' || c == '_' || c == '`')
+         .trim();
+     let clean_b = strip_leading_enumeration(b.trim())
+         .trim_matches(|c| c == '*' || c == '_' || c == '`')
+         .trim();
+     clean_a.eq_ignore_ascii_case(clean_b)
+ }
+ 
++fn normalize_path_for_match(p: &str) -> String {
++    let s = p.replace('\\', "/");
++    let trimmed = s.trim();
++    let without_dot = trimmed.strip_prefix("./").unwrap_or(trimmed);
++    without_dot.trim_start_matches('/').to_string()
++}
++
++fn path_matches(related: &str, file: &str) -> bool {
++    let r = normalize_path_for_match(related);
++    let f = normalize_path_for_match(file);
++    if r.is_empty() || f.is_empty() {
++        return false;
++    }
++    if r == f {
++        return true;
++    }
++    if r.ends_with(&f) {
++        let prefix_len = r.len() - f.len();
++        if prefix_len == 0 || r.as_bytes()[prefix_len - 1] == b'/' {
++            return true;
++        }
++    }
++    if f.ends_with(&r) {
++        let prefix_len = f.len() - r.len();
++        if prefix_len == 0 || f.as_bytes()[prefix_len - 1] == b'/' {
++            return true;
++        }
++    }
++    false
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn test_intent_ledger_lifecycle() {
+         let mut ledger = IntentLedger::new("Build AgentBench sandbox website");
+         assert_eq!(ledger.root_objective, "Build AgentBench sandbox website");
+         assert_eq!(ledger.items.len(), 0);
+ 
+@@ -1180,11 +1321,96 @@ Refactor core architecture
+         ledger.set_status(&id_block, RequirementStatus::Blocked);
+         ledger.set_status(&id_skip, RequirementStatus::Skipped);
+ 
+         let block = ledger.to_prompt_block();
+         assert!(block.contains("[ ] Pending item"));
+         assert!(block.contains("[-] InProgress item"));
+         assert!(block.contains("[x] Completed item"));
+         assert!(block.contains("[!] Blocked item"));
+         assert!(block.contains("[s] Skipped item"));
+     }
++
++    #[test]
++    fn test_update_from_file_activity() {
++        let mut ledger = IntentLedger::new("Test Activity");
++        let id1 = ledger.add_item(
++            "Dashboard",
++            None,
++            vec!["src/pages/Dashboard.tsx".to_string()],
++        );
++        let id2 = ledger.add_item(
++            "Backend and Models",
++            None,
++            vec!["src/models.rs".to_string(), "src/backend.rs".to_string()],
++        );
++
++        ledger.consecutive_turns_without_progress = 4;
++
++        // Turn 1: Write Dashboard.tsx -> Dashboard has 1 related file, matches, becomes Completed
++        let updated =
++            ledger.update_from_file_activity(&["src/pages/Dashboard.tsx".to_string()], &[], 1);
++        assert_eq!(updated, 1);
++        assert_eq!(
++            ledger.get_item(&id1).unwrap().status,
++            RequirementStatus::Completed
++        );
++        assert_eq!(ledger.get_item(&id1).unwrap().updated_turn, 1);
++        assert_eq!(ledger.consecutive_turns_without_progress, 0);
++
++        // Turn 2: Write src/models.rs (1 of 2 related files for item 2)
++        // Item 2 moves from Pending to InProgress
++        ledger.consecutive_turns_without_progress = 2;
++        let updated = ledger.update_from_file_activity(&["src/models.rs".to_string()], &[], 2);
++        assert_eq!(updated, 1);
++        assert_eq!(
++            ledger.get_item(&id2).unwrap().status,
++            RequirementStatus::InProgress
++        );
++        assert_eq!(ledger.get_item(&id2).unwrap().updated_turn, 2);
++        assert_eq!(ledger.consecutive_turns_without_progress, 0);
++        assert_eq!(ledger.active_item_id, Some(id2.clone()));
++
++        // Turn 3: Modifying unrelated file does nothing
++        let updated = ledger.update_from_file_activity(&[], &["README.md".to_string()], 3);
++        assert_eq!(updated, 0);
++        assert_eq!(
++            ledger.get_item(&id2).unwrap().status,
++            RequirementStatus::InProgress
++        );
++
++        // Turn 4: Write src/backend.rs (2nd of 2 files) -> item 2 becomes Completed!
++        let updated = ledger.update_from_file_activity(&[], &["src/backend.rs".to_string()], 4);
++        assert_eq!(updated, 1);
++        assert_eq!(
++            ledger.get_item(&id2).unwrap().status,
++            RequirementStatus::Completed
++        );
++        assert_eq!(ledger.get_item(&id2).unwrap().updated_turn, 4);
++        assert_eq!(ledger.active_item_id, None);
++        assert_eq!(ledger.completed_count(), 2);
++    }
++
++    #[test]
++    fn test_load_or_create() {
++        let temp_dir =
++            std::env::temp_dir().join(format!("intent_load_or_create_{}", uuid::Uuid::new_v4()));
++        let prompt = "# Project X\n- [ ] Task 1";
++
++        // When file does not exist on disk, creates from prompt
++        let ledger1 = IntentLedger::load_or_create(&temp_dir, prompt, 10);
++        assert_eq!(ledger1.root_objective, "Project X");
++        assert_eq!(ledger1.items.len(), 1);
++
++        // Save ledger to disk
++        let disk_path = temp_dir.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
++        ledger1
++            .save_to_disk(&disk_path)
++            .expect("Failed to save ledger");
++
++        // When file exists on disk, loads existing ledger
++        let ledger2 = IntentLedger::load_or_create(&temp_dir, "Different Prompt", 10);
++        assert_eq!(ledger2.root_objective, "Project X");
++        assert_eq!(ledger2.items.len(), 1);
++
++        let _ = std::fs::remove_dir_all(&temp_dir);
++    }
+ }
+diff --git a/tests/integration_intent_tracking.rs b/tests/integration_intent_tracking.rs
+new file mode 100644
+index 0000000..bde6cd8
+--- /dev/null
++++ b/tests/integration_intent_tracking.rs
+@@ -0,0 +1,171 @@
++mod common;
++
++use common::{MockProvider, MockResponse};
++use minicode::agent::AgentLoop;
++use minicode::config::Config;
++use minicode::context::memory::intent::{IntentLedger, RequirementStatus};
++use tempfile::tempdir;
++use tokio::sync::mpsc;
++
++#[tokio::test]
++async fn test_agent_loop_intent_tracking_auto_advance() {
++    let dir = tempdir().unwrap();
++    let ws_path = dir.path().to_path_buf();
++
++    // 1. Initial Prompt with 2 requirements
++    let prompt = "Build AgentBench\n#### 1. Dashboard\nCreate src/pages/Dashboard.tsx\n#### 2. Settings\nCreate src/pages/Settings.tsx";
++
++    // Mock response invoking write_file for Dashboard.tsx
++    let responses_turn_1 = vec![
++        MockResponse::with_tool_call(
++            "call_1",
++            "write_file",
++            serde_json::json!({
++                "path": "src/pages/Dashboard.tsx",
++                "content": "export const Dashboard = () => <div>Dashboard</div>;"
++            }),
++        ),
++        MockResponse::text_only("Created Dashboard page component."),
++    ];
++
++    let provider = Box::new(MockProvider::new(responses_turn_1));
++    let mut config = Config::default();
++    config.git.auto_commit = false;
++    config.agent.auto_approve = true;
++
++    let mut agent = AgentLoop::new(&ws_path, config, provider);
++
++    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
++    tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
++
++    let _turn_1 = agent.execute_turn(prompt, event_tx, None).await.unwrap();
++
++    // Assert agent.intent_ledger().is_some()
++    assert!(agent.intent_ledger().is_some());
++    let ledger = agent.intent_ledger().unwrap();
++
++    // Assert root objective
++    assert_eq!(ledger.root_objective, "Build AgentBench");
++
++    // Assert Dashboard requirement is marked Completed
++    let dashboard_item = ledger
++        .items
++        .iter()
++        .find(|item| item.title.contains("Dashboard"))
++        .expect("Dashboard requirement item should exist");
++    assert_eq!(dashboard_item.status, RequirementStatus::Completed);
++
++    // Assert Settings requirement is still Pending
++    let settings_item = ledger
++        .items
++        .iter()
++        .find(|item| item.title.contains("Settings"))
++        .expect("Settings requirement item should exist");
++    assert_eq!(settings_item.status, RequirementStatus::Pending);
++
++    // Assert .minicode/intent_anchor.json was written to disk and can be deserialized
++    let anchor_path = ws_path.join(".minicode").join("intent_anchor.json");
++    assert!(
++        anchor_path.exists(),
++        "Intent anchor file must exist on disk"
++    );
++    let disk_ledger =
++        IntentLedger::load_from_disk(&anchor_path).expect("Must deserialize from disk");
++    assert_eq!(disk_ledger.root_objective, "Build AgentBench");
++    assert_eq!(disk_ledger.completed_count(), 1);
++    assert_eq!(disk_ledger.total_count(), 2);
++}
++
++#[tokio::test]
++async fn test_agent_loop_drift_increment_and_multi_turn_advance() {
++    let dir = tempdir().unwrap();
++    let ws_path = dir.path().to_path_buf();
++
++    let prompt = "Build AgentBench\n#### 1. Dashboard\nCreate src/pages/Dashboard.tsx\n#### 2. Settings\nCreate src/pages/Settings.tsx";
++
++    // Turn 1: Write Dashboard.tsx
++    let responses_turn_1 = vec![
++        MockResponse::with_tool_call(
++            "call_1",
++            "write_file",
++            serde_json::json!({
++                "path": "src/pages/Dashboard.tsx",
++                "content": "export const Dashboard = () => <div>Dashboard</div>;"
++            }),
++        ),
++        MockResponse::text_only("Created Dashboard page component."),
++    ];
++
++    let provider = Box::new(MockProvider::new(responses_turn_1));
++    let mut config = Config::default();
++    config.git.auto_commit = false;
++    config.agent.auto_approve = true;
++
++    let mut agent = AgentLoop::new(&ws_path, config.clone(), provider);
++
++    let (event_tx1, mut event_rx1) = mpsc::unbounded_channel();
++    tokio::spawn(async move { while event_rx1.recv().await.is_some() {} });
++
++    let _ = agent.execute_turn(prompt, event_tx1, None).await.unwrap();
++
++    assert_eq!(
++        agent
++            .intent_ledger()
++            .unwrap()
++            .consecutive_turns_without_progress,
++        0
++    );
++
++    // Turn 2: Conversational reply without file modification -> drift increments
++    let responses_turn_2 = vec![MockResponse::text_only("Thinking about next steps...")];
++    agent.update_config(
++        config.clone(),
++        Box::new(MockProvider::new(responses_turn_2)),
++    );
++
++    let (event_tx2, mut event_rx2) = mpsc::unbounded_channel();
++    tokio::spawn(async move { while event_rx2.recv().await.is_some() {} });
++
++    let _ = agent
++        .execute_turn("What's next?", event_tx2, None)
++        .await
++        .unwrap();
++
++    assert_eq!(
++        agent
++            .intent_ledger()
++            .unwrap()
++            .consecutive_turns_without_progress,
++        1
++    );
++
++    // Turn 3: Write Settings.tsx -> Settings completed, drift reset to 0
++    let responses_turn_3 = vec![
++        MockResponse::with_tool_call(
++            "call_3",
++            "write_file",
++            serde_json::json!({
++                "path": "src/pages/Settings.tsx",
++                "content": "export const Settings = () => <div>Settings</div>;"
++            }),
++        ),
++        MockResponse::text_only("Created Settings page component."),
++    ];
++    agent.update_config(
++        config.clone(),
++        Box::new(MockProvider::new(responses_turn_3)),
++    );
++
++    let (event_tx3, mut event_rx3) = mpsc::unbounded_channel();
++    tokio::spawn(async move { while event_rx3.recv().await.is_some() {} });
++
++    let _ = agent
++        .execute_turn("Now build settings", event_tx3, None)
++        .await
++        .unwrap();
++
++    let final_ledger = agent.intent_ledger().unwrap();
++    assert_eq!(final_ledger.consecutive_turns_without_progress, 0);
++    assert_eq!(final_ledger.completed_count(), 2);
++    assert_eq!(final_ledger.total_count(), 2);
++}
