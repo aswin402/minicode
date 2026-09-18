@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 128 (v0.3.29) Pi/OhMyPi Intent Anchoring & Living Execution Ledger | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 129 (v0.3.30) Human-Centric Slash Commands & Autocomplete Streamlining | **Status:** ✅ Complete (134 Tools)
 
 ---
 
@@ -1840,4 +1840,12 @@
 - [x] 128.4: Wire `IntentLedger` into `AgentLoop` in `src/agent/loop.rs`: first-turn prompt extraction, tool file activity auto-advancement (`write_file`, `patch_file`), turn-end drift increments, and disk persistence
 - [x] 128.5: Implement interactive `/goal` and `/intent` slash commands in `src/app/commands.rs` (show, add, done with 1-based index or ID, reset, run), and register in command catalog & help modal
 - [x] 128.6: Pass all targeted unit and integration tests (19 intent tests, 2 integration tests, 8 commands tests, 5 prompt tests), clean clippy with zero warnings, format clean, and bump version to `v0.3.29`
+
+### Phase 129: Human-Centric Slash Commands & Autocomplete Streamlining (v0.3.30)
+- [x] 129.1: Audit all 45+ slash commands, separating user-facing deliberate actions from internal agent mechanisms handled automatically via natural language and background tools
+- [x] 129.2: Prune `COMMAND_CATALOG_ITEMS` in `src/ui/modals/command_catalog.rs` to 17 essential commands (`/goal`, `/diff`, `/undo`, `/plan`, `/review`, `/copy`, `/new`, `/clear`, `/model`, `/theme`, `/configure`, `/stack`, `/terminal`, `/context`, `/help`, `/commands`, `/exit`), removing cognitive clutter
+- [x] 129.3: Align inline palette autocomplete popup `PALETTE_COMMANDS` in `src/ui/input.rs` and `src/ui/modals/help.rs` to match the exact streamlined command set and keyboard shortcuts
+- [x] 129.4: Preserve backwards-compatible fallback routing in `src/app/commands.rs` so legacy invocations and natural language queries dispatch seamlessly without errors
+- [x] 129.5: Pass targeted integration and unit tests (`integration_onpkg_tools`, `integration_git_diff_review`, `integration_intent_routing`, `ui::input::tests`), zero clippy warnings, clean formatting, and compile release via `./localupdate.sh` (v0.3.30)
+
 

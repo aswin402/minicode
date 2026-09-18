@@ -22,9 +22,16 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  /goal, /intent", Style::default().fg(theme.success)),
+            Span::styled("  /goal      ", Style::default().fg(theme.success)),
             Span::styled(
                 "Inspect, manage, or execute Goal Anchor and Execution Ledger",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  /diff      ", Style::default().fg(theme.success)),
+            Span::styled(
+                "View git diff changes (working tree or --cached)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),
@@ -50,9 +57,9 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  /sessions  ", Style::default().fg(theme.success)),
+            Span::styled("  /commands  ", Style::default().fg(theme.success)),
             Span::styled(
-                "Browse & reload past workspace session history",
+                "Open interactive command catalog & keybindings cheatsheet",
                 Style::default().fg(theme.text_primary),
             ),
         ]),
