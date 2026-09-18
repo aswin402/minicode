@@ -43,7 +43,7 @@ const PATH_KEYS: &[&str] = &[
 const QUERY_KEYS: &[&str] = &["query", "pattern", "term", "regex", "Query", "Pattern"];
 
 /// Returns true if the tool name indicates a file mutation operation.
-fn is_mutation_tool(name: &str) -> bool {
+pub(crate) fn is_mutation_tool(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),

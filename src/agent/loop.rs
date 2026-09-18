@@ -1362,14 +1362,12 @@ impl AgentLoop {
                             ));
 
                             if tool_result.success
-                                && (FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-                                    || tool_call.name == "replace_file_content"
-                                    || tool_call.name == "edit_file")
+                                && crate::context::budget::micro_compact::is_mutation_tool(&tool_call.name)
                             {
                                 let micro_metrics =
                                     crate::context::budget::MicroCompactor::compact_messages(
                                         &mut self.messages,
-                                        2,
+                                        1,
                                     );
                                 if micro_metrics.tokens_saved_estimate > 0 {
                                     tracing::info!(
