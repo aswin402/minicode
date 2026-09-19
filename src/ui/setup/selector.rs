@@ -187,7 +187,7 @@ impl InteractiveSelector {
                 }
 
                 if key_event.modifiers.contains(KeyModifiers::CONTROL)
-                    && key_event.code == KeyCode::Char('c')
+                    && matches!(key_event.code, KeyCode::Char('c' | 'C'))
                 {
                     Self::clear_lines(&mut out, total_lines)?;
                     return Ok(None);
