@@ -1,37 +1,112 @@
-# Task 4 Execution Report: AgentLoop Ingestion, ToolFilterMode Alignment & Real-Time Timeline Cards
+# Task 4 Execution Report: End-to-End Integration Test Suite
 
 ## Status: DONE
 
-- **Commit Hash Pending:** Task 4 changes ready to commit
-- **Brief Reference:** docs/superpowers/plans/task-4-brief.md
+- **Commit Hash:** `c9c046f`
+- **Component:** `tests/integration_subagent_merge.rs`
+- **Phase:** Phase 133 (Subagent Merge & Conflict Arbitration Engine)
 
-### Summary of Accomplishments
-1. **ToolFilterMode Alignment (`src/config.rs` & `src/tools/mod.rs`)**:
-   - Extended `ToolFilterMode` with `ReadOnly` and `Standard` variants.
-   - Implemented `Display` and `FromStr` mappings (`"read_only"` / `"readonly"` and `"standard"`).
-   - Implemented `ToolRegistry::filter_tools(mode, tools)` ensuring subagents launched in read-only mode (`Scout`, `Reviewer`) only have read-only tools exposed, while standard mode (`Coder`, `Tester`) filters out meta-tools.
-2. **AgentEvent Subagent Streaming Variants (`src/agent/types.rs`)**:
-   - Added `AgentEvent::SubagentProgress` (`turn_id`, `subagent_id`, `role`, `action`, `detail`).
-   - Added `AgentEvent::SubagentCompleted` (`turn_id`, `subagent_id`, `role`, `success`, `tokens_used`, `tools_executed`, `summary`).
-3. **Reactive A2A Mailbox Ingestion in AgentLoop (`src/agent/loop.rs`)**:
-   - Added `mailbox: Option<AgentMailbox>` to `AgentLoop`.
-   - Initialized parent mailbox at `.minicode/agents/parent/mailbox.jsonl`.
-   - In `AgentLoop::execute_turn`, automatically drains unread A2A messages from child subagents and injects them as structured `<agent_message>` blocks into conversation history before model invocation.
-4. **Timeline Activity Card Rendering (`src/ui/view.rs`)**:
-   - Enhanced `TimelineView` with `on_subagent_progress` and `on_subagent_completed` handlers.
-   - Rendered real-time nested subagent execution blocks with role styling, status badges, action details, and completion summaries.
-5. **Headless NDJSON & CLI Forwarding (`src/main.rs`, `src/app/mod.rs`, `src/logging/formatter.rs`)**:
-   - Handled subagent progress and completion events in headless streaming (`println!` with formatted badge) and TUI event pump.
-6. **Comprehensive Integration Tests (`tests/integration_subagent_delegation.rs`)**:
-   - `test_subagent_roles_and_workspace_modes`: PASS
-   - `test_tool_filter_mode_parsing`: PASS
-   - `test_agent_event_subagent_variants_serde`: PASS
-   - `test_timeline_subagent_events_rendering`: PASS
-   - `test_tool_registry_filtering_modes`: PASS
-   - `test_subagent_mailbox_drain_and_prompt_formatting`: PASS
-   - `test_agent_loop_mailbox_ingestion`: PASS
-   All 7 integration tests pass with 100% success.
-7. **Quality Gates**:
-   - `cargo fmt --check`: 100% compliant
-   - `cargo clippy -j 1 --bin minicode -- -D warnings`: 0 warnings
-   - Zero non-test `.unwrap()` or `.expect()`.
+---
+
+## 1. Summary of Test Suite Implementation
+
+Created `tests/integration_subagent_merge.rs` implementing end-to-end integration tests for the complete arbitration and worktree merge lifecycle:
+
+1. **Clean Merge Lifecycle (`test_integration_subagent_worktree_clean_merge`)**:
+   - Initialized temporary Git repository with local user identity and signing disabled.
+   - Provisioned isolated worktree via `GitWorktreeManager::create_worktree` under `.minicode/worktrees/subagent-coder-clean`.
+   - Modified and committed changes (`lib.rs`) inside worktree branch.
+   - Executed pre-merge verification via `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))` and asserted success.
+   - Inspected mergeability via `MergeArbitrator::check_mergeability(root, &handle.branch_name)` and verified `can_merge_cleanly == true`.
+   - Applied committed merge via `MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))`.
+   - Torn down worktree via `GitWorktreeManager::remove_worktree`.
+   - Verified changes (`pub fn subagent_feature()`) exist in parent workspace.
+
+2. **Conflict Detection & Rejection (`test_integration_subagent_worktree_conflict_detection`)**:
+   - Initialized temporary Git repository with base commit modifying `conflict.txt`.
+   - Provisioned worktree for `coder-conflict` and committed changes on subagent branch.
+   - Created concurrent conflicting commit modifying `conflict.txt` on main branch in parent workspace.
+   - Executed `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
+   - Asserted `can_merge_cleanly == false` and `conflicted_files` contains `"conflict.txt"`.
+   - Asserted `MergeArbitrator::apply_merge` rejects merge with `Err(ArbitrationError::MergeConflict(conflicts))` referencing `"conflict.txt"`.
+   - Removed worktree and verified parent working tree remains clean and completely uncorrupted.
+
+3. **Tool Primitive End-to-End (`test_integration_subagent_tool_full_lifecycle`)**:
+   - Initialized temporary Git repository.
+   - Created worktree for subagent `coder-integration`.
+   - Modified and committed `feature.rs` inside worktree.
+   - Invoked `merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))`.
+   - Asserted tool result is `Ok(summary)` containing success message, subagent ID, and `feature.rs`.
+   - Asserted worktree directory and branch were automatically cleaned up.
+   - Asserted `feature.rs` exists in the parent repository with expected content.
+
+4. **Pre-Merge Verification Failure Handling (`test_integration_subagent_worktree_verification_failure`)**:
+   - Created worktree for `tester-verification` with code changes.
+   - Ran `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("false"))`.
+   - Asserted `v_report.success == false` and `v_report.exit_code != 0`.
+   - Invoked `merge_subagent_worktree` with failing verification command and verified it halted merge, returned formatted markdown failure summary, left parent repo untouched, and preserved the worktree on disk for developer/subagent remediation.
+   - Asserted `MergeArbitrator::verify_worktree` returns `Err(ArbitrationError::WorktreeNotFound)` when target directory does not exist.
+   - Verified `ArbitrationError::VerificationFailed` formatting.
+
+---
+
+## 2. Verification Results
+
+### 1. Targeted Integration Test Suite
+Command:
+```bash
+cargo test -j 1 --test integration_subagent_merge
+```
+
+Output:
+```text
+   Compiling minicode v0.3.33 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.11s
+     Running tests/integration_subagent_merge.rs (target/debug/deps/integration_subagent_merge-c0f41344afc1655b)
+
+running 4 tests
+test test_integration_subagent_worktree_verification_failure ... ok
+test test_integration_subagent_worktree_conflict_detection ... ok
+test test_integration_subagent_worktree_clean_merge ... ok
+test test_integration_subagent_tool_full_lifecycle ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+```
+
+### 2. Clippy Verification
+Command:
+```bash
+cargo clippy -j 1 --bin minicode -- -D warnings
+```
+
+Output:
+```text
+    Checking minicode v0.3.33 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.37s
+(Exit code 0, clean with 0 warnings)
+```
+
+### 3. Code Formatting
+Command:
+```bash
+cargo fmt --check
+```
+
+Output:
+```text
+(Exit code 0, clean with 0 diffs)
+```
+
+---
+
+## 3. Non-Test Code Constraints Audit
+- Non-test `.unwrap()` / `.expect()` count: **0** in production code.
+- Concurrency limit `-j 1`: Strictly respected across all cargo commands.
+- Test scope: ONLY targeted test `cargo test -j 1 --test integration_subagent_merge` was run; full test suite was never run.
+
+---
+
+## 4. Concerns & Notes
+- **Status:** DONE.
+- All 4 required test scenarios pass reliably in 0.08s.
+- Staged/committed git commit hash: `c9c046f`.
