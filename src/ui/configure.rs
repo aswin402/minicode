@@ -1,132 +1,15 @@
 use crate::agent::models::ModelFetcher;
 use crate::config::Config;
 use crate::error::Result;
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, Write};
 use std::path::Path;
 
 pub struct ConfigMenu;
 
+#[allow(dead_code)]
 impl ConfigMenu {
     pub async fn run_interactive(workspace: &Path) -> Result<()> {
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
-        let stdin = io::stdin();
-        let mut reader = stdin.lock();
-
-        let fetcher = ModelFetcher::new();
-        let mut config = Config::load(Some(workspace), None).unwrap_or_default();
-
-        loop {
-            writeln!(
-                handle,
-                "\n\x1b[1;35m⚡ minicode — Interactive Configuration Wizard\x1b[0m"
-            )?;
-            writeln!(
-                handle,
-                "\x1b[90mActive Provider: \x1b[36m{}\x1b[90m | Active Model: \x1b[33m{}\x1b[90m | Policy: \x1b[32m{}\x1b[0m",
-                config.provider.default, config.provider.model, config.agent.approval_policy
-            )?;
-            writeln!(
-                handle,
-                "\x1b[90m─────────────────────────────────────────────────────────\x1b[0m"
-            )?;
-            writeln!(
-                handle,
-                "  \x1b[1m[1]\x1b[0m ⚡ Setup / Switch Active Provider"
-            )?;
-            writeln!(
-                handle,
-                "  \x1b[1m[2]\x1b[0m 🔑 Manage / Reconfigure API Keys"
-            )?;
-            writeln!(
-                handle,
-                "  \x1b[1m[3]\x1b[0m 🔌 Add Custom OpenAI-Compatible Provider"
-            )?;
-            writeln!(
-                handle,
-                "  \x1b[1m[4]\x1b[0m 🤖 Select Model (Live Fetch from Provider)"
-            )?;
-            writeln!(handle, "  \x1b[1m[5]\x1b[0m 🛡️ Toggle Tool Approval Policy")?;
-            writeln!(
-                handle,
-                "  \x1b[1m[6]\x1b[0m 💰 Toggle Cost Display in Status Bar (currently: \x1b[36m{}\x1b[0m)",
-                if config.ui.show_cost { "ENABLED" } else { "DISABLED" }
-            )?;
-            writeln!(handle, "  \x1b[1m[0]\x1b[0m 💾 Save & Exit")?;
-            write!(handle, "\n  Enter choice [0-6]: ")?;
-            handle.flush()?;
-
-            let mut input = String::new();
-            if reader.read_line(&mut input)? == 0 {
-                break;
-            }
-            let choice = input.trim();
-
-            match choice {
-                "1" => {
-                    Self::submenu_setup_provider(
-                        &mut handle,
-                        &mut reader,
-                        &fetcher,
-                        &mut config,
-                        workspace,
-                    )
-                    .await?;
-                }
-                "2" => {
-                    Self::submenu_manage_keys(
-                        &mut handle,
-                        &mut reader,
-                        &fetcher,
-                        &mut config,
-                        workspace,
-                    )
-                    .await?;
-                }
-                "3" => {
-                    Self::submenu_add_custom_provider(
-                        &mut handle,
-                        &mut reader,
-                        &fetcher,
-                        &mut config,
-                        workspace,
-                    )
-                    .await?;
-                }
-                "4" => {
-                    Self::submenu_select_model(&mut handle, &mut reader, &fetcher, &mut config)
-                        .await?;
-                }
-                "5" => {
-                    Self::submenu_toggle_policy(&mut handle, &mut reader, &mut config)?;
-                }
-                "6" => {
-                    config.ui.show_cost = !config.ui.show_cost;
-                    writeln!(
-                        handle,
-                        "\x1b[32m✔ Cost display in status bar set to: {}\x1b[0m",
-                        if config.ui.show_cost {
-                            "ENABLED"
-                        } else {
-                            "DISABLED"
-                        }
-                    )?;
-                }
-                "0" | "exit" | "quit" | "q" => {
-                    Self::save_all(&config, workspace)?;
-                    writeln!(
-                        handle,
-                        "\n\x1b[32m✔ Configuration saved successfully to ~/.config/minicode/config.toml and .env\x1b[0m"
-                    )?;
-                    break;
-                }
-                _ => {
-                    writeln!(handle, "\x1b[31mInvalid option. Please choose 0-6.\x1b[0m")?;
-                }
-            }
-        }
-
-        Ok(())
+        crate::ui::setup::SetupWizard::run(workspace).await
     }
 
     async fn submenu_setup_provider<W: Write, R: BufRead>(

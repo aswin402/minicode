@@ -4,6 +4,8 @@ pub mod guard;
 pub mod input;
 #[allow(dead_code)]
 pub mod selector;
+#[allow(dead_code)]
+pub mod wizard;
 
 #[allow(unused_imports)]
 pub use guard::TerminalGuard;
@@ -11,3 +13,5 @@ pub use guard::TerminalGuard;
 pub use input::{mask_api_key, prompt_api_key, prompt_text};
 #[allow(unused_imports)]
 pub use selector::{next_index, prev_index, InteractiveSelector, SelectorItem};
+#[allow(unused_imports)]
+pub use wizard::SetupWizard;
