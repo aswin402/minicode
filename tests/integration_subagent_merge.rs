@@ -32,6 +32,7 @@ fn setup_git_repo(root: &Path) {
     run(&["config", "user.name", "test-user"]);
     run(&["config", "user.email", "test@example.com"]);
     run(&["config", "commit.gpgsign", "false"]);
+    run(&["config", "init.defaultBranch", "main"]);
 
     std::fs::write(root.join(".gitignore"), ".minicode/\n").unwrap();
     run(&["add", ".gitignore"]);
