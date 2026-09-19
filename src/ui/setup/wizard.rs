@@ -260,7 +260,7 @@ impl SetupWizard {
             .insert(name.to_string(), base_url.to_string());
 
         if let Some(key) = api_key {
-            let env_var = format!("{}_API_KEY", name.to_uppercase().replace(['-', '.'], "_"));
+            let env_var = Self::custom_env_var(name);
             std::env::set_var(&env_var, key);
             config
                 .provider
