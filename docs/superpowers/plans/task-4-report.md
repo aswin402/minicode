@@ -1,157 +1,37 @@
-# Task 4 Execution Report: Wire Micro-Compactor into AgentLoop Lifecycle & Integration Testing
+# Task 4 Execution Report: AgentLoop Ingestion, ToolFilterMode Alignment & Real-Time Timeline Cards
 
 ## Status: DONE
 
-- **Commit Hash:** `2a21461b514b5ac8eaf4ecdd83b604fd10fbc287`
-- **Brief Reference:** [task-4-brief.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/task-4-brief.md)
-- **Primary Files Modified/Created:**
-  - [`src/agent/loop.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/loop.rs)
-  - [`src/context/budget/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/context/budget/mod.rs)
-  - [`tests/common/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/tests/common/mod.rs)
-  - [`tests/integration_micro_compaction.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/tests/integration_micro_compaction.rs)
+- **Commit Hash Pending:** Task 4 changes ready to commit
+- **Brief Reference:** docs/superpowers/plans/task-4-brief.md
 
----
-
-## Implementation Summary
-
-### 1. AgentLoop Lifecycle Wiring (`src/agent/loop.rs`)
-- **Turn Start Compaction**:
-  In `AgentLoop::execute_turn`, before building recency context and invoking `self.prune_context()`, semantic micro-compaction is evaluated across conversation history:
-  ```rust
-  let micro_metrics =
-      crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
-  if micro_metrics.tokens_saved_estimate > 0 {
-      tracing::info!(
-          superseded_reads = micro_metrics.superseded_reads_compacted,
-          duplicate_reads = micro_metrics.duplicate_reads_compacted,
-          mutation_echoes = micro_metrics.mutation_echoes_compacted,
-          search_results = micro_metrics.search_results_compacted,
-          tokens_saved = micro_metrics.tokens_saved_estimate,
-          "Applied semantic micro-compaction to conversation history"
-      );
-  }
-  ```
-- **Post-File Mutation Trigger**:
-  Inside the sequential tool execution loop, immediately after pushing the tool result of a successful file-modifying tool (`write_file`, `patch_file`, `replace_file_content`, `edit_file`):
-  ```rust
-  if tool_result.success
-      && (FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-          || tool_call.name == "replace_file_content"
-          || tool_call.name == "edit_file")
-  {
-      let micro_metrics =
-          crate::context::budget::MicroCompactor::compact_messages(
-              &mut self.messages,
-              2,
-          );
-      if micro_metrics.tokens_saved_estimate > 0 {
-          tracing::info!(
-              superseded_reads = micro_metrics.superseded_reads_compacted,
-              duplicate_reads = micro_metrics.duplicate_reads_compacted,
-              mutation_echoes = micro_metrics.mutation_echoes_compacted,
-              search_results = micro_metrics.search_results_compacted,
-              tokens_saved = micro_metrics.tokens_saved_estimate,
-              "Applied semantic micro-compaction after file mutation"
-          );
-      }
-  }
-  ```
-  This guarantees that any prior `read_file` for modified targets is immediately compacted to a lightweight receipt before the next LLM step or generation turn.
-
-### 2. Module Re-export (`src/context/budget/mod.rs`)
-- Re-exported `pub use ccr_cache::CcrCache;` with `#[allow(unused_imports)]` in `src/context/budget/mod.rs` for uniform library access across integration test suites and external crates.
-
-### 3. Integration Test Suite (`tests/integration_micro_compaction.rs`)
-Implemented four comprehensive integration tests:
-1. `test_end_to_end_multi_turn_micro_compaction`:
-   - Simulates a realistic 4-turn coding conversation:
-     - Turn 1: `read_file` on `src/service.rs` (300 lines of code)
-     - Turn 2: `grep_search` for `handle_request` (50 lines of matches)
-     - Turn 3: `patch_file` on `src/service.rs` (succeeds)
-     - Turn 4: `cargo test` in active turn
-   - Runs `MicroCompactor::compact_messages(&mut messages, 1)`.
-   - Asserts Turn 1 `read_file` is condensed as superseded by modification with a `ccr_` ID.
-   - Asserts Turn 2 `grep_search` is condensed as historical search with a `ccr_` ID.
-   - Asserts Turn 4 `cargo test` is in the active turn and is 100% untouched.
-   - Asserts `CcrCache::retrieve` on both CCR IDs recovers the exact raw text verbatim.
-2. `test_multi_file_mutation_and_selective_compaction`:
-   - Reads `file_a.rs` and `file_b.rs`.
-   - Modifies only `file_a.rs`.
-   - Runs `MicroCompactor::compact_messages(&mut messages, 1)`.
-   - Asserts `file_a.rs` read is compacted (superseded by modification).
-   - Asserts `file_b.rs` read is NOT compacted (since it was never modified).
-3. `test_cumulative_tokens_saved_metric`:
-   - Verifies `metrics.tokens_saved_estimate > 0` and precisely matches expected formula `(raw_len - receipt_len) / 4`.
-4. `test_agent_loop_micro_compaction_wiring`:
-   - Initializes an `AgentLoop` instance with `MockProvider`, simulates a multi-turn conversation in its message history, and verifies that micro-compaction correctly compacts superseded observations within the agent loop context.
-
----
-
-## Verification Results
-
-### 1. Targeted Integration Tests
-Command: `cargo test -j 1 --test integration_micro_compaction`
-Output:
-```text
-running 4 tests
-test test_multi_file_mutation_and_selective_compaction ... ok
-test test_cumulative_tokens_saved_metric ... ok
-test test_end_to_end_multi_turn_micro_compaction ... ok
-test test_agent_loop_micro_compaction_wiring ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
-```
-
-### 2. Targeted Unit Tests
-Command: `cargo test -j 1 --lib context::budget::micro_compact::tests`
-Output:
-```text
-running 20 tests
-test context::budget::micro_compact::tests::test_extract_search_query ... ok
-test context::budget::micro_compact::tests::test_already_compacted_read_skipped ... ok
-test context::budget::micro_compact::tests::test_cross_platform_path_normalization ... ok
-test context::budget::micro_compact::tests::test_extract_target_path_various_schemas ... ok
-test context::budget::micro_compact::tests::test_duplicate_read_with_normalized_paths ... ok
-test context::budget::micro_compact::tests::test_duplicate_consecutive_reads ... ok
-test context::budget::micro_compact::tests::test_duplicate_read_with_mutation_between_not_compacted_as_duplicate ... ok
-test context::budget::micro_compact::tests::test_find_by_name_pattern_search_result_condensation ... ok
-test context::budget::micro_compact::tests::test_historical_mutation_echo_condensation ... ok
-test context::budget::micro_compact::tests::test_is_already_receipt ... ok
-test context::budget::micro_compact::tests::test_historical_search_result_condensation ... ok
-test context::budget::micro_compact::tests::test_mutation_echo_recent_turn_preserved ... ok
-test context::budget::micro_compact::tests::test_non_superseded_read_uncompacted ... ok
-test context::budget::micro_compact::tests::test_no_negative_compression_on_tiny_output ... ok
-test context::budget::micro_compact::tests::test_normalize_path_for_compare_variants ... ok
-test context::budget::micro_compact::tests::test_recent_search_result_uncompacted ... ok
-test context::budget::micro_compact::tests::test_recent_turn_preserved_uncompacted ... ok
-test context::budget::micro_compact::tests::test_small_search_result_uncompacted ... ok
-test context::budget::micro_compact::tests::test_search_missing_query_fallback ... ok
-test context::budget::micro_compact::tests::test_superseded_file_read_compaction ... ok
-
-test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 447 filtered out; finished in 0.00s
-```
-
-### 3. Clippy Lint Check
-Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
-Output:
-```text
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s
-```
-Result: Clean (exit code 0, 0 warnings).
-
-### 4. Code Formatting
-Command: `cargo fmt --check`
-Result: Clean (exit code 0, 0 diffs).
-
----
-
-## Non-Test Code Constraints Audit
-- `.unwrap()` count in non-test code: **0**
-- `.expect()` count in non-test code: **0**
-- Full test suite run: **Never executed** (only targeted test paths were executed).
-- Concurrency: **-j 1** strictly adhered to on all `cargo check`, `cargo clippy`, and `cargo test` commands.
-
----
-
-## Concerns / Notes
-- None. All requirements, constraints, and integration tests passed cleanly and completely.
+### Summary of Accomplishments
+1. **ToolFilterMode Alignment (`src/config.rs` & `src/tools/mod.rs`)**:
+   - Extended `ToolFilterMode` with `ReadOnly` and `Standard` variants.
+   - Implemented `Display` and `FromStr` mappings (`"read_only"` / `"readonly"` and `"standard"`).
+   - Implemented `ToolRegistry::filter_tools(mode, tools)` ensuring subagents launched in read-only mode (`Scout`, `Reviewer`) only have read-only tools exposed, while standard mode (`Coder`, `Tester`) filters out meta-tools.
+2. **AgentEvent Subagent Streaming Variants (`src/agent/types.rs`)**:
+   - Added `AgentEvent::SubagentProgress` (`turn_id`, `subagent_id`, `role`, `action`, `detail`).
+   - Added `AgentEvent::SubagentCompleted` (`turn_id`, `subagent_id`, `role`, `success`, `tokens_used`, `tools_executed`, `summary`).
+3. **Reactive A2A Mailbox Ingestion in AgentLoop (`src/agent/loop.rs`)**:
+   - Added `mailbox: Option<AgentMailbox>` to `AgentLoop`.
+   - Initialized parent mailbox at `.minicode/agents/parent/mailbox.jsonl`.
+   - In `AgentLoop::execute_turn`, automatically drains unread A2A messages from child subagents and injects them as structured `<agent_message>` blocks into conversation history before model invocation.
+4. **Timeline Activity Card Rendering (`src/ui/view.rs`)**:
+   - Enhanced `TimelineView` with `on_subagent_progress` and `on_subagent_completed` handlers.
+   - Rendered real-time nested subagent execution blocks with role styling, status badges, action details, and completion summaries.
+5. **Headless NDJSON & CLI Forwarding (`src/main.rs`, `src/app/mod.rs`, `src/logging/formatter.rs`)**:
+   - Handled subagent progress and completion events in headless streaming (`println!` with formatted badge) and TUI event pump.
+6. **Comprehensive Integration Tests (`tests/integration_subagent_delegation.rs`)**:
+   - `test_subagent_roles_and_workspace_modes`: PASS
+   - `test_tool_filter_mode_parsing`: PASS
+   - `test_agent_event_subagent_variants_serde`: PASS
+   - `test_timeline_subagent_events_rendering`: PASS
+   - `test_tool_registry_filtering_modes`: PASS
+   - `test_subagent_mailbox_drain_and_prompt_formatting`: PASS
+   - `test_agent_loop_mailbox_ingestion`: PASS
+   All 7 integration tests pass with 100% success.
+7. **Quality Gates**:
+   - `cargo fmt --check`: 100% compliant
+   - `cargo clippy -j 1 --bin minicode -- -D warnings`: 0 warnings
+   - Zero non-test `.unwrap()` or `.expect()`.

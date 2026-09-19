@@ -372,6 +372,41 @@ impl HonoLogFormatter {
                 ))
             }
 
+            AgentEvent::SubagentProgress {
+                turn_id,
+                subagent_id,
+                role,
+                action,
+                status,
+            } => {
+                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let badge = self.color("\x1b[38;2;130;170;255m");
+                Some(format!(
+                    "{}{}  {} {}AGENT{}  #{} [{}: {}] {} ({})",
+                    dim, time, arrow_in, badge, reset, turn_id, role, subagent_id, action, status
+                ))
+            }
+
+            AgentEvent::SubagentCompleted {
+                turn_id,
+                subagent_id,
+                role,
+                success,
+                summary,
+            } => {
+                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let (badge, arrow) = if *success {
+                    (self.color("\x1b[38;2;120;220;120m"), arrow_out_ok)
+                } else {
+                    (self.color("\x1b[38;2;255;100;100m"), arrow_out_err)
+                };
+                let status_str = if *success { "Completed" } else { "Failed" };
+                Some(format!(
+                    "{}{}  {} {}AGENT{}  #{} [{}: {}] {} - {}",
+                    dim, time, arrow, badge, reset, turn_id, role, subagent_id, status_str, summary
+                ))
+            }
+
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
@@ -513,6 +548,30 @@ impl HonoLogFormatter {
                 Some(*turn_id),
                 500,
                 format!("{} ({} failures)", pattern, failures),
+            ),
+            AgentEvent::SubagentProgress {
+                turn_id,
+                subagent_id,
+                role,
+                action,
+                status,
+            } => (
+                "subagent_progress",
+                Some(*turn_id),
+                200,
+                format!("[{}: {}] {} ({})", role, subagent_id, action, status),
+            ),
+            AgentEvent::SubagentCompleted {
+                turn_id,
+                subagent_id,
+                role,
+                success,
+                summary,
+            } => (
+                "subagent_completed",
+                Some(*turn_id),
+                if *success { 200 } else { 500 },
+                format!("[{}: {}] {}", role, subagent_id, summary),
             ),
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }

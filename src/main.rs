@@ -1187,6 +1187,35 @@ async fn run_interactive_mode(
                         AgentEvent::Error { message, .. } => {
                             eprintln!("\n✗ Error: {}", message);
                         }
+                        AgentEvent::SubagentProgress {
+                            subagent_id,
+                            role,
+                            action,
+                            status,
+                            ..
+                        } => {
+                            println!(
+                                "🤖 [Subagent {} ({})]: {} [{}]",
+                                subagent_id, role, action, status
+                            );
+                        }
+                        AgentEvent::SubagentCompleted {
+                            subagent_id,
+                            role,
+                            success,
+                            summary,
+                            ..
+                        } => {
+                            let status_badge = if success {
+                                "✔ Completed"
+                            } else {
+                                "✗ Failed"
+                            };
+                            println!(
+                                "🤖 [Subagent {} ({}) {}]: {}",
+                                subagent_id, role, status_badge, summary
+                            );
+                        }
                         _ => {}
                     }
                 }

@@ -562,6 +562,34 @@ impl<'a> App<'a> {
                             AgentEvent::AntiThrashTripped { intervention, .. } => {
                                 self.timeline.add_status(format!("⚠️ Anti-Thrashing Breaker: Halting loop\n{}", intervention));
                             }
+                            AgentEvent::SubagentProgress {
+                                subagent_id,
+                                role,
+                                action,
+                                status,
+                                ..
+                            } => {
+                                self.timeline.handle_subagent_progress(
+                                    &subagent_id,
+                                    &role,
+                                    &action,
+                                    &status,
+                                );
+                            }
+                            AgentEvent::SubagentCompleted {
+                                subagent_id,
+                                role,
+                                success,
+                                summary,
+                                ..
+                            } => {
+                                self.timeline.handle_subagent_completed(
+                                    &subagent_id,
+                                    &role,
+                                    success,
+                                    &summary,
+                                );
+                            }
                             _ => {}
                         }
                     }

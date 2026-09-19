@@ -231,6 +231,28 @@ pub fn assemble_active_tools_with_mcp(
             all.push(activate_tools_schema_with_mcp(&mcp_server_info));
             all
         }
+        crate::config::ToolFilterMode::ReadOnly => {
+            let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
+            for cat in &ToolCategory::ALL {
+                all.extend(cat.get_schemas());
+            }
+            for tools in mcp_tools_by_server.values() {
+                all.extend(tools.clone());
+            }
+            all.retain(|s| crate::tools::is_read_only(&s.name));
+            all
+        }
+        crate::config::ToolFilterMode::Standard => {
+            let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
+            for cat in &ToolCategory::ALL {
+                all.extend(cat.get_schemas());
+            }
+            for tools in mcp_tools_by_server.values() {
+                all.extend(tools.clone());
+            }
+            all.retain(|s| s.name != "spawn_subagent" && s.name != "activate_tools");
+            all
+        }
         crate::config::ToolFilterMode::CoreOnly => {
             let mut core = get_core_schemas();
             if let Some(pos) = core.iter().position(|s| s.name == "activate_tools") {

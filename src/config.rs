@@ -199,6 +199,8 @@ pub enum ToolFilterMode {
     Dynamic,
     CoreOnly,
     Full,
+    ReadOnly,
+    Standard,
 }
 
 impl std::fmt::Display for ToolFilterMode {
@@ -207,6 +209,8 @@ impl std::fmt::Display for ToolFilterMode {
             Self::Dynamic => write!(f, "dynamic"),
             Self::CoreOnly => write!(f, "core_only"),
             Self::Full => write!(f, "full"),
+            Self::ReadOnly => write!(f, "read_only"),
+            Self::Standard => write!(f, "standard"),
         }
     }
 }
@@ -218,8 +222,10 @@ impl std::str::FromStr for ToolFilterMode {
             "dynamic" => Ok(Self::Dynamic),
             "core_only" | "core" => Ok(Self::CoreOnly),
             "full" | "all" => Ok(Self::Full),
+            "read_only" | "readonly" => Ok(Self::ReadOnly),
+            "standard" => Ok(Self::Standard),
             other => Err(format!(
-                "Invalid tool_mode '{}'. Must be 'dynamic', 'core_only', or 'full'",
+                "Invalid tool_mode '{}'. Must be 'dynamic', 'core_only', 'full', 'read_only', or 'standard'",
                 other
             )),
         }

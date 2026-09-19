@@ -580,6 +580,98 @@ impl TimelineView {
         }
     }
 
+    /// Ingests a SubagentProgress event and updates or creates a SubagentTree block.
+    pub fn handle_subagent_progress(
+        &mut self,
+        subagent_id: &str,
+        role: &str,
+        action: &str,
+        status: &str,
+    ) {
+        let item_status = match status.to_lowercase().as_str() {
+            "success" | "done" | "ok" => SubagentItemStatus::Success,
+            "failed" | "error" => SubagentItemStatus::Failed(action.to_string()),
+            _ => SubagentItemStatus::Running,
+        };
+
+        for entry in self.entries.iter_mut().rev() {
+            if let TimelineEntry::SubagentTree(ref mut block) = entry {
+                if block.id == subagent_id {
+                    block.items.push(SubagentTreeItem {
+                        name: role.to_string(),
+                        detail: action.to_string(),
+                        status: item_status,
+                    });
+                    return;
+                }
+            }
+        }
+
+        self.entries
+            .push(TimelineEntry::SubagentTree(SubagentTreeBlock {
+                id: subagent_id.to_string(),
+                role_name: role.to_string(),
+                task_prompt: action.to_string(),
+                items: vec![SubagentTreeItem {
+                    name: role.to_string(),
+                    detail: action.to_string(),
+                    status: item_status,
+                }],
+                is_running: true,
+                is_success: false,
+                outcome: None,
+                error_message: None,
+                tokens_used: 0,
+                duration_ms: None,
+            }));
+    }
+
+    /// Ingests a SubagentCompleted event and finalizes the matching SubagentTree block.
+    pub fn handle_subagent_completed(
+        &mut self,
+        subagent_id: &str,
+        role: &str,
+        success: bool,
+        summary: &str,
+    ) {
+        for entry in self.entries.iter_mut().rev() {
+            if let TimelineEntry::SubagentTree(ref mut block) = entry {
+                if block.id == subagent_id {
+                    block.is_running = false;
+                    block.is_success = success;
+                    if success {
+                        block.outcome = Some(summary.to_string());
+                    } else {
+                        block.error_message = Some(summary.to_string());
+                    }
+                    return;
+                }
+            }
+        }
+
+        self.entries
+            .push(TimelineEntry::SubagentTree(SubagentTreeBlock {
+                id: subagent_id.to_string(),
+                role_name: role.to_string(),
+                task_prompt: summary.to_string(),
+                items: vec![],
+                is_running: false,
+                is_success: success,
+                outcome: if success {
+                    Some(summary.to_string())
+                } else {
+                    None
+                },
+                error_message: if !success {
+                    Some(summary.to_string())
+                } else {
+                    None
+                },
+                tokens_used: 0,
+                duration_ms: None,
+            }));
+    }
+
     /// Gets the most recent assistant response text for copying
     pub fn get_last_assistant_response(&self) -> Option<String> {
         for entry in self.entries.iter().rev() {
@@ -616,6 +708,46 @@ impl TimelineView {
                         status,
                         output.trim()
                     ));
+                }
+                TimelineEntry::SubagentTree(block) => {
+                    let status = if block.is_success {
+                        "Success"
+                    } else if block.is_running {
+                        "Running"
+                    } else {
+                        "Failed"
+                    };
+                    out.push_str(&format!(
+                        "### Subagent: {} ({}) [{}]\nPrompt: {}\n",
+                        block.id,
+                        block.role_name,
+                        status,
+                        block.task_prompt.trim()
+                    ));
+                    for it in &block.items {
+                        out.push_str(&format!("- {} {}\n", it.name, it.detail));
+                    }
+                    if let Some(ref outcome) = block.outcome {
+                        out.push_str(&format!("Outcome: {}\n", outcome));
+                    }
+                    if let Some(ref err) = block.error_message {
+                        out.push_str(&format!("Error: {}\n", err));
+                    }
+                    out.push('\n');
+                }
+                TimelineEntry::SubagentSwarm(swarm) => {
+                    out.push_str(&format!(
+                        "### Subagent Swarm: {} ({} workers)\n",
+                        swarm.title,
+                        swarm.workers.len()
+                    ));
+                    for w in &swarm.workers {
+                        out.push_str(&format!(
+                            "- [{}] {}: {} tokens\n",
+                            w.role_name, w.id, w.tokens_used
+                        ));
+                    }
+                    out.push('\n');
                 }
                 _ => {}
             }

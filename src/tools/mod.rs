@@ -55,6 +55,34 @@ impl ToolRegistry {
         schemas
     }
 
+    /// Filters a list of tool schemas according to the active ToolFilterMode.
+    #[allow(dead_code)]
+    pub fn filter_tools(
+        mode: crate::config::ToolFilterMode,
+        tools: Vec<ToolSchema>,
+    ) -> Vec<ToolSchema> {
+        match mode {
+            crate::config::ToolFilterMode::ReadOnly => tools
+                .into_iter()
+                .filter(|s| crate::tools::is_read_only(&s.name))
+                .collect(),
+            crate::config::ToolFilterMode::Standard => tools
+                .into_iter()
+                .filter(|s| s.name != "spawn_subagent" && s.name != "activate_tools")
+                .collect(),
+            crate::config::ToolFilterMode::CoreOnly => {
+                let core = crate::tools::category::get_core_schemas();
+                let core_names: std::collections::HashSet<String> =
+                    core.into_iter().map(|s| s.name).collect();
+                tools
+                    .into_iter()
+                    .filter(|s| core_names.contains(&s.name))
+                    .collect()
+            }
+            crate::config::ToolFilterMode::Full | crate::config::ToolFilterMode::Dynamic => tools,
+        }
+    }
+
     /// Dispatches and executes a tool call by name with safety checkpointing.
     pub async fn dispatch(
         workspace_root: &Path,

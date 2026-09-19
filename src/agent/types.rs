@@ -272,6 +272,25 @@ pub enum AgentEvent {
 
     #[serde(rename = "command_list")]
     CommandList { commands: Vec<CommandDescription> },
+
+    #[serde(rename = "subagent_progress")]
+    SubagentProgress {
+        turn_id: usize,
+        subagent_id: String,
+        role: String,
+        action: String,
+        #[serde(default)]
+        status: String,
+    },
+
+    #[serde(rename = "subagent_completed")]
+    SubagentCompleted {
+        turn_id: usize,
+        subagent_id: String,
+        role: String,
+        success: bool,
+        summary: String,
+    },
 }
 
 /// Description of a built-in slash command or autonomous intent

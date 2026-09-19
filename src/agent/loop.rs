@@ -45,6 +45,8 @@ pub struct AgentLoop {
     pub cumulative_tokens_used: usize,
     /// Living intent anchor and execution ledger.
     pub intent_ledger: Option<crate::context::memory::intent::IntentLedger>,
+    /// Reactive agent-to-agent FIFO mailbox for receiving subagent coordination messages.
+    pub mailbox: Option<crate::agent::subagent::mailbox::AgentMailbox>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -103,6 +105,15 @@ impl AgentLoop {
             None
         };
 
+        let mailbox = crate::agent::subagent::mailbox::AgentMailbox::new(
+            crate::agent::subagent::types::AgentId::parent(),
+            &workspace_root
+                .join(".minicode")
+                .join("agents")
+                .join("parent"),
+        )
+        .ok();
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -122,8 +133,15 @@ impl AgentLoop {
             speculative_executor,
             cumulative_tokens_used: 0,
             intent_ledger,
+            mailbox,
             _active_guard: active_guard,
         }
+    }
+
+    /// Returns a reference to the reactive agent-to-agent mailbox, if available.
+    #[allow(dead_code)]
+    pub fn mailbox(&self) -> Option<&crate::agent::subagent::mailbox::AgentMailbox> {
+        self.mailbox.as_ref()
     }
 
     /// Returns a handle to the in-flight approval registry for hosts (TUI/NDJSON).
@@ -336,6 +354,16 @@ impl AgentLoop {
         // This prevents the registry from growing unboundedly when hosts disappear
         // or turns get rolled back without draining their approval entries.
         self.prune_stale_approvals();
+
+        // Drain any incoming reactive A2A messages into conversation history
+        if let Some(ref mb) = self.mailbox {
+            if let Ok(unread) = mb.drain_unread() {
+                for msg in unread {
+                    tracing::info!(from = %msg.sender.0, intent = ?msg.intent, "Ingested incoming A2A message");
+                    self.messages.push(Message::user(msg.format_for_prompt()));
+                }
+            }
+        }
 
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
