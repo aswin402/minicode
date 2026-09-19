@@ -285,6 +285,7 @@ impl MultiAgentOrchestrator {
     }
 
     /// Merges an isolated subagent worktree branch into the current branch and cleans up.
+    #[allow(dead_code)]
     pub async fn merge_worktree(workspace_root: &Path, subagent_id: &str) -> Result<String> {
         let mgr = WorktreeManager::new(workspace_root);
         let merge_output = mgr.merge_worktree(subagent_id).await.map_err(|e| {

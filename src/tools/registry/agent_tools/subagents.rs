@@ -246,13 +246,25 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "merge_subagent_worktree".to_string(),
-            description: "Integrate a verified subagent worktree branch (subagent/<id>) into the current branch and clean up its temporary worktree directory.".to_string(),
+            description: "Validates and merges code changes from a completed subagent's ephemeral git worktree into the main workspace. Automatically runs project build/test checks before landing changes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "subagent_id": {
                         "type": "string",
-                        "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'task-a1b2c3d4' or 'testengineer-2')"
+                        "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'coder-1' or 'task-a1b2c3d4')"
+                    },
+                    "commit": {
+                        "type": "boolean",
+                        "description": "Whether to automatically commit the merged changes (default: true). If false, stages changes in the working tree without committing."
+                    },
+                    "check_cmd": {
+                        "type": "string",
+                        "description": "Optional pre-merge validation command to run in the worktree (e.g. 'cargo check -j 1' or 'skip'). Defaults to auto-detecting project check command."
+                    },
+                    "commit_message": {
+                        "type": "string",
+                        "description": "Optional custom commit message when commit is true"
                     }
                 },
                 "required": ["subagent_id"]
@@ -674,12 +686,21 @@ pub async fn dispatch(
             }
         }.await),
         "merge_subagent_worktree" => Some(async {
-            let subagent_id = param::require_str(args, "subagent_id", "merge_subagent_worktree")?;
+            let parsed: MergeSubagentWorktreeArgs = serde_json::from_value(args.clone())
+                .map_err(|e| ToolError::InvalidArguments {
+                    name: "merge_subagent_worktree".to_string(),
+                    reason: format!("Failed to parse arguments: {}", e),
+                })?;
 
-            crate::agent::orchestrator::MultiAgentOrchestrator::merge_worktree(
+            merge_subagent_worktree(
                 workspace_root,
-                subagent_id,
-            ).await
+                &parsed.subagent_id,
+                parsed.commit.unwrap_or(true),
+                parsed.check_cmd.as_deref(),
+                parsed.commit_message.as_deref(),
+            )
+            .await
+            .map_err(Into::into)
         }.await),
         "subagent_transcript_drilldown" => Some(async {
             let subagent_id = param::require_str(args, "subagent_id", "subagent_transcript_drilldown")?;
@@ -712,5 +733,459 @@ pub async fn dispatch(
             }
         }.await),
         _ => None,
+    }
+}
+
+/// Arguments for `merge_subagent_worktree` tool.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MergeSubagentWorktreeArgs {
+    pub subagent_id: String,
+    pub commit: Option<bool>,
+    pub check_cmd: Option<String>,
+    pub commit_message: Option<String>,
+}
+
+/// Validates and merges code changes from a completed subagent's ephemeral git worktree
+/// into the main workspace with automatic pre-merge verification, conflict detection, and cleanup.
+pub async fn merge_subagent_worktree(
+    workspace_root: &Path,
+    subagent_id: &str,
+    commit: bool,
+    check_cmd: Option<&str>,
+    commit_message: Option<&str>,
+) -> std::result::Result<String, ToolError> {
+    // 1. Locate worktree path via GitWorktreeManager::locate_worktree
+    let agent_id = crate::agent::subagent::AgentId(subagent_id.to_string());
+    let worktree_path =
+        crate::sandbox::GitWorktreeManager::locate_worktree(workspace_root, &agent_id).ok_or_else(
+            || {
+                ToolError::ExecutionFailed(format!(
+                    "Worktree not found for subagent '{}' under .minicode/worktrees/",
+                    subagent_id
+                ))
+            },
+        )?;
+
+    // 2. Resolve source branch via GitWorktreeManager::resolve_branch_for
+    let branch_name =
+        crate::sandbox::GitWorktreeManager::resolve_branch_for(workspace_root, &agent_id);
+
+    // 3. Pre-merge verification via MergeArbitrator::verify_worktree
+    let validation = crate::sandbox::MergeArbitrator::verify_worktree(&worktree_path, check_cmd)
+        .map_err(|e| ToolError::ExecutionFailed(format!("Pre-merge verification error: {}", e)))?;
+
+    if !validation.success {
+        let mut report = format!(
+            "❌ Pre-merge verification failed for subagent `{}` in worktree `{}`.\n\
+             • Command: `{}`\n\
+             • Exit Code: {}\n\
+             • Duration: {}ms\n\
+             • Status: Parent workspace untouched and worktree preserved.\n",
+            subagent_id,
+            worktree_path.display(),
+            validation.command,
+            validation.exit_code,
+            validation.duration_ms
+        );
+        if !validation.stdout.trim().is_empty() {
+            report.push_str(&format!(
+                "\n### Stdout\n```\n{}\n```\n",
+                validation.stdout.trim()
+            ));
+        }
+        if !validation.stderr.trim().is_empty() {
+            report.push_str(&format!(
+                "\n### Stderr\n```\n{}\n```\n",
+                validation.stderr.trim()
+            ));
+        }
+        return Ok(report);
+    }
+
+    // 4. Mergeability check via MergeArbitrator::check_mergeability
+    let mergeability =
+        crate::sandbox::MergeArbitrator::check_mergeability(workspace_root, &branch_name)
+            .map_err(|e| ToolError::ExecutionFailed(format!("Mergeability check failed: {}", e)))?;
+
+    if !mergeability.can_merge_cleanly {
+        let mut report = format!(
+            "⚠️ Merge conflicts detected between branch `{}` and HEAD for subagent `{}`.\n\
+             • Worktree: `{}`\n\
+             • Conflicted Files ({}):\n",
+            branch_name,
+            subagent_id,
+            worktree_path.display(),
+            mergeability.conflicted_files.len()
+        );
+        for file in &mergeability.conflicted_files {
+            report.push_str(&format!("  - `{}`\n", file));
+        }
+        report.push_str(
+            "\n• Status: Merge aborted. Parent workspace untouched and worktree preserved.\n",
+        );
+        return Ok(report);
+    }
+
+    // 5. Apply merge via MergeArbitrator::apply_merge
+    let merge_report = crate::sandbox::MergeArbitrator::apply_merge(
+        workspace_root,
+        &branch_name,
+        commit,
+        commit_message,
+    )
+    .map_err(|e| match e {
+        crate::sandbox::ArbitrationError::MergeConflict(conflicts) => ToolError::ExecutionFailed(
+            format!("Merge conflict encountered during apply: {:?}", conflicts),
+        ),
+        other => ToolError::ExecutionFailed(format!("Failed to apply merge: {}", other)),
+    })?;
+
+    // 6. On successful merge, clean up worktree and temporary branch via GitWorktreeManager::remove_worktree
+    let handle = crate::sandbox::WorktreeHandle {
+        worktree_path: worktree_path.clone(),
+        branch_name: branch_name.clone(),
+        agent_id: agent_id.clone(),
+        repo_root: workspace_root.to_path_buf(),
+    };
+    if let Err(e) = crate::sandbox::GitWorktreeManager::remove_worktree(&handle) {
+        tracing::warn!("Failed to clean up worktree after merge: {}", e);
+    }
+
+    // 7. Return formatted markdown success summary
+    let landing_mode = if merge_report.committed {
+        "Committed (`--no-ff`)"
+    } else {
+        "Staged without committing (`--no-commit`)"
+    };
+
+    let mut commit_details = String::new();
+    if let Some(ref hash) = merge_report.commit_hash {
+        commit_details.push_str(&format!("\n• **Commit Hash**: `{}`", hash));
+    }
+    if let Some(ref msg) = merge_report.commit_message {
+        commit_details.push_str(&format!("\n• **Commit Message**: {}", msg));
+    }
+
+    let files_summary = if merge_report.files_changed.is_empty() {
+        "  - None (empty diff)".to_string()
+    } else {
+        merge_report
+            .files_changed
+            .iter()
+            .map(|f| format!("  - `{}`", f))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let summary = format!(
+        "✔ Successfully merged subagent worktree changes!\n\
+         • **Subagent ID**: `{}`\n\
+         • **Branch**: `{}`\n\
+         • **Landing Mode**: {}{}\n\
+         • **Pre-Merge Validation**: Passed (`{}` in {}ms)\n\
+         • **Cleanup**: Worktree `{}` and branch `{}` removed\n\n\
+         ### Files Changed ({})\n\
+         {}\n",
+        subagent_id,
+        branch_name,
+        landing_mode,
+        commit_details,
+        validation.command,
+        validation.duration_ms,
+        worktree_path.display(),
+        branch_name,
+        merge_report.files_changed.len(),
+        files_summary
+    );
+
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_subagent_worktree_arg_parsing() {
+        let json = serde_json::json!({
+            "subagent_id": "coder-1",
+            "commit": true,
+            "check_cmd": "cargo check -j 1",
+            "commit_message": "merge: auth feature"
+        });
+        let args: MergeSubagentWorktreeArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.subagent_id, "coder-1");
+        assert_eq!(args.commit, Some(true));
+        assert_eq!(args.check_cmd.as_deref(), Some("cargo check -j 1"));
+        assert_eq!(args.commit_message.as_deref(), Some("merge: auth feature"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_subagent_worktree_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let res = merge_subagent_worktree(temp.path(), "missing-agent", true, None, None).await;
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Worktree not found for subagent 'missing-agent'"));
+    }
+
+    #[tokio::test]
+    async fn test_merge_subagent_worktree_clean_merge() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let agent_id = crate::agent::subagent::AgentId("coder-test".to_string());
+        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+
+        // Add a commit in the worktree
+        std::fs::write(
+            handle.worktree_path.join("feature.txt"),
+            "new feature content\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: add feature"])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+
+        let res = merge_subagent_worktree(
+            root,
+            "coder-test",
+            true,
+            Some("skip"),
+            Some("merge: feat add feature"),
+        )
+        .await;
+
+        assert!(res.is_ok());
+        let summary = res.unwrap();
+        assert!(summary.contains("Successfully merged subagent worktree changes"));
+        assert!(summary.contains("coder-test"));
+        assert!(summary.contains("feature.txt"));
+
+        // Worktree should be cleaned up
+        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_none());
+        assert!(root.join("feature.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_merge_subagent_worktree_staged_no_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let agent_id = crate::agent::subagent::AgentId("staged-test".to_string());
+        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+
+        std::fs::write(handle.worktree_path.join("staged.txt"), "staged content\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "branch staged"])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+
+        let res = merge_subagent_worktree(root, "staged-test", false, Some("skip"), None).await;
+
+        assert!(res.is_ok());
+        let summary = res.unwrap();
+        assert!(summary.contains("Staged without committing"));
+        assert!(root.join("staged.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_merge_subagent_worktree_verification_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let agent_id = crate::agent::subagent::AgentId("failing-verifier".to_string());
+        let _handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+
+        // Verification command that fails
+        let res =
+            merge_subagent_worktree(root, "failing-verifier", true, Some("false"), None).await;
+
+        assert!(res.is_ok());
+        let report = res.unwrap();
+        assert!(report.contains("Pre-merge verification failed"));
+        assert!(report.contains("Parent workspace untouched and worktree preserved"));
+
+        // Worktree MUST still exist
+        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_some());
+    }
+
+    #[tokio::test]
+    async fn test_merge_subagent_worktree_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        std::fs::write(root.join("conflict.txt"), "line original\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let agent_id = crate::agent::subagent::AgentId("conflicting-subagent".to_string());
+        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+
+        // Branch commit
+        std::fs::write(
+            handle.worktree_path.join("conflict.txt"),
+            "line branch edit\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "branch edit"])
+            .current_dir(&handle.worktree_path)
+            .output()
+            .unwrap();
+
+        // Main commit
+        std::fs::write(root.join("conflict.txt"), "line main edit\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "main edit"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let res =
+            merge_subagent_worktree(root, "conflicting-subagent", true, Some("skip"), None).await;
+
+        assert!(res.is_ok());
+        let report = res.unwrap();
+        assert!(report.contains("Merge conflicts detected"));
+        assert!(report.contains("conflict.txt"));
+        assert!(report.contains("Parent workspace untouched and worktree preserved"));
+
+        // Worktree MUST still exist
+        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_some());
     }
 }
