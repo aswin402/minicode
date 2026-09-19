@@ -116,6 +116,7 @@ pub struct WorkerResult {
     pub merge_status: MergeStatus,
     pub summary: String,
     pub error: Option<String>,
+    pub check_cmd: Option<String>,
 }
 
 /// Orchestrator for concurrent subagent swarm execution and map-reduce aggregation.
@@ -184,6 +185,7 @@ impl FanoutOrchestrator {
                         merge_status: MergeStatus::NotApplicable,
                         summary: format!("Worker failed to execute: {}", e),
                         error: Some(e.to_string()),
+                        check_cmd: task_item.check_cmd.clone(),
                     });
                 }
                 Err(e) => {
@@ -233,6 +235,7 @@ impl FanoutOrchestrator {
                     merge_status: MergeStatus::SkippedCancelled,
                     summary: "Task cancelled before acquiring concurrency permit.".to_string(),
                     error: Some("Cancelled".to_string()),
+                    check_cmd: task_item.check_cmd,
                 });
             }
             permit_res = semaphore.acquire() => {
@@ -262,6 +265,7 @@ impl FanoutOrchestrator {
                 merge_status: MergeStatus::SkippedCancelled,
                 summary: "Task cancelled before execution.".to_string(),
                 error: Some("Cancelled".to_string()),
+                check_cmd: task_item.check_cmd,
             });
         }
 
@@ -469,6 +473,7 @@ impl FanoutOrchestrator {
                     merge_status: MergeStatus::SkippedCancelled,
                     summary: "Worker execution was cancelled.".to_string(),
                     error: Some("Worker cancelled".to_string()),
+                    check_cmd: task_item.check_cmd,
                 });
             }
             (wait_res, err_output) = execution_future => {
@@ -492,6 +497,7 @@ impl FanoutOrchestrator {
                             merge_status: MergeStatus::NotApplicable,
                             summary: format!("Subagent child wait error: {}", e),
                             error: Some(e.to_string()),
+                            check_cmd: task_item.check_cmd,
                         });
                     }
                 };
@@ -557,6 +563,7 @@ impl FanoutOrchestrator {
                 merge_status,
                 summary: final_response.trim().to_string(),
                 error: None,
+                check_cmd: task_item.check_cmd,
             })
         } else {
             // Clean up worktree on failure
@@ -589,6 +596,7 @@ impl FanoutOrchestrator {
                 merge_status: MergeStatus::NotApplicable,
                 summary: final_response.trim().to_string(),
                 error: error_detail,
+                check_cmd: task_item.check_cmd,
             })
         }
     }
@@ -609,7 +617,10 @@ impl FanoutOrchestrator {
             };
 
             // 1. Pre-merge verification
-            let check_cmd = tasks.get(i).and_then(|t| t.check_cmd.as_deref());
+            let check_cmd = res
+                .check_cmd
+                .as_deref()
+                .or_else(|| tasks.get(i).and_then(|t| t.check_cmd.as_deref()));
             let v_res = MergeArbitrator::verify_worktree(&worktree_path, check_cmd);
             match v_res {
                 Ok(v_rep) if !v_rep.success => {
@@ -677,7 +688,13 @@ impl FanoutOrchestrator {
                         agent_id: res.agent_id.clone(),
                         repo_root: workspace_root.to_path_buf(),
                     };
-                    let _ = GitWorktreeManager::remove_worktree(&handle);
+                    if let Err(e) = GitWorktreeManager::remove_worktree(&handle) {
+                        tracing::warn!(
+                            agent_id = %res.agent_id,
+                            error = %e,
+                            "Failed to remove worktree after merge"
+                        );
+                    }
                 }
                 Err(ArbitrationError::MergeConflict(files)) => {
                     res.merge_status = MergeStatus::Conflict {
@@ -1095,6 +1112,7 @@ pub mod tests {
             merge_status: MergeStatus::RetainedUnmerged,
             summary: "Resolved edge case in token parser.".to_string(),
             error: None,
+            check_cmd: None,
         };
 
         let report = FanoutOrchestrator::format_baseline_report(&[worker], FanoutJoinMode::All);
@@ -1179,6 +1197,7 @@ pub mod tests {
             merge_status: MergeStatus::RetainedUnmerged,
             summary: "Successfully added file_a.txt".to_string(),
             error: None,
+            check_cmd: Some("skip".to_string()),
         }];
 
         let tasks = vec![FanoutTaskItem {
@@ -1295,6 +1314,7 @@ pub mod tests {
             merge_status: MergeStatus::RetainedUnmerged,
             summary: "Updated shared.txt".to_string(),
             error: None,
+            check_cmd: Some("skip".to_string()),
         }];
 
         let tasks = vec![FanoutTaskItem {
@@ -1324,6 +1344,108 @@ pub mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_arbitrate_mutating_workers_verification_failed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.name");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.email");
+
+        std::fs::write(root.join("base.txt"), "base content\n").expect("write base");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add base");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("git commit base");
+
+        let branch = "minicode/subagent/worker-fail-verify";
+        std::process::Command::new("git")
+            .args(["branch", branch])
+            .current_dir(root)
+            .output()
+            .expect("git branch");
+
+        let wt_dir = root.join("wt-fail-verify");
+        std::process::Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
+            .current_dir(root)
+            .output()
+            .expect("git worktree add");
+
+        std::fs::write(wt_dir.join("broken.txt"), "broken\n").expect("write broken");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git add broken");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "commit with broken code"])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git commit broken");
+
+        let mut results = vec![WorkerResult {
+            agent_id: AgentId("worker-fail-verify".to_string()),
+            role: SubagentRole::Coder,
+            task: "Implement feature".to_string(),
+            success: true,
+            duration_ms: 100,
+            tokens_used: 50,
+            files_modified: vec!["broken.txt".to_string()],
+            worktree_path: Some(wt_dir.clone()),
+            branch_name: Some(branch.to_string()),
+            merge_status: MergeStatus::RetainedUnmerged,
+            summary: "Completed changes".to_string(),
+            error: None,
+            check_cmd: Some("false".to_string()),
+        }];
+
+        let tasks = vec![FanoutTaskItem {
+            task: "Implement feature".to_string(),
+            role: SubagentRole::Coder,
+            workspace_mode: Some(WorkspaceMode::Worktree),
+            max_iterations: None,
+            check_cmd: Some("false".to_string()),
+        }];
+
+        FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
+
+        match &results[0].merge_status {
+            MergeStatus::VerificationFailed {
+                command, exit_code, ..
+            } => {
+                assert_eq!(command, "false");
+                assert_ne!(*exit_code, 0);
+            }
+            other => panic!("Expected MergeStatus::VerificationFailed, got: {:?}", other),
+        }
+
+        assert!(
+            wt_dir.exists(),
+            "Worktree directory must be preserved on disk when verification fails"
+        );
+    }
+
     #[test]
     fn test_format_fanout_report() {
         let results = vec![
@@ -1340,6 +1462,7 @@ pub mod tests {
                 merge_status: MergeStatus::NotApplicable,
                 summary: "Scouted directories and identified entrypoints.".to_string(),
                 error: None,
+                check_cmd: None,
             },
             WorkerResult {
                 agent_id: AgentId("coder-1".to_string()),
@@ -1356,6 +1479,7 @@ pub mod tests {
                 },
                 summary: "Implemented feature A cleanly.".to_string(),
                 error: None,
+                check_cmd: None,
             },
             WorkerResult {
                 agent_id: AgentId("coder-2".to_string()),
@@ -1372,6 +1496,7 @@ pub mod tests {
                 },
                 summary: "Implemented feature B with overlapping edits.".to_string(),
                 error: None,
+                check_cmd: None,
             },
             WorkerResult {
                 agent_id: AgentId("coder-3".to_string()),
@@ -1390,6 +1515,7 @@ pub mod tests {
                 },
                 summary: "Broke build during implementation.".to_string(),
                 error: None,
+                check_cmd: None,
             },
             WorkerResult {
                 agent_id: AgentId("tester-1".to_string()),
@@ -1404,6 +1530,7 @@ pub mod tests {
                 merge_status: MergeStatus::SkippedCancelled,
                 summary: "Task cancelled due to race completion.".to_string(),
                 error: Some("cancelled".to_string()),
+                check_cmd: None,
             },
         ];
 
