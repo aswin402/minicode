@@ -136,6 +136,9 @@ pub enum ToolError {
     #[allow(dead_code)]
     #[error("Tool execution was rejected by user: {reason}")]
     Rejected { reason: String },
+
+    #[error("Subagent execution failed: {0}")]
+    ExecutionFailed(String),
 }
 
 impl ToolError {

@@ -93,6 +93,16 @@ pub enum SubagentRole {
 
 #[allow(dead_code)]
 impl SubagentRole {
+    /// Returns the string representation of this role
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SubagentRole::Scout => "scout",
+            SubagentRole::Coder => "coder",
+            SubagentRole::Tester => "tester",
+            SubagentRole::Reviewer => "reviewer",
+        }
+    }
+
     /// Returns the default workspace isolation mode for this role
     pub fn default_workspace_mode(&self) -> WorkspaceMode {
         match self {

@@ -1,5 +1,6 @@
 pub mod mailbox;
 pub mod message;
+pub mod orchestrator;
 pub mod pool;
 pub mod reducer;
 pub mod scratchpad;
@@ -11,6 +12,8 @@ pub mod worker;
 pub use mailbox::AgentMailbox;
 #[allow(unused_imports)]
 pub use message::{AgentMessage, MessageIntent};
+#[allow(unused_imports)]
+pub use orchestrator::SubagentOrchestrator;
 #[allow(unused_imports)]
 pub use pool::SubagentPool;
 #[allow(unused_imports)]

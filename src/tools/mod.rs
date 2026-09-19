@@ -236,6 +236,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_total_tool_count() {
+        let schemas = ToolRegistry::get_tool_schemas();
+        assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);
+    }
+
+    #[test]
     fn test_tool_schemas_count() {
         let schemas = ToolRegistry::get_tool_schemas();
         assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);

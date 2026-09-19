@@ -129,7 +129,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "list_reproducers" => ToolSafetyLevel::ReadOnly,
 
         // Multi-Agent Mutations
-        "dispatch_subagent"
+        "spawn_subagent"
+        | "dispatch_subagent"
         | "fanout_subagents"
         | "merge_subagent_worktree"
         | "synthesize_reproducer"

@@ -107,21 +107,66 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "send_message".to_string(),
-            description: "Send a follow-up instruction or message to an active subagent in the swarm pool.".to_string(),
+            name: "spawn_subagent".to_string(),
+            description: "Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Clear and detailed task instructions for the subagent"
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["scout", "coder", "tester", "reviewer"],
+                        "description": "Specialized role preset defining subagent capabilities and workspace isolation"
+                    },
+                    "workspace_mode": {
+                        "type": "string",
+                        "enum": ["auto", "worktree", "shared"],
+                        "description": "Workspace isolation mode: 'auto' (default based on role), 'worktree' (isolated Git worktree branch), or 'shared' (in-place execution)"
+                    },
+                    "max_iterations": {
+                        "type": "integer",
+                        "description": "Maximum tool loop iterations for the subagent before terminating"
+                    }
+                },
+                "required": ["task", "role"]
+            }),
+        },
+        ToolSchema {
+            name: "send_message".to_string(),
+            description: "Send a typed message or follow-up instruction to an agent or subagent via durable mailbox.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "recipient": {
+                        "type": "string",
+                        "description": "The unique identifier of the recipient agent (or 'parent' for coordinator)"
+                    },
                     "subagent_id": {
                         "type": "string",
-                        "description": "The unique identifier of the target subagent"
+                        "description": "Alias for recipient: the unique identifier of the target subagent"
                     },
                     "message": {
                         "type": "string",
                         "description": "The instruction or message content to deliver"
+                    },
+                    "intent": {
+                        "type": "string",
+                        "enum": [
+                            "task_init",
+                            "status_update",
+                            "clarification_request",
+                            "clarification_response",
+                            "feedback",
+                            "handoff",
+                            "task_complete"
+                        ],
+                        "description": "Optional high-level intent of the message (default: 'status_update')"
                     }
                 },
-                "required": ["subagent_id", "message"]
+                "required": ["message"]
             }),
         },
         ToolSchema {
@@ -132,8 +177,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "await", "transcript", "drilldown", "kill", "kill_all"],
-                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
+                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' / 'wait' for completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
@@ -381,22 +426,77 @@ pub async fn dispatch(
 
             Ok(out)
         }.await),
-        "send_message" => Some(async {
-            let subagent_id = param::require_str(args, "subagent_id", "send_message")?;
-            let message = param::require_str(args, "message", "send_message")?;
+        "spawn_subagent" => Some(async {
+            let task = param::require_str(args, "task", "spawn_subagent")?;
+            let role_str = param::require_str(args, "role", "spawn_subagent")?;
+            let role = match role_str.to_lowercase().as_str() {
+                "scout" | "researcher" | "research" => crate::agent::subagent::SubagentRole::Scout,
+                "coder" => crate::agent::subagent::SubagentRole::Coder,
+                "tester" | "test_engineer" | "test" => crate::agent::subagent::SubagentRole::Tester,
+                "reviewer" | "code_reviewer" | "security_auditor" | "security" => {
+                    crate::agent::subagent::SubagentRole::Reviewer
+                }
+                other => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "spawn_subagent".to_string(),
+                        reason: format!(
+                            "Unknown role '{}'. Expected 'scout', 'coder', 'tester', or 'reviewer'",
+                            other
+                        ),
+                    }.into());
+                }
+            };
 
-            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-            if let Some(info) = pool.get_subagent(subagent_id).await {
-                Ok(format!(
-                    "✔ Message delivered to subagent `{}` (Role: {}, State: {:?})\nMessage content: '{}'",
-                    subagent_id,
-                    info.role.badge(),
-                    info.state,
-                    message
-                ))
-            } else {
-                Ok(format!("ℹ Subagent `{}` received instruction: '{}'", subagent_id, message))
-            }
+            let mode_str = param::opt_str(args, "workspace_mode").unwrap_or("auto");
+            let workspace_mode = match mode_str.to_lowercase().as_str() {
+                "worktree" => crate::agent::subagent::WorkspaceMode::Worktree,
+                "shared" => crate::agent::subagent::WorkspaceMode::Shared,
+                _ => crate::agent::subagent::WorkspaceMode::Auto,
+            };
+
+            let max_iterations = param::opt_u64(args, "max_iterations").map(|n| n as usize);
+
+            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent(
+                workspace_root,
+                task,
+                role,
+                workspace_mode,
+                max_iterations,
+            )
+            .await?;
+
+            Ok(report)
+        }.await),
+        "send_message" => Some(async {
+            let recipient_str = param::opt_str(args, "recipient")
+                .or_else(|| param::opt_str(args, "subagent_id"))
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "send_message".to_string(),
+                    reason: "Missing required argument 'recipient' or 'subagent_id'".to_string(),
+                })?;
+            let message = param::require_str(args, "message", "send_message")?;
+            let intent = param::opt_str(args, "intent").map(|s| match s {
+                "task_init" => crate::agent::subagent::MessageIntent::TaskInit,
+                "clarification_request" => crate::agent::subagent::MessageIntent::ClarificationRequest,
+                "clarification_response" => crate::agent::subagent::MessageIntent::ClarificationResponse,
+                "feedback" => crate::agent::subagent::MessageIntent::Feedback,
+                "handoff" => crate::agent::subagent::MessageIntent::Handoff,
+                "task_complete" => crate::agent::subagent::MessageIntent::TaskComplete,
+                _ => crate::agent::subagent::MessageIntent::StatusUpdate,
+            });
+
+            let sender = crate::agent::subagent::AgentId::parent();
+            let recipient = crate::agent::subagent::AgentId::from(recipient_str);
+
+            let confirm = crate::agent::subagent::orchestrator::SubagentOrchestrator::send_message(
+                workspace_root,
+                &sender,
+                &recipient,
+                message,
+                intent,
+            )?;
+
+            Ok(confirm)
         }.await),
         "manage_subagents" => Some(async {
             let action = param::opt_str(args, "action").unwrap_or("list");
@@ -424,7 +524,7 @@ pub async fn dispatch(
                         Ok(format!("ℹ No subagent found with ID '{}'", id))
                     }
                 }
-                "await" => {
+                "await" | "wait" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
                     let timeout_secs = param::opt_u64(args, "timeout_secs").unwrap_or(60);
                     let start = std::time::Instant::now();
@@ -531,7 +631,7 @@ pub async fn dispatch(
                 }
                 other => Err(ToolError::InvalidArguments {
                     name: "manage_subagents".to_string(),
-                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, transcript, drilldown, kill, kill_all", other),
+                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, wait, transcript, drilldown, kill, kill_all", other),
                 }.into()),
             }
         }.await),
