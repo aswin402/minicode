@@ -86,7 +86,7 @@ pub fn render_api_key_lines_with_width(
     } else {
         let suffix = format!(" ({count} chars)");
         format!(
-            "\x1b[90m│\x1b[0m Paste key: \x1b[36m{bullets_display}\x1b[0m \x1b[90m{suffix}\x1b[0m{} \x1b[90m│\x1b[0m",
+            "\x1b[90m│\x1b[0m Paste key: \x1b[36m{bullets_display}\x1b[0m\x1b[90m{suffix}\x1b[0m{} \x1b[90m│\x1b[0m",
             " ".repeat(line2_pad)
         )
     };
@@ -329,7 +329,7 @@ pub fn prompt_api_key(
         Ok((w, _)) => w as usize,
         Err(_) => 80,
     };
-    let width = term_width.clamp(40, 80);
+    let width = term_width.clamp(50, 80);
 
     let lines = render_api_key_lines_with_width(provider_name, current_key, &buffer, width);
     let total_lines = lines.len();
@@ -608,5 +608,48 @@ mod tests {
             handle_text_event(&esc_ev, &mut buf, None, false),
             Some(None)
         );
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut res = String::new();
+        let mut in_escape = false;
+        for c in s.chars() {
+            if c == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if c == 'm' {
+                    in_escape = false;
+                }
+            } else {
+                res.push(c);
+            }
+        }
+        res
+    }
+
+    #[test]
+    fn test_render_card_lines_width_alignment() {
+        for width in [50, 60, 80] {
+            for buf in [
+                "",
+                "a",
+                "sk-12345678",
+                "sk-very-long-api-key-that-exceeds-available-inner-width-1234567890",
+            ] {
+                let lines =
+                    render_api_key_lines_with_width("MiniMax", Some("sk-current"), buf, width);
+                assert_eq!(lines.len(), 6);
+                let expected_width = width.max(50);
+                for (idx, line) in lines.iter().enumerate() {
+                    let plain = strip_ansi(line);
+                    let actual_width = plain.chars().count();
+                    assert_eq!(
+                        actual_width, expected_width,
+                        "Line {} width mismatch (expected {}, got {}): {:?}",
+                        idx, expected_width, actual_width, plain
+                    );
+                }
+            }
+        }
     }
 }
