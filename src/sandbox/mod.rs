@@ -1,3 +1,4 @@
+pub mod arbitration;
 pub mod dynamic;
 pub mod env;
 #[cfg(target_os = "linux")]
@@ -6,6 +7,10 @@ pub mod path;
 pub mod redact;
 pub mod worktree;
 
+#[allow(unused_imports)]
+pub use arbitration::{
+    ArbitrationError, MergeArbitrator, MergeSuccessReport, MergeabilityReport, ValidationReport,
+};
 #[allow(unused_imports)]
 pub use dynamic::{
     format_sandbox_result, is_bwrap_available, run_sandboxed, SandboxBackendPreference,
