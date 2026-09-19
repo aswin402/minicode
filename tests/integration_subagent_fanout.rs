@@ -15,31 +15,32 @@ use minicode::tools::registry::agent_tools::swarms::{dispatch, parse_fanout_args
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Executes a git command in the target directory, asserting success.
+fn run_git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Initializes a temporary Git repository with local user identity and signing disabled.
 fn setup_git_repo(root: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .output()
-            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-
-    run(&["init"]);
-    run(&["config", "user.name", "test-user"]);
-    run(&["config", "user.email", "test@example.com"]);
-    run(&["config", "commit.gpgsign", "false"]);
-    run(&["config", "init.defaultBranch", "main"]);
+    run_git(root, &["init"]);
+    run_git(root, &["config", "user.name", "test-user"]);
+    run_git(root, &["config", "user.email", "test@example.com"]);
+    run_git(root, &["config", "commit.gpgsign", "false"]);
+    run_git(root, &["config", "init.defaultBranch", "main"]);
 
     std::fs::write(root.join(".gitignore"), ".minicode/\n").unwrap();
-    run(&["add", ".gitignore"]);
-    run(&["commit", "-m", "ignore minicode"]);
+    run_git(root, &["add", ".gitignore"]);
+    run_git(root, &["commit", "-m", "ignore minicode"]);
 }
 
 #[tokio::test]
@@ -68,7 +69,15 @@ async fn test_integration_fanout_dispatch_and_validation() {
     let invalid_res = dispatch("fanout_subagents", &invalid_payload, root)
         .await
         .expect("dispatcher handled fanout_subagents");
-    assert!(invalid_res.is_err());
+    match invalid_res {
+        Err(minicode::error::MinicodeError::Tool(
+            minicode::error::ToolError::InvalidArguments { name, reason },
+        )) => {
+            assert_eq!(name, "fanout_subagents");
+            assert!(reason.contains("missing required field 'task'"));
+        }
+        other => panic!("Expected ToolError::InvalidArguments, got: {:?}", other),
+    }
 
     // 3. Positive argument parsing test with prompt alias, join_mode, auto_merge, concurrency
     let valid_payload = serde_json::json!({
@@ -119,76 +128,45 @@ async fn test_integration_fanout_sequential_multi_worker_merge() {
 
     // Initial base commit
     std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "initial base commit"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-m", "initial base commit"]);
 
     // 1. Worker Alpha setup
     let branch_alpha = "minicode/subagent/worker-alpha";
-    Command::new("git")
-        .args(["branch", branch_alpha])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["branch", branch_alpha]);
     let wt_alpha = root.join("wt-alpha");
-    Command::new("git")
-        .args(["worktree", "add", wt_alpha.to_str().unwrap(), branch_alpha])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(
+        root,
+        &["worktree", "add", wt_alpha.to_str().unwrap(), branch_alpha],
+    );
 
     std::fs::write(
         wt_alpha.join("alpha.rs"),
         "pub fn alpha() -> &'static str { \"alpha\" }\n",
     )
     .unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&wt_alpha)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "feat(alpha): add alpha module"])
-        .current_dir(&wt_alpha)
-        .output()
-        .unwrap();
+    run_git(&wt_alpha, &["add", "."]);
+    run_git(
+        &wt_alpha,
+        &["commit", "-m", "feat(alpha): add alpha module"],
+    );
 
     // 2. Worker Beta setup
     let branch_beta = "minicode/subagent/worker-beta";
-    Command::new("git")
-        .args(["branch", branch_beta])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["branch", branch_beta]);
     let wt_beta = root.join("wt-beta");
-    Command::new("git")
-        .args(["worktree", "add", wt_beta.to_str().unwrap(), branch_beta])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(
+        root,
+        &["worktree", "add", wt_beta.to_str().unwrap(), branch_beta],
+    );
 
     std::fs::write(
         wt_beta.join("beta.rs"),
         "pub fn beta() -> &'static str { \"beta\" }\n",
     )
     .unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&wt_beta)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "feat(beta): add beta module"])
-        .current_dir(&wt_beta)
-        .output()
-        .unwrap();
+    run_git(&wt_beta, &["add", "."]);
+    run_git(&wt_beta, &["commit", "-m", "feat(beta): add beta module"]);
 
     // 3. Construct Swarm Results & Task Items
     let mut results = vec![
@@ -244,14 +222,18 @@ async fn test_integration_fanout_sequential_multi_worker_merge() {
     // 4. Run Sequential Merge Arbitration
     FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
 
-    // Assert both workers merged cleanly
+    // Assert both workers merged cleanly with a recorded commit hash
     assert!(matches!(
         results[0].merge_status,
-        MergeStatus::Merged { .. }
+        MergeStatus::Merged {
+            commit_hash: Some(_)
+        }
     ));
     assert!(matches!(
         results[1].merge_status,
-        MergeStatus::Merged { .. }
+        MergeStatus::Merged {
+            commit_hash: Some(_)
+        }
     ));
 
     // Assert both files landed in parent workspace
@@ -271,76 +253,36 @@ async fn test_integration_fanout_conflict_isolation_retains_worktree() {
 
     // Initial base commit with shared file
     std::fs::write(root.join("config.json"), "{\n  \"version\": 1\n}\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "init config"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-m", "init config"]);
 
     // 1. Worker 1 branch & worktree
     let branch_1 = "minicode/subagent/worker-first";
-    Command::new("git")
-        .args(["branch", branch_1])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["branch", branch_1]);
     let wt_1 = root.join("wt-first");
-    Command::new("git")
-        .args(["worktree", "add", wt_1.to_str().unwrap(), branch_1])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["worktree", "add", wt_1.to_str().unwrap(), branch_1]);
 
     std::fs::write(
         wt_1.join("config.json"),
         "{\n  \"version\": 2,\n  \"author\": \"first\"\n}\n",
     )
     .unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&wt_1)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "update config by first"])
-        .current_dir(&wt_1)
-        .output()
-        .unwrap();
+    run_git(&wt_1, &["add", "."]);
+    run_git(&wt_1, &["commit", "-m", "update config by first"]);
 
     // 2. Worker 2 branch & worktree
     let branch_2 = "minicode/subagent/worker-second";
-    Command::new("git")
-        .args(["branch", branch_2])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["branch", branch_2]);
     let wt_2 = root.join("wt-second");
-    Command::new("git")
-        .args(["worktree", "add", wt_2.to_str().unwrap(), branch_2])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["worktree", "add", wt_2.to_str().unwrap(), branch_2]);
 
     std::fs::write(
         wt_2.join("config.json"),
         "{\n  \"version\": 99,\n  \"author\": \"second\"\n}\n",
     )
     .unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&wt_2)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "conflicting config by second"])
-        .current_dir(&wt_2)
-        .output()
-        .unwrap();
+    run_git(&wt_2, &["add", "."]);
+    run_git(&wt_2, &["commit", "-m", "conflicting config by second"]);
 
     // 3. Construct Swarm Results & Task Items
     let mut results = vec![
@@ -399,7 +341,9 @@ async fn test_integration_fanout_conflict_isolation_retains_worktree() {
     // Worker 1 should have merged cleanly and had its worktree cleaned up
     assert!(matches!(
         results[0].merge_status,
-        MergeStatus::Merged { .. }
+        MergeStatus::Merged {
+            commit_hash: Some(_)
+        }
     ));
     assert!(!wt_1.exists());
 
@@ -427,41 +371,17 @@ async fn test_integration_fanout_verification_failure_isolation() {
     setup_git_repo(root);
 
     std::fs::write(root.join("base.txt"), "base\n").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-m", "init"]);
 
     let branch = "minicode/subagent/worker-failing-check";
-    Command::new("git")
-        .args(["branch", branch])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["branch", branch]);
     let wt = root.join("wt-fail");
-    Command::new("git")
-        .args(["worktree", "add", wt.to_str().unwrap(), branch])
-        .current_dir(root)
-        .output()
-        .unwrap();
+    run_git(root, &["worktree", "add", wt.to_str().unwrap(), branch]);
 
     std::fs::write(wt.join("broken.rs"), "syntax error here").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(&wt)
-        .output()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "broken commit"])
-        .current_dir(&wt)
-        .output()
-        .unwrap();
+    run_git(&wt, &["add", "."]);
+    run_git(&wt, &["commit", "-m", "broken commit"]);
 
     let mut results = vec![WorkerResult {
         agent_id: AgentId("worker-failing-check".to_string()),
@@ -577,6 +497,21 @@ fn test_integration_fanout_matrix_reporting() {
             check_cmd: Some("cargo check".to_string()),
         },
         WorkerResult {
+            agent_id: AgentId("coder-retained".to_string()),
+            role: SubagentRole::Coder,
+            task: "Retained inspection task".to_string(),
+            success: true,
+            duration_ms: 1500,
+            tokens_used: 420,
+            files_modified: vec!["src/retained.rs".to_string()],
+            worktree_path: Some(PathBuf::from("/tmp/wt-retained")),
+            branch_name: Some("minicode/subagent/coder-retained".to_string()),
+            merge_status: MergeStatus::RetainedUnmerged,
+            summary: "Retained for developer inspection.".to_string(),
+            error: None,
+            check_cmd: None,
+        },
+        WorkerResult {
             agent_id: AgentId("tester-cancelled".to_string()),
             role: SubagentRole::Tester,
             task: "Race candidate benchmark".to_string(),
@@ -600,7 +535,7 @@ fn test_integration_fanout_matrix_reporting() {
     assert!(report.contains("Subagent Swarm Fan-Out Completed"));
     assert!(report.contains("race (first success wins)"));
     assert!(report.contains("enabled (sequential arbitration)"));
-    assert!(report.contains("2920 tokens used"));
+    assert!(report.contains("3340 tokens used"));
 
     // Verify matrix table
     assert!(report
@@ -608,6 +543,7 @@ fn test_integration_fanout_matrix_reporting() {
     assert!(report.contains("✔ Merged (`9876abc`)"));
     assert!(report.contains("⚠️ Conflict (1 file(s))"));
     assert!(report.contains("❌ Verify Failed (`cargo check` exit 101)"));
+    assert!(report.contains("📁 Retained (`/tmp/wt-retained`)"));
     assert!(report.contains("— (read-only)"));
     assert!(report.contains("⏹ Cancelled"));
 
@@ -621,4 +557,5 @@ fn test_integration_fanout_matrix_reporting() {
     assert!(report.contains("Executive Summaries & Findings:"));
     assert!(report.contains("Feature X cleanly landed."));
     assert!(report.contains("Feature Y conflicted with X."));
+    assert!(report.contains("Retained for developer inspection."));
 }

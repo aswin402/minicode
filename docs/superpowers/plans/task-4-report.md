@@ -89,5 +89,13 @@ Output:
 
 ---
 
-## 4. Concerns & Notes
-- None. All 5 integration test scenarios pass reliably in 0.16s.
+## 4. Code Review Polish & Improvements
+- Replaced all ad-hoc git `Command::new("git")` subprocess invocations across all test fixtures with the shared helper `run_git`.
+- Tightened sequential merge assertions to explicitly check `matches!(..., MergeStatus::Merged { commit_hash: Some(_) })`.
+- Added a 6th worker with `MergeStatus::RetainedUnmerged` to `test_integration_fanout_matrix_reporting` (`/tmp/wt-retained`), verified total token calculation `3340 tokens used`, and asserted retention diagnostic output `📁 Retained (/tmp/wt-retained)`.
+- Re-verified targeted integration test suite: 5 passed, 0 failed.
+
+---
+
+## 5. Concerns & Notes
+- None. All 5 integration test scenarios pass reliably in 0.15s.
