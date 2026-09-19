@@ -204,7 +204,7 @@ pub async fn dispatch(
 }
 
 /// Helper to extract and validate `fanout_subagents` tool arguments.
-pub(crate) fn parse_fanout_args(
+pub fn parse_fanout_args(
     args: &serde_json::Value,
 ) -> std::result::Result<(Vec<FanoutTaskItem>, FanoutJoinMode, bool, usize), ToolError> {
     let tasks_arr = param::require_array(args, "tasks", "fanout_subagents")?;

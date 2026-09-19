@@ -1,48 +1,55 @@
 # Task 4 Brief: End-to-End Integration Test Suite
 
 ## Overview
-Implement an end-to-end integration test suite in `tests/integration_subagent_merge.rs` validating the complete arbitration and worktree merge lifecycle under clean merges, pre-merge verification failures, and merge conflicts.
+Implement an end-to-end integration test suite in `tests/integration_subagent_fanout.rs` validating the complete swarm fan-out and sequential arbitration lifecycle:
+1. Tool dispatch and argument parsing integration.
+2. Sequential multi-worker clean arbitration and automatic worktree teardown.
+3. Competing concurrent modifications and safe conflict isolation without parent corruption.
+4. Pre-merge verification failure isolation and worktree retention.
+5. Executive map-reduce matrix reporting across all worker outcome variants.
 
 ## Files to Create:
-- `tests/integration_subagent_merge.rs`
+- `tests/integration_subagent_fanout.rs`
 
 ## Requirements:
-1. **Clean Merge Lifecycle (`test_integration_subagent_worktree_clean_merge`)**:
-   - Initialize temporary Git repo with user name and email.
-   - Create worktree via `GitWorktreeManager::create_worktree`.
-   - Modify and commit changes in the worktree.
-   - Run `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))`.
-   - Run `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
-   - Assert `can_merge_cleanly == true`.
-   - Apply merge via `MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))`.
-   - Clean up worktree via `GitWorktreeManager::remove_worktree`.
-   - Assert file modifications are present in parent workspace.
+1. **Tool Dispatch & Argument Parsing (`test_integration_fanout_dispatch_and_validation`)**:
+   - Verify `minicode::tools::registry::agent_tools::swarms::dispatch` with empty tasks returns advisory message.
+   - Verify invalid arguments (e.g. missing both `task` and `prompt`) returns `ToolError::InvalidArguments`.
+   - Verify valid payload parsing with `parse_fanout_args` correctly handles roles, workspace modes, and aliases.
 
-2. **Conflict Detection (`test_integration_subagent_worktree_conflict_detection`)**:
-   - Initialize temporary Git repo with initial base commit modifying `conflict.txt`.
-   - Create worktree and commit changes to `conflict.txt` on subagent branch.
-   - Make conflicting commit to `conflict.txt` on main branch in parent workspace.
-   - Run `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
-   - Assert `can_merge_cleanly == false` and `conflicted_files` contains `"conflict.txt"`.
-   - Assert `MergeArbitrator::apply_merge` returns `Err(ArbitrationError::MergeConflict(_))`.
-   - Clean up worktree and verify parent workspace is unharmed.
+2. **Sequential Multi-Worker Clean Merge Arbitration (`test_integration_fanout_sequential_multi_worker_merge`)**:
+   - Set up temporary Git repository.
+   - Provision 2 concurrent mutating workers (`worker-alpha` and `worker-beta`) on distinct branches and worktrees modifying different files (`alpha.rs` and `beta.rs`).
+   - Run `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Assert both workers achieve `MergeStatus::Merged { commit_hash: Some(_) }`.
+   - Assert both `alpha.rs` and `beta.rs` exist in the root repository.
+   - Assert both worktrees are cleanly removed from disk.
 
-3. **Tool Primitive End-to-End (`test_integration_subagent_tool_full_lifecycle`)**:
-   - Test `minicode::tools::registry::agent_tools::subagents::merge_subagent_worktree`.
-   - Create worktree for subagent `coder-integration`.
-   - Modify and commit files in worktree.
-   - Execute `merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))`.
-   - Assert result is `Ok(summary)` containing success message and files changed.
-   - Assert worktree is automatically cleaned up and files exist in main repo.
+3. **Competing Modifications & Conflict Isolation (`test_integration_fanout_conflict_isolation_retains_worktree`)**:
+   - Set up temporary Git repository with initial commit containing `shared.txt`.
+   - Worker 1 modifies `shared.txt` to "alpha content" and commits.
+   - Worker 2 modifies `shared.txt` to "beta content" and commits.
+   - Run `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Assert Worker 1 merges cleanly and its worktree is removed.
+   - Assert Worker 2 is marked with `MergeStatus::Conflict { conflicted_files }` where `conflicted_files` contains `"shared.txt"`.
+   - Assert Worker 2's worktree directory is preserved on disk for manual remediation.
+   - Assert parent workspace working tree is clean and contains Worker 1's version without conflict markers.
 
-4. **Pre-Merge Verification Failure Handling (`test_integration_subagent_worktree_verification_failure`)**:
-   - Create worktree and run `MergeArbitrator::verify_worktree` with a failing command (e.g. `false` or non-existent command).
-   - Assert it returns `Err(ArbitrationError::VerificationFailed { .. })`.
-   - Verify worktree path still exists on disk for remediation.
+4. **Pre-Merge Verification Failure Handling (`test_integration_fanout_verification_failure_isolation`)**:
+   - Provision worker with `check_cmd: Some("false")`.
+   - Run `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Assert worker is marked with `MergeStatus::VerificationFailed { .. }`.
+   - Assert worker's worktree directory is preserved on disk.
+   - Assert parent workspace is not modified.
+
+5. **Executive Map-Reduce Matrix Report Formatting (`test_integration_fanout_matrix_reporting`)**:
+   - Construct swarm results including Merged, Conflict, VerificationFailed, RetainedUnmerged, and SkippedCancelled.
+   - Run `FanoutOrchestrator::format_fanout_report`.
+   - Verify Markdown table structure, metrics header, diagnostics callout blocks, and individual summaries.
 
 ## Constraints:
-- ONLY run targeted test: `cargo test -j 1 --test integration_subagent_merge`.
+- ONLY run targeted test: `cargo test -j 1 --test integration_subagent_fanout`.
 - Zero `.unwrap()` or `.expect()` in non-test code.
 - Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Commit with message: `test(subagent): add integration test suite for worktree merge and conflict arbitration (Phase 133)`
+- Commit with message: `test(subagent): add integration test suite for swarm fanout and aggregate arbitration (Phase 134)`.
 - Write execution report to `docs/superpowers/plans/task-4-report.md`.

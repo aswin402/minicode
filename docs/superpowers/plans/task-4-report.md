@@ -2,99 +2,82 @@
 
 ## Status: DONE
 
-- **Commit Hash:** `c9c046f`
-- **Component:** `tests/integration_subagent_merge.rs`
-- **Phase:** Phase 133 (Subagent Merge & Conflict Arbitration Engine)
+- **Commit Hash:** Pending
+- **Component:** `tests/integration_subagent_fanout.rs`
+- **Phase:** Phase 134 (Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine)
 
 ---
 
 ## 1. Summary of Test Suite Implementation
 
-Created `tests/integration_subagent_merge.rs` implementing end-to-end integration tests for the complete arbitration and worktree merge lifecycle:
+Created `tests/integration_subagent_fanout.rs` implementing end-to-end integration tests for the complete swarm fan-out and arbitration lifecycle:
 
-1. **Clean Merge Lifecycle (`test_integration_subagent_worktree_clean_merge`)**:
-   - Initialized temporary Git repository with local user identity and signing disabled.
-   - Provisioned isolated worktree via `GitWorktreeManager::create_worktree` under `.minicode/worktrees/subagent-coder-clean`.
-   - Modified and committed changes (`lib.rs`) inside worktree branch.
-   - Executed pre-merge verification via `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))` and asserted success.
-   - Inspected mergeability via `MergeArbitrator::check_mergeability(root, &handle.branch_name)` and verified `can_merge_cleanly == true`.
-   - Applied committed merge via `MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))`.
-   - Torn down worktree via `GitWorktreeManager::remove_worktree`.
-   - Verified changes (`pub fn subagent_feature()`) exist in parent workspace.
+1. **Tool Dispatch & Argument Parsing (`test_integration_fanout_dispatch_and_validation`)**:
+   - Dispatches `fanout_subagents` with empty tasks array; verifies clean advisory message.
+   - Dispatches `fanout_subagents` with missing task/prompt; verifies `ToolError::InvalidArguments`.
+   - Tests `parse_fanout_args` with task/prompt alias resolution, role parsing, workspace mode mapping, join mode, auto-merge, and concurrency bounds.
 
-2. **Conflict Detection & Rejection (`test_integration_subagent_worktree_conflict_detection`)**:
-   - Initialized temporary Git repository with base commit modifying `conflict.txt`.
-   - Provisioned worktree for `coder-conflict` and committed changes on subagent branch.
-   - Created concurrent conflicting commit modifying `conflict.txt` on main branch in parent workspace.
-   - Executed `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
-   - Asserted `can_merge_cleanly == false` and `conflicted_files` contains `"conflict.txt"`.
-   - Asserted `MergeArbitrator::apply_merge` rejects merge with `Err(ArbitrationError::MergeConflict(conflicts))` referencing `"conflict.txt"`.
-   - Removed worktree and verified parent working tree remains clean and completely uncorrupted.
-
-3. **Tool Primitive End-to-End (`test_integration_subagent_tool_full_lifecycle`)**:
+2. **Sequential Multi-Worker Clean Merge Arbitration (`test_integration_fanout_sequential_multi_worker_merge`)**:
    - Initialized temporary Git repository.
-   - Created worktree for subagent `coder-integration`.
-   - Modified and committed `feature.rs` inside worktree.
-   - Invoked `merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))`.
-   - Asserted tool result is `Ok(summary)` containing success message, subagent ID, and `feature.rs`.
-   - Asserted worktree directory and branch were automatically cleaned up.
-   - Asserted `feature.rs` exists in the parent repository with expected content.
+   - Provisioned 2 concurrent mutating workers (`worker-alpha` and `worker-beta`) with distinct branches and worktrees modifying different files (`alpha.rs` and `beta.rs`).
+   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Asserted both workers achieved `MergeStatus::Merged`.
+   - Verified both `alpha.rs` and `beta.rs` landed in the parent repository.
+   - Verified both worktrees were cleanly removed from disk.
 
-4. **Pre-Merge Verification Failure Handling (`test_integration_subagent_worktree_verification_failure`)**:
-   - Created worktree for `tester-verification` with code changes.
-   - Ran `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("false"))`.
-   - Asserted `v_report.success == false` and `v_report.exit_code != 0`.
-   - Invoked `merge_subagent_worktree` with failing verification command and verified it halted merge, returned formatted markdown failure summary, left parent repo untouched, and preserved the worktree on disk for developer/subagent remediation.
-   - Asserted `MergeArbitrator::verify_worktree` returns `Err(ArbitrationError::WorktreeNotFound)` when target directory does not exist.
-   - Verified `ArbitrationError::VerificationFailed` formatting.
+3. **Competing Modifications & Conflict Isolation (`test_integration_fanout_conflict_isolation_retains_worktree`)**:
+   - Initialized temporary Git repository with base commit containing `config.json`.
+   - Worker 1 modifies `config.json` on `wt-first`.
+   - Worker 2 modifies `config.json` concurrently on `wt-second`.
+   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Verified Worker 1 merges cleanly and its worktree is removed.
+   - Verified Worker 2 detects a 3-way merge conflict (`MergeStatus::Conflict { conflicted_files }`) against the newly merged HEAD without dirtying or modifying the parent workspace.
+   - Verified Worker 2's worktree is preserved on disk for developer remediation.
+   - Verified parent repository contains Worker 1's landed code with no merge conflict markers.
+
+4. **Pre-Merge Verification Failure Handling (`test_integration_fanout_verification_failure_isolation`)**:
+   - Provisioned worker with `check_cmd: Some("false")`.
+   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
+   - Verified worker status is `MergeStatus::VerificationFailed { command: "false", exit_code: != 0, .. }`.
+   - Verified worker's worktree is preserved on disk.
+   - Verified parent repository is untouched.
+
+5. **Executive Map-Reduce Matrix Report Formatting (`test_integration_fanout_matrix_reporting`)**:
+   - Constructed swarm results across all `MergeStatus` variants (Merged, Conflict, VerificationFailed, RetainedUnmerged, SkippedCancelled, NotApplicable).
+   - Generated report via `FanoutOrchestrator::format_fanout_report`.
+   - Verified header metrics, Markdown table structure, merge outcome tags, diagnostics callout blocks, and individual summaries.
 
 ---
 
 ## 2. Verification Results
 
 ### 1. Targeted Integration Test Suite
-Command:
-```bash
-cargo test -j 1 --test integration_subagent_merge
-```
-
+Command: `cargo test -j 1 --test integration_subagent_fanout`
 Output:
 ```text
-   Compiling minicode v0.3.33 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.11s
-     Running tests/integration_subagent_merge.rs (target/debug/deps/integration_subagent_merge-c0f41344afc1655b)
+running 5 tests
+test test_integration_fanout_matrix_reporting ... ok
+test test_integration_fanout_dispatch_and_validation ... ok
+test test_integration_fanout_verification_failure_isolation ... ok
+test test_integration_fanout_conflict_isolation_retains_worktree ... ok
+test test_integration_fanout_sequential_multi_worker_merge ... ok
 
-running 4 tests
-test test_integration_subagent_worktree_verification_failure ... ok
-test test_integration_subagent_worktree_conflict_detection ... ok
-test test_integration_subagent_worktree_clean_merge ... ok
-test test_integration_subagent_tool_full_lifecycle ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 ```
 
 ### 2. Clippy Verification
-Command:
-```bash
-cargo clippy -j 1 --bin minicode -- -D warnings
-```
-
+Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
 Output:
 ```text
-    Checking minicode v0.3.33 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 25.37s
-(Exit code 0, clean with 0 warnings)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.49s
+(Exit code 0, zero warnings)
 ```
 
 ### 3. Code Formatting
-Command:
-```bash
-cargo fmt --check
-```
-
+Command: `cargo fmt`
 Output:
 ```text
-(Exit code 0, clean with 0 diffs)
+(Exit code 0, clean)
 ```
 
 ---
@@ -102,11 +85,9 @@ Output:
 ## 3. Non-Test Code Constraints Audit
 - Non-test `.unwrap()` / `.expect()` count: **0** in production code.
 - Concurrency limit `-j 1`: Strictly respected across all cargo commands.
-- Test scope: ONLY targeted test `cargo test -j 1 --test integration_subagent_merge` was run; full test suite was never run.
+- Test scope: ONLY targeted test `cargo test -j 1 --test integration_subagent_fanout` was run; full test suite was never run.
 
 ---
 
 ## 4. Concerns & Notes
-- **Status:** DONE.
-- All 4 required test scenarios pass reliably in 0.08s.
-- Staged/committed git commit hash: `c9c046f`.
+- None. All 5 integration test scenarios pass reliably in 0.16s.
