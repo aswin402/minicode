@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 132 (v0.3.33) Multi-Agent Subagent Delegation & A2A Communication Runtime | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 133 (v0.3.34) Autonomous Subagent Merge & Conflict Arbitration Engine | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1869,3 +1869,10 @@
 - [x] 132.4: Extend `ToolFilterMode` with `ReadOnly` and `Standard` variants to enforce role tool boundaries, and add `SubagentProgress` and `SubagentCompleted` to `AgentEvent`
 - [x] 132.5: Wire `AgentMailbox` turn draining into `AgentLoop::execute_turn` with automatic `<agent_message>` context injection and render live subagent cards in `TimelineView` (`src/ui/view.rs`)
 - [x] 132.6: Pass all 7 integration tests in `tests/integration_subagent_delegation.rs`, all orchestrator and worktree tests, zero clippy warnings, recompile release binary via `./localupdate.sh`, and validate real-world autonomous execution (v0.3.33)
+ 
+### Phase 133: Autonomous Subagent Merge & Conflict Arbitration Engine (v0.3.34)
+- [x] 133.1: Implement `MergeArbitrator`, `ValidationReport`, `MergeabilityReport`, `MergeSuccessReport`, and `ArbitrationError` in `src/sandbox/arbitration.rs` with project manifest validation detection (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`), 60s sandboxed command execution, and non-destructive 3-way `git merge-tree --write-tree` conflict checking
+- [x] 133.2: Implement worktree retention in `src/agent/subagent/orchestrator.rs` upon child subagent success, and add resolution helpers (`branch_name_for`, `locate_worktree`, `resolve_branch_for`) in `src/sandbox/worktree.rs` with automatic teardown on failure/timeout
+- [x] 133.3: Implement `merge_subagent_worktree` tool primitive and schema in `src/tools/registry/agent_tools/subagents.rs` supporting configurable landing (`commit: true` vs uncommitted working tree), custom/skipped verification commands, structured conflict diagnostics, and post-merge worktree cleanup
+- [x] 133.4: Implement comprehensive end-to-end integration test suite in `tests/integration_subagent_merge.rs` covering clean merge, conflict detection and safe rejection, full tool primitive execution, and pre-merge verification failure handling
+- [x] 133.5: Pass all targeted unit and integration tests (6 arbitration tests, 6 worktree tests, 6 subagent tests, 4 integration tests), zero clippy warnings, clean formatting, recompile release binary via `./localupdate.sh`, and validate real-world autonomous execution (v0.3.34)

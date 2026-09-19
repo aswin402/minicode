@@ -1,81 +1,48 @@
-# Task 4 Brief: AgentLoop Ingestion, ToolFilterMode Alignment & Real-Time Timeline Cards
+# Task 4 Brief: End-to-End Integration Test Suite
 
-## Scope & Objective
-Wire the reactive A2A mailbox into `AgentLoop` so incoming messages from subagents are automatically ingested at turn start, extend `ToolFilterMode` in `src/config.rs` with `ReadOnly` and `Standard` variants for child subagents, format subagent progress cards in `src/ui/view.rs`, and write comprehensive integration tests in `tests/integration_subagent_delegation.rs`.
+## Overview
+Implement an end-to-end integration test suite in `tests/integration_subagent_merge.rs` validating the complete arbitration and worktree merge lifecycle under clean merges, pre-merge verification failures, and merge conflicts.
 
-## Files to Create/Modify
-- Modify: `src/config.rs` (extend `ToolFilterMode` with `ReadOnly` and `Standard` variants and string parsing)
-- Modify: `src/agent/types.rs` (add `SubagentProgress` and `SubagentCompleted` variants to `AgentEvent` if not present)
-- Modify: `src/agent/loop.rs` (wire `AgentMailbox` into `AgentLoop`, poll and inject unread messages into `self.messages` at start of `execute_turn`)
-- Modify: `src/ui/view.rs` (ensure subagent progress and completion events render cleanly in the conversation timeline)
-- Create: `tests/integration_subagent_delegation.rs`
+## Files to Create:
+- `tests/integration_subagent_merge.rs`
 
-## Specifications & Requirements
+## Requirements:
+1. **Clean Merge Lifecycle (`test_integration_subagent_worktree_clean_merge`)**:
+   - Initialize temporary Git repo with user name and email.
+   - Create worktree via `GitWorktreeManager::create_worktree`.
+   - Modify and commit changes in the worktree.
+   - Run `MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))`.
+   - Run `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
+   - Assert `can_merge_cleanly == true`.
+   - Apply merge via `MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))`.
+   - Clean up worktree via `GitWorktreeManager::remove_worktree`.
+   - Assert file modifications are present in parent workspace.
 
-### 1. `src/config.rs`
-- Add variants to `ToolFilterMode`:
-  ```rust
-  pub enum ToolFilterMode {
-      #[default]
-      Dynamic,
-      CoreOnly,
-      Full,
-      ReadOnly,
-      Standard,
-  }
-  ```
-- In `Display` implementation:
-  - `Self::ReadOnly => write!(f, "read_only")`
-  - `Self::Standard => write!(f, "standard")`
-- In `FromStr` implementation:
-  - `"read_only" | "readonly"` => `Ok(Self::ReadOnly)`
-  - `"standard"` => `Ok(Self::Standard)`
-- In tool filtering logic (e.g. `ToolRegistry::filter_tools` or `agent/loop.rs`):
-  - When `ToolFilterMode::ReadOnly` is active, keep only tools where `crate::tools::is_read_only(&schema.name)` is true.
-  - When `ToolFilterMode::Standard` is active, filter out dangerous meta-tools or permit standard developer tools.
+2. **Conflict Detection (`test_integration_subagent_worktree_conflict_detection`)**:
+   - Initialize temporary Git repo with initial base commit modifying `conflict.txt`.
+   - Create worktree and commit changes to `conflict.txt` on subagent branch.
+   - Make conflicting commit to `conflict.txt` on main branch in parent workspace.
+   - Run `MergeArbitrator::check_mergeability(root, &handle.branch_name)`.
+   - Assert `can_merge_cleanly == false` and `conflicted_files` contains `"conflict.txt"`.
+   - Assert `MergeArbitrator::apply_merge` returns `Err(ArbitrationError::MergeConflict(_))`.
+   - Clean up worktree and verify parent workspace is unharmed.
 
-### 2. `src/agent/loop.rs`
-- Add `mailbox: Option<crate::agent::subagent::mailbox::AgentMailbox>` to `AgentLoop`.
-- In `AgentLoop::new(...)` or builder:
-  - Initialize `mailbox = AgentMailbox::new(AgentId::parent(), &workspace_root.join(".minicode").join("agents").join("parent")).ok()`.
-- In `AgentLoop::execute_turn`:
-  - At the very beginning of the turn (before building recency context):
-    ```rust
-    if let Some(ref mb) = self.mailbox {
-        if let Ok(unread) = mb.drain_unread() {
-            for msg in unread {
-                tracing::info!(from = %msg.sender.0, intent = ?msg.intent, "Ingested incoming A2A message");
-                self.messages.push(Message::user(msg.format_for_prompt()));
-            }
-        }
-    }
-    ```
+3. **Tool Primitive End-to-End (`test_integration_subagent_tool_full_lifecycle`)**:
+   - Test `minicode::tools::registry::agent_tools::subagents::merge_subagent_worktree`.
+   - Create worktree for subagent `coder-integration`.
+   - Modify and commit files in worktree.
+   - Execute `merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))`.
+   - Assert result is `Ok(summary)` containing success message and files changed.
+   - Assert worktree is automatically cleaned up and files exist in main repo.
 
-### 3. `src/ui/view.rs`
-- Ensure `AgentEvent::SubagentProgress` and `SubagentCompleted` (or `TimelineEntry::SubagentSwarm`) format cleanly into timeline entries without crashing or misaligning ANSI boundaries.
+4. **Pre-Merge Verification Failure Handling (`test_integration_subagent_worktree_verification_failure`)**:
+   - Create worktree and run `MergeArbitrator::verify_worktree` with a failing command (e.g. `false` or non-existent command).
+   - Assert it returns `Err(ArbitrationError::VerificationFailed { .. })`.
+   - Verify worktree path still exists on disk for remediation.
 
-### 4. Integration Tests in `tests/integration_subagent_delegation.rs`
-Write comprehensive async integration tests:
-1. `test_subagent_mailbox_drain_and_prompt_formatting`:
-   - Creates an `AgentMailbox` for parent in a tempdir.
-   - Posts a `TaskComplete` message from a subagent (`coder-1`).
-   - Verifies `drain_unread()` retrieves the message.
-   - Verifies `format_for_prompt()` contains the `<agent_message>` block with sender, intent, and message content.
-2. `test_tool_filter_mode_parsing`:
-   - Asserts `"read_only".parse::<ToolFilterMode>() == Ok(ToolFilterMode::ReadOnly)`.
-   - Asserts `"standard".parse::<ToolFilterMode>() == Ok(ToolFilterMode::Standard)`.
-3. `test_subagent_roles_and_workspace_modes`:
-   - Asserts `SubagentRole::Scout.default_workspace_mode() == WorkspaceMode::Shared`.
-   - Asserts `SubagentRole::Coder.default_workspace_mode() == WorkspaceMode::Worktree`.
-   - Asserts `SubagentRole::Tester.default_workspace_mode() == WorkspaceMode::Worktree`.
-   - Asserts `SubagentRole::Reviewer.default_workspace_mode() == WorkspaceMode::Shared`.
-
-## Critical Constraints
-1. ONLY run targeted tests:
-   - `cargo test -j 1 --test integration_subagent_delegation`
-   - `cargo test -j 1 --lib agent::subagent::orchestrator::tests`
-   NEVER run the full test suite.
-2. Error handling: zero `.unwrap()` or `.expect()` in non-test code.
-3. Concurrency: Use `-j 1` for `cargo check` and `cargo test`.
-4. Verification: `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
-5. Commit message: `feat(agent): wire subagent event streaming and reactive mailbox injection into AgentLoop`.
+## Constraints:
+- ONLY run targeted test: `cargo test -j 1 --test integration_subagent_merge`.
+- Zero `.unwrap()` or `.expect()` in non-test code.
+- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
+- Commit with message: `test(subagent): add integration test suite for worktree merge and conflict arbitration (Phase 133)`
+- Write execution report to `docs/superpowers/plans/task-4-report.md`.

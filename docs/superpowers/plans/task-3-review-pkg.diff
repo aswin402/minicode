@@ -1,928 +1,528 @@
-c15fb7c feat(tools): add spawn_subagent primitive and wire orchestrator with worktree and mailbox (Phase 132)
-=== STAT ===
- src/agent/subagent/mod.rs                   |   3 +
- src/agent/subagent/orchestrator.rs          | 475 ++++++++++++++++++++++++++++
- src/agent/subagent/types.rs                 |  10 +
- src/constants.rs                            |   2 +-
- src/error.rs                                |   3 +
- src/tools/concurrency.rs                    |   3 +-
- src/tools/mod.rs                            |   6 +
- src/tools/registry/agent_tools/subagents.rs | 140 ++++++--
- 8 files changed, 620 insertions(+), 22 deletions(-)
-=== DIFF ===
-diff --git a/src/agent/subagent/mod.rs b/src/agent/subagent/mod.rs
-index 30b04b7..ea56bb8 100644
---- a/src/agent/subagent/mod.rs
-+++ b/src/agent/subagent/mod.rs
-@@ -1,24 +1,27 @@
- pub mod mailbox;
- pub mod message;
-+pub mod orchestrator;
- pub mod pool;
- pub mod reducer;
- pub mod scratchpad;
- pub mod transcript;
- pub mod types;
- pub mod worker;
+diff --git a/src/agent/orchestrator.rs b/src/agent/orchestrator.rs
+index 43122b2..4f940ec 100644
+--- a/src/agent/orchestrator.rs
++++ b/src/agent/orchestrator.rs
+@@ -285,6 +285,7 @@ impl MultiAgentOrchestrator {
+     }
  
- #[allow(unused_imports)]
- pub use mailbox::AgentMailbox;
- #[allow(unused_imports)]
- pub use message::{AgentMessage, MessageIntent};
- #[allow(unused_imports)]
-+pub use orchestrator::SubagentOrchestrator;
-+#[allow(unused_imports)]
- pub use pool::SubagentPool;
- #[allow(unused_imports)]
- pub use reducer::{
-     AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
-     SubagentSynthesisReducer,
- };
- #[allow(unused_imports)]
- pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
- #[allow(unused_imports)]
- pub use transcript::{
-diff --git a/src/agent/subagent/orchestrator.rs b/src/agent/subagent/orchestrator.rs
-new file mode 100644
-index 0000000..6825177
---- /dev/null
-+++ b/src/agent/subagent/orchestrator.rs
-@@ -0,0 +1,475 @@
-+//! Subagent process orchestrator and agent-to-agent communication dispatcher.
-+//!
-+//! Manages the execution lifecycle of autonomous child `minicode` processes in isolated
-+//! Git worktrees, wires reactive A2A mailbox channels, and synthesizes structured reports.
+     /// Merges an isolated subagent worktree branch into the current branch and cleans up.
++    #[allow(dead_code)]
+     pub async fn merge_worktree(workspace_root: &Path, subagent_id: &str) -> Result<String> {
+         let mgr = WorktreeManager::new(workspace_root);
+         let merge_output = mgr.merge_worktree(subagent_id).await.map_err(|e| {
+diff --git a/src/tools/registry/agent_tools/subagents.rs b/src/tools/registry/agent_tools/subagents.rs
+index 5fe3b87..4242f52 100644
+--- a/src/tools/registry/agent_tools/subagents.rs
++++ b/src/tools/registry/agent_tools/subagents.rs
+@@ -246,13 +246,25 @@ pub fn get_schemas() -> Vec<ToolSchema> {
+         },
+         ToolSchema {
+             name: "merge_subagent_worktree".to_string(),
+-            description: "Integrate a verified subagent worktree branch (subagent/<id>) into the current branch and clean up its temporary worktree directory.".to_string(),
++            description: "Validates and merges code changes from a completed subagent's ephemeral git worktree into the main workspace. Automatically runs project build/test checks before landing changes.".to_string(),
+             parameters: json!({
+                 "type": "object",
+                 "properties": {
+                     "subagent_id": {
+                         "type": "string",
+-                        "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'task-a1b2c3d4' or 'testengineer-2')"
++                        "description": "Unique identifier of the subagent whose worktree to merge (e.g. 'coder-1' or 'task-a1b2c3d4')"
++                    },
++                    "commit": {
++                        "type": "boolean",
++                        "description": "Whether to automatically commit the merged changes (default: true). If false, stages changes in the working tree without committing."
++                    },
++                    "check_cmd": {
++                        "type": "string",
++                        "description": "Optional pre-merge validation command to run in the worktree (e.g. 'cargo check -j 1' or 'skip'). Defaults to auto-detecting project check command."
++                    },
++                    "commit_message": {
++                        "type": "string",
++                        "description": "Optional custom commit message when commit is true"
+                     }
+                 },
+                 "required": ["subagent_id"]
+@@ -674,12 +686,21 @@ pub async fn dispatch(
+             }
+         }.await),
+         "merge_subagent_worktree" => Some(async {
+-            let subagent_id = param::require_str(args, "subagent_id", "merge_subagent_worktree")?;
++            let parsed: MergeSubagentWorktreeArgs = serde_json::from_value(args.clone())
++                .map_err(|e| ToolError::InvalidArguments {
++                    name: "merge_subagent_worktree".to_string(),
++                    reason: format!("Failed to parse arguments: {}", e),
++                })?;
+ 
+-            crate::agent::orchestrator::MultiAgentOrchestrator::merge_worktree(
++            merge_subagent_worktree(
+                 workspace_root,
+-                subagent_id,
+-            ).await
++                &parsed.subagent_id,
++                parsed.commit.unwrap_or(true),
++                parsed.check_cmd.as_deref(),
++                parsed.commit_message.as_deref(),
++            )
++            .await
++            .map_err(Into::into)
+         }.await),
+         "subagent_transcript_drilldown" => Some(async {
+             let subagent_id = param::require_str(args, "subagent_id", "subagent_transcript_drilldown")?;
+@@ -714,3 +735,457 @@ pub async fn dispatch(
+         _ => None,
+     }
+ }
 +
-+use std::path::{Path, PathBuf};
-+use std::process::Stdio;
-+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-+use tokio::process::Command;
++/// Arguments for `merge_subagent_worktree` tool.
++#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
++pub struct MergeSubagentWorktreeArgs {
++    pub subagent_id: String,
++    pub commit: Option<bool>,
++    pub check_cmd: Option<String>,
++    pub commit_message: Option<String>,
++}
 +
-+use crate::agent::subagent::mailbox::AgentMailbox;
-+use crate::agent::subagent::message::{AgentMessage, MessageIntent};
-+use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-+use crate::agent::types::AgentEvent;
-+use crate::error::ToolError;
-+use crate::sandbox::worktree::GitWorktreeManager;
++/// Validates and merges code changes from a completed subagent's ephemeral git worktree
++/// into the main workspace with automatic pre-merge verification, conflict detection, and cleanup.
++pub async fn merge_subagent_worktree(
++    workspace_root: &Path,
++    subagent_id: &str,
++    commit: bool,
++    check_cmd: Option<&str>,
++    commit_message: Option<&str>,
++) -> std::result::Result<String, ToolError> {
++    // 1. Locate worktree path via GitWorktreeManager::locate_worktree
++    let agent_id = crate::agent::subagent::AgentId(subagent_id.to_string());
++    let worktree_path =
++        crate::sandbox::GitWorktreeManager::locate_worktree(workspace_root, &agent_id).ok_or_else(
++            || {
++                ToolError::ExecutionFailed(format!(
++                    "Worktree not found for subagent '{}' under .minicode/worktrees/",
++                    subagent_id
++                ))
++            },
++        )?;
 +
-+/// Orchestrator for spawning autonomous subagent child processes and routing A2A messages.
-+pub struct SubagentOrchestrator;
++    // 2. Resolve source branch via GitWorktreeManager::resolve_branch_for
++    let branch_name =
++        crate::sandbox::GitWorktreeManager::resolve_branch_for(workspace_root, &agent_id);
 +
-+impl SubagentOrchestrator {
-+    /// Spawns an autonomous background subagent with a specialized role in an isolated workspace or worktree.
-+    pub async fn spawn_subagent(
-+        workspace_root: &Path,
-+        task: &str,
-+        role: SubagentRole,
-+        workspace_mode: WorkspaceMode,
-+        max_iterations: Option<usize>,
-+    ) -> Result<String, ToolError> {
-+        // 1. Generate child agent id
-+        let agent_id = AgentId::new_subagent(role.as_str());
++    // 3. Pre-merge verification via MergeArbitrator::verify_worktree
++    let validation = crate::sandbox::MergeArbitrator::verify_worktree(&worktree_path, check_cmd)
++        .map_err(|e| ToolError::ExecutionFailed(format!("Pre-merge verification error: {}", e)))?;
 +
-+        // 2. Determine workspace isolation mode
-+        let should_isolate = workspace_mode == WorkspaceMode::Worktree
-+            || (workspace_mode == WorkspaceMode::Auto
-+                && role.default_workspace_mode() == WorkspaceMode::Worktree);
-+
-+        let (worktree_handle, target_dir) = if should_isolate {
-+            match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
-+                Ok(handle) => {
-+                    let path = handle.worktree_path.clone();
-+                    (Some(handle), path)
-+                }
-+                Err(e) => {
-+                    tracing::warn!(
-+                        agent_id = %agent_id,
-+                        error = %e,
-+                        "Worktree creation failed or repository is not Git; falling back to workspace root"
-+                    );
-+                    (None, workspace_root.to_path_buf())
-+                }
-+            }
-+        } else {
-+            (None, workspace_root.to_path_buf())
-+        };
-+
-+        // 3. Initialize child agent mailbox directory
-+        let child_agent_dir = workspace_root
-+            .join(".minicode")
-+            .join("agents")
-+            .join(&agent_id.0);
-+        let child_mailbox = AgentMailbox::new(agent_id.clone(), &child_agent_dir).map_err(|e| {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            ToolError::ExecutionFailed(format!(
-+                "Failed to initialize mailbox for subagent `{}`: {}",
-+                agent_id, e
-+            ))
-+        })?;
-+
-+        // 4. Post initial task initialization message to child mailbox
-+        let init_msg = AgentMessage::new(
-+            AgentId::parent(),
-+            agent_id.clone(),
-+            MessageIntent::TaskInit,
-+            task,
-+        );
-+        if let Err(e) = child_mailbox.post(init_msg) {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            return Err(ToolError::ExecutionFailed(format!(
-+                "Failed to post init message to subagent `{}` mailbox: {}",
-+                agent_id, e
-+            )));
-+        }
-+
-+        // 5. Spawn headless child minicode process
-+        let current_exe = std::env::current_exe().map_err(|e| {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            ToolError::ExecutionFailed(format!("Failed to determine current executable: {}", e))
-+        })?;
-+
-+        let mut cmd = Command::new(current_exe);
-+        cmd.arg("run");
-+        cmd.arg("-d").arg(&target_dir);
-+        cmd.arg("-y");
-+        cmd.arg("--json-stream");
-+        cmd.arg("--tools").arg(role.tool_filter_mode());
-+
-+        if let Some(max_iter) = max_iterations {
-+            cmd.arg("--max-iterations").arg(max_iter.to_string());
-+        }
-+
-+        cmd.arg(task);
-+        cmd.stdin(Stdio::null());
-+        cmd.stdout(Stdio::piped());
-+        cmd.stderr(Stdio::piped());
-+        cmd.kill_on_drop(true);
-+
-+        #[cfg(unix)]
-+        {
-+            cmd.process_group(0);
-+        }
-+
-+        let mut child = cmd.spawn().map_err(|e| {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            ToolError::ExecutionFailed(format!("Failed to spawn subagent process: {}", e))
-+        })?;
-+
-+        // 6. Asynchronously read lines from child stdout using BufReader
-+        let stdout = child.stdout.take().ok_or_else(|| {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            ToolError::ExecutionFailed("Failed to capture child process stdout".to_string())
-+        })?;
-+
-+        let stderr = child.stderr.take();
-+
-+        let mut final_response = String::new();
-+        let mut files_modified: Vec<String> = Vec::new();
-+        let mut tools_executed: Vec<String> = Vec::new();
-+        let mut tokens_used = 0;
-+        let mut child_success = true;
-+        let mut error_msg: Option<String> = None;
-+
-+        let reader = BufReader::new(stdout);
-+        let mut lines = reader.lines();
-+
-+        let read_stdout = async {
-+            while let Ok(Some(line)) = lines.next_line().await {
-+                let trimmed = line.trim();
-+                if trimmed.is_empty() {
-+                    continue;
-+                }
-+                if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-+                    match event {
-+                        AgentEvent::StreamDelta { delta, .. } => {
-+                            final_response.push_str(&delta);
-+                        }
-+                        AgentEvent::ToolCall { tool, .. } => {
-+                            if !tools_executed.contains(&tool) {
-+                                tools_executed.push(tool);
-+                            }
-+                        }
-+                        AgentEvent::FileModified { path, .. } => {
-+                            if !files_modified.contains(&path) {
-+                                files_modified.push(path);
-+                            }
-+                        }
-+                        AgentEvent::TurnEnd {
-+                            total_tokens_used,
-+                            files_modified: modified,
-+                            status,
-+                            ..
-+                        } => {
-+                            tokens_used = total_tokens_used;
-+                            for f in modified {
-+                                if !files_modified.contains(&f) {
-+                                    files_modified.push(f);
-+                                }
-+                            }
-+                            if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
-+                                || status == crate::constants::TURN_STATUS_CANCELLED
-+                            {
-+                                child_success = false;
-+                            }
-+                        }
-+                        AgentEvent::Error { message, .. } => {
-+                            tracing::error!(message = %message, "Subagent encountered error");
-+                            child_success = false;
-+                            error_msg = Some(message);
-+                        }
-+                        _ => {}
-+                    }
-+                }
-+            }
-+        };
-+
-+        let mut captured_stderr = String::new();
-+        let read_stderr = async {
-+            if let Some(mut err_stream) = stderr {
-+                let _ = err_stream.read_to_string(&mut captured_stderr).await;
-+            }
-+        };
-+
-+        // 7. Await child completion or timeout (120s)
-+        let timeout_dur = std::time::Duration::from_secs(120);
-+        let run_outcome = tokio::time::timeout(timeout_dur, async {
-+            tokio::join!(read_stdout, read_stderr);
-+            child.wait().await
-+        })
-+        .await;
-+
-+        let exit_status = match run_outcome {
-+            Ok(Ok(status)) => status,
-+            Ok(Err(e)) => {
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                return Err(ToolError::ExecutionFailed(format!(
-+                    "Subagent `{}` wait error: {}",
-+                    agent_id, e
-+                )));
-+            }
-+            Err(_) => {
-+                let _ = child.kill().await;
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                return Err(ToolError::ExecutionFailed(format!(
-+                    "Subagent `{}` timed out after 120 seconds",
-+                    agent_id
-+                )));
-+            }
-+        };
-+
-+        if !exit_status.success() {
-+            child_success = false;
-+        }
-+
-+        if !child_success {
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
-+            }
-+            let reason = error_msg.unwrap_or_else(|| {
-+                let trimmed_stderr = captured_stderr.trim();
-+                if !trimmed_stderr.is_empty() {
-+                    trimmed_stderr.to_string()
-+                } else if !exit_status.success() {
-+                    format!("Process exited with status {:?}", exit_status.code())
-+                } else {
-+                    "Subagent execution failed".to_string()
-+                }
-+            });
-+            return Err(ToolError::ExecutionFailed(format!(
-+                "Subagent `{}` failed: {}",
-+                agent_id, reason
-+            )));
-+        }
-+
-+        // Child succeeded: capture diff if worktree was used, then remove worktree
-+        let diff = if let Some(ref handle) = worktree_handle {
-+            let captured = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
-+            let _ = GitWorktreeManager::remove_worktree(handle);
-+            captured
-+        } else {
-+            String::new()
-+        };
-+
-+        let summary_text = if final_response.trim().is_empty() {
-+            "Task executed successfully without stream output.".to_string()
-+        } else {
-+            final_response.trim().to_string()
-+        };
-+
++    if !validation.success {
 +        let mut report = format!(
-+            "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Tools Executed: {}\n• Files Modified: {}\n",
-+            agent_id,
-+            role.badge(),
-+            tokens_used,
-+            if tools_executed.is_empty() {
-+                "None".to_string()
-+            } else {
-+                tools_executed.join(", ")
-+            },
-+            if files_modified.is_empty() {
-+                "None (Read-Only)".to_string()
-+            } else {
-+                files_modified.join(", ")
-+            },
++            "❌ Pre-merge verification failed for subagent `{}` in worktree `{}`.\n\
++             • Command: `{}`\n\
++             • Exit Code: {}\n\
++             • Duration: {}ms\n\
++             • Status: Parent workspace untouched and worktree preserved.\n",
++            subagent_id,
++            worktree_path.display(),
++            validation.command,
++            validation.exit_code,
++            validation.duration_ms
 +        );
-+
-+        if !diff.is_empty() {
-+            report.push_str(&format!("\n### Worktree Diff\n```diff\n{}\n```\n", diff));
++        if !validation.stdout.trim().is_empty() {
++            report.push_str(&format!(
++                "\n### Stdout\n```\n{}\n```\n",
++                validation.stdout.trim()
++            ));
 +        }
-+
-+        report.push_str(&format!("\n### Summary & Findings\n{}", summary_text));
-+
-+        Ok(report)
++        if !validation.stderr.trim().is_empty() {
++            report.push_str(&format!(
++                "\n### Stderr\n```\n{}\n```\n",
++                validation.stderr.trim()
++            ));
++        }
++        return Ok(report);
 +    }
 +
-+    /// Sends a typed message to a target agent's durable mailbox.
-+    pub fn send_message(
-+        workspace_root: &Path,
-+        sender: &AgentId,
-+        recipient: &AgentId,
-+        message: &str,
-+        intent: Option<MessageIntent>,
-+    ) -> Result<String, ToolError> {
-+        // 1. Resolve recipient agent directory
-+        let agent_dir: PathBuf = if recipient.is_parent() {
-+            workspace_root
-+                .join(".minicode")
-+                .join("agents")
-+                .join("parent")
-+        } else {
-+            workspace_root
-+                .join(".minicode")
-+                .join("agents")
-+                .join(&recipient.0)
-+        };
++    // 4. Mergeability check via MergeArbitrator::check_mergeability
++    let mergeability =
++        crate::sandbox::MergeArbitrator::check_mergeability(workspace_root, &branch_name)
++            .map_err(|e| ToolError::ExecutionFailed(format!("Mergeability check failed: {}", e)))?;
 +
-+        // 2. Create or load AgentMailbox
-+        let mailbox = AgentMailbox::new(recipient.clone(), &agent_dir).map_err(|e| {
-+            ToolError::ExecutionFailed(format!(
-+                "Failed to open mailbox for agent `{}`: {}",
-+                recipient, e
-+            ))
-+        })?;
-+
-+        // 3. Construct AgentMessage with unique UUID, sender, recipient, intent, and timestamp
-+        let msg = AgentMessage::new(
-+            sender.clone(),
-+            recipient.clone(),
-+            intent.unwrap_or(MessageIntent::StatusUpdate),
-+            message,
++    if !mergeability.can_merge_cleanly {
++        let mut report = format!(
++            "⚠️ Merge conflicts detected between branch `{}` and HEAD for subagent `{}`.\n\
++             • Worktree: `{}`\n\
++             • Conflicted Files ({}):\n",
++            branch_name,
++            subagent_id,
++            worktree_path.display(),
++            mergeability.conflicted_files.len()
 +        );
-+
-+        // 4. Call mailbox.post(msg)
-+        mailbox.post(msg).map_err(|e| {
-+            ToolError::ExecutionFailed(format!(
-+                "Failed to deliver message to agent `{}` mailbox: {}",
-+                recipient, e
-+            ))
-+        })?;
-+
-+        // 5. Return confirmation string
-+        Ok(format!(
-+            "✔ Message delivered to agent `{}` mailbox.",
-+            recipient
-+        ))
++        for file in &mergeability.conflicted_files {
++            report.push_str(&format!("  - `{}`\n", file));
++        }
++        report.push_str(
++            "\n• Status: Merge aborted. Parent workspace untouched and worktree preserved.\n",
++        );
++        return Ok(report);
 +    }
++
++    // 5. Apply merge via MergeArbitrator::apply_merge
++    let merge_report = crate::sandbox::MergeArbitrator::apply_merge(
++        workspace_root,
++        &branch_name,
++        commit,
++        commit_message,
++    )
++    .map_err(|e| match e {
++        crate::sandbox::ArbitrationError::MergeConflict(conflicts) => ToolError::ExecutionFailed(
++            format!("Merge conflict encountered during apply: {:?}", conflicts),
++        ),
++        other => ToolError::ExecutionFailed(format!("Failed to apply merge: {}", other)),
++    })?;
++
++    // 6. On successful merge, clean up worktree and temporary branch via GitWorktreeManager::remove_worktree
++    let handle = crate::sandbox::WorktreeHandle {
++        worktree_path: worktree_path.clone(),
++        branch_name: branch_name.clone(),
++        agent_id: agent_id.clone(),
++        repo_root: workspace_root.to_path_buf(),
++    };
++    if let Err(e) = crate::sandbox::GitWorktreeManager::remove_worktree(&handle) {
++        tracing::warn!("Failed to clean up worktree after merge: {}", e);
++    }
++
++    // 7. Return formatted markdown success summary
++    let landing_mode = if merge_report.committed {
++        "Committed (`--no-ff`)"
++    } else {
++        "Staged without committing (`--no-commit`)"
++    };
++
++    let mut commit_details = String::new();
++    if let Some(ref hash) = merge_report.commit_hash {
++        commit_details.push_str(&format!("\n• **Commit Hash**: `{}`", hash));
++    }
++    if let Some(ref msg) = merge_report.commit_message {
++        commit_details.push_str(&format!("\n• **Commit Message**: {}", msg));
++    }
++
++    let files_summary = if merge_report.files_changed.is_empty() {
++        "  - None (empty diff)".to_string()
++    } else {
++        merge_report
++            .files_changed
++            .iter()
++            .map(|f| format!("  - `{}`", f))
++            .collect::<Vec<_>>()
++            .join("\n")
++    };
++
++    let summary = format!(
++        "✔ Successfully merged subagent worktree changes!\n\
++         • **Subagent ID**: `{}`\n\
++         • **Branch**: `{}`\n\
++         • **Landing Mode**: {}{}\n\
++         • **Pre-Merge Validation**: Passed (`{}` in {}ms)\n\
++         • **Cleanup**: Worktree `{}` and branch `{}` removed\n\n\
++         ### Files Changed ({})\n\
++         {}\n",
++        subagent_id,
++        branch_name,
++        landing_mode,
++        commit_details,
++        validation.command,
++        validation.duration_ms,
++        worktree_path.display(),
++        branch_name,
++        merge_report.files_changed.len(),
++        files_summary
++    );
++
++    Ok(summary)
 +}
 +
 +#[cfg(test)]
-+pub mod tests {
++mod tests {
 +    use super::*;
 +
 +    #[test]
-+    fn test_spawn_subagent_schema_valid() {
-+        let schemas = crate::tools::ToolRegistry::get_tool_schemas();
-+        let spawn_schema = schemas.iter().find(|s| s.name == "spawn_subagent");
-+        assert!(
-+            spawn_schema.is_some(),
-+            "spawn_subagent schema must be registered"
-+        );
-+        let schema = spawn_schema.unwrap();
-+        assert!(
-+            schema
-+                .description
-+                .contains("Spawn an autonomous background subagent"),
-+            "Description must match specification"
-+        );
-+
-+        let props = schema
-+            .parameters
-+            .get("properties")
-+            .expect("properties object must exist");
-+        assert!(props.get("task").is_some(), "task property required");
-+        assert!(props.get("role").is_some(), "role property required");
-+        assert!(
-+            props.get("workspace_mode").is_some(),
-+            "workspace_mode property required"
-+        );
-+        assert!(
-+            props.get("max_iterations").is_some(),
-+            "max_iterations property required"
-+        );
++    fn test_merge_subagent_worktree_arg_parsing() {
++        let json = serde_json::json!({
++            "subagent_id": "coder-1",
++            "commit": true,
++            "check_cmd": "cargo check -j 1",
++            "commit_message": "merge: auth feature"
++        });
++        let args: MergeSubagentWorktreeArgs = serde_json::from_value(json).unwrap();
++        assert_eq!(args.subagent_id, "coder-1");
++        assert_eq!(args.commit, Some(true));
++        assert_eq!(args.check_cmd.as_deref(), Some("cargo check -j 1"));
++        assert_eq!(args.commit_message.as_deref(), Some("merge: auth feature"));
 +    }
 +
-+    #[test]
-+    fn test_total_tool_count_matches() {
-+        let schemas = crate::tools::ToolRegistry::get_tool_schemas();
-+        assert_eq!(
-+            schemas.len(),
-+            crate::constants::TOTAL_TOOL_COUNT,
-+            "Tool registry schemas length must equal TOTAL_TOOL_COUNT"
-+        );
++    #[tokio::test]
++    async fn test_merge_subagent_worktree_not_found() {
++        let temp = tempfile::tempdir().unwrap();
++        let res = merge_subagent_worktree(temp.path(), "missing-agent", true, None, None).await;
++        assert!(res.is_err());
++        let err_msg = res.unwrap_err().to_string();
++        assert!(err_msg.contains("Worktree not found for subagent 'missing-agent'"));
 +    }
 +
-+    #[test]
-+    fn test_send_message_routes_to_mailbox() {
-+        let temp_dir = tempfile::tempdir().expect("tempdir creation");
-+        let sender = AgentId::parent();
-+        let recipient = AgentId::new_subagent("coder");
-+        let msg_text = "Implement SubagentOrchestrator in orchestrator.rs";
++    #[tokio::test]
++    async fn test_merge_subagent_worktree_clean_merge() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
 +
-+        let result = SubagentOrchestrator::send_message(
-+            temp_dir.path(),
-+            &sender,
-+            &recipient,
-+            msg_text,
-+            Some(MessageIntent::TaskInit),
-+        );
++        // git init
++        std::process::Command::new("git")
++            .args(["init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.name", "test"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.email", "test@example.com"])
++            .current_dir(root)
++            .output()
++            .unwrap();
 +
-+        assert!(result.is_ok(), "send_message should succeed");
-+        let confirm = result.unwrap();
-+        assert_eq!(
-+            confirm,
-+            format!("✔ Message delivered to agent `{}` mailbox.", recipient)
-+        );
++        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
 +
-+        let mailbox_file = temp_dir
-+            .path()
-+            .join(".minicode")
-+            .join("agents")
-+            .join(&recipient.0)
-+            .join("mailbox.jsonl");
-+        assert!(
-+            mailbox_file.exists(),
-+            "mailbox.jsonl must exist at {:?}",
-+            mailbox_file
-+        );
++        let agent_id = crate::agent::subagent::AgentId("coder-test".to_string());
++        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
 +
-+        let mailbox =
-+            AgentMailbox::new(recipient.clone(), &mailbox_file.parent().unwrap()).unwrap();
-+        let unread = mailbox.drain_unread().expect("drain unread messages");
-+        assert_eq!(unread.len(), 1);
-+        assert_eq!(unread[0].sender, sender);
-+        assert_eq!(unread[0].recipient, recipient);
-+        assert_eq!(unread[0].intent, MessageIntent::TaskInit);
-+        assert_eq!(unread[0].content, msg_text);
++        // Add a commit in the worktree
++        std::fs::write(
++            handle.worktree_path.join("feature.txt"),
++            "new feature content\n",
++        )
++        .unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "feat: add feature"])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++
++        let res = merge_subagent_worktree(
++            root,
++            "coder-test",
++            true,
++            Some("skip"),
++            Some("merge: feat add feature"),
++        )
++        .await;
++
++        assert!(res.is_ok());
++        let summary = res.unwrap();
++        assert!(summary.contains("Successfully merged subagent worktree changes"));
++        assert!(summary.contains("coder-test"));
++        assert!(summary.contains("feature.txt"));
++
++        // Worktree should be cleaned up
++        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_none());
++        assert!(root.join("feature.txt").exists());
 +    }
 +
-+    #[test]
-+    fn test_send_message_parent_recipient() {
-+        let temp_dir = tempfile::tempdir().expect("tempdir creation");
-+        let sender = AgentId::new_subagent("tester");
-+        let recipient = AgentId::parent();
-+        let msg_text = "All 42 unit tests passed cleanly";
++    #[tokio::test]
++    async fn test_merge_subagent_worktree_staged_no_commit() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
 +
-+        let result = SubagentOrchestrator::send_message(
-+            temp_dir.path(),
-+            &sender,
-+            &recipient,
-+            msg_text,
-+            Some(MessageIntent::TaskComplete),
-+        );
++        std::process::Command::new("git")
++            .args(["init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.name", "test"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.email", "test@example.com"])
++            .current_dir(root)
++            .output()
++            .unwrap();
 +
-+        assert!(result.is_ok(), "send_message to parent should succeed");
-+        let mailbox_file = temp_dir
-+            .path()
-+            .join(".minicode")
-+            .join("agents")
-+            .join("parent")
-+            .join("mailbox.jsonl");
-+        assert!(mailbox_file.exists(), "parent mailbox.jsonl must exist");
++        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
 +
-+        let mailbox =
-+            AgentMailbox::new(recipient.clone(), &mailbox_file.parent().unwrap()).unwrap();
-+        let unread = mailbox.drain_unread().expect("drain unread messages");
-+        assert_eq!(unread.len(), 1);
-+        assert_eq!(unread[0].sender, sender);
-+        assert_eq!(unread[0].recipient, recipient);
-+        assert_eq!(unread[0].intent, MessageIntent::TaskComplete);
-+        assert_eq!(unread[0].content, msg_text);
++        let agent_id = crate::agent::subagent::AgentId("staged-test".to_string());
++        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++
++        std::fs::write(handle.worktree_path.join("staged.txt"), "staged content\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "branch staged"])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++
++        let res = merge_subagent_worktree(root, "staged-test", false, Some("skip"), None).await;
++
++        assert!(res.is_ok());
++        let summary = res.unwrap();
++        assert!(summary.contains("Staged without committing"));
++        assert!(root.join("staged.txt").exists());
++    }
++
++    #[tokio::test]
++    async fn test_merge_subagent_worktree_verification_failure() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
++
++        // git init
++        std::process::Command::new("git")
++            .args(["init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.name", "test"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.email", "test@example.com"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        let agent_id = crate::agent::subagent::AgentId("failing-verifier".to_string());
++        let _handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++
++        // Verification command that fails
++        let res =
++            merge_subagent_worktree(root, "failing-verifier", true, Some("false"), None).await;
++
++        assert!(res.is_ok());
++        let report = res.unwrap();
++        assert!(report.contains("Pre-merge verification failed"));
++        assert!(report.contains("Parent workspace untouched and worktree preserved"));
++
++        // Worktree MUST still exist
++        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_some());
++    }
++
++    #[tokio::test]
++    async fn test_merge_subagent_worktree_conflict() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
++
++        // git init
++        std::process::Command::new("git")
++            .args(["init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.name", "test"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.email", "test@example.com"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        std::fs::write(root.join("conflict.txt"), "line original\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        let agent_id = crate::agent::subagent::AgentId("conflicting-subagent".to_string());
++        let handle = crate::sandbox::GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++
++        // Branch commit
++        std::fs::write(
++            handle.worktree_path.join("conflict.txt"),
++            "line branch edit\n",
++        )
++        .unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "branch edit"])
++            .current_dir(&handle.worktree_path)
++            .output()
++            .unwrap();
++
++        // Main commit
++        std::fs::write(root.join("conflict.txt"), "line main edit\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "main edit"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        let res =
++            merge_subagent_worktree(root, "conflicting-subagent", true, Some("skip"), None).await;
++
++        assert!(res.is_ok());
++        let report = res.unwrap();
++        assert!(report.contains("Merge conflicts detected"));
++        assert!(report.contains("conflict.txt"));
++        assert!(report.contains("Parent workspace untouched and worktree preserved"));
++
++        // Worktree MUST still exist
++        assert!(crate::sandbox::GitWorktreeManager::locate_worktree(root, &agent_id).is_some());
 +    }
 +}
-diff --git a/src/agent/subagent/types.rs b/src/agent/subagent/types.rs
-index dee0107..9653ec7 100644
---- a/src/agent/subagent/types.rs
-+++ b/src/agent/subagent/types.rs
-@@ -86,20 +86,30 @@ impl WorkspaceMode {
- #[serde(rename_all = "snake_case")]
- pub enum SubagentRole {
-     Scout,
-     Coder,
-     Tester,
-     Reviewer,
- }
- 
- #[allow(dead_code)]
- impl SubagentRole {
-+    /// Returns the string representation of this role
-+    pub fn as_str(&self) -> &'static str {
-+        match self {
-+            SubagentRole::Scout => "scout",
-+            SubagentRole::Coder => "coder",
-+            SubagentRole::Tester => "tester",
-+            SubagentRole::Reviewer => "reviewer",
-+        }
-+    }
-+
-     /// Returns the default workspace isolation mode for this role
-     pub fn default_workspace_mode(&self) -> WorkspaceMode {
-         match self {
-             SubagentRole::Scout | SubagentRole::Reviewer => WorkspaceMode::Shared,
-             SubagentRole::Coder | SubagentRole::Tester => WorkspaceMode::Worktree,
-         }
-     }
- 
-     /// Returns the tool filtering mode ("read_only" vs "standard")
-     pub fn tool_filter_mode(&self) -> &'static str {
-diff --git a/src/constants.rs b/src/constants.rs
-index 9028fe8..5d6801f 100644
---- a/src/constants.rs
-+++ b/src/constants.rs
-@@ -904,21 +904,21 @@ pub const FNV_PRIME: u64 = 0x100000001b3;
- /// Maximum matched symbol entries returned in code explore search
- pub const MAX_MATCHED_ENTRIES: usize = 5;
- /// Maximum source lines rendered in code explore symbol definition
- pub const MAX_SOURCE_LINES: usize = 60;
- /// Maximum incoming callers listed in code explore symbol view
- pub const MAX_CALLERS: usize = 8;
- /// Maximum outgoing callees listed in code explore symbol view
- pub const MAX_CALLEES: usize = 8;
- 
- /// Total number of built-in and extended tool schemas in registry
--pub const TOTAL_TOOL_COUNT: usize = 134;
-+pub const TOTAL_TOOL_COUNT: usize = 135;
- 
- // === Hierarchical Fault Localization (Phase 92) ===
- /// Default candidate files to evaluate in hierarchical fault localization
- pub const DEFAULT_FAULT_LOCALIZE_MAX_FILES: usize = 3;
- /// Maximum candidate files to evaluate in hierarchical fault localization
- pub const MAX_FAULT_LOCALIZE_FILES: usize = 5;
- /// Maximum suspicious symbols localized per candidate file
- pub const FAULT_LOCALIZE_MAX_SYMBOLS_PER_FILE: usize = 3;
- /// Maximum lines to extract for code envelope slices
- pub const FAULT_LOCALIZE_MAX_SLICE_LINES: usize = 30;
-diff --git a/src/error.rs b/src/error.rs
-index d3c8a43..8dbffe5 100644
---- a/src/error.rs
-+++ b/src/error.rs
-@@ -129,20 +129,23 @@ pub enum ToolError {
- 
-     #[error("Command execution failed: {0}")]
-     CommandExec(String),
- 
-     #[error("Command timed out after {timeout_secs} seconds")]
-     CommandTimeout { timeout_secs: u64 },
- 
-     #[allow(dead_code)]
-     #[error("Tool execution was rejected by user: {reason}")]
-     Rejected { reason: String },
-+
-+    #[error("Subagent execution failed: {0}")]
-+    ExecutionFailed(String),
- }
- 
- impl ToolError {
-     /// Creates an `InvalidArguments` error with a formatted or literal reason
-     pub fn invalid_args(name: impl Into<String>, reason: impl Into<String>) -> Self {
-         Self::InvalidArguments {
-             name: name.into(),
-             reason: reason.into(),
-         }
-     }
-diff --git a/src/tools/concurrency.rs b/src/tools/concurrency.rs
-index b9deda5..ecc6e76 100644
---- a/src/tools/concurrency.rs
-+++ b/src/tools/concurrency.rs
-@@ -122,21 +122,22 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
-         // Multi-Agent & Reasoning Inspection
-         "explore_hypotheses"
-         | "evaluate_branch"
-         | "select_best_branch"
-         | "prune_context"
-         | "critic_review"
-         | "sequential_thinking"
-         | "list_reproducers" => ToolSafetyLevel::ReadOnly,
- 
-         // Multi-Agent Mutations
--        "dispatch_subagent"
-+        "spawn_subagent"
-+        | "dispatch_subagent"
-         | "fanout_subagents"
-         | "merge_subagent_worktree"
-         | "synthesize_reproducer"
-         | "verify_reproducer"
-         | "execute_dag"
-         | "repair_diagnostics" => ToolSafetyLevel::Mutating,
- 
-         // Memory & Context Inspection (Read-Only)
-         "read_plan"
-         | "view_memory"
-diff --git a/src/tools/mod.rs b/src/tools/mod.rs
-index b70c1c6..1864fa7 100644
---- a/src/tools/mod.rs
-+++ b/src/tools/mod.rs
-@@ -228,20 +228,26 @@ impl ToolRegistry {
-         }
-         .into())
-     }
- }
- 
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use serde_json::json;
- 
-+    #[test]
-+    fn test_total_tool_count() {
-+        let schemas = ToolRegistry::get_tool_schemas();
-+        assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);
-+    }
-+
-     #[test]
-     fn test_tool_schemas_count() {
-         let schemas = ToolRegistry::get_tool_schemas();
-         assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);
-         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
-         assert!(names.contains(&"score_task_complexity"));
-         assert!(names.contains(&"check_architecture"));
-         assert!(names.contains(&"ast_diff"));
-         assert!(names.contains(&"explore_hypotheses"));
-         assert!(names.contains(&"evaluate_branch"));
-diff --git a/src/tools/registry/agent_tools/subagents.rs b/src/tools/registry/agent_tools/subagents.rs
-index e52ff4f..5fe3b87 100644
---- a/src/tools/registry/agent_tools/subagents.rs
-+++ b/src/tools/registry/agent_tools/subagents.rs
-@@ -99,48 +99,93 @@ pub fn get_schemas() -> Vec<ToolSchema> {
-                         "description": "Optional custom system prompt override"
-                     },
-                     "isolate_worktree": {
-                         "type": "boolean",
-                         "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for mutating roles (test_engineer, custom)."
-                     }
-                 },
-                 "required": ["role", "prompt"]
-             }),
-         },
-+        ToolSchema {
-+            name: "spawn_subagent".to_string(),
-+            description: "Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree.".to_string(),
-+            parameters: json!({
-+                "type": "object",
-+                "properties": {
-+                    "task": {
-+                        "type": "string",
-+                        "description": "Clear and detailed task instructions for the subagent"
-+                    },
-+                    "role": {
-+                        "type": "string",
-+                        "enum": ["scout", "coder", "tester", "reviewer"],
-+                        "description": "Specialized role preset defining subagent capabilities and workspace isolation"
-+                    },
-+                    "workspace_mode": {
-+                        "type": "string",
-+                        "enum": ["auto", "worktree", "shared"],
-+                        "description": "Workspace isolation mode: 'auto' (default based on role), 'worktree' (isolated Git worktree branch), or 'shared' (in-place execution)"
-+                    },
-+                    "max_iterations": {
-+                        "type": "integer",
-+                        "description": "Maximum tool loop iterations for the subagent before terminating"
-+                    }
-+                },
-+                "required": ["task", "role"]
-+            }),
-+        },
-         ToolSchema {
-             name: "send_message".to_string(),
--            description: "Send a follow-up instruction or message to an active subagent in the swarm pool.".to_string(),
-+            description: "Send a typed message or follow-up instruction to an agent or subagent via durable mailbox.".to_string(),
-             parameters: json!({
-                 "type": "object",
-                 "properties": {
-+                    "recipient": {
-+                        "type": "string",
-+                        "description": "The unique identifier of the recipient agent (or 'parent' for coordinator)"
-+                    },
-                     "subagent_id": {
-                         "type": "string",
--                        "description": "The unique identifier of the target subagent"
-+                        "description": "Alias for recipient: the unique identifier of the target subagent"
-                     },
-                     "message": {
-                         "type": "string",
-                         "description": "The instruction or message content to deliver"
-+                    },
-+                    "intent": {
-+                        "type": "string",
-+                        "enum": [
-+                            "task_init",
-+                            "status_update",
-+                            "clarification_request",
-+                            "clarification_response",
-+                            "feedback",
-+                            "handoff",
-+                            "task_complete"
-+                        ],
-+                        "description": "Optional high-level intent of the message (default: 'status_update')"
-                     }
-                 },
--                "required": ["subagent_id", "message"]
-+                "required": ["message"]
-             }),
-         },
-         ToolSchema {
-             name: "manage_subagents".to_string(),
-             description: "Inspect, list, monitor, await completion, or terminate active subagent workers in the swarm pool.".to_string(),
-             parameters: json!({
-                 "type": "object",
-                 "properties": {
-                     "action": {
-                         "type": "string",
--                        "enum": ["list", "status", "await", "transcript", "drilldown", "kill", "kill_all"],
--                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
-+                        "enum": ["list", "status", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
-+                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' / 'wait' for completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
-                     },
-                     "subagent_id": {
-                         "type": "string",
-                         "description": "Identifier of the target subagent (required for 'status', 'kill', 'await', and 'transcript')"
-                     },
-                     "step_index": {
-                         "type": "integer",
-                         "description": "Optional step number (1-indexed) when action is 'transcript' or 'drilldown'"
-                     },
-                     "timeout_secs": {
-@@ -374,36 +419,91 @@ pub async fn dispatch(
-                  • **Await Completion**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")` when ready to inspect results, or `manage_subagents(action=\"status\", subagent_id=\"{}\")` for intermediate updates.",
-                 id,
-                 role.badge(),
-                 isolation_label,
-                 id,
-                 id
-             );
- 
-             Ok(out)
-         }.await),
-+        "spawn_subagent" => Some(async {
-+            let task = param::require_str(args, "task", "spawn_subagent")?;
-+            let role_str = param::require_str(args, "role", "spawn_subagent")?;
-+            let role = match role_str.to_lowercase().as_str() {
-+                "scout" | "researcher" | "research" => crate::agent::subagent::SubagentRole::Scout,
-+                "coder" => crate::agent::subagent::SubagentRole::Coder,
-+                "tester" | "test_engineer" | "test" => crate::agent::subagent::SubagentRole::Tester,
-+                "reviewer" | "code_reviewer" | "security_auditor" | "security" => {
-+                    crate::agent::subagent::SubagentRole::Reviewer
-+                }
-+                other => {
-+                    return Err(ToolError::InvalidArguments {
-+                        name: "spawn_subagent".to_string(),
-+                        reason: format!(
-+                            "Unknown role '{}'. Expected 'scout', 'coder', 'tester', or 'reviewer'",
-+                            other
-+                        ),
-+                    }.into());
-+                }
-+            };
-+
-+            let mode_str = param::opt_str(args, "workspace_mode").unwrap_or("auto");
-+            let workspace_mode = match mode_str.to_lowercase().as_str() {
-+                "worktree" => crate::agent::subagent::WorkspaceMode::Worktree,
-+                "shared" => crate::agent::subagent::WorkspaceMode::Shared,
-+                _ => crate::agent::subagent::WorkspaceMode::Auto,
-+            };
-+
-+            let max_iterations = param::opt_u64(args, "max_iterations").map(|n| n as usize);
-+
-+            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent(
-+                workspace_root,
-+                task,
-+                role,
-+                workspace_mode,
-+                max_iterations,
-+            )
-+            .await?;
-+
-+            Ok(report)
-+        }.await),
-         "send_message" => Some(async {
--            let subagent_id = param::require_str(args, "subagent_id", "send_message")?;
-+            let recipient_str = param::opt_str(args, "recipient")
-+                .or_else(|| param::opt_str(args, "subagent_id"))
-+                .ok_or_else(|| ToolError::InvalidArguments {
-+                    name: "send_message".to_string(),
-+                    reason: "Missing required argument 'recipient' or 'subagent_id'".to_string(),
-+                })?;
-             let message = param::require_str(args, "message", "send_message")?;
-+            let intent = param::opt_str(args, "intent").map(|s| match s {
-+                "task_init" => crate::agent::subagent::MessageIntent::TaskInit,
-+                "clarification_request" => crate::agent::subagent::MessageIntent::ClarificationRequest,
-+                "clarification_response" => crate::agent::subagent::MessageIntent::ClarificationResponse,
-+                "feedback" => crate::agent::subagent::MessageIntent::Feedback,
-+                "handoff" => crate::agent::subagent::MessageIntent::Handoff,
-+                "task_complete" => crate::agent::subagent::MessageIntent::TaskComplete,
-+                _ => crate::agent::subagent::MessageIntent::StatusUpdate,
-+            });
- 
--            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
--            if let Some(info) = pool.get_subagent(subagent_id).await {
--                Ok(format!(
--                    "✔ Message delivered to subagent `{}` (Role: {}, State: {:?})\nMessage content: '{}'",
--                    subagent_id,
--                    info.role.badge(),
--                    info.state,
--                    message
--                ))
--            } else {
--                Ok(format!("ℹ Subagent `{}` received instruction: '{}'", subagent_id, message))
--            }
-+            let sender = crate::agent::subagent::AgentId::parent();
-+            let recipient = crate::agent::subagent::AgentId::from(recipient_str);
-+
-+            let confirm = crate::agent::subagent::orchestrator::SubagentOrchestrator::send_message(
-+                workspace_root,
-+                &sender,
-+                &recipient,
-+                message,
-+                intent,
-+            )?;
-+
-+            Ok(confirm)
-         }.await),
-         "manage_subagents" => Some(async {
-             let action = param::opt_str(args, "action").unwrap_or("list");
-             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
- 
-             match action {
-                 "list" => {
-                     let summary = pool.format_swarm_summary().await;
-                     Ok(summary)
-                 }
-@@ -417,21 +517,21 @@ pub async fn dispatch(
-                             info.state,
-                             info.turns_executed,
-                             info.tokens_used,
-                             info.prompt,
-                             info.started_at_secs
-                         ))
-                     } else {
-                         Ok(format!("ℹ No subagent found with ID '{}'", id))
-                     }
-                 }
--                "await" => {
-+                "await" | "wait" => {
-                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
-                     let timeout_secs = param::opt_u64(args, "timeout_secs").unwrap_or(60);
-                     let start = std::time::Instant::now();
-                     let max_dur = std::time::Duration::from_secs(timeout_secs);
- 
-                     let mut final_info = None;
-                     while start.elapsed() < max_dur {
-                         if let Some(info) = pool.get_subagent(id).await {
-                             if !matches!(
-                                 info.state,
-@@ -524,21 +624,21 @@ pub async fn dispatch(
-                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
-                     pool.kill_subagent(id).await?;
-                     Ok(format!("✔ Subagent `{}` successfully terminated", id))
-                 }
-                 "kill_all" => {
-                     pool.kill_all().await;
-                     Ok("✔ All active subagents in swarm pool have been terminated".to_string())
-                 }
-                 other => Err(ToolError::InvalidArguments {
-                     name: "manage_subagents".to_string(),
--                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, transcript, drilldown, kill, kill_all", other),
-+                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, wait, transcript, drilldown, kill, kill_all", other),
-                 }.into()),
-             }
-         }.await),
-         "scratchpad_write" => Some(async {
-             let key = param::require_str(args, "key", "scratchpad_write")?;
-             let title = param::require_str(args, "title", "scratchpad_write")?;
-             let content = param::require_str(args, "content", "scratchpad_write")?;
-             let author = param::opt_str(args, "author").unwrap_or("orchestrator");
- 
-             let sp = crate::agent::subagent::get_global_scratchpad();

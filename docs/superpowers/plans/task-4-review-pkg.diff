@@ -1,452 +1,373 @@
-2a21461 feat(agent): wire semantic micro-compactor into agent loop execution lifecycle
-
---- STAT ---
-
- src/agent/loop.rs                     |  36 +++-
- src/context/budget/mod.rs             |   2 +
- tests/common/mod.rs                   |   1 +
- tests/integration_micro_compaction.rs | 318 ++++++++++++++++++++++++++++++++++
- 4 files changed, 356 insertions(+), 1 deletion(-)
-
---- DIFF ---
-
-diff --git a/src/agent/loop.rs b/src/agent/loop.rs
-index ac71f1e..fa3c4a3 100644
---- a/src/agent/loop.rs
-+++ b/src/agent/loop.rs
-@@ -364,20 +364,32 @@ impl AgentLoop {
-                 tracing::warn!(
-                     error = %e,
-                     path = %persistence_path.display(),
-                     "Failed to persist initial intent ledger"
-                 );
-             }
-             self.intent_ledger = Some(ledger);
-         }
- 
-         // 1. Prune/compact conversation context if approaching budget
-+        let micro_metrics =
-+            crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
-+        if micro_metrics.tokens_saved_estimate > 0 {
-+            tracing::info!(
-+                superseded_reads = micro_metrics.superseded_reads_compacted,
-+                duplicate_reads = micro_metrics.duplicate_reads_compacted,
-+                mutation_echoes = micro_metrics.mutation_echoes_compacted,
-+                search_results = micro_metrics.search_results_compacted,
-+                tokens_saved = micro_metrics.tokens_saved_estimate,
-+                "Applied semantic micro-compaction to conversation history"
-+            );
-+        }
-         let compaction_metrics = self.prune_context();
-         let message_index = self.messages.len();
- 
-         // 2. Build Tri-Zone context:
-         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
-         let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
- 
-         // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor, context budget)
-         let git_service = crate::git::GitService::new(self.workspace_root.clone());
-         let git_status = git_service.get_status().await.ok();
-@@ -1338,24 +1350,46 @@ impl AgentLoop {
-                             }
- 
-                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
-                             let output_for_llm =
-                                 crate::context::budget::ObservationPruner::prune_for_llm(
-                                     &tool_call.name,
-                                     &tool_result.output,
-                                 );
-                             self.messages.push(Message::tool_result(
-                                 tool_call.id,
--                                tool_call.name,
-+                                tool_call.name.clone(),
-                                 output_for_llm,
-                             ));
- 
-+                            if tool_result.success
-+                                && (FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-+                                    || tool_call.name == "replace_file_content"
-+                                    || tool_call.name == "edit_file")
-+                            {
-+                                let micro_metrics =
-+                                    crate::context::budget::MicroCompactor::compact_messages(
-+                                        &mut self.messages,
-+                                        2,
-+                                    );
-+                                if micro_metrics.tokens_saved_estimate > 0 {
-+                                    tracing::info!(
-+                                        superseded_reads = micro_metrics.superseded_reads_compacted,
-+                                        duplicate_reads = micro_metrics.duplicate_reads_compacted,
-+                                        mutation_echoes = micro_metrics.mutation_echoes_compacted,
-+                                        search_results = micro_metrics.search_results_compacted,
-+                                        tokens_saved = micro_metrics.tokens_saved_estimate,
-+                                        "Applied semantic micro-compaction after file mutation"
-+                                    );
-+                                }
-+                            }
-+
-                             turn_tool_results.push(tool_result);
-                             if circuit_tripped {
-                                 break;
-                             }
-                         }
-                     }
-                 }
- 
-                 if was_cancelled || circuit_tripped {
-                     // Guarantee that every tool call in pending_tool_calls has a corresponding tool result in self.messages
-diff --git a/src/context/budget/mod.rs b/src/context/budget/mod.rs
-index 1dfbe85..c40e4a1 100644
---- a/src/context/budget/mod.rs
-+++ b/src/context/budget/mod.rs
-@@ -7,12 +7,14 @@ pub mod compressor;
- pub mod dedup;
- pub mod donut;
- pub mod flaky;
- pub mod json_crusher;
- pub mod log_pruner;
- pub mod micro_compact;
- pub mod observation_pruner;
- 
- pub use budget::*;
- #[allow(unused_imports)]
-+pub use ccr_cache::CcrCache;
-+#[allow(unused_imports)]
- pub use micro_compact::{MicroCompactMetrics, MicroCompactor};
- pub use observation_pruner::ObservationPruner;
-diff --git a/tests/common/mod.rs b/tests/common/mod.rs
-index efca6b3..43eddd3 100644
---- a/tests/common/mod.rs
-+++ b/tests/common/mod.rs
-@@ -1,6 +1,7 @@
- pub mod mock_provider;
- pub mod workspace;
- 
-+#[allow(unused_imports)]
- pub use mock_provider::{MockProvider, MockResponse};
- #[allow(unused_imports)]
- pub use workspace::TestWorkspace;
-diff --git a/tests/integration_micro_compaction.rs b/tests/integration_micro_compaction.rs
+diff --git a/tests/integration_subagent_merge.rs b/tests/integration_subagent_merge.rs
 new file mode 100644
-index 0000000..6e9ffb2
+index 0000000..cefbd6e
 --- /dev/null
-+++ b/tests/integration_micro_compaction.rs
-@@ -0,0 +1,318 @@
-+mod common;
++++ b/tests/integration_subagent_merge.rs
+@@ -0,0 +1,367 @@
++//! End-to-End Integration Test Suite for Subagent Worktree Merge & Conflict Arbitration Engine.
++//!
++//! Validates the complete arbitration lifecycle:
++//! 1. Clean merge lifecycle (creation, modification, pre-merge verification, mergeability check, merge application, cleanup).
++//! 2. Merge conflict arbitration (competing concurrent modifications, conflict detection via git merge-tree, safe rejection).
++//! 3. Tool primitive end-to-end execution (`merge_subagent_worktree`).
++//! 4. Pre-merge verification failure handling (preserving worktree on disk, aborting merge cleanly).
 +
-+use common::MockProvider;
-+use minicode::agent::types::{Message, ToolCall};
-+use minicode::context::budget::{CcrCache, MicroCompactor};
-+use serde_json::json;
++use minicode::agent::subagent::types::AgentId;
++use minicode::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator};
++use minicode::tools::registry::agent_tools::subagents::merge_subagent_worktree;
++use std::path::Path;
++use std::process::Command;
 +
-+#[test]
-+fn test_end_to_end_multi_turn_micro_compaction() {
-+    // Turn 1: read_file on src/service.rs (300 lines of code)
-+    let service_300_lines = (1..=300)
-+        .map(|i| format!("pub fn handle_request_step_{i}() -> Result<(), Error> {{ Ok(()) }}"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++/// Initializes a temporary Git repository with local user identity and signing disabled.
++fn setup_git_repo(root: &Path) {
++    let run = |args: &[&str]| {
++        let output = Command::new("git")
++            .args(args)
++            .current_dir(root)
++            .output()
++            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
++        assert!(
++            output.status.success(),
++            "git {:?} failed: {}",
++            args,
++            String::from_utf8_lossy(&output.stderr)
++        );
++    };
 +
-+    // Turn 2: grep_search for handle_request (50 lines of matches)
-+    let grep_50_lines = (1..=50)
-+        .map(|i| format!("src/service.rs:{i}:    pub fn handle_request_step_{i}()"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++    run(&["init"]);
++    run(&["config", "user.name", "test-user"]);
++    run(&["config", "user.email", "test@example.com"]);
++    run(&["config", "commit.gpgsign", "false"]);
 +
-+    // Turn 3: patch_file on src/service.rs
-+    let patch_output = "Successfully applied patch to src/service.rs: 1 hunk applied.";
-+
-+    // Turn 4: cargo test in active turn
-+    let test_output =
-+        "running 12 tests\ntest service::test_handle_request ... ok\ntest result: ok. 12 passed; 0 failed";
-+
-+    let mut messages = vec![
-+        // Turn 1: User requests code inspection
-+        Message::user("Please inspect src/service.rs to understand request handling."),
-+        Message::assistant_with_tools(
-+            "I'll read src/service.rs to inspect the logic.",
-+            vec![ToolCall {
-+                id: "call_read_1".into(),
-+                name: "read_file".into(),
-+                arguments: json!({"path": "src/service.rs"}),
-+            }],
-+        ),
-+        Message::tool_result("call_read_1", "read_file", &service_300_lines),
-+        Message::assistant("I have inspected src/service.rs."),
-+        // Turn 2: User requests grep search
-+        Message::user("Search for handle_request usages across the codebase."),
-+        Message::assistant_with_tools(
-+            "I'll grep for handle_request across the codebase.",
-+            vec![ToolCall {
-+                id: "call_grep_1".into(),
-+                name: "grep_search".into(),
-+                arguments: json!({"query": "handle_request"}),
-+            }],
-+        ),
-+        Message::tool_result("call_grep_1", "grep_search", &grep_50_lines),
-+        Message::assistant("Found 50 matching occurrences of handle_request."),
-+        // Turn 3: User requests patch
-+        Message::user("Patch src/service.rs to optimize request routing."),
-+        Message::assistant_with_tools(
-+            "Applying patch to src/service.rs.",
-+            vec![ToolCall {
-+                id: "call_patch_1".into(),
-+                name: "patch_file".into(),
-+                arguments: json!({"path": "src/service.rs"}),
-+            }],
-+        ),
-+        Message::tool_result("call_patch_1", "patch_file", patch_output),
-+        Message::assistant("Patch applied successfully."),
-+        // Turn 4: Active turn: running cargo test
-+        Message::user("Run cargo test to verify the changes."),
-+        Message::assistant_with_tools(
-+            "Running cargo test now.",
-+            vec![ToolCall {
-+                id: "call_test_1".into(),
-+                name: "exec_cmd".into(),
-+                arguments: json!({"command": "cargo test"}),
-+            }],
-+        ),
-+        Message::tool_result("call_test_1", "exec_cmd", test_output),
-+        Message::assistant("All 12 tests passed!"),
-+    ];
-+
-+    // Compact with preserve_recent_turns = 1 (Turn 4 active turn is preserved untouched)
-+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+
-+    // Assert Turn 1 read_file was compacted (superseded by Turn 3 patch_file)
-+    assert_eq!(metrics.superseded_reads_compacted, 1);
-+    assert_eq!(metrics.search_results_compacted, 1);
-+    assert!(metrics.tokens_saved_estimate > 0);
-+
-+    // Verify Turn 1 observation (message index 2)
-+    let turn_1_content = &messages[2].content;
-+    assert!(
-+        turn_1_content.contains("superseded by modification"),
-+        "Turn 1 observation should be marked as superseded: {turn_1_content}"
-+    );
-+    assert!(
-+        turn_1_content.contains("id=\"ccr_"),
-+        "Turn 1 observation should reference a CCR id: {turn_1_content}"
-+    );
-+
-+    // Extract Turn 1 CCR ID
-+    let id_start_1 = turn_1_content.find("id=\"").expect("CCR id start") + 4;
-+    let id_end_1 = turn_1_content[id_start_1..].find('"').expect("CCR id end") + id_start_1;
-+    let ccr_id_read = &turn_1_content[id_start_1..id_end_1];
-+
-+    // Verify Turn 2 observation (message index 6)
-+    let turn_2_content = &messages[6].content;
-+    assert!(
-+        turn_2_content.contains("returned 50 lines"),
-+        "Turn 2 grep should be condensed: {turn_2_content}"
-+    );
-+    assert!(
-+        turn_2_content.contains("id=\"ccr_"),
-+        "Turn 2 observation should reference a CCR id: {turn_2_content}"
-+    );
-+
-+    // Extract Turn 2 CCR ID
-+    let id_start_2 = turn_2_content.find("id=\"").expect("CCR id start") + 4;
-+    let id_end_2 = turn_2_content[id_start_2..].find('"').expect("CCR id end") + id_start_2;
-+    let ccr_id_grep = &turn_2_content[id_start_2..id_end_2];
-+
-+    // Verify Turn 4 observation (message index 14) is 100% UNTOUCHED
-+    assert_eq!(
-+        messages[14].content, test_output,
-+        "Active turn observation must remain 100% untouched"
-+    );
-+
-+    // Assert CcrCache::retrieve recovers exact raw text verbatim for both observations
-+    let retrieved_read = CcrCache::retrieve(ccr_id_read, None, None);
-+    assert_eq!(
-+        retrieved_read,
-+        Some(service_300_lines),
-+        "CcrCache::retrieve must recover the exact 300 lines of read_file verbatim"
-+    );
-+
-+    let retrieved_grep = CcrCache::retrieve(ccr_id_grep, None, None);
-+    assert_eq!(
-+        retrieved_grep,
-+        Some(grep_50_lines),
-+        "CcrCache::retrieve must recover the exact 50 lines of grep_search verbatim"
-+    );
++    std::fs::write(root.join(".gitignore"), ".minicode/\n").unwrap();
++    run(&["add", ".gitignore"]);
++    run(&["commit", "-m", "ignore minicode"]);
 +}
 +
 +#[test]
-+fn test_multi_file_mutation_and_selective_compaction() {
-+    let file_a_code = (1..=40)
-+        .map(|i| format!("pub struct StructA_{i} {{ pub val: usize }}"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++fn test_integration_subagent_worktree_clean_merge() {
++    let temp = tempfile::tempdir().unwrap();
++    let root = temp.path();
++    setup_git_repo(root);
 +
-+    let file_b_code = (1..=40)
-+        .map(|i| format!("pub struct StructB_{i} {{ pub val: usize }}"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++    // Initial base commit in parent workspace
++    std::fs::write(root.join("lib.rs"), "// base\n").unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "init"])
++        .current_dir(root)
++        .output()
++        .unwrap();
 +
-+    let mut messages = vec![
-+        // Turn 1: Read both file_a.rs and file_b.rs
-+        Message::user("Read file_a.rs and file_b.rs"),
-+        Message::assistant_with_tools(
-+            "Reading both files.",
-+            vec![
-+                ToolCall {
-+                    id: "call_read_a".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/file_a.rs"}),
-+                },
-+                ToolCall {
-+                    id: "call_read_b".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/file_b.rs"}),
-+                },
-+            ],
-+        ),
-+        Message::tool_result("call_read_a", "read_file", &file_a_code),
-+        Message::tool_result("call_read_b", "read_file", &file_b_code),
-+        Message::assistant("Both files read."),
-+        // Turn 2: Modify ONLY file_a.rs
-+        Message::user("Modify file_a.rs"),
-+        Message::assistant_with_tools(
-+            "Patching file_a.rs.",
-+            vec![ToolCall {
-+                id: "call_patch_a".into(),
-+                name: "patch_file".into(),
-+                arguments: json!({"path": "src/file_a.rs"}),
-+            }],
-+        ),
-+        Message::tool_result("call_patch_a", "patch_file", "ok"),
-+        Message::assistant("Modified file_a.rs."),
-+        // Turn 3: Active recent turn
-+        Message::user("Continue work"),
-+        Message::assistant("Ready for instructions."),
-+    ];
++    // 1. Create worktree via GitWorktreeManager::create_worktree
++    let agent_id = AgentId("coder-clean".to_string());
++    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++    assert!(handle.worktree_path.exists());
 +
-+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++    // 2. Modify and commit changes in the worktree
++    std::fs::write(
++        handle.worktree_path.join("lib.rs"),
++        "// base\npub fn subagent_feature() -> bool { true }\n",
++    )
++    .unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "feat: subagent add feature"])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
 +
-+    // file_a was modified so its read is superseded and compacted
-+    assert_eq!(metrics.superseded_reads_compacted, 1);
-+    assert_eq!(metrics.duplicate_reads_compacted, 0);
++    // 3. Run MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))
++    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip")).unwrap();
++    assert!(v_report.success);
++    assert_eq!(v_report.command, "skip");
 +
-+    // Assert file_a.rs read is compacted
-+    let content_a = &messages[2].content;
-+    assert!(
-+        content_a.contains("superseded by modification"),
-+        "file_a.rs read should be compacted as superseded: {content_a}"
-+    );
++    // 4. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
++    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
++    assert!(m_report.can_merge_cleanly);
++    assert!(m_report.conflicted_files.is_empty());
 +
-+    // Assert file_b.rs read is NOT compacted (since file_b was never modified)
-+    let content_b = &messages[3].content;
-+    assert_eq!(
-+        content_b, &file_b_code,
-+        "file_b.rs read must remain uncompacted because it was never modified"
-+    );
++    // 5. Apply merge via MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
++    let merge_res =
++        MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
++            .unwrap();
++    assert!(merge_res.committed);
++    assert!(merge_res.files_changed.contains(&"lib.rs".to_string()));
++    assert!(merge_res.commit_hash.is_some());
++
++    // 6. Clean up worktree via GitWorktreeManager::remove_worktree
++    GitWorktreeManager::remove_worktree(&handle).unwrap();
++    assert!(!handle.worktree_path.exists());
++
++    // 7. Assert file modifications are present in parent workspace
++    let merged_content = std::fs::read_to_string(root.join("lib.rs")).unwrap();
++    assert!(merged_content.contains("pub fn subagent_feature() -> bool { true }"));
 +}
 +
 +#[test]
-+fn test_cumulative_tokens_saved_metric() {
-+    let large_code = (1..=100)
-+        .map(|i| format!("fn calculate_metric_item_{i}(input: i64) -> i64 {{ input * {i} }}"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++fn test_integration_subagent_worktree_conflict_detection() {
++    let temp = tempfile::tempdir().unwrap();
++    let root = temp.path();
++    setup_git_repo(root);
 +
-+    let raw_len = large_code.len();
++    // Initial base commit modifying conflict.txt
++    std::fs::write(
++        root.join("conflict.txt"),
++        "original line 1\noriginal line 2\n",
++    )
++    .unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "init base"])
++        .current_dir(root)
++        .output()
++        .unwrap();
 +
-+    let mut messages = vec![
-+        // Turn 1: Read file
-+        Message::user("Examine code"),
-+        Message::assistant_with_tools(
-+            "Reading file.",
-+            vec![ToolCall {
-+                id: "call_1".into(),
-+                name: "read_file".into(),
-+                arguments: json!({"path": "src/calc.rs"}),
-+            }],
-+        ),
-+        Message::tool_result("call_1", "read_file", &large_code),
-+        Message::assistant("Done reading."),
-+        // Turn 2: Write file
-+        Message::user("Overwrite calc.rs"),
-+        Message::assistant_with_tools(
-+            "Overwriting.",
-+            vec![ToolCall {
-+                id: "call_2".into(),
-+                name: "write_file".into(),
-+                arguments: json!({"path": "src/calc.rs"}),
-+            }],
-+        ),
-+        Message::tool_result("call_2", "write_file", "File written successfully."),
-+        Message::assistant("Done writing."),
-+        // Turn 3: Active turn
-+        Message::user("Status check"),
-+        Message::assistant("All good."),
-+    ];
++    // 1. Create worktree and commit changes to conflict.txt on subagent branch
++    let agent_id = AgentId("coder-conflict".to_string());
++    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++    assert!(handle.worktree_path.exists());
 +
-+    let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++    std::fs::write(
++        handle.worktree_path.join("conflict.txt"),
++        "original line 1\nsubagent branch change\n",
++    )
++    .unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "subagent conflict edit"])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
 +
-+    assert!(metrics.tokens_saved_estimate > 0);
++    // 2. Make conflicting commit to conflict.txt on main branch in parent workspace
++    std::fs::write(
++        root.join("conflict.txt"),
++        "original line 1\nparent main conflicting change\n",
++    )
++    .unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "parent conflicting edit"])
++        .current_dir(root)
++        .output()
++        .unwrap();
 +
-+    let receipt_len = messages[2].content.len();
-+    let expected_tokens_saved = raw_len.saturating_sub(receipt_len) / 4;
++    // 3. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
++    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
 +
-+    assert_eq!(
-+        metrics.tokens_saved_estimate, expected_tokens_saved,
-+        "Tokens saved estimate must match expected formula (raw_len - receipt_len) / 4"
++    // 4. Assert can_merge_cleanly == false and conflicted_files contains "conflict.txt"
++    assert!(!m_report.can_merge_cleanly);
++    assert!(m_report
++        .conflicted_files
++        .contains(&"conflict.txt".to_string()));
++
++    // 5. Assert MergeArbitrator::apply_merge returns Err(ArbitrationError::MergeConflict(_))
++    let apply_res = MergeArbitrator::apply_merge(
++        root,
++        &handle.branch_name,
++        true,
++        Some("attempt conflict merge"),
 +    );
++    assert!(matches!(apply_res, Err(ArbitrationError::MergeConflict(_))));
++    if let Err(ArbitrationError::MergeConflict(conflicts)) = apply_res {
++        assert!(conflicts.contains(&"conflict.txt".to_string()));
++    }
++
++    // 6. Clean up worktree and verify parent workspace is unharmed
++    GitWorktreeManager::remove_worktree(&handle).unwrap();
++    assert!(!handle.worktree_path.exists());
++
++    let parent_content = std::fs::read_to_string(root.join("conflict.txt")).unwrap();
++    assert_eq!(
++        parent_content,
++        "original line 1\nparent main conflicting change\n"
++    );
++
++    // Parent working tree is clean and unchanged
++    let status_out = Command::new("git")
++        .args(["status", "--porcelain"])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    assert!(status_out.status.success());
++    assert!(String::from_utf8_lossy(&status_out.stdout)
++        .trim()
++        .is_empty());
 +}
 +
 +#[tokio::test]
-+async fn test_agent_loop_micro_compaction_wiring() {
-+    // Verify AgentLoop initializes and has micro-compaction wired into its message history
-+    let dir = tempfile::tempdir().expect("tempdir");
-+    let ws_path = dir.path().to_path_buf();
++async fn test_integration_subagent_tool_full_lifecycle() {
++    let temp = tempfile::tempdir().unwrap();
++    let root = temp.path();
++    setup_git_repo(root);
 +
-+    let config = minicode::config::Config::default();
-+    let provider = Box::new(MockProvider::new(vec![]));
++    // Base commit in parent workspace
++    std::fs::write(root.join("app.rs"), "// initial app\n").unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "init app"])
++        .current_dir(root)
++        .output()
++        .unwrap();
 +
-+    let mut agent = minicode::agent::AgentLoop::new(&ws_path, config, provider);
++    // 1. Create worktree for subagent coder-integration
++    let agent_id = AgentId("coder-integration".to_string());
++    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++    assert!(handle.worktree_path.exists());
 +
-+    // Populate agent.messages with a superseded read pattern
-+    let code_50_lines = (1..=50)
-+        .map(|i| format!("pub fn step_{i}() {{}}"))
-+        .collect::<Vec<_>>()
-+        .join("\n");
++    // 2. Modify and commit files in worktree
++    std::fs::write(
++        handle.worktree_path.join("feature.rs"),
++        "pub fn integration_test() -> i32 { 42 }\n",
++    )
++    .unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "coder adds feature"])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
 +
-+    let messages = agent.messages_mut();
-+    // Turn 1
-+    messages.push(Message::user("Read file"));
-+    messages.push(Message::assistant_with_tools(
-+        "reading",
-+        vec![ToolCall {
-+            id: "tc_read".into(),
-+            name: "read_file".into(),
-+            arguments: json!({"path": "src/code.rs"}),
-+        }],
++    // 3. Execute merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))
++    let res = merge_subagent_worktree(
++        root,
++        "coder-integration",
++        true,
++        Some("skip"),
++        Some("feat: integrated"),
++    )
++    .await;
++
++    // 4. Assert result is Ok(summary) containing success message and files changed
++    assert!(res.is_ok());
++    let summary = res.unwrap();
++    assert!(summary.contains("Successfully merged subagent worktree changes"));
++    assert!(summary.contains("coder-integration"));
++    assert!(summary.contains("feature.rs"));
++
++    // 5. Assert worktree is automatically cleaned up and files exist in main repo
++    assert!(!handle.worktree_path.exists());
++    assert!(GitWorktreeManager::locate_worktree(root, &agent_id).is_none());
++
++    let main_feature_file = root.join("feature.rs");
++    assert!(main_feature_file.exists());
++    let content = std::fs::read_to_string(main_feature_file).unwrap();
++    assert!(content.contains("pub fn integration_test() -> i32 { 42 }"));
++}
++
++#[tokio::test]
++async fn test_integration_subagent_worktree_verification_failure() {
++    let temp = tempfile::tempdir().unwrap();
++    let root = temp.path();
++    setup_git_repo(root);
++
++    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(root)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "init"])
++        .current_dir(root)
++        .output()
++        .unwrap();
++
++    // 1. Create worktree
++    let agent_id = AgentId("tester-verification".to_string());
++    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
++    assert!(handle.worktree_path.exists());
++
++    // 2. Modify file in worktree
++    std::fs::write(handle.worktree_path.join("broken.rs"), "syntax error;\n").unwrap();
++    Command::new("git")
++        .args(["add", "."])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
++    Command::new("git")
++        .args(["commit", "-m", "wip broken code"])
++        .current_dir(&handle.worktree_path)
++        .output()
++        .unwrap();
++
++    // 3. Run verify_worktree with a failing command ("false")
++    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("false")).unwrap();
++    assert!(!v_report.success);
++    assert_ne!(v_report.exit_code, 0);
++
++    // 4. Test tool primitive pre-merge failure handling:
++    // Calling merge_subagent_worktree with failing verification aborts merge,
++    // leaves parent workspace untouched, and preserves worktree on disk.
++    let tool_res = merge_subagent_worktree(
++        root,
++        "tester-verification",
++        true,
++        Some("false"),
++        Some("should not land"),
++    )
++    .await
++    .unwrap();
++
++    assert!(tool_res.contains("Pre-merge verification failed"));
++    assert!(tool_res.contains("Parent workspace untouched and worktree preserved"));
++
++    // 5. Verify worktree path still exists on disk for remediation
++    assert!(handle.worktree_path.exists());
++    assert!(handle.worktree_path.join("broken.rs").exists());
++
++    // Parent repo untouched
++    assert!(!root.join("broken.rs").exists());
++
++    // 6. Verify non-existent worktree returns ArbitrationError::WorktreeNotFound
++    let non_existent = root
++        .join(".minicode")
++        .join("worktrees")
++        .join("subagent-ghost");
++    let not_found_res = MergeArbitrator::verify_worktree(&non_existent, Some("skip"));
++    assert!(matches!(
++        not_found_res,
++        Err(ArbitrationError::WorktreeNotFound(_))
 +    ));
-+    messages.push(Message::tool_result("tc_read", "read_file", &code_50_lines));
-+    messages.push(Message::assistant("done"));
 +
-+    // Turn 2
-+    messages.push(Message::user("Patch file"));
-+    messages.push(Message::assistant_with_tools(
-+        "patching",
-+        vec![ToolCall {
-+            id: "tc_patch".into(),
-+            name: "patch_file".into(),
-+            arguments: json!({"path": "src/code.rs"}),
-+        }],
-+    ));
-+    messages.push(Message::tool_result("tc_patch", "patch_file", "ok"));
-+    messages.push(Message::assistant("done"));
++    // 7. Verify ArbitrationError::VerificationFailed display format
++    let err =
++        ArbitrationError::VerificationFailed("cargo check failed with exit code 1".to_string());
++    assert!(err.to_string().contains("Pre-merge verification failed"));
++    assert!(err
++        .to_string()
++        .contains("cargo check failed with exit code 1"));
 +
-+    // Turn 3
-+    messages.push(Message::user("Active turn"));
-+
-+    // Call compact_messages directly as done in AgentLoop lifecycle
-+    let metrics = MicroCompactor::compact_messages(agent.messages_mut(), 2);
-+    assert_eq!(metrics.superseded_reads_compacted, 1);
-+    assert!(agent.messages()[2]
-+        .content
-+        .contains("superseded by modification"));
++    // Cleanup
++    GitWorktreeManager::remove_worktree(&handle).unwrap();
++    assert!(!handle.worktree_path.exists());
 +}
