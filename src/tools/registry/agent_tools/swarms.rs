@@ -185,58 +185,7 @@ pub async fn dispatch(
         ),
         "fanout_subagents" => Some(
             async {
-                let tasks_arr = param::require_array(args, "tasks", "fanout_subagents")?;
-
-                let mut task_items = Vec::new();
-                for (i, t) in tasks_arr.iter().enumerate() {
-                    let task_text = t
-                        .get("task")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| t.get("prompt").and_then(|v| v.as_str()))
-                        .filter(|s| !s.trim().is_empty())
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "fanout_subagents".to_string(),
-                            reason: format!(
-                                "Task #{} missing required field 'task' (or 'prompt')",
-                                i + 1
-                            ),
-                        })?;
-
-                    let role = if let Some(role_str) = t.get("role").and_then(|v| v.as_str()) {
-                        SubagentRole::from_str_loose(role_str)
-                    } else {
-                        SubagentRole::Coder
-                    };
-
-                    let workspace_mode =
-                        t.get("workspace_mode")
-                            .and_then(|v| v.as_str())
-                            .and_then(|m| match m.to_lowercase().as_str() {
-                                "worktree" => Some(WorkspaceMode::Worktree),
-                                "shared" => Some(WorkspaceMode::Shared),
-                                "auto" => Some(WorkspaceMode::Auto),
-                                _ => None,
-                            });
-
-                    let max_iterations = param::opt_u64(t, "max_iterations").map(|n| n as usize);
-                    let check_cmd = param::opt_str(t, "check_cmd").map(|s| s.to_string());
-
-                    task_items.push(FanoutTaskItem {
-                        task: task_text.to_string(),
-                        role,
-                        workspace_mode,
-                        max_iterations,
-                        check_cmd,
-                    });
-                }
-
-                let join_mode = match param::opt_str(args, "join_mode") {
-                    Some("race") => FanoutJoinMode::Race,
-                    _ => FanoutJoinMode::All,
-                };
-
-                let auto_merge = param::opt_bool(args, "auto_merge", false);
-                let max_concurrency = param::opt_u64(args, "max_concurrency").unwrap_or(4) as usize;
+                let (task_items, join_mode, auto_merge, max_concurrency) = parse_fanout_args(args)?;
 
                 FanoutOrchestrator::execute_fanout(
                     workspace_root,
@@ -252,6 +201,68 @@ pub async fn dispatch(
         ),
         _ => None,
     }
+}
+
+/// Helper to extract and validate `fanout_subagents` tool arguments.
+pub(crate) fn parse_fanout_args(
+    args: &serde_json::Value,
+) -> std::result::Result<(Vec<FanoutTaskItem>, FanoutJoinMode, bool, usize), ToolError> {
+    let tasks_arr = param::require_array(args, "tasks", "fanout_subagents")?;
+
+    let mut task_items = Vec::new();
+    for (i, t) in tasks_arr.iter().enumerate() {
+        let task_text = t
+            .get("task")
+            .and_then(|v| v.as_str())
+            .or_else(|| t.get("prompt").and_then(|v| v.as_str()))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "fanout_subagents".to_string(),
+                reason: format!(
+                    "Task #{} missing required field 'task' (or 'prompt')",
+                    i + 1
+                ),
+            })?;
+
+        let role = if let Some(role_str) = t.get("role").and_then(|v| v.as_str()) {
+            SubagentRole::from_str_loose(role_str)
+        } else {
+            SubagentRole::Coder
+        };
+
+        let workspace_mode = t
+            .get("workspace_mode")
+            .and_then(|v| v.as_str())
+            .and_then(|m| match m.to_lowercase().as_str() {
+                "worktree" => Some(WorkspaceMode::Worktree),
+                "shared" => Some(WorkspaceMode::Shared),
+                "auto" => Some(WorkspaceMode::Auto),
+                _ => None,
+            });
+
+        let max_iterations = param::opt_u64(t, "max_iterations").map(|n| n as usize);
+        let check_cmd = param::opt_str(t, "check_cmd").map(|s| s.to_string());
+
+        task_items.push(FanoutTaskItem {
+            task: task_text.to_string(),
+            role,
+            workspace_mode,
+            max_iterations,
+            check_cmd,
+        });
+    }
+
+    let join_mode = match param::opt_str(args, "join_mode") {
+        Some("race") => FanoutJoinMode::Race,
+        _ => FanoutJoinMode::All,
+    };
+
+    let auto_merge = param::opt_bool(args, "auto_merge", false);
+    let max_concurrency = param::opt_u64(args, "max_concurrency")
+        .unwrap_or(4)
+        .clamp(1, 16) as usize;
+
+    Ok((task_items, join_mode, auto_merge, max_concurrency))
 }
 
 #[cfg(test)]
@@ -276,10 +287,67 @@ mod tests {
         assert!(props.contains_key("auto_merge"));
         assert!(props.contains_key("max_concurrency"));
 
+        let task_props = props["tasks"]["items"]["properties"]
+            .as_object()
+            .expect("task item properties");
+        assert!(task_props.contains_key("task"));
+        assert!(task_props.contains_key("prompt"));
+        assert!(task_props.contains_key("role"));
+        assert!(task_props.contains_key("workspace_mode"));
+        assert!(task_props.contains_key("max_iterations"));
+        assert!(task_props.contains_key("check_cmd"));
+
+        let join_mode_enums = props["join_mode"]["enum"]
+            .as_array()
+            .expect("join_mode enum");
+        assert_eq!(join_mode_enums, &vec![json!("all"), json!("race")]);
+
         let required = fanout_schema.parameters["required"]
             .as_array()
             .expect("required array");
         assert!(required.iter().any(|v| v == "tasks"));
+    }
+
+    #[test]
+    fn test_fanout_subagents_argument_parsing() {
+        let json_args = serde_json::json!({
+            "tasks": [
+                {
+                    "task": "Inspect schema",
+                    "role": "scout",
+                    "workspace_mode": "shared"
+                },
+                {
+                    "prompt": "Implement feature",
+                    "role": "coder",
+                    "workspace_mode": "worktree",
+                    "max_iterations": 15,
+                    "check_cmd": "cargo check -j 1"
+                }
+            ],
+            "join_mode": "race",
+            "auto_merge": true,
+            "max_concurrency": 8
+        });
+
+        let (tasks, join_mode, auto_merge, max_concurrency) =
+            parse_fanout_args(&json_args).expect("valid parse");
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task, "Inspect schema");
+        assert_eq!(tasks[0].role, SubagentRole::Scout);
+        assert_eq!(tasks[0].workspace_mode, Some(WorkspaceMode::Shared));
+        assert_eq!(tasks[0].check_cmd, None);
+
+        assert_eq!(tasks[1].task, "Implement feature");
+        assert_eq!(tasks[1].role, SubagentRole::Coder);
+        assert_eq!(tasks[1].workspace_mode, Some(WorkspaceMode::Worktree));
+        assert_eq!(tasks[1].max_iterations, Some(15));
+        assert_eq!(tasks[1].check_cmd, Some("cargo check -j 1".to_string()));
+
+        assert_eq!(join_mode, FanoutJoinMode::Race);
+        assert!(auto_merge);
+        assert_eq!(max_concurrency, 8);
     }
 
     #[tokio::test]
