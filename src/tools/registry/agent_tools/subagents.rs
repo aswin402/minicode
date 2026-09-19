@@ -847,9 +847,13 @@ pub async fn merge_subagent_worktree(
         agent_id: agent_id.clone(),
         repo_root: workspace_root.to_path_buf(),
     };
-    if let Err(e) = crate::sandbox::GitWorktreeManager::remove_worktree(&handle) {
-        tracing::warn!("Failed to clean up worktree after merge: {}", e);
-    }
+    let cleanup_warning = match crate::sandbox::GitWorktreeManager::remove_worktree(&handle) {
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("Failed to clean up worktree after merge: {}", e);
+            Some(e.to_string())
+        }
+    };
 
     // 7. Return formatted markdown success summary
     let landing_mode = if merge_report.committed {
@@ -877,13 +881,26 @@ pub async fn merge_subagent_worktree(
             .join("\n")
     };
 
+    let cleanup_detail = match cleanup_warning {
+        Some(w) => format!(
+            "⚠️ Warning cleaning worktree `{}`: {}",
+            worktree_path.display(),
+            w
+        ),
+        None => format!(
+            "Worktree `{}` and branch `{}` removed",
+            worktree_path.display(),
+            branch_name
+        ),
+    };
+
     let summary = format!(
         "✔ Successfully merged subagent worktree changes!\n\
          • **Subagent ID**: `{}`\n\
          • **Branch**: `{}`\n\
          • **Landing Mode**: {}{}\n\
          • **Pre-Merge Validation**: Passed (`{}` in {}ms)\n\
-         • **Cleanup**: Worktree `{}` and branch `{}` removed\n\n\
+         • **Cleanup**: {}\n\n\
          ### Files Changed ({})\n\
          {}\n",
         subagent_id,
@@ -892,8 +909,7 @@ pub async fn merge_subagent_worktree(
         commit_details,
         validation.command,
         validation.duration_ms,
-        worktree_path.display(),
-        branch_name,
+        cleanup_detail,
         merge_report.files_changed.len(),
         files_summary
     );
