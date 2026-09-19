@@ -10,6 +10,7 @@ pub mod modal;
 pub mod modals;
 pub mod pty_drawer;
 pub mod selection;
+pub mod setup;
 pub mod status;
 pub mod subagent_drawer;
 pub mod theme;
@@ -33,6 +34,8 @@ pub use layout_utils::{centered_rect, centered_rect_exact};
 pub use markdown::MarkdownRenderer;
 pub use modal::ModalState;
 pub use pty_drawer::PtyDrawer;
+#[allow(unused_imports)]
+pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
 pub use status::{StatusContext, StatusWidgets};
 #[allow(unused_imports)]
 pub use subagent_drawer::SubagentDrawer;
