@@ -1,1539 +1,629 @@
-19fd1fc feat(subagent): implement core types, A2A message schema, and reactive mailbox (Phase 132)
-=== STAT ===
- Cargo.lock                                  |   1 +
- Cargo.toml                                  |   2 +-
- src/agent/orchestrator.rs                   |  25 ++--
- src/agent/subagent/mailbox.rs               | 139 ++++++++++++++++++
- src/agent/subagent/message.rs               |  92 ++++++++++++
- src/agent/subagent/mod.rs                   |  16 +-
- src/agent/subagent/pool.rs                  |  41 +++---
- src/agent/subagent/reducer.rs               |   3 +-
- src/agent/subagent/tests.rs                 |  89 +++++++++++
- src/agent/subagent/types.rs                 | 220 +++++++++++++++++++---------
- src/agent/subagent/worker.rs                |  29 ++--
- src/tools/registry/agent_tools/subagents.rs |  59 ++++----
- src/ui/subagent_drawer.rs                   |   5 +-
- 13 files changed, 564 insertions(+), 157 deletions(-)
-=== DIFF ===
-diff --git a/Cargo.lock b/Cargo.lock
-index e81e968..54b43bd 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -276,20 +276,21 @@ dependencies = [
- 
- [[package]]
- name = "chrono"
- version = "0.4.45"
- source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
- dependencies = [
-  "iana-time-zone",
-  "js-sys",
-  "num-traits",
-+ "serde",
-  "wasm-bindgen",
-  "windows-link",
- ]
- 
- [[package]]
- name = "clap"
- version = "4.6.6"
- source = "registry+https://github.com/rust-lang/crates.io-index"
- checksum = "473c7e07f409a8d772161724aa8db6a765a2532a70f9667eeb7b49d3d02fbdca"
- dependencies = [
-diff --git a/Cargo.toml b/Cargo.toml
-index f1d22d9..53ad8f4 100644
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -69,21 +69,21 @@ libc = "0.2"
- # Display-width aware line wrapping for the TUI timeline
- unicode-width = "0.2"
- 
- # Utilities & Error Handling
- anyhow = "1.0"
- thiserror = "1.0"
- indexmap = { version = "2.6", features = ["serde"] }
- tracing = "0.1"
- tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
- tracing-appender = "0.2"
--chrono = "0.4"
-+chrono = { version = "0.4", features = ["serde"] }
- uuid = { version = "1.10", features = ["v4"] }
- 
- # Linux-only kernel sandbox; excluded on other targets where it cannot build
- [target.'cfg(target_os = "linux")'.dependencies]
- landlock = "0.4"
- 
- 
- [features]
- default = []
- 
-diff --git a/src/agent/orchestrator.rs b/src/agent/orchestrator.rs
-index 99c0ef3..43122b2 100644
---- a/src/agent/orchestrator.rs
-+++ b/src/agent/orchestrator.rs
-@@ -44,22 +44,22 @@ impl MultiAgentOrchestrator {
-         workspace_root: &Path,
-         task_prompt: &str,
-         use_worktree: bool,
-         timeout_secs: Option<u64>,
-         config: Option<crate::agent::subagent::SubagentConfig>,
-     ) -> Result<SubAgentResult> {
-         let pool = get_global_subagent_pool(workspace_root);
-         let provider = pool.get_or_create_provider().await;
-         let role = config
-             .as_ref()
--            .map(|c| c.role.clone())
--            .unwrap_or(SubagentRole::Researcher);
-+            .map(|c| c.role)
-+            .unwrap_or(SubagentRole::Scout);
-         let timeout = timeout_secs.unwrap_or(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS);
- 
-         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
- 
-         match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
-             Ok(res) => res,
-             Err(_) => Err(MinicodeError::Channel(format!(
-                 "Subagent task timed out after {} seconds",
-                 timeout
-             ))),
-@@ -76,39 +76,36 @@ impl MultiAgentOrchestrator {
-         if tasks.is_empty() {
-             return Ok("No subagent tasks specified for fan-out.".to_string());
-         }
- 
-         let pool = get_global_subagent_pool(workspace_root);
-         let provider = pool.get_or_create_provider().await;
-         let mut worker_specs = Vec::new();
-         let mut launched_descriptions = Vec::new();
- 
-         for task in tasks {
--            let role = task.role.clone();
-+            let role = task.role;
-             let prompt = task.prompt.clone();
-             let timeout = task.timeout_secs.unwrap_or(120);
- 
--            let isolate_worktree = task.isolate_worktree.unwrap_or(!matches!(
--                role,
--                SubagentRole::Researcher
--                    | SubagentRole::CodeReviewer
--                    | SubagentRole::SecurityAuditor
--            ));
-+            let isolate_worktree = task.isolate_worktree.unwrap_or(
-+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
-+            );
- 
--            let mut config = SubagentConfig::for_role(role.clone());
-+            let mut config = SubagentConfig::for_role(role);
-             if let Some(m) = task.model {
-                 config.model = Some(m);
-             }
- 
-             let task_id = pool
-                 .spawn_background_worker(
--                    role.clone(),
-+                    role,
-                     &prompt,
-                     Some(config),
-                     std::sync::Arc::clone(&provider),
-                     isolate_worktree,
-                 )
-                 .await?;
- 
-             launched_descriptions.push((
-                 task_id.clone(),
-                 role.badge().to_string(),
-@@ -148,21 +145,22 @@ impl MultiAgentOrchestrator {
-         for (id, role, isolate_worktree, timeout_secs) in worker_specs {
-             let start = std::time::Instant::now();
-             let max_dur = std::time::Duration::from_secs(timeout_secs);
- 
-             let mut final_info = None;
-             while start.elapsed() < max_dur {
-                 if let Some(info) = pool.get_subagent(&id).await {
-                     if !matches!(
-                         info.state,
-                         crate::agent::subagent::types::SubagentState::Running
--                            | crate::agent::subagent::types::SubagentState::Idle
-+                            | crate::agent::subagent::types::SubagentState::Starting
-+                            | crate::agent::subagent::types::SubagentState::WaitingForInput
-                     ) {
-                         final_info = Some(info);
-                         break;
-                     }
-                 }
-                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-             }
- 
-             let info = match final_info {
-                 Some(i) => Some(i),
-@@ -195,22 +193,23 @@ impl MultiAgentOrchestrator {
-                 && success
-                 && worktree_mgr.merge_worktree(&id).await.is_ok()
-             {
-                 let _ = worktree_mgr.remove_worktree(&id).await;
-                 merged = true;
-             }
- 
-             let sub_res = SubAgentResult {
-                 id: id.clone(),
-                 task_id: id.clone(),
--                role: role.clone(),
-+                role,
-                 success,
-+
-                 final_summary: summary.clone(),
-                 tokens_used,
-                 turns_executed,
-                 files_inspected: Vec::new(),
-                 files_modified: Vec::new(),
-                 worktree_branch: if isolate_worktree {
-                     Some(format!("subagent/{}", id))
-                 } else {
-                     None
-                 },
-diff --git a/src/agent/subagent/mailbox.rs b/src/agent/subagent/mailbox.rs
+# Review package: 7c351ed..HEAD
+
+## Commits
+3b658a0 feat(sandbox): implement MergeArbitrator with sandboxed verification and mergeability checks (Phase 133)
+
+## Files changed
+ src/sandbox/arbitration.rs | 587 +++++++++++++++++++++++++++++++++++++++++++++
+ src/sandbox/mod.rs         |   5 +
+ 2 files changed, 592 insertions(+)
+
+## Diff
+diff --git a/src/sandbox/arbitration.rs b/src/sandbox/arbitration.rs
 new file mode 100644
-index 0000000..b939faa
+index 0000000..af96f64
 --- /dev/null
-+++ b/src/agent/subagent/mailbox.rs
-@@ -0,0 +1,139 @@
-+use crate::agent::subagent::message::AgentMessage;
-+use crate::agent::subagent::types::AgentId;
-+use std::fs::OpenOptions;
-+use std::io::{BufRead, BufReader, Write};
-+use std::path::{Path, PathBuf};
-+use std::time::{SystemTime, UNIX_EPOCH};
++++ b/src/sandbox/arbitration.rs
+@@ -0,0 +1,587 @@
++//! Merge and Conflict Arbitration Engine for isolated subagent worktrees.
++//!
++//! Provides pre-merge sandboxed verification, clean mergeability checking
++//! via `git merge-tree`, and conflict-free branch merging into the main workspace.
 +
-+/// Thread-safe and process-safe reactive FIFO mailbox backed by a disk-persisted JSONL file
++use std::path::Path;
++use std::process::Command;
++
++/// Structured validation report from pre-merge test or compiler execution.
 +#[allow(dead_code)]
-+#[derive(Debug, Clone)]
-+pub struct AgentMailbox {
-+    agent_id: AgentId,
-+    mailbox_path: PathBuf,
++#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct ValidationReport {
++    pub success: bool,
++    pub command: String,
++    pub exit_code: i32,
++    pub stdout: String,
++    pub stderr: String,
++    pub duration_ms: u64,
 +}
 +
++/// Structured report of branch mergeability against HEAD.
 +#[allow(dead_code)]
-+impl AgentMailbox {
-+    /// Initializes an AgentMailbox for the specified agent within its directory
-+    pub fn new(agent_id: AgentId, agent_dir: &Path) -> std::io::Result<Self> {
-+        std::fs::create_dir_all(agent_dir)?;
-+        let mailbox_path = agent_dir.join("mailbox.jsonl");
-+        Ok(Self {
-+            agent_id,
-+            mailbox_path,
-+        })
-+    }
++#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct MergeabilityReport {
++    pub can_merge_cleanly: bool,
++    pub conflicted_files: Vec<String>,
++    pub merge_base: Option<String>,
++}
 +
-+    /// Returns the owner AgentId of this mailbox
-+    pub fn agent_id(&self) -> &AgentId {
-+        &self.agent_id
-+    }
++/// Structured report summarizing a successfully applied branch merge.
++#[allow(dead_code)]
++#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct MergeSuccessReport {
++    pub subagent_id: String,
++    pub branch_name: String,
++    pub files_changed: Vec<String>,
++    pub committed: bool,
++    pub commit_hash: Option<String>,
++    pub commit_message: Option<String>,
++}
 +
-+    /// Returns the file path of this mailbox
-+    pub fn mailbox_path(&self) -> &Path {
-+        &self.mailbox_path
-+    }
++/// Typed error conditions encountered during worktree arbitration and merging.
++#[allow(dead_code)]
++#[derive(Debug, thiserror::Error)]
++pub enum ArbitrationError {
++    #[error("Worktree directory not found: {0}")]
++    WorktreeNotFound(String),
 +
-+    /// Appends a message to the agent's mailbox JSONL file with sync_all durability
-+    pub fn post(&self, msg: AgentMessage) -> std::io::Result<()> {
-+        let mut line = serde_json::to_string(&msg)
-+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-+        line.push('\n');
++    #[error("Pre-merge verification failed: {0}")]
++    VerificationFailed(String),
 +
-+        let mut file = OpenOptions::new()
-+            .create(true)
-+            .append(true)
-+            .open(&self.mailbox_path)?;
++    #[error("Merge conflicts detected in files: {0:?}")]
++    MergeConflict(Vec<String>),
 +
-+        file.write_all(line.as_bytes())?;
-+        file.sync_all()?;
-+        Ok(())
-+    }
++    #[error("Git execution failed: {0}")]
++    GitError(String),
 +
-+    /// Atomically drains all unread messages from the mailbox
++    #[error("IO error: {0}")]
++    IoError(#[from] std::io::Error),
++}
++
++/// Subagent Merge and Conflict Arbitration Engine.
++#[allow(dead_code)]
++pub struct MergeArbitrator;
++
++#[allow(dead_code)]
++impl MergeArbitrator {
++    /// Detects standard project validation command based on manifest files in the directory.
 +    ///
-+    /// Renames the active `mailbox.jsonl` to an ephemeral processing file to prevent
-+    /// race conditions against concurrent posts, reads and parses each line, and deletes
-+    /// the processing file upon completion.
-+    pub fn drain_unread(&self) -> std::io::Result<Vec<AgentMessage>> {
-+        if !self.mailbox_path.exists() {
-+            return Ok(Vec::new());
-+        }
-+
-+        let parent = self.mailbox_path.parent().unwrap_or_else(|| Path::new("."));
-+
-+        let now_nanos = SystemTime::now()
-+            .duration_since(UNIX_EPOCH)
-+            .unwrap_or_default()
-+            .as_nanos();
-+
-+        let processing_file = format!(
-+            "mailbox.processing.{}.{}.jsonl",
-+            now_nanos,
-+            uuid::Uuid::new_v4()
-+        );
-+        let processing_path = parent.join(processing_file);
-+
-+        if let Err(e) = std::fs::rename(&self.mailbox_path, &processing_path) {
-+            if e.kind() == std::io::ErrorKind::NotFound {
-+                return Ok(Vec::new());
++    /// - `Cargo.toml`: `["cargo", "check", "-j", "1"]`
++    /// - `package.json`: `["bun", "test"]` (if `bun.lockb`), `["pnpm", "test"]` (if `pnpm-lock.yaml`), else `["npm", "test"]`
++    /// - `pyproject.toml` or `pytest.ini`: `["pytest"]`
++    /// - `go.mod`: `["go", "test", "./..."]`
++    pub fn detect_project_validation_cmd(path: &Path) -> Option<Vec<String>> {
++        if path.join("Cargo.toml").exists() {
++            Some(vec![
++                "cargo".to_string(),
++                "check".to_string(),
++                "-j".to_string(),
++                "1".to_string(),
++            ])
++        } else if path.join("package.json").exists() {
++            if path.join("bun.lockb").exists() {
++                Some(vec!["bun".to_string(), "test".to_string()])
++            } else if path.join("pnpm-lock.yaml").exists() {
++                Some(vec!["pnpm".to_string(), "test".to_string()])
++            } else {
++                Some(vec!["npm".to_string(), "test".to_string()])
 +            }
-+            return Err(e);
++        } else if path.join("pyproject.toml").exists() || path.join("pytest.ini").exists() {
++            Some(vec!["pytest".to_string()])
++        } else if path.join("go.mod").exists() {
++            Some(vec![
++                "go".to_string(),
++                "test".to_string(),
++                "./...".to_string(),
++            ])
++        } else {
++            None
++        }
++    }
++
++    /// Verifies that code inside the worktree passes build or test validation before merging.
++    ///
++    /// - If `check_cmd` is `Some("skip")`, returns immediate success without running any command.
++    /// - If `check_cmd` is `Some(custom)`, executes the custom command in `worktree_path`.
++    /// - If `check_cmd` is `None`, automatically detects project validation command; if none detected, returns success.
++    /// - Enforces a 60-second timeout on command execution.
++    pub fn verify_worktree(
++        worktree_path: &Path,
++        check_cmd: Option<&str>,
++    ) -> Result<ValidationReport, ArbitrationError> {
++        if !worktree_path.exists() {
++            return Err(ArbitrationError::WorktreeNotFound(
++                worktree_path.display().to_string(),
++            ));
 +        }
 +
-+        let file = match std::fs::File::open(&processing_path) {
-+            Ok(f) => f,
-+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-+            Err(e) => return Err(e),
++        if let Some(cmd) = check_cmd {
++            if cmd.trim() == "skip" {
++                return Ok(ValidationReport {
++                    success: true,
++                    command: "skip".to_string(),
++                    exit_code: 0,
++                    stdout: String::new(),
++                    stderr: String::new(),
++                    duration_ms: 0,
++                });
++            }
++        }
++
++        let cmd_args = match check_cmd {
++            Some(custom) => {
++                let parts: Vec<String> = custom.split_whitespace().map(|s| s.to_string()).collect();
++                if parts.is_empty() {
++                    return Ok(ValidationReport {
++                        success: true,
++                        command: String::new(),
++                        exit_code: 0,
++                        stdout: String::new(),
++                        stderr: String::new(),
++                        duration_ms: 0,
++                    });
++                }
++                parts
++            }
++            None => match Self::detect_project_validation_cmd(worktree_path) {
++                Some(detected) => detected,
++                None => {
++                    return Ok(ValidationReport {
++                        success: true,
++                        command: "none".to_string(),
++                        exit_code: 0,
++                        stdout: "No project validation command detected".to_string(),
++                        stderr: String::new(),
++                        duration_ms: 0,
++                    });
++                }
++            },
 +        };
 +
-+        let reader = BufReader::new(file);
-+        let mut messages = Vec::new();
++        let command_str = cmd_args.join(" ");
++        let start = std::time::Instant::now();
++        let timeout = std::time::Duration::from_secs(60);
 +
-+        for line_res in reader.lines() {
-+            let line = line_res?;
-+            let trimmed = line.trim();
-+            if trimmed.is_empty() {
-+                continue;
++        let mut cmd = Command::new(&cmd_args[0]);
++        if cmd_args.len() > 1 {
++            cmd.args(&cmd_args[1..]);
++        }
++        cmd.current_dir(worktree_path);
++
++        let output_res = run_command_with_timeout(cmd, timeout);
++        let duration_ms = start.elapsed().as_millis() as u64;
++
++        match output_res {
++            Ok(output) => {
++                let success = output.status.success();
++                let exit_code = output.status.code().unwrap_or(if success { 0 } else { -1 });
++                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
++                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
++                Ok(ValidationReport {
++                    success,
++                    command: command_str,
++                    exit_code,
++                    stdout,
++                    stderr,
++                    duration_ms,
++                })
 +            }
-+            match serde_json::from_str::<AgentMessage>(trimmed) {
-+                Ok(msg) => messages.push(msg),
-+                Err(e) => {
-+                    tracing::warn!(
-+                        error = %e,
-+                        line = %trimmed,
-+                        "Failed to deserialize AgentMessage from mailbox"
-+                    );
++            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(ValidationReport {
++                success: false,
++                command: command_str,
++                exit_code: -1,
++                stdout: String::new(),
++                stderr: format!("Validation command timed out after {}s", timeout.as_secs()),
++                duration_ms,
++            }),
++            Err(e) => Err(ArbitrationError::IoError(e)),
++        }
++    }
++
++    /// Checks whether `branch_name` can be cleanly merged into `HEAD` in `repo_root`
++    /// without conflicts, using `git merge-tree` to avoid dirtying the working directory.
++    pub fn check_mergeability(
++        repo_root: &Path,
++        branch_name: &str,
++    ) -> Result<MergeabilityReport, ArbitrationError> {
++        if !repo_root.exists() {
++            return Err(ArbitrationError::IoError(std::io::Error::new(
++                std::io::ErrorKind::NotFound,
++                format!("Repository root does not exist: {}", repo_root.display()),
++            )));
++        }
++
++        // 1. Determine merge-base between HEAD and branch
++        let merge_base_output = Command::new("git")
++            .args(["merge-base", "HEAD", branch_name])
++            .current_dir(repo_root)
++            .output()?;
++
++        if !merge_base_output.status.success() {
++            let stderr = String::from_utf8_lossy(&merge_base_output.stderr).to_string();
++            return Err(ArbitrationError::GitError(format!(
++                "Failed to compute merge-base for HEAD and '{}': {}",
++                branch_name,
++                stderr.trim()
++            )));
++        }
++
++        let base_raw = String::from_utf8_lossy(&merge_base_output.stdout)
++            .trim()
++            .to_string();
++        let merge_base = if base_raw.is_empty() {
++            None
++        } else {
++            Some(base_raw)
++        };
++
++        // 2. Perform 3-way merge inspection using git merge-tree --write-tree
++        let merge_tree_output = Command::new("git")
++            .args(["merge-tree", "--write-tree", "HEAD", branch_name])
++            .current_dir(repo_root)
++            .output()?;
++
++        if merge_tree_output.status.success() {
++            return Ok(MergeabilityReport {
++                can_merge_cleanly: true,
++                conflicted_files: Vec::new(),
++                merge_base,
++            });
++        }
++
++        // Exit code 1 indicates merge conflicts were found
++        if merge_tree_output.status.code() == Some(1) {
++            let stdout = String::from_utf8_lossy(&merge_tree_output.stdout);
++            let mut conflicted_files = Vec::new();
++
++            for line in stdout.lines() {
++                // Line format in git merge-tree unmerged section: <mode> <hash> <stage>\t<path>
++                if let Some((info, path)) = line.split_once('\t') {
++                    let parts: Vec<&str> = info.split_whitespace().collect();
++                    if parts.len() == 3 && (parts[2] == "1" || parts[2] == "2" || parts[2] == "3") {
++                        let trimmed = path.trim().to_string();
++                        if !trimmed.is_empty() && !conflicted_files.contains(&trimmed) {
++                            conflicted_files.push(trimmed);
++                        }
++                    }
++                } else if let Some(idx) = line.find("CONFLICT (") {
++                    if let Some(colon_idx) = line[idx..].find(':') {
++                        let conflict_info = line[idx + colon_idx + 1..].trim();
++                        if let Some(rest) = conflict_info.strip_prefix("Merge conflict in ") {
++                            let trimmed = rest.trim().to_string();
++                            if !trimmed.is_empty() && !conflicted_files.contains(&trimmed) {
++                                conflicted_files.push(trimmed);
++                            }
++                        } else if let Some((first_word, _)) = conflict_info.split_once(' ') {
++                            let candidate = first_word.trim().to_string();
++                            if !candidate.is_empty() && !conflicted_files.contains(&candidate) {
++                                conflicted_files.push(candidate);
++                            }
++                        }
++                    }
 +                }
 +            }
++
++            return Ok(MergeabilityReport {
++                can_merge_cleanly: false,
++                conflicted_files,
++                merge_base,
++            });
 +        }
 +
-+        let _ = std::fs::remove_file(&processing_path);
-+        Ok(messages)
++        // Other non-zero exit code: real git error
++        let stderr = String::from_utf8_lossy(&merge_tree_output.stderr).to_string();
++        Err(ArbitrationError::GitError(format!(
++            "git merge-tree failed: {}",
++            stderr.trim()
++        )))
 +    }
 +
-+    /// Returns the number of unread messages currently in the mailbox
-+    pub fn unread_count(&self) -> std::io::Result<usize> {
-+        if !self.mailbox_path.exists() {
-+            return Ok(0);
++    /// Merges changes from `branch_name` into the main workspace at `repo_root`.
++    ///
++    /// - If `commit` is `true`, commits the merge with `--no-ff` and the specified or default message.
++    /// - If `commit` is `false`, leaves changes in the working tree without committing.
++    /// - Validates mergeability first; returns `ArbitrationError::MergeConflict` if conflicts exist.
++    pub fn apply_merge(
++        repo_root: &Path,
++        branch_name: &str,
++        commit: bool,
++        commit_msg: Option<&str>,
++    ) -> Result<MergeSuccessReport, ArbitrationError> {
++        let mergeability = Self::check_mergeability(repo_root, branch_name)?;
++        if !mergeability.can_merge_cleanly {
++            return Err(ArbitrationError::MergeConflict(
++                mergeability.conflicted_files,
++            ));
 +        }
 +
-+        let file = match std::fs::File::open(&self.mailbox_path) {
-+            Ok(f) => f,
-+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-+            Err(e) => return Err(e),
++        // Capture list of changed files
++        let diff_out = Command::new("git")
++            .args(["diff", "--name-only", "HEAD...", branch_name])
++            .current_dir(repo_root)
++            .output()?;
++
++        let mut files_changed: Vec<String> = if diff_out.status.success() {
++            String::from_utf8_lossy(&diff_out.stdout)
++                .lines()
++                .map(|s| s.trim().to_string())
++                .filter(|s| !s.is_empty())
++                .collect()
++        } else {
++            Vec::new()
 +        };
 +
-+        let reader = BufReader::new(file);
-+        let mut count = 0;
-+        for line_res in reader.lines() {
-+            let line = line_res?;
-+            if !line.trim().is_empty() {
-+                count += 1;
++        if files_changed.is_empty() {
++            let fallback = Command::new("git")
++                .args(["diff", "--name-only", "HEAD", branch_name])
++                .current_dir(repo_root)
++                .output()?;
++            if fallback.status.success() {
++                files_changed = String::from_utf8_lossy(&fallback.stdout)
++                    .lines()
++                    .map(|s| s.trim().to_string())
++                    .filter(|s| !s.is_empty())
++                    .collect();
 +            }
 +        }
 +
-+        Ok(count)
-+    }
-+}
-diff --git a/src/agent/subagent/message.rs b/src/agent/subagent/message.rs
-new file mode 100644
-index 0000000..58a54a4
---- /dev/null
-+++ b/src/agent/subagent/message.rs
-@@ -0,0 +1,92 @@
-+use crate::agent::subagent::types::AgentId;
-+use chrono::{DateTime, Utc};
-+use serde::{Deserialize, Serialize};
++        let subagent_id = extract_subagent_id(branch_name);
 +
-+/// High-level intent of an agent-to-agent (A2A) message
-+#[allow(dead_code)]
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-+#[serde(rename_all = "snake_case")]
-+pub enum MessageIntent {
-+    TaskInit,
-+    StatusUpdate,
-+    ClarificationRequest,
-+    ClarificationResponse,
-+    Feedback,
-+    Handoff,
-+    TaskComplete,
-+}
++        if commit {
++            let default_msg = format!(
++                "merge(subagent-{}): land verified subagent changes",
++                subagent_id
++            );
++            let msg = commit_msg.unwrap_or(&default_msg);
 +
-+#[allow(dead_code)]
-+impl MessageIntent {
-+    pub fn as_str(&self) -> &'static str {
-+        match self {
-+            MessageIntent::TaskInit => "task_init",
-+            MessageIntent::StatusUpdate => "status_update",
-+            MessageIntent::ClarificationRequest => "clarification_request",
-+            MessageIntent::ClarificationResponse => "clarification_response",
-+            MessageIntent::Feedback => "feedback",
-+            MessageIntent::Handoff => "handoff",
-+            MessageIntent::TaskComplete => "task_complete",
++            let merge_out = Command::new("git")
++                .args(["merge", "--no-ff", "-m", msg, branch_name])
++                .current_dir(repo_root)
++                .output()?;
++
++            if !merge_out.status.success() {
++                let _ = Command::new("git")
++                    .args(["merge", "--abort"])
++                    .current_dir(repo_root)
++                    .output();
++                let stderr = String::from_utf8_lossy(&merge_out.stderr).to_string();
++                return Err(ArbitrationError::GitError(format!(
++                    "git merge failed: {}",
++                    stderr.trim()
++                )));
++            }
++
++            let rev_out = Command::new("git")
++                .args(["rev-parse", "HEAD"])
++                .current_dir(repo_root)
++                .output()?;
++
++            let commit_hash = if rev_out.status.success() {
++                let hash = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
++                if hash.is_empty() {
++                    None
++                } else {
++                    Some(hash)
++                }
++            } else {
++                None
++            };
++
++            Ok(MergeSuccessReport {
++                subagent_id,
++                branch_name: branch_name.to_string(),
++                files_changed,
++                committed: true,
++                commit_hash,
++                commit_message: Some(msg.to_string()),
++            })
++        } else {
++            let merge_out = Command::new("git")
++                .args(["merge", "--no-commit", "--no-ff", branch_name])
++                .current_dir(repo_root)
++                .output()?;
++
++            if !merge_out.status.success() {
++                let _ = Command::new("git")
++                    .args(["merge", "--abort"])
++                    .current_dir(repo_root)
++                    .output();
++                let stderr = String::from_utf8_lossy(&merge_out.stderr).to_string();
++                return Err(ArbitrationError::GitError(format!(
++                    "git merge failed: {}",
++                    stderr.trim()
++                )));
++            }
++
++            Ok(MergeSuccessReport {
++                subagent_id,
++                branch_name: branch_name.to_string(),
++                files_changed,
++                committed: false,
++                commit_hash: None,
++                commit_message: None,
++            })
 +        }
 +    }
 +}
 +
-+/// Typed message exchanged between agents via reactive mailboxes
++/// Extracts clean subagent identifier from branch name conventions.
 +#[allow(dead_code)]
-+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-+pub struct AgentMessage {
-+    pub id: String,
-+    pub sender: AgentId,
-+    pub recipient: AgentId,
-+    pub intent: MessageIntent,
-+    pub content: String,
-+    pub timestamp: DateTime<Utc>,
-+    #[serde(default, skip_serializing_if = "Option::is_none")]
-+    pub metadata: Option<serde_json::Value>,
++fn extract_subagent_id(branch_name: &str) -> String {
++    if let Some(rest) = branch_name.strip_prefix("minicode-task-") {
++        rest.to_string()
++    } else if let Some(rest) = branch_name.strip_prefix("minicode/subagent/") {
++        rest.to_string()
++    } else {
++        branch_name.to_string()
++    }
 +}
 +
++/// Helper to execute a command with a timeout without blocking indefinitely.
 +#[allow(dead_code)]
-+impl AgentMessage {
-+    /// Creates a new AgentMessage with a unique ID and current timestamp
-+    pub fn new(
-+        sender: AgentId,
-+        recipient: AgentId,
-+        intent: MessageIntent,
-+        content: impl Into<String>,
-+    ) -> Self {
-+        Self {
-+            id: format!("msg-{}", uuid::Uuid::new_v4()),
-+            sender,
-+            recipient,
-+            intent,
-+            content: content.into(),
-+            timestamp: Utc::now(),
-+            metadata: None,
++fn run_command_with_timeout(
++    mut cmd: Command,
++    timeout: std::time::Duration,
++) -> Result<std::process::Output, std::io::Error> {
++    let child = cmd
++        .stdout(std::process::Stdio::piped())
++        .stderr(std::process::Stdio::piped())
++        .spawn()?;
++
++    let (tx, rx) = std::sync::mpsc::channel();
++    let child_id = child.id();
++    std::thread::spawn(move || {
++        let res = child.wait_with_output();
++        let _ = tx.send(res);
++    });
++
++    match rx.recv_timeout(timeout) {
++        Ok(res) => res,
++        Err(_) => {
++            #[cfg(unix)]
++            unsafe {
++                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
++            }
++            #[cfg(not(unix))]
++            {
++                let _ = Command::new("taskkill")
++                    .args(["/PID", &child_id.to_string(), "/F"])
++                    .output();
++            }
++            Err(std::io::Error::new(
++                std::io::ErrorKind::TimedOut,
++                format!("Process timed out after {}s", timeout.as_secs()),
++            ))
 +        }
 +    }
-+
-+    /// Attaches structured metadata to the message
-+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
-+        self.metadata = Some(metadata);
-+        self
-+    }
-+
-+    /// Overrides message id (useful for testing or message correlation)
-+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-+        self.id = id.into();
-+        self
-+    }
-+
-+    /// Formats the message into an XML-style `<agent_message>` block suitable for LLM prompt ingestion
-+    pub fn format_for_prompt(&self) -> String {
-+        let intent_str =
-+            serde_json::to_string(&self.intent).unwrap_or_else(|_| "message".to_string());
-+        format!(
-+            "<agent_message from=\"{}\" intent=\"{}\" timestamp=\"{}\">\n{}\n</agent_message>",
-+            self.sender.0,
-+            intent_str.trim_matches('"'),
-+            self.timestamp.to_rfc3339(),
-+            self.content.trim()
-+        )
-+    }
 +}
-diff --git a/src/agent/subagent/mod.rs b/src/agent/subagent/mod.rs
-index 6eb6f98..30b04b7 100644
---- a/src/agent/subagent/mod.rs
-+++ b/src/agent/subagent/mod.rs
-@@ -1,34 +1,41 @@
-+pub mod mailbox;
-+pub mod message;
- pub mod pool;
- pub mod reducer;
- pub mod scratchpad;
- pub mod transcript;
- pub mod types;
- pub mod worker;
- 
-+#[allow(unused_imports)]
-+pub use mailbox::AgentMailbox;
-+#[allow(unused_imports)]
-+pub use message::{AgentMessage, MessageIntent};
- #[allow(unused_imports)]
- pub use pool::SubagentPool;
- #[allow(unused_imports)]
- pub use reducer::{
-     AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
-     SubagentSynthesisReducer,
- };
- #[allow(unused_imports)]
- pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
- #[allow(unused_imports)]
- pub use transcript::{
-     get_global_transcript_store, SubagentStepRecord, SubagentTranscript, SubagentTranscriptStore,
- };
- pub use types::SubagentResult as SubAgentResult;
- #[allow(unused_imports)]
- pub use types::{
--    SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState, SubagentTaskSpec,
-+    AgentId, SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState,
-+    SubagentTaskSpec, WorkspaceMode,
- };
- #[allow(unused_imports)]
- pub use worker::SubagentWorker;
- 
- use std::path::{Path, PathBuf};
- use std::process::Stdio;
- use std::sync::OnceLock;
- use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
- use tokio::process::Command;
- 
-@@ -223,27 +230,30 @@ impl SubAgent {
- 
-         let worktree_branch = if self.use_worktree {
-             Some(format!("subagent/{}", self.task_id))
-         } else {
-             None
-         };
- 
-         let assigned_role = self
-             .config
-             .as_ref()
--            .map(|c| c.role.clone())
--            .unwrap_or_else(|| SubagentRole::Custom("worktree_worker".to_string()));
-+            .map(|c| c.role)
-+            .unwrap_or(SubagentRole::Coder);
- 
-         Ok(SubagentResult {
-             id: self.task_id.clone(),
-             task_id: self.task_id.clone(),
-             role: assigned_role,
-             success,
-             final_summary: final_response,
-             tokens_used,
-             turns_executed: 1,
-             files_inspected: Vec::new(),
-             files_modified,
-             worktree_branch,
-         })
-     }
- }
 +
 +#[cfg(test)]
-+mod tests;
-diff --git a/src/agent/subagent/pool.rs b/src/agent/subagent/pool.rs
-index 0026cb0..a7ec322 100644
---- a/src/agent/subagent/pool.rs
-+++ b/src/agent/subagent/pool.rs
-@@ -98,21 +98,21 @@ impl SubagentPool {
-     /// Spawns a subagent worker and executes it to completion synchronously with options
-     pub async fn run_subagent_with_options(
-         &self,
-         role: SubagentRole,
-         prompt: &str,
-         custom_config: Option<SubagentConfig>,
-         provider: Arc<dyn Provider>,
-         isolate_worktree: bool,
-     ) -> Result<SubagentResult> {
-         let id = self.next_id(&role).await;
--        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role.clone()));
-+        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role));
- 
-         // Worktree isolation if requested
-         let effective_root = if isolate_worktree {
-             let worktree_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
-             match worktree_mgr.create_worktree(&id).await {
-                 Ok(path) => path,
-                 Err(e) => {
-                     tracing::warn!(
-                         subagent_id = %id,
-                         error = %e,
-@@ -162,21 +162,21 @@ impl SubagentPool {
-     /// Spawns an autonomous background subagent worker without blocking caller
-     pub async fn spawn_background_worker(
-         &self,
-         role: SubagentRole,
-         prompt: &str,
-         custom_config: Option<SubagentConfig>,
-         provider: Arc<dyn Provider>,
-         isolate_worktree: bool,
-     ) -> Result<String> {
-         let id = self.next_id(&role).await;
--        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role.clone()));
-+        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role));
- 
-         // Worktree isolation if requested
-         let effective_root = if isolate_worktree {
-             let worktree_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
-             match worktree_mgr.create_worktree(&id).await {
-                 Ok(path) => path,
-                 Err(e) => {
-                     tracing::warn!(
-                         subagent_id = %id,
-                         error = %e,
-@@ -198,21 +198,22 @@ impl SubagentPool {
- 
-         let info = Arc::clone(&worker.info);
-         let cancel_flag = Arc::clone(&worker.cancel_flag);
- 
-         {
-             let mut workers = self.workers.write().await;
-             workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
-         }
- 
-         let worker_id = id.clone();
--        let worker_role = role.clone();
-+        let worker_role = role;
++mod tests {
++    use super::*;
 +
-         let ws_root = self.workspace_root.clone();
- 
-         tokio::spawn(async move {
-             let res = worker.run(provider).await;
-             let scratchpad = crate::agent::subagent::get_global_scratchpad();
-             match res {
-                 Ok(sub_res) => {
-                     let title = format!("Subagent {} ({}) Report", worker_id, worker_role.badge());
-                     scratchpad.write_entry(
-                         &format!("subagent_{}", worker_id),
-@@ -268,39 +269,39 @@ impl SubagentPool {
-             None
-         }
-     }
- 
-     /// Cancels a running subagent by ID
-     pub async fn kill_subagent(&self, id: &str) -> Result<()> {
-         let workers = self.workers.read().await;
-         if let Some(handle) = workers.get(id) {
-             handle.cancel_flag.store(true, Ordering::SeqCst);
-             let mut info = handle.info.write().await;
--            info.state = SubagentState::Canceled;
-+            info.state = SubagentState::Terminated;
-             info.current_tool = None;
-             info.status_message = Some("Canceled by user".to_string());
-             Ok(())
-         } else {
-             Err(MinicodeError::Channel(format!(
-                 "Subagent '{}' not found",
-                 id
-             )))
-         }
-     }
- 
-     /// Cancels all currently running subagents
-     pub async fn kill_all(&self) {
-         let workers = self.workers.read().await;
-         for handle in workers.values() {
-             handle.cancel_flag.store(true, Ordering::SeqCst);
-             if let Ok(mut info) = handle.info.try_write() {
--                info.state = SubagentState::Canceled;
-+                info.state = SubagentState::Terminated;
-                 info.current_tool = None;
-                 info.status_message = Some("Canceled by user".to_string());
-             }
-         }
-     }
- 
-     /// Formats a clean Markdown summary report of all subagents in the pool
-     pub async fn format_swarm_summary(&self) -> String {
-         let list = self.list_subagents().await;
-         if list.is_empty() {
-@@ -308,26 +309,28 @@ impl SubagentPool {
-         }
- 
-         let mut out = String::from("### Subagent Swarm Status\n\n");
-         out.push_str(
-             "| ID | Role | Status | Active Tool / Detail | Turns | Tokens Used | Task Prompt |\n",
-         );
-         out.push_str("| :--- | :--- | :--- | :--- | :---: | :---: | :--- |\n");
- 
-         for item in list {
-             let status_badge = match &item.state {
--                SubagentState::Idle => "○ Idle",
-+                SubagentState::Starting => "○ Starting",
-                 SubagentState::Running => "◉ Running",
-+                SubagentState::WaitingForInput => "◷ Waiting",
-                 SubagentState::Completed => "✔ Done",
-                 SubagentState::Failed(_) => "✗ Failed",
--                SubagentState::Canceled => "⊘ Canceled",
-+                SubagentState::Terminated => "⊘ Terminated",
-             };
-+
-             let detail = if let Some(ref t) = item.current_tool {
-                 format!("⚡ `{}`", t)
-             } else if let Some(ref s) = item.status_message {
-                 s.clone()
-             } else {
-                 "-".to_string()
-             };
-             let short_prompt = crate::utils::truncate_ellipsis(&item.prompt, 40);
-             out.push_str(&format!(
-                 "| `{}` | **{}** | {} | {} | {} | {} | {} |\n",
-@@ -351,86 +354,86 @@ mod tests {
-     use crate::agent::mock_provider::MockProvider;
- 
-     #[tokio::test]
-     async fn test_subagent_pool_lifecycle() {
-         let temp_dir = tempfile::tempdir().unwrap();
-         let pool = SubagentPool::new(temp_dir.path());
- 
-         assert_eq!(pool.worker_count(), 0);
-         assert!(pool.snapshot_subagents().is_empty());
- 
--        let id1 = pool.next_id(&SubagentRole::Researcher).await;
--        assert_eq!(id1, "researcher-1");
-+        let id1 = pool.next_id(&SubagentRole::Scout).await;
-+        assert_eq!(id1, "scout-1");
- 
--        let id2 = pool.next_id(&SubagentRole::TestEngineer).await;
--        assert_eq!(id2, "testengineer-2");
-+        let id2 = pool.next_id(&SubagentRole::Tester).await;
-+        assert_eq!(id2, "tester-2");
-     }
- 
-     #[tokio::test]
-     async fn test_spawn_background_worker_and_snapshot() {
-         let temp_dir = tempfile::tempdir().unwrap();
-         let pool = SubagentPool::new(temp_dir.path());
- 
-         let mock = Arc::new(MockProvider::new("mock", "mock-model"));
-         mock.push_response(&["Subagent analysis completed."], vec![]);
-         pool.set_provider(mock.clone());
- 
-         let id = pool
-             .spawn_background_worker(
--                SubagentRole::Researcher,
-+                SubagentRole::Scout,
-                 "Analyze codebase architecture",
-                 None,
-                 mock,
-                 false,
-             )
-             .await
-             .unwrap();
- 
--        assert_eq!(id, "researcher-1");
-+        assert_eq!(id, "scout-1");
-         assert_eq!(pool.worker_count(), 1);
- 
-         let snapshots = pool.snapshot_subagents();
-         assert_eq!(snapshots.len(), 1);
--        assert_eq!(snapshots[0].id, "researcher-1");
--        assert_eq!(snapshots[0].role, SubagentRole::Researcher);
-+        assert_eq!(snapshots[0].id, "scout-1");
-+        assert_eq!(snapshots[0].role, SubagentRole::Scout);
- 
-         // Wait briefly for background execution
-         for _ in 0..20 {
-             if let Some(info) = pool.get_subagent(&id).await {
-                 if matches!(info.state, SubagentState::Completed) {
-                     break;
-                 }
-             }
-             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-         }
- 
-         let summary = pool.format_swarm_summary().await;
--        assert!(summary.contains("researcher-1"));
--        assert!(summary.contains("Researcher"));
-+        assert!(summary.contains("scout-1"));
-+        assert!(summary.contains("Scout"));
-     }
- 
-     #[tokio::test]
-     async fn test_kill_subagent() {
-         let temp_dir = tempfile::tempdir().unwrap();
-         let pool = SubagentPool::new(temp_dir.path());
- 
-         let mock = Arc::new(MockProvider::new("mock", "mock-model"));
-         // No responses queued so it would wait or finish
-         let id = pool
-             .spawn_background_worker(
--                SubagentRole::CodeReviewer,
-+                SubagentRole::Reviewer,
-                 "Review code changes",
-                 None,
-                 mock,
-                 false,
-             )
-             .await
-             .unwrap();
- 
-         let kill_res = pool.kill_subagent(&id).await;
-         assert!(kill_res.is_ok());
- 
-         let info = pool.get_subagent(&id).await.unwrap();
--        assert_eq!(info.state, SubagentState::Canceled);
-+        assert_eq!(info.state, SubagentState::Terminated);
-         assert_eq!(info.status_message.as_deref(), Some("Canceled by user"));
-     }
- }
-diff --git a/src/agent/subagent/reducer.rs b/src/agent/subagent/reducer.rs
-index e1112a3..2b61fa7 100644
---- a/src/agent/subagent/reducer.rs
-+++ b/src/agent/subagent/reducer.rs
-@@ -277,22 +277,23 @@ impl SubagentSynthesisReducer {
-         let serialized_transcript =
-             serde_json::to_string_pretty(ctx.transcript).unwrap_or_default();
-         let ccr_id = if !serialized_transcript.is_empty() {
-             Some(CcrCache::store(&serialized_transcript))
-         } else {
-             None
-         };
- 
-         SubagentReport {
-             subagent_id: ctx.subagent_id.to_string(),
--            role: ctx.role.clone(),
-+            role: *ctx.role,
-             status: ctx.status.to_string(),
-+
-             success: ctx.success,
-             executive_summary,
-             files_inspected: ctx.files_inspected.to_vec(),
-             files_modified: ctx.files_modified.to_vec(),
-             ast_impact,
-             verifications,
-             key_findings,
-             tokens_used: ctx.transcript.total_tokens,
-             turns_executed: ctx.transcript.turns_executed,
-             total_steps: ctx.transcript.steps.len(),
-diff --git a/src/agent/subagent/tests.rs b/src/agent/subagent/tests.rs
-new file mode 100644
-index 0000000..f08611a
---- /dev/null
-+++ b/src/agent/subagent/tests.rs
-@@ -0,0 +1,89 @@
-+use crate::agent::subagent::mailbox::AgentMailbox;
-+use crate::agent::subagent::message::{AgentMessage, MessageIntent};
-+use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-+
-+#[test]
-+fn test_agent_id_and_roles() {
-+    let parent = AgentId::parent();
-+    assert_eq!(parent.0, "parent");
-+    assert!(parent.is_parent());
-+
-+    let scout_id = AgentId::new_subagent("scout");
-+    assert!(scout_id.0.starts_with("scout-"));
-+
-+    assert_eq!(
-+        SubagentRole::Scout.default_workspace_mode(),
-+        WorkspaceMode::Shared
-+    );
-+    assert_eq!(
-+        SubagentRole::Coder.default_workspace_mode(),
-+        WorkspaceMode::Worktree
-+    );
-+    assert_eq!(
-+        SubagentRole::Tester.default_workspace_mode(),
-+        WorkspaceMode::Worktree
-+    );
-+    assert_eq!(
-+        SubagentRole::Reviewer.default_workspace_mode(),
-+        WorkspaceMode::Shared
-+    );
-+}
-+
-+#[test]
-+fn test_agent_message_format_for_prompt() {
-+    let msg = AgentMessage {
-+        id: "msg-1".to_string(),
-+        sender: AgentId("scout-1".to_string()),
-+        recipient: AgentId::parent(),
-+        intent: MessageIntent::StatusUpdate,
-+        content: "Found 3 auth files".to_string(),
-+        timestamp: chrono::Utc::now(),
-+        metadata: None,
-+    };
-+    let formatted = msg.format_for_prompt();
-+    assert!(formatted.contains("<agent_message from=\"scout-1\" intent=\"status_update\""));
-+    assert!(formatted.contains("Found 3 auth files"));
-+    assert!(formatted.contains("</agent_message>"));
-+}
-+
-+#[tokio::test]
-+async fn test_agent_mailbox_fifo_and_disk_persistence() {
-+    let temp_dir = tempfile::tempdir().unwrap();
-+    let agent_dir = temp_dir
-+        .path()
-+        .join(".minicode")
-+        .join("agents")
-+        .join("test-agent");
-+    let mailbox = AgentMailbox::new(AgentId("test-agent".to_string()), &agent_dir).unwrap();
-+
-+    assert_eq!(mailbox.unread_count().unwrap(), 0);
-+
-+    let msg1 = AgentMessage {
-+        id: "m1".to_string(),
-+        sender: AgentId::parent(),
-+        recipient: AgentId("test-agent".to_string()),
-+        intent: MessageIntent::TaskInit,
-+        content: "Start search".to_string(),
-+        timestamp: chrono::Utc::now(),
-+        metadata: None,
-+    };
-+    let msg2 = AgentMessage {
-+        id: "m2".to_string(),
-+        sender: AgentId::parent(),
-+        recipient: AgentId("test-agent".to_string()),
-+        intent: MessageIntent::Feedback,
-+        content: "Also check tests/".to_string(),
-+        timestamp: chrono::Utc::now(),
-+        metadata: None,
-+    };
-+
-+    mailbox.post(msg1).unwrap();
-+    mailbox.post(msg2).unwrap();
-+    assert_eq!(mailbox.unread_count().unwrap(), 2);
-+
-+    let drained = mailbox.drain_unread().unwrap();
-+    assert_eq!(drained.len(), 2);
-+    assert_eq!(drained[0].content, "Start search");
-+    assert_eq!(drained[1].content, "Also check tests/");
-+    assert_eq!(mailbox.unread_count().unwrap(), 0);
-+}
-diff --git a/src/agent/subagent/types.rs b/src/agent/subagent/types.rs
-index a4475f6..dee0107 100644
---- a/src/agent/subagent/types.rs
-+++ b/src/agent/subagent/types.rs
-@@ -1,175 +1,251 @@
- use serde::{Deserialize, Serialize};
- use std::collections::HashSet;
-+use std::fmt;
- use std::time::{SystemTime, UNIX_EPOCH};
- 
--/// Specialized role preset for a subagent worker
--#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-+/// Unique identifier for an agent (coordinator or subagent)
-+#[allow(dead_code)]
-+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-+pub struct AgentId(pub String);
-+
-+#[allow(dead_code)]
-+impl AgentId {
-+    /// Returns the standard identifier for the coordinator / parent agent
-+    pub fn parent() -> Self {
-+        AgentId("parent".to_string())
++    #[test]
++    fn test_detect_project_validation_cmd_cargo() {
++        let temp = tempfile::tempdir().unwrap();
++        std::fs::write(
++            temp.path().join("Cargo.toml"),
++            "[package]\nname = \"demo\"\n",
++        )
++        .unwrap();
++        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
++        assert_eq!(cmd, vec!["cargo", "check", "-j", "1"]);
 +    }
 +
-+    /// Generates a unique subagent identifier with a role prefix and short UUID
-+    pub fn new_subagent(prefix: &str) -> Self {
-+        let uuid_str = uuid::Uuid::new_v4().to_string();
-+        let short_uuid = if uuid_str.len() >= 8 {
-+            &uuid_str[..8]
-+        } else {
-+            &uuid_str
-+        };
-+        AgentId(format!("{}-{}", prefix, short_uuid))
++    #[test]
++    fn test_detect_project_validation_cmd_package_json() {
++        let temp = tempfile::tempdir().unwrap();
++        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
++        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
++        assert_eq!(cmd, vec!["npm", "test"]);
 +    }
 +
-+    /// Returns true if this agent represents the coordinator / parent agent
-+    pub fn is_parent(&self) -> bool {
-+        self.0 == "parent"
++    #[test]
++    fn test_verify_worktree_skip() {
++        let temp = tempfile::tempdir().unwrap();
++        let report = MergeArbitrator::verify_worktree(temp.path(), Some("skip")).unwrap();
++        assert!(report.success);
++        assert_eq!(report.command, "skip");
 +    }
 +
-+    /// Returns a string slice of the agent id
-+    pub fn as_str(&self) -> &str {
-+        &self.0
++    #[test]
++    fn test_mergeability_and_apply_clean() {
++        let temp = tempfile::tempdir().unwrap();
++        let root = temp.path();
++
++        // git init
++        std::process::Command::new("git")
++            .args(["init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.name", "test"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["config", "user.email", "test@example.com"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "init"])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        // create branch
++        let branch = "minicode/subagent/coder-1";
++        std::process::Command::new("git")
++            .args(["branch", branch])
++            .current_dir(root)
++            .output()
++            .unwrap();
++
++        // modify on branch
++        let worktree_dir = root.join("wt");
++        std::process::Command::new("git")
++            .args(["worktree", "add", worktree_dir.to_str().unwrap(), branch])
++            .current_dir(root)
++            .output()
++            .unwrap();
++        std::fs::write(worktree_dir.join("hello.txt"), "base\nupdated\n").unwrap();
++        std::process::Command::new("git")
++            .args(["add", "."])
++            .current_dir(&worktree_dir)
++            .output()
++            .unwrap();
++        std::process::Command::new("git")
++            .args(["commit", "-m", "branch commit"])
++            .current_dir(&worktree_dir)
++            .output()
++            .unwrap();
++
++        // check mergeability
++        let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
++        assert!(mergeability.can_merge_cleanly);
++        assert!(mergeability.conflicted_files.is_empty());
++
++        // apply merge
++        let success =
++            MergeArbitrator::apply_merge(root, branch, true, Some("merge subagent")).unwrap();
++        assert!(success.committed);
++        assert!(success.files_changed.contains(&"hello.txt".to_string()));
++
++        let content = std::fs::read_to_string(root.join("hello.txt")).unwrap();
++        assert!(content.contains("updated"));
 +    }
 +}
-+
-+impl fmt::Display for AgentId {
-+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-+        write!(f, "{}", self.0)
-+    }
-+}
-+
-+impl AsRef<str> for AgentId {
-+    fn as_ref(&self) -> &str {
-+        &self.0
-+    }
-+}
-+
-+impl From<&str> for AgentId {
-+    fn from(s: &str) -> Self {
-+        AgentId(s.to_string())
-+    }
-+}
-+
-+impl From<String> for AgentId {
-+    fn from(s: String) -> Self {
-+        AgentId(s)
-+    }
-+}
-+
-+/// Workspace isolation mode for a subagent
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-+#[serde(rename_all = "snake_case")]
-+pub enum WorkspaceMode {
-+    Auto,
-+    Worktree,
-+    Shared,
-+}
-+
-+#[allow(dead_code)]
-+impl WorkspaceMode {
-+    pub fn as_str(&self) -> &'static str {
-+        match self {
-+            WorkspaceMode::Auto => "auto",
-+            WorkspaceMode::Worktree => "worktree",
-+            WorkspaceMode::Shared => "shared",
-+        }
-+    }
-+}
-+
-+/// Specialized role preset defining subagent capabilities and workspace isolation
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
- #[serde(rename_all = "snake_case")]
- pub enum SubagentRole {
--    /// Read-only deep codebase explorer and web documentation researcher
--    Researcher,
--    /// Multi-axis code reviewer evaluating diffs, AST contracts, and standards
--    CodeReviewer,
--    /// Test runner and failure reproducer
--    TestEngineer,
--    /// Vulnerability, secret leak, and security policy auditor
--    SecurityAuditor,
--    /// Custom user-defined role with custom prompt and toolset
--    Custom(String),
-+    Scout,
-+    Coder,
-+    Tester,
-+    Reviewer,
- }
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index bd1f246..41bf945 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -1,15 +1,20 @@
++pub mod arbitration;
+ pub mod dynamic;
+ pub mod env;
+ #[cfg(target_os = "linux")]
+ pub mod landlock;
+ pub mod path;
+ pub mod redact;
+ pub mod worktree;
  
-+#[allow(dead_code)]
- impl SubagentRole {
--    /// Returns default tool whitelist for this role
-+    /// Returns the default workspace isolation mode for this role
-+    pub fn default_workspace_mode(&self) -> WorkspaceMode {
-+        match self {
-+            SubagentRole::Scout | SubagentRole::Reviewer => WorkspaceMode::Shared,
-+            SubagentRole::Coder | SubagentRole::Tester => WorkspaceMode::Worktree,
-+        }
-+    }
-+
-+    /// Returns the tool filtering mode ("read_only" vs "standard")
-+    pub fn tool_filter_mode(&self) -> &'static str {
-+        match self {
-+            SubagentRole::Scout | SubagentRole::Reviewer => "read_only",
-+            SubagentRole::Coder | SubagentRole::Tester => "standard",
-+        }
-+    }
-+
-+    /// Human-readable badge for UI rendering
-+    pub fn badge(&self) -> &'static str {
-+        match self {
-+            SubagentRole::Scout => "Scout",
-+            SubagentRole::Coder => "Coder",
-+            SubagentRole::Tester => "Tester",
-+            SubagentRole::Reviewer => "Reviewer",
-+        }
-+    }
-+
-+    /// Flexible case-insensitive role parser
-+    pub fn from_str_loose(s: &str) -> Self {
-+        let normalized = s.trim().to_lowercase().replace('-', "_");
-+        match normalized.as_str() {
-+            "scout" | "researcher" | "research" => Self::Scout,
-+            "reviewer" | "code_reviewer" | "code_review" | "security" | "security_auditor" => {
-+                Self::Reviewer
-+            }
-+            "tester" | "test_engineer" | "test" => Self::Tester,
-+            "coder" => Self::Coder,
-+            _ => Self::Coder,
-+        }
-+    }
-+
-+    /// Default tool whitelist for this role
-     pub fn default_tool_whitelist(&self) -> HashSet<String> {
-         let mut set = HashSet::new();
-         match self {
--            SubagentRole::Researcher => {
--                // Read-only tools
-+            SubagentRole::Scout => {
-                 for t in &[
-                     "read_file",
-                     "grep_search",
-                     "file_search",
-                     "locate_symbol",
-                     "view_outline",
-                     "fetch_or_browse",
-                     "search_web",
-                 ] {
-                     set.insert(t.to_string());
-                 }
-             }
--            SubagentRole::CodeReviewer => {
--                // Inspection and analysis tools
-+            SubagentRole::Reviewer => {
-                 for t in &[
-                     "read_file",
-                     "grep_search",
-                     "file_search",
-                     "locate_symbol",
-                     "view_outline",
-                     "browser_snapshot",
-                     "browser_eval",
-                 ] {
-                     set.insert(t.to_string());
-                 }
-             }
--            SubagentRole::TestEngineer => {
--                // Testing & diagnostic execution
-+            SubagentRole::Tester => {
-                 for t in &[
-                     "read_file",
-                     "grep_search",
-                     "file_search",
-                     "view_outline",
-                     "exec_cmd",
-                     "write_file",
-+                    "patch_file",
-                 ] {
-                     set.insert(t.to_string());
-                 }
-             }
--            SubagentRole::SecurityAuditor => {
--                // Security inspection
--                for t in &[
--                    "read_file",
--                    "grep_search",
--                    "file_search",
--                    "locate_symbol",
--                    "view_outline",
--                ] {
--                    set.insert(t.to_string());
--                }
--            }
--            SubagentRole::Custom(_) => {
--                // All standard tools permitted by default for custom
-+            SubagentRole::Coder => {
-                 for t in &[
-                     "read_file",
-                     "write_file",
-                     "patch_file",
-                     "grep_search",
-                     "file_search",
-                     "locate_symbol",
-                     "view_outline",
-                     "fetch_or_browse",
-                     "search_web",
-                     "exec_cmd",
-                 ] {
-                     set.insert(t.to_string());
-                 }
-             }
-         }
-         set
-     }
- 
--    /// Returns default max token budget for this role
-+    /// Default token budget for this role
-     pub fn default_token_budget(&self) -> usize {
-         match self {
--            SubagentRole::Researcher => 24_000,
--            SubagentRole::CodeReviewer => 16_000,
--            SubagentRole::TestEngineer => 32_000,
--            SubagentRole::SecurityAuditor => 16_000,
--            SubagentRole::Custom(_) => 24_000,
-+            SubagentRole::Scout => 24_000,
-+            SubagentRole::Coder => 32_000,
-+            SubagentRole::Tester => 32_000,
-+            SubagentRole::Reviewer => 16_000,
-         }
-     }
- 
--    /// Returns default max turns for this role
-+    /// Default max turns for this role
-     pub fn default_max_turns(&self) -> usize {
-         match self {
--            SubagentRole::Researcher => 12,
--            SubagentRole::CodeReviewer => 6,
--            SubagentRole::TestEngineer => 10,
--            SubagentRole::SecurityAuditor => 6,
--            SubagentRole::Custom(_) => 10,
--        }
--    }
--
--    /// Returns a human-readable role badge
--    pub fn badge(&self) -> &'static str {
--        match self {
--            SubagentRole::Researcher => "Researcher",
--            SubagentRole::CodeReviewer => "CodeReviewer",
--            SubagentRole::TestEngineer => "TestEngineer",
--            SubagentRole::SecurityAuditor => "SecurityAuditor",
--            SubagentRole::Custom(_) => "CustomWorker",
--        }
--    }
--
--    /// Flexible case-insensitive role parser
--    pub fn from_str_loose(s: &str) -> Self {
--        let normalized = s.trim().to_lowercase().replace('-', "_");
--        match normalized.as_str() {
--            "researcher" | "research" => Self::Researcher,
--            "code_reviewer" | "reviewer" | "code_review" => Self::CodeReviewer,
--            "test_engineer" | "tester" | "test" => Self::TestEngineer,
--            "security_auditor" | "security" | "auditor" => Self::SecurityAuditor,
--            other => Self::Custom(other.to_string()),
-+            SubagentRole::Scout => 12,
-+            SubagentRole::Coder => 15,
-+            SubagentRole::Tester => 10,
-+            SubagentRole::Reviewer => 6,
-         }
-     }
- }
- 
- /// Lifecycle state of an active or finished subagent worker
- #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
- #[serde(rename_all = "snake_case")]
- pub enum SubagentState {
--    Idle,
-+    Starting,
-     Running,
-+    WaitingForInput,
-     Completed,
-     Failed(String),
--    Canceled,
-+    Terminated,
- }
- 
- #[allow(dead_code)]
- impl SubagentState {
-     pub fn as_str(&self) -> &str {
-         match self {
--            SubagentState::Idle => "idle",
-+            SubagentState::Starting => "starting",
-             SubagentState::Running => "running",
-+            SubagentState::WaitingForInput => "waiting_for_input",
-             SubagentState::Completed => "completed",
-             SubagentState::Failed(_) => "failed",
--            SubagentState::Canceled => "canceled",
-+            SubagentState::Terminated => "terminated",
-         }
-     }
- }
- 
- /// Configuration settings for instantiating a subagent worker
- #[derive(Debug, Clone, Serialize, Deserialize)]
- pub struct SubagentConfig {
-     pub role: SubagentRole,
-     pub model: Option<String>,
-     pub token_budget: usize,
-diff --git a/src/agent/subagent/worker.rs b/src/agent/subagent/worker.rs
-index 5a7f5ee..ff2786d 100644
---- a/src/agent/subagent/worker.rs
-+++ b/src/agent/subagent/worker.rs
-@@ -13,69 +13,62 @@ use tokio::sync::RwLock;
- pub struct SubagentWorker {
-     pub info: Arc<RwLock<SubagentInfo>>,
-     pub config: SubagentConfig,
-     pub workspace_root: PathBuf,
-     pub cancel_flag: Arc<AtomicBool>,
- }
- 
- #[allow(dead_code)]
- impl SubagentWorker {
-     pub fn new(id: String, prompt: String, config: SubagentConfig, workspace_root: &Path) -> Self {
--        let info = Arc::new(RwLock::new(SubagentInfo::new(
--            id,
--            config.role.clone(),
--            prompt,
--        )));
-+        let info = Arc::new(RwLock::new(SubagentInfo::new(id, config.role, prompt)));
- 
-         Self {
-             info,
-             config,
-             workspace_root: workspace_root.to_path_buf(),
-             cancel_flag: Arc::new(AtomicBool::new(false)),
-         }
-     }
- 
-     /// Generates the specialized system prompt for the worker's role
-     pub fn build_system_prompt(&self) -> String {
-         if let Some(custom) = &self.config.system_prompt_override {
-             return custom.clone();
-         }
- 
-         match &self.config.role {
--            SubagentRole::Researcher => {
--                "You are an expert Research Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
-+            SubagentRole::Scout => {
-+                "You are an expert Scout Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
-             }
--            SubagentRole::CodeReviewer => {
--                "You are a Senior Code Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
-+            SubagentRole::Reviewer => {
-+                "You are a Senior Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
-             }
--            SubagentRole::TestEngineer => {
-+            SubagentRole::Tester => {
-                 "You are a QA & Test Engineer Subagent. Your mission is to run test suites, analyze test failures, reproduce edge cases, and ensure high test coverage.".to_string()
-             }
--            SubagentRole::SecurityAuditor => {
--                "You are a Security Auditor Subagent. Your mission is to check for hardcoded secrets, injection vectors, unvalidated inputs, unsafe blocks, and permissions issues.".to_string()
--            }
--            SubagentRole::Custom(name) => {
--                format!("You are a specialized Subagent ({}) executing an assigned subtask. Fulfill the user's instructions accurately and concisely.", name)
-+            SubagentRole::Coder => {
-+                "You are a specialized Coder Subagent executing an assigned implementation task. Fulfill the user's instructions accurately and concisely.".to_string()
-             }
-         }
-     }
- 
-     /// Executes the subagent loop and returns the final result
-     pub fn run<'a>(
-         &'a self,
-         provider: Arc<dyn Provider>,
-     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SubagentResult>> + Send + 'a>>
-     {
-         Box::pin(async move {
-             let (prompt, role, id) = {
-                 let info = self.info.read().await;
--                (info.prompt.clone(), info.role.clone(), info.id.clone())
-+                (info.prompt.clone(), info.role, info.id.clone())
-             };
- 
-             tracing::info!(subagent_id = %id, role = ?role, "Starting subagent worker");
- 
-             let system_prompt = self.build_system_prompt();
-             let mut messages = vec![
-                 Message::system(system_prompt.clone()),
-                 Message::user(prompt.clone()),
-             ];
- 
-@@ -103,21 +96,21 @@ impl SubagentWorker {
- 
-             let mut files_inspected = Vec::new();
-             let mut files_modified = Vec::new();
-             let mut tokens_used = 0;
-             let mut turns_executed = 0;
-             let mut final_summary = String::new();
-             let mut success = true;
-             let mut step_counter = 0;
-             let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
-                 &id,
--                role.clone(),
-+                role,
-                 prompt.clone(),
-             );
- 
-             while turns_executed < self.config.max_turns {
-                 if self.cancel_flag.load(Ordering::SeqCst) {
-                     let now = SystemTime::now()
-                         .duration_since(UNIX_EPOCH)
-                         .unwrap_or_default()
-                         .as_secs();
- 
-@@ -138,21 +131,21 @@ impl SubagentWorker {
-                             files_modified: &files_modified,
-                             transcript: &transcript,
-                             workspace_root: &self.workspace_root,
-                             worktree_branch: None,
-                         },
-                     )
-                     .await;
-                     let report_md = report.format_markdown();
- 
-                     let mut info = self.info.write().await;
--                    info.state = SubagentState::Canceled;
-+                    info.state = SubagentState::Terminated;
-                     info.current_tool = None;
-                     info.status_message = Some("Canceled by user".to_string());
-                     info.final_summary = Some(report_md.clone());
-                     return Ok(SubagentResult {
-                         id: id.clone(),
-                         task_id: id,
-                         role,
-                         success: false,
-                         final_summary: report_md,
-                         tokens_used,
-diff --git a/src/tools/registry/agent_tools/subagents.rs b/src/tools/registry/agent_tools/subagents.rs
-index 4636d18..e52ff4f 100644
---- a/src/tools/registry/agent_tools/subagents.rs
-+++ b/src/tools/registry/agent_tools/subagents.rs
-@@ -261,48 +261,46 @@ pub async fn dispatch(
-                 timeout_secs,
-             )
-             .await?;
-             Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
-         }.await),
-         "invoke_subagent" => Some(async {
-             let role_str = param::require_str(args, "role", "invoke_subagent")?;
-             let prompt = param::require_str(args, "prompt", "invoke_subagent")?;
- 
-             let role = match role_str.to_lowercase().as_str() {
--                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
--                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
--                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
--                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
--                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
-+                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
-+                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
-+                    crate::agent::subagent::SubagentRole::Reviewer
-+                }
-+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
-+                _ => crate::agent::subagent::SubagentRole::Coder,
-             };
- 
--            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
-+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
-             if let Some(model) = param::opt_str(args, "model") {
-                 config.model = Some(model.to_string());
-             }
-             if let Some(budget) = param::opt_u64(args, "token_budget") {
-                 config.token_budget = budget as usize;
-             }
-             if let Some(max_t) = param::opt_u64(args, "max_turns") {
-                 config.max_turns = max_t as usize;
-             }
-             if let Some(sys_prompt) = param::opt_str(args, "system_prompt") {
-                 config.system_prompt_override = Some(sys_prompt.to_string());
-             }
- 
--            let isolate_worktree = param::get_bool(args, "isolate_worktree")
--                .unwrap_or(!matches!(
--                    role,
--                    crate::agent::subagent::SubagentRole::Researcher
--                        | crate::agent::subagent::SubagentRole::CodeReviewer
--                        | crate::agent::subagent::SubagentRole::SecurityAuditor
--                ));
-+            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
-+            );
-+
- 
-             let res =
-                 crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
-                     workspace_root,
-                     prompt,
-                     isolate_worktree,
-                     Some(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS),
-                     Some(config),
-                 )
-                 .await?;
-@@ -319,55 +317,54 @@ pub async fn dispatch(
-                     res.final_summary
-                 );
-                 Ok(report)
-             }
-         }.await),
-         "dispatch_subagent" => Some(async {
-             let role_str = param::require_str(args, "role", "dispatch_subagent")?;
-             let prompt = param::require_str(args, "prompt", "dispatch_subagent")?;
- 
-             let role = match role_str.to_lowercase().as_str() {
--                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
--                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
--                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
--                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
--                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
-+                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
-+                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
-+                    crate::agent::subagent::SubagentRole::Reviewer
-+                }
-+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
-+                _ => crate::agent::subagent::SubagentRole::Coder,
-             };
- 
--            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
-+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
-             if let Some(model) = param::opt_str(args, "model") {
-                 config.model = Some(model.to_string());
-             }
-             if let Some(budget) = param::opt_u64(args, "token_budget") {
-                 config.token_budget = budget as usize;
-             }
-             if let Some(max_t) = param::opt_u64(args, "max_turns") {
-                 config.max_turns = max_t as usize;
-             }
-             if let Some(sys_prompt) = param::opt_str(args, "system_prompt") {
-                 config.system_prompt_override = Some(sys_prompt.to_string());
-             }
- 
-             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
--            let isolate_worktree = param::get_bool(args, "isolate_worktree")
--                .unwrap_or(!matches!(
--                    role,
--                    crate::agent::subagent::SubagentRole::Researcher
--                        | crate::agent::subagent::SubagentRole::CodeReviewer
--                        | crate::agent::subagent::SubagentRole::SecurityAuditor
--                ));
-+            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
-+            );
-+
- 
-             let provider = pool.get_or_create_provider().await;
-             let id = pool
--                .spawn_background_worker(role.clone(), prompt, Some(config), provider, isolate_worktree)
-+                .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
-                 .await?;
- 
-+
-             let isolation_label = if isolate_worktree {
-                 format!("Dedicated Git Worktree (`subagent/{}`)", id)
-             } else {
-                 "Shared Read-Only Context".to_string()
-             };
- 
-             let out = format!(
-                 "✔ Background subagent spawned successfully!\n\
-                  • **Worker ID**: `{}`\n\
-                  • **Role**: {}\n\
-@@ -429,21 +426,27 @@ pub async fn dispatch(
-                 }
-                 "await" => {
-                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
-                     let timeout_secs = param::opt_u64(args, "timeout_secs").unwrap_or(60);
-                     let start = std::time::Instant::now();
-                     let max_dur = std::time::Duration::from_secs(timeout_secs);
- 
-                     let mut final_info = None;
-                     while start.elapsed() < max_dur {
-                         if let Some(info) = pool.get_subagent(id).await {
--                            if !matches!(info.state, crate::agent::subagent::types::SubagentState::Running | crate::agent::subagent::types::SubagentState::Idle) {
-+                            if !matches!(
-+                                info.state,
-+                                crate::agent::subagent::types::SubagentState::Running
-+                                    | crate::agent::subagent::types::SubagentState::Starting
-+                                    | crate::agent::subagent::types::SubagentState::WaitingForInput
-+                            ) {
-+
-                                 final_info = Some(info);
-                                 break;
-                             }
-                         } else {
-                             return Ok(format!("ℹ No subagent found with ID '{}'", id));
-                         }
-                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                     }
- 
-                     if let Some(info) = final_info {
-diff --git a/src/ui/subagent_drawer.rs b/src/ui/subagent_drawer.rs
-index f000bdb..ae686fe 100644
---- a/src/ui/subagent_drawer.rs
-+++ b/src/ui/subagent_drawer.rs
-@@ -195,25 +195,26 @@ impl SubagentDrawer {
-         let split_layout = Layout::default()
-             .direction(Direction::Horizontal)
-             .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-             .split(inner_layout[0]);
- 
-         // Left Pane: Worker Cards List
-         let mut list_lines = Vec::new();
-         for (i, worker) in workers.iter().enumerate() {
-             let is_selected = i == selected_idx;
-             let (status_icon, status_color, status_text) = match &worker.state {
-+                SubagentState::Starting => ("○", Color::DarkGray, "STARTING"),
-                 SubagentState::Running => ("●", Color::Green, "RUNNING"),
-+                SubagentState::WaitingForInput => ("◷", Color::Yellow, "WAITING"),
-                 SubagentState::Completed => ("✔", Color::Cyan, "DONE"),
-                 SubagentState::Failed(_) => ("✗", Color::Red, "FAILED"),
--                SubagentState::Canceled => ("⊘", Color::Yellow, "CANCELED"),
--                SubagentState::Idle => ("○", Color::DarkGray, "IDLE"),
-+                SubagentState::Terminated => ("⊘", Color::Yellow, "TERMINATED"),
-             };
- 
-             let prefix = if is_selected { "▶ " } else { "  " };
-             let isolation = if worker.isolate_worktree {
-                 " [Worktree]"
-             } else {
-                 " [Read-Only]"
-             };
- 
-             let item_style = if is_selected {
++#[allow(unused_imports)]
++pub use arbitration::{
++    ArbitrationError, MergeArbitrator, MergeSuccessReport, MergeabilityReport, ValidationReport,
++};
+ #[allow(unused_imports)]
+ pub use dynamic::{
+     format_sandbox_result, is_bwrap_available, run_sandboxed, SandboxBackendPreference,
+     SandboxBackendType, SandboxExecutionResult, SandboxPolicy,
+ };
+ #[allow(unused_imports)]
+ pub use worktree::{GitWorktreeManager, WorktreeHandle};

@@ -68,7 +68,7 @@ impl MergeArbitrator {
     /// Detects standard project validation command based on manifest files in the directory.
     ///
     /// - `Cargo.toml`: `["cargo", "check", "-j", "1"]`
-    /// - `package.json`: `["bun", "test"]` (if `bun.lockb`), `["pnpm", "test"]` (if `pnpm-lock.yaml`), else `["npm", "test"]`
+    /// - `package.json`: `["bun", "test"]` (if `bun.lockb` or `bun.lock`), `["pnpm", "test"]` (if `pnpm-lock.yaml`), else `["npm", "test"]`
     /// - `pyproject.toml` or `pytest.ini`: `["pytest"]`
     /// - `go.mod`: `["go", "test", "./..."]`
     pub fn detect_project_validation_cmd(path: &Path) -> Option<Vec<String>> {
@@ -80,7 +80,7 @@ impl MergeArbitrator {
                 "1".to_string(),
             ])
         } else if path.join("package.json").exists() {
-            if path.join("bun.lockb").exists() {
+            if path.join("bun.lockb").exists() || path.join("bun.lock").exists() {
                 Some(vec!["bun".to_string(), "test".to_string()])
             } else if path.join("pnpm-lock.yaml").exists() {
                 Some(vec!["pnpm".to_string(), "test".to_string()])
@@ -444,6 +444,13 @@ fn run_command_with_timeout(
     mut cmd: Command,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, std::io::Error> {
+    cmd.stdin(std::process::Stdio::null());
+
+    #[cfg(unix)]
+    {
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    }
+
     let child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -461,6 +468,7 @@ fn run_command_with_timeout(
         Err(_) => {
             #[cfg(unix)]
             unsafe {
+                libc::kill(-(child_id as libc::pid_t), libc::SIGKILL);
                 libc::kill(child_id as libc::pid_t, libc::SIGKILL);
             }
             #[cfg(not(unix))]
@@ -583,5 +591,103 @@ mod tests {
 
         let content = std::fs::read_to_string(root.join("hello.txt")).unwrap();
         assert!(content.contains("updated"));
+    }
+
+    #[test]
+    fn test_detect_project_validation_cmd_bun_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
+        std::fs::write(temp.path().join("bun.lock"), "").unwrap();
+        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
+        assert_eq!(cmd, vec!["bun", "test"]);
+    }
+
+    #[test]
+    fn test_mergeability_conflict() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Base commit modifying file.txt
+        std::fs::write(root.join("file.txt"), "base content\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Branch 1 modifies file.txt to A and commits
+        let branch = "minicode/subagent/conflict-branch";
+        std::process::Command::new("git")
+            .args(["branch", branch])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let worktree_dir = root.join("wt");
+        std::process::Command::new("git")
+            .args(["worktree", "add", worktree_dir.to_str().unwrap(), branch])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(worktree_dir.join("file.txt"), "modified A in branch\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&worktree_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "branch commit A"])
+            .current_dir(&worktree_dir)
+            .output()
+            .unwrap();
+
+        // Main modifies file.txt to B and commits
+        std::fs::write(root.join("file.txt"), "modified B in main\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "main commit B"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        // Asserts check_mergeability returns can_merge_cleanly: false and conflicted_files containing "file.txt"
+        let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
+        assert!(!mergeability.can_merge_cleanly);
+        assert!(mergeability
+            .conflicted_files
+            .contains(&"file.txt".to_string()));
+
+        // Asserts apply_merge returns Err(ArbitrationError::MergeConflict(_))
+        let res = MergeArbitrator::apply_merge(root, branch, true, Some("attempt merge"));
+        assert!(matches!(res, Err(ArbitrationError::MergeConflict(_))));
+        if let Err(ArbitrationError::MergeConflict(conflicts)) = res {
+            assert!(conflicts.contains(&"file.txt".to_string()));
+        }
     }
 }
