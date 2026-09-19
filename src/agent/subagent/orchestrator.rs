@@ -255,11 +255,9 @@ impl SubagentOrchestrator {
             )));
         }
 
-        // Child succeeded: capture diff if worktree was used, then remove worktree
+        // Child succeeded: capture diff if worktree was used, and retain worktree for arbitration
         let diff = if let Some(ref handle) = worktree_handle {
-            let captured = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
-            let _ = GitWorktreeManager::remove_worktree(handle);
-            captured
+            GitWorktreeManager::capture_diff(handle).unwrap_or_default()
         } else {
             String::new()
         };
@@ -286,6 +284,14 @@ impl SubagentOrchestrator {
                 files_modified.join(", ")
             },
         );
+
+        if let Some(ref handle) = worktree_handle {
+            report.push_str(&format!(
+                "\n• Worktree Retained: `{}` (branch `{}` — ready for `merge_subagent_worktree`)\n",
+                handle.worktree_path.display(),
+                handle.branch_name
+            ));
+        }
 
         if !diff.is_empty() {
             report.push_str(&format!("\n### Worktree Diff\n```diff\n{}\n```\n", diff));

@@ -24,20 +24,62 @@ pub struct GitWorktreeManager;
 
 #[allow(dead_code)]
 impl GitWorktreeManager {
+    /// Derives the dedicated branch name for a subagent.
+    pub fn branch_name_for(agent_id: &AgentId) -> String {
+        format!("minicode/subagent/{}", agent_id.0)
+    }
+
+    /// Locates an existing worktree directory for a subagent under `.minicode/worktrees/`.
+    ///
+    /// Checks for `subagent-<agent_id>` first, then legacy `<agent_id>`.
+    pub fn locate_worktree(repo_root: &Path, agent_id: &AgentId) -> Option<PathBuf> {
+        let worktrees_dir = repo_root.join(".minicode").join("worktrees");
+        let prefixed = worktrees_dir.join(format!("subagent-{}", agent_id.0));
+        if prefixed.exists() {
+            return Some(prefixed);
+        }
+        let direct = worktrees_dir.join(&agent_id.0);
+        if direct.exists() {
+            return Some(direct);
+        }
+        None
+    }
+
+    /// Resolves the Git branch associated with a subagent's worktree.
+    ///
+    /// Inspects `HEAD` inside the worktree if present; falls back to `branch_name_for(agent_id)`.
+    pub fn resolve_branch_for(repo_root: &Path, agent_id: &AgentId) -> String {
+        if let Some(wt) = Self::locate_worktree(repo_root, agent_id) {
+            if let Ok(output) = Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&wt)
+                .output()
+            {
+                if output.status.success() {
+                    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !branch.is_empty() && branch != "HEAD" {
+                        return branch;
+                    }
+                }
+            }
+        }
+        Self::branch_name_for(agent_id)
+    }
+
     /// Creates an isolated Git worktree and dedicated branch for a subagent.
     ///
-    /// 1. Worktree path: `repo_root/.minicode/worktrees/<agent_id>`
-    /// 2. Branch name: `minicode-task-<agent_id>`
+    /// 1. Worktree path: `repo_root/.minicode/worktrees/subagent-<agent_id>`
+    /// 2. Branch name: `minicode/subagent/<agent_id>`
     /// 3. Ensures `.minicode/worktrees/` directory exists.
-    /// 4. If `worktree_path` exists, cleans up stale worktree and branch first.
+    /// 4. If worktree or branch exists, cleans up stale worktree and branch first.
     /// 5. Runs `git worktree add -b <branch_name> <worktree_path> HEAD`.
     pub fn create_worktree(
         repo_root: &Path,
         agent_id: &AgentId,
     ) -> std::io::Result<WorktreeHandle> {
         let worktrees_dir = repo_root.join(".minicode").join("worktrees");
-        let worktree_path = worktrees_dir.join(&agent_id.0);
-        let branch_name = format!("minicode-task-{}", &agent_id.0);
+        let worktree_path = worktrees_dir.join(format!("subagent-{}", &agent_id.0));
+        let branch_name = Self::branch_name_for(agent_id);
 
         std::fs::create_dir_all(&worktrees_dir)?;
 
@@ -48,14 +90,26 @@ impl GitWorktreeManager {
             repo_root: repo_root.to_path_buf(),
         };
 
+        if let Some(existing_wt) = Self::locate_worktree(repo_root, agent_id) {
+            let existing_handle = WorktreeHandle {
+                worktree_path: existing_wt,
+                branch_name: branch_name.clone(),
+                agent_id: agent_id.clone(),
+                repo_root: repo_root.to_path_buf(),
+            };
+            let _ = Self::remove_worktree(&existing_handle);
+        }
         if worktree_path.exists() {
             let _ = Self::remove_worktree(&handle);
-        } else {
-            let _ = Command::new("git")
-                .args(["branch", "-D", &branch_name])
-                .current_dir(repo_root)
-                .output();
         }
+        let _ = Command::new("git")
+            .args(["branch", "-D", &branch_name])
+            .current_dir(repo_root)
+            .output();
+        let _ = Command::new("git")
+            .args(["worktree", "prune"])
+            .current_dir(repo_root)
+            .output();
 
         let output = Command::new("git")
             .args(["worktree", "add", "-b", &branch_name])
@@ -218,6 +272,34 @@ mod tests {
     }
 
     #[test]
+    fn test_branch_name_and_locate_worktree() {
+        let agent_id = AgentId("coder-test-99".to_string());
+        let branch = GitWorktreeManager::branch_name_for(&agent_id);
+        assert_eq!(branch, "minicode/subagent/coder-test-99");
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        let expected_dir = repo_dir
+            .path()
+            .join(".minicode")
+            .join("worktrees")
+            .join("subagent-coder-test-99");
+        std::fs::create_dir_all(&expected_dir).unwrap();
+
+        let located = GitWorktreeManager::locate_worktree(repo_dir.path(), &agent_id);
+        assert_eq!(located, Some(expected_dir));
+
+        let legacy_agent_id = AgentId("coder-legacy".to_string());
+        let legacy_dir = repo_dir
+            .path()
+            .join(".minicode")
+            .join("worktrees")
+            .join("coder-legacy");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let located_legacy = GitWorktreeManager::locate_worktree(repo_dir.path(), &legacy_agent_id);
+        assert_eq!(located_legacy, Some(legacy_dir));
+    }
+
+    #[test]
     fn test_worktree_lifecycle_in_git_repo() {
         let temp_dir = setup_git_repo();
         let repo_root = temp_dir.path();
@@ -227,7 +309,15 @@ mod tests {
             .expect("create_worktree failed");
 
         assert!(handle.worktree_path.exists());
-        assert_eq!(handle.branch_name, "minicode-task-coder-test");
+        assert_eq!(handle.branch_name, "minicode/subagent/coder-test");
+
+        // Verifies resolve_branch_for matches branch
+        let resolved = GitWorktreeManager::resolve_branch_for(repo_root, &agent_id);
+        assert_eq!(resolved, "minicode/subagent/coder-test");
+
+        // Verifies locate_worktree returns the handle's worktree path
+        let located = GitWorktreeManager::locate_worktree(repo_root, &agent_id);
+        assert_eq!(located, Some(handle.worktree_path.clone()));
 
         // Verifies worktree directory exists and branch is created
         let branch_out = Command::new("git")
