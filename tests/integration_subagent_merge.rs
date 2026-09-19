@@ -1,0 +1,367 @@
+//! End-to-End Integration Test Suite for Subagent Worktree Merge & Conflict Arbitration Engine.
+//!
+//! Validates the complete arbitration lifecycle:
+//! 1. Clean merge lifecycle (creation, modification, pre-merge verification, mergeability check, merge application, cleanup).
+//! 2. Merge conflict arbitration (competing concurrent modifications, conflict detection via git merge-tree, safe rejection).
+//! 3. Tool primitive end-to-end execution (`merge_subagent_worktree`).
+//! 4. Pre-merge verification failure handling (preserving worktree on disk, aborting merge cleanly).
+
+use minicode::agent::subagent::types::AgentId;
+use minicode::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator};
+use minicode::tools::registry::agent_tools::subagents::merge_subagent_worktree;
+use std::path::Path;
+use std::process::Command;
+
+/// Initializes a temporary Git repository with local user identity and signing disabled.
+fn setup_git_repo(root: &Path) {
+    let run = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run(&["init"]);
+    run(&["config", "user.name", "test-user"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "commit.gpgsign", "false"]);
+
+    std::fs::write(root.join(".gitignore"), ".minicode/\n").unwrap();
+    run(&["add", ".gitignore"]);
+    run(&["commit", "-m", "ignore minicode"]);
+}
+
+#[test]
+fn test_integration_subagent_worktree_clean_merge() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    setup_git_repo(root);
+
+    // Initial base commit in parent workspace
+    std::fs::write(root.join("lib.rs"), "// base\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 1. Create worktree via GitWorktreeManager::create_worktree
+    let agent_id = AgentId("coder-clean".to_string());
+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+    assert!(handle.worktree_path.exists());
+
+    // 2. Modify and commit changes in the worktree
+    std::fs::write(
+        handle.worktree_path.join("lib.rs"),
+        "// base\npub fn subagent_feature() -> bool { true }\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "feat: subagent add feature"])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+
+    // 3. Run MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))
+    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip")).unwrap();
+    assert!(v_report.success);
+    assert_eq!(v_report.command, "skip");
+
+    // 4. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
+    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
+    assert!(m_report.can_merge_cleanly);
+    assert!(m_report.conflicted_files.is_empty());
+
+    // 5. Apply merge via MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
+    let merge_res =
+        MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
+            .unwrap();
+    assert!(merge_res.committed);
+    assert!(merge_res.files_changed.contains(&"lib.rs".to_string()));
+    assert!(merge_res.commit_hash.is_some());
+
+    // 6. Clean up worktree via GitWorktreeManager::remove_worktree
+    GitWorktreeManager::remove_worktree(&handle).unwrap();
+    assert!(!handle.worktree_path.exists());
+
+    // 7. Assert file modifications are present in parent workspace
+    let merged_content = std::fs::read_to_string(root.join("lib.rs")).unwrap();
+    assert!(merged_content.contains("pub fn subagent_feature() -> bool { true }"));
+}
+
+#[test]
+fn test_integration_subagent_worktree_conflict_detection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    setup_git_repo(root);
+
+    // Initial base commit modifying conflict.txt
+    std::fs::write(
+        root.join("conflict.txt"),
+        "original line 1\noriginal line 2\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init base"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 1. Create worktree and commit changes to conflict.txt on subagent branch
+    let agent_id = AgentId("coder-conflict".to_string());
+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+    assert!(handle.worktree_path.exists());
+
+    std::fs::write(
+        handle.worktree_path.join("conflict.txt"),
+        "original line 1\nsubagent branch change\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "subagent conflict edit"])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+
+    // 2. Make conflicting commit to conflict.txt on main branch in parent workspace
+    std::fs::write(
+        root.join("conflict.txt"),
+        "original line 1\nparent main conflicting change\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "parent conflicting edit"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 3. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
+    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
+
+    // 4. Assert can_merge_cleanly == false and conflicted_files contains "conflict.txt"
+    assert!(!m_report.can_merge_cleanly);
+    assert!(m_report
+        .conflicted_files
+        .contains(&"conflict.txt".to_string()));
+
+    // 5. Assert MergeArbitrator::apply_merge returns Err(ArbitrationError::MergeConflict(_))
+    let apply_res = MergeArbitrator::apply_merge(
+        root,
+        &handle.branch_name,
+        true,
+        Some("attempt conflict merge"),
+    );
+    assert!(matches!(apply_res, Err(ArbitrationError::MergeConflict(_))));
+    if let Err(ArbitrationError::MergeConflict(conflicts)) = apply_res {
+        assert!(conflicts.contains(&"conflict.txt".to_string()));
+    }
+
+    // 6. Clean up worktree and verify parent workspace is unharmed
+    GitWorktreeManager::remove_worktree(&handle).unwrap();
+    assert!(!handle.worktree_path.exists());
+
+    let parent_content = std::fs::read_to_string(root.join("conflict.txt")).unwrap();
+    assert_eq!(
+        parent_content,
+        "original line 1\nparent main conflicting change\n"
+    );
+
+    // Parent working tree is clean and unchanged
+    let status_out = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(status_out.status.success());
+    assert!(String::from_utf8_lossy(&status_out.stdout)
+        .trim()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_integration_subagent_tool_full_lifecycle() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    setup_git_repo(root);
+
+    // Base commit in parent workspace
+    std::fs::write(root.join("app.rs"), "// initial app\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init app"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 1. Create worktree for subagent coder-integration
+    let agent_id = AgentId("coder-integration".to_string());
+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+    assert!(handle.worktree_path.exists());
+
+    // 2. Modify and commit files in worktree
+    std::fs::write(
+        handle.worktree_path.join("feature.rs"),
+        "pub fn integration_test() -> i32 { 42 }\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "coder adds feature"])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+
+    // 3. Execute merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))
+    let res = merge_subagent_worktree(
+        root,
+        "coder-integration",
+        true,
+        Some("skip"),
+        Some("feat: integrated"),
+    )
+    .await;
+
+    // 4. Assert result is Ok(summary) containing success message and files changed
+    assert!(res.is_ok());
+    let summary = res.unwrap();
+    assert!(summary.contains("Successfully merged subagent worktree changes"));
+    assert!(summary.contains("coder-integration"));
+    assert!(summary.contains("feature.rs"));
+
+    // 5. Assert worktree is automatically cleaned up and files exist in main repo
+    assert!(!handle.worktree_path.exists());
+    assert!(GitWorktreeManager::locate_worktree(root, &agent_id).is_none());
+
+    let main_feature_file = root.join("feature.rs");
+    assert!(main_feature_file.exists());
+    let content = std::fs::read_to_string(main_feature_file).unwrap();
+    assert!(content.contains("pub fn integration_test() -> i32 { 42 }"));
+}
+
+#[tokio::test]
+async fn test_integration_subagent_worktree_verification_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    setup_git_repo(root);
+
+    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 1. Create worktree
+    let agent_id = AgentId("tester-verification".to_string());
+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
+    assert!(handle.worktree_path.exists());
+
+    // 2. Modify file in worktree
+    std::fs::write(handle.worktree_path.join("broken.rs"), "syntax error;\n").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "wip broken code"])
+        .current_dir(&handle.worktree_path)
+        .output()
+        .unwrap();
+
+    // 3. Run verify_worktree with a failing command ("false")
+    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("false")).unwrap();
+    assert!(!v_report.success);
+    assert_ne!(v_report.exit_code, 0);
+
+    // 4. Test tool primitive pre-merge failure handling:
+    // Calling merge_subagent_worktree with failing verification aborts merge,
+    // leaves parent workspace untouched, and preserves worktree on disk.
+    let tool_res = merge_subagent_worktree(
+        root,
+        "tester-verification",
+        true,
+        Some("false"),
+        Some("should not land"),
+    )
+    .await
+    .unwrap();
+
+    assert!(tool_res.contains("Pre-merge verification failed"));
+    assert!(tool_res.contains("Parent workspace untouched and worktree preserved"));
+
+    // 5. Verify worktree path still exists on disk for remediation
+    assert!(handle.worktree_path.exists());
+    assert!(handle.worktree_path.join("broken.rs").exists());
+
+    // Parent repo untouched
+    assert!(!root.join("broken.rs").exists());
+
+    // 6. Verify non-existent worktree returns ArbitrationError::WorktreeNotFound
+    let non_existent = root
+        .join(".minicode")
+        .join("worktrees")
+        .join("subagent-ghost");
+    let not_found_res = MergeArbitrator::verify_worktree(&non_existent, Some("skip"));
+    assert!(matches!(
+        not_found_res,
+        Err(ArbitrationError::WorktreeNotFound(_))
+    ));
+
+    // 7. Verify ArbitrationError::VerificationFailed display format
+    let err =
+        ArbitrationError::VerificationFailed("cargo check failed with exit code 1".to_string());
+    assert!(err.to_string().contains("Pre-merge verification failed"));
+    assert!(err
+        .to_string()
+        .contains("cargo check failed with exit code 1"));
+
+    // Cleanup
+    GitWorktreeManager::remove_worktree(&handle).unwrap();
+    assert!(!handle.worktree_path.exists());
+}
