@@ -1,0 +1,612 @@
+use std::io::{self, Write};
+
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+
+use super::guard::TerminalGuard;
+
+/// Masks an API key for safe display in terminal cards and logs.
+///
+/// Rules:
+/// - If empty: returns `""`.
+/// - If length <= 10: returns `•` repeated for each character.
+/// - If length > 10: preserves the first 6 characters and the last 4 characters,
+///   replacing the middle with `••••`.
+pub fn mask_api_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    if chars.len() <= 10 {
+        return "•".repeat(chars.len());
+    }
+    let prefix: String = chars[..6].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    format!("{prefix}••••{suffix}")
+}
+
+/// Formats the API key prompt card lines for display with a default width of 80 columns.
+pub fn render_api_key_lines(
+    provider_name: &str,
+    current_key: Option<&str>,
+    buffer: &str,
+) -> Vec<String> {
+    render_api_key_lines_with_width(provider_name, current_key, buffer, 80)
+}
+
+/// Formats the API key prompt card lines with a specified column width.
+pub fn render_api_key_lines_with_width(
+    provider_name: &str,
+    current_key: Option<&str>,
+    buffer: &str,
+    width: usize,
+) -> Vec<String> {
+    let card_width = width.max(50);
+    let inner_width = card_width.saturating_sub(4);
+
+    let title = format!("Configure {provider_name} API Key");
+    let top_prefix = format!("┌─ {title} ");
+    let top_prefix_len = top_prefix.chars().count();
+    let top_dashes = card_width.saturating_sub(top_prefix_len + 1);
+    let line0 = format!(
+        "\x1b[90m┌─ \x1b[0m\x1b[1m{title}\x1b[0m\x1b[90m {}┐\x1b[0m",
+        "─".repeat(top_dashes)
+    );
+
+    let masked_current = match current_key {
+        Some(k) if !k.trim().is_empty() => mask_api_key(k),
+        _ => "(not set)".to_string(),
+    };
+    let line1_content = format!("Current: {masked_current}");
+    let line1_pad = inner_width.saturating_sub(line1_content.chars().count());
+    let line1 = format!(
+        "\x1b[90m│\x1b[0m Current: \x1b[1m{masked_current}\x1b[0m{} \x1b[90m│\x1b[0m",
+        " ".repeat(line1_pad)
+    );
+
+    let count = buffer.chars().count();
+    let (paste_plain, bullets_display) = if count == 0 {
+        ("Paste key: (0 chars)".to_string(), String::new())
+    } else {
+        let suffix = format!(" ({count} chars)");
+        let prefix = "Paste key: ";
+        let avail = inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
+        let shown_bullets = if count > avail && avail > 3 {
+            format!("{}...", "•".repeat(avail - 3))
+        } else {
+            "•".repeat(count)
+        };
+        (format!("{prefix}{shown_bullets}{suffix}"), shown_bullets)
+    };
+    let line2_pad = inner_width.saturating_sub(paste_plain.chars().count());
+    let line2 = if count == 0 {
+        format!(
+            "\x1b[90m│\x1b[0m Paste key: \x1b[90m(0 chars)\x1b[0m{} \x1b[90m│\x1b[0m",
+            " ".repeat(line2_pad)
+        )
+    } else {
+        let suffix = format!(" ({count} chars)");
+        format!(
+            "\x1b[90m│\x1b[0m Paste key: \x1b[36m{bullets_display}\x1b[0m \x1b[90m{suffix}\x1b[0m{} \x1b[90m│\x1b[0m",
+            " ".repeat(line2_pad)
+        )
+    };
+
+    let line3 = format!(
+        "\x1b[90m│\x1b[0m{}\x1b[90m│\x1b[0m",
+        " ".repeat(card_width.saturating_sub(2))
+    );
+
+    let actions_plain = "[Enter] Save & Set as Active    [Esc] Cancel";
+    let line4_pad = inner_width.saturating_sub(actions_plain.chars().count());
+    let line4 = format!(
+        "\x1b[90m│\x1b[0m \x1b[1;36m[Enter]\x1b[0m \x1b[1mSave & Set as Active\x1b[0m    \x1b[1;33m[Esc]\x1b[0m \x1b[90mCancel\x1b[0m{} \x1b[90m│\x1b[0m",
+        " ".repeat(line4_pad)
+    );
+
+    let bot_dashes = card_width.saturating_sub(2);
+    let line5 = format!("\x1b[90m└{}┘\x1b[0m", "─".repeat(bot_dashes));
+
+    vec![line0, line1, line2, line3, line4, line5]
+}
+
+/// Formats text prompt lines for display.
+pub fn render_text_prompt_lines(
+    prompt_label: &str,
+    default_value: Option<&str>,
+    buffer: &str,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let default_hint = match default_value {
+        Some(def) if !def.is_empty() => format!(" \x1b[90m(default: {def})\x1b[0m"),
+        _ => String::new(),
+    };
+    lines.push(format!(
+        "  \x1b[1;36m›\x1b[0m \x1b[1m{prompt_label}\x1b[0m{default_hint}: {buffer}"
+    ));
+    lines.push(
+        "  \x1b[90m──────────────────────────────────────────────────────────\x1b[0m".to_string(),
+    );
+    lines.push("  \x1b[90m↵ Confirm • Esc Cancel\x1b[0m".to_string());
+    lines
+}
+
+fn redraw_api_key<W: Write>(
+    out: &mut W,
+    provider_name: &str,
+    current_key: Option<&str>,
+    buffer: &str,
+    total_lines: usize,
+    width: usize,
+) -> io::Result<()> {
+    if total_lines > 0 {
+        write!(out, "\x1b[{}A", total_lines)?;
+    }
+    let lines = render_api_key_lines_with_width(provider_name, current_key, buffer, width);
+    for line in &lines {
+        write!(out, "\x1b[2K\r{line}\r\n")?;
+    }
+    out.flush()
+}
+
+fn redraw_text_prompt<W: Write>(
+    out: &mut W,
+    prompt_label: &str,
+    default_value: Option<&str>,
+    buffer: &str,
+    total_lines: usize,
+) -> io::Result<()> {
+    if total_lines > 0 {
+        write!(out, "\x1b[{}A", total_lines)?;
+    }
+    let lines = render_text_prompt_lines(prompt_label, default_value, buffer);
+    for line in &lines {
+        write!(out, "\x1b[2K\r{line}\r\n")?;
+    }
+    out.flush()
+}
+
+fn clear_lines<W: Write>(out: &mut W, total_lines: usize) -> io::Result<()> {
+    if total_lines > 0 {
+        write!(out, "\x1b[{}A", total_lines)?;
+        for _ in 0..total_lines {
+            write!(out, "\x1b[2K\r\n")?;
+        }
+        write!(out, "\x1b[{}A\r", total_lines)?;
+        out.flush()?;
+    }
+    Ok(())
+}
+
+/// Handles a crossterm event for the API key input prompt.
+///
+/// Returns:
+/// - `None` to continue waiting for events.
+/// - `Some(None)` if cancelled (Esc or Ctrl+C).
+/// - `Some(Some(key))` if confirmed.
+pub fn handle_api_key_event(
+    event: &Event,
+    buffer: &mut String,
+    current_key: Option<&str>,
+) -> Option<Option<String>> {
+    match event {
+        Event::Paste(pasted) => {
+            for c in pasted.chars() {
+                if c != '\r' && c != '\n' {
+                    buffer.push(c);
+                }
+            }
+            None
+        }
+        Event::Key(key_event) => {
+            if key_event.kind == KeyEventKind::Release {
+                return None;
+            }
+
+            if key_event.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key_event.code, KeyCode::Char('c' | 'C'))
+            {
+                return Some(None);
+            }
+
+            match key_event.code {
+                KeyCode::Esc => Some(None),
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    None
+                }
+                KeyCode::Enter => {
+                    let trimmed = buffer.trim();
+                    if !trimmed.is_empty() {
+                        Some(Some(trimmed.to_string()))
+                    } else if let Some(cur) = current_key {
+                        let cur_trimmed = cur.trim();
+                        if !cur_trimmed.is_empty() {
+                            Some(Some(cur_trimmed.to_string()))
+                        } else {
+                            Some(None)
+                        }
+                    } else {
+                        Some(None)
+                    }
+                }
+                KeyCode::Char(c)
+                    if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    buffer.push(c);
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Handles a crossterm event for the generic text prompt.
+///
+/// Returns:
+/// - `None` to continue waiting for events.
+/// - `Some(None)` if cancelled (Esc or Ctrl+C).
+/// - `Some(Some(text))` if confirmed.
+pub fn handle_text_event(
+    event: &Event,
+    buffer: &mut String,
+    default_value: Option<&str>,
+    allow_empty: bool,
+) -> Option<Option<String>> {
+    match event {
+        Event::Paste(pasted) => {
+            for c in pasted.chars() {
+                if c != '\r' && c != '\n' {
+                    buffer.push(c);
+                }
+            }
+            None
+        }
+        Event::Key(key_event) => {
+            if key_event.kind == KeyEventKind::Release {
+                return None;
+            }
+
+            if key_event.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key_event.code, KeyCode::Char('c' | 'C'))
+            {
+                return Some(None);
+            }
+
+            match key_event.code {
+                KeyCode::Esc => Some(None),
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    None
+                }
+                KeyCode::Enter => {
+                    let trimmed = buffer.trim();
+                    if !trimmed.is_empty() {
+                        Some(Some(trimmed.to_string()))
+                    } else if let Some(def) = default_value {
+                        let def_trimmed = def.trim();
+                        if !def_trimmed.is_empty() {
+                            Some(Some(def_trimmed.to_string()))
+                        } else if allow_empty {
+                            Some(Some(String::new()))
+                        } else {
+                            None
+                        }
+                    } else if allow_empty {
+                        Some(Some(String::new()))
+                    } else {
+                        None
+                    }
+                }
+                KeyCode::Char(c)
+                    if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    buffer.push(c);
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Prompts the user to enter or paste an API key inside an interactive card.
+///
+/// Returns `Ok(Some(key))` if confirmed with Enter, or `Ok(None)` if cancelled with Esc / Ctrl+C.
+pub fn prompt_api_key(
+    provider_name: &str,
+    current_key: Option<&str>,
+) -> io::Result<Option<String>> {
+    let _guard = TerminalGuard::new()?;
+    let mut out = io::stdout();
+    let mut buffer = String::new();
+
+    let term_width = match crossterm::terminal::size() {
+        Ok((w, _)) => w as usize,
+        Err(_) => 80,
+    };
+    let width = term_width.clamp(40, 80);
+
+    let lines = render_api_key_lines_with_width(provider_name, current_key, &buffer, width);
+    let total_lines = lines.len();
+
+    for line in &lines {
+        write!(out, "{line}\r\n")?;
+    }
+    out.flush()?;
+
+    loop {
+        let ev = crossterm::event::read()?;
+        let prev_len = buffer.len();
+        if let Some(result) = handle_api_key_event(&ev, &mut buffer, current_key) {
+            clear_lines(&mut out, total_lines)?;
+            return Ok(result);
+        }
+        if buffer.len() != prev_len {
+            redraw_api_key(
+                &mut out,
+                provider_name,
+                current_key,
+                &buffer,
+                total_lines,
+                width,
+            )?;
+        }
+    }
+}
+
+/// Prompts the user to enter a single line of text with optional default value.
+///
+/// Returns `Ok(Some(text))` if confirmed with Enter, or `Ok(None)` if cancelled with Esc / Ctrl+C.
+pub fn prompt_text(
+    prompt_label: &str,
+    default_value: Option<&str>,
+    allow_empty: bool,
+) -> io::Result<Option<String>> {
+    let _guard = TerminalGuard::new()?;
+    let mut out = io::stdout();
+    let mut buffer = String::new();
+
+    let lines = render_text_prompt_lines(prompt_label, default_value, &buffer);
+    let total_lines = lines.len();
+
+    for line in &lines {
+        write!(out, "{line}\r\n")?;
+    }
+    out.flush()?;
+
+    loop {
+        let ev = crossterm::event::read()?;
+        let prev_len = buffer.len();
+        if let Some(result) = handle_text_event(&ev, &mut buffer, default_value, allow_empty) {
+            clear_lines(&mut out, total_lines)?;
+            return Ok(result);
+        }
+        if buffer.len() != prev_len {
+            redraw_text_prompt(&mut out, prompt_label, default_value, &buffer, total_lines)?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyEventState};
+
+    fn make_key_event(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind,
+            state: KeyEventState::empty(),
+        })
+    }
+
+    #[test]
+    fn test_mask_api_key() {
+        // Empty key
+        assert_eq!(mask_api_key(""), "");
+
+        // Short keys (<= 10 chars)
+        assert_eq!(mask_api_key("1"), "•");
+        assert_eq!(mask_api_key("short"), "•••••");
+        assert_eq!(mask_api_key("1234567890"), "••••••••••");
+
+        // Length > 10 chars
+        assert_eq!(mask_api_key("12345678901"), "123456••••8901");
+        assert_eq!(mask_api_key("sk-minimax-123456789"), "sk-min••••6789");
+        assert_eq!(mask_api_key("AIzaSyD-abc12345678xyz"), "AIzaSy••••8xyz");
+
+        // Unicode chars
+        assert_eq!(mask_api_key("🔑123456789"), "••••••••••"); // 10 chars
+        assert_eq!(mask_api_key("🔑1234567890"), "🔑12345••••7890"); // 11 chars
+    }
+
+    #[test]
+    fn test_render_api_key_lines_structure() {
+        let lines = render_api_key_lines("minimax", Some("sk-current123456"), "");
+        assert_eq!(lines.len(), 6);
+        assert!(lines[0].contains("Configure minimax API Key"));
+        assert!(lines[1].contains("Current:"));
+        assert!(lines[1].contains("sk-cur••••3456"));
+        assert!(lines[2].contains("Paste key:"));
+        assert!(lines[2].contains("(0 chars)"));
+        assert!(lines[4].contains("[Enter]"));
+        assert!(lines[4].contains("[Esc]"));
+        assert!(lines[5].contains("└"));
+        assert!(lines[5].contains("┘"));
+    }
+
+    #[test]
+    fn test_render_api_key_lines_not_set() {
+        let lines = render_api_key_lines("openai", None, "typed-key-123");
+        assert_eq!(lines.len(), 6);
+        assert!(lines[1].contains("(not set)"));
+        assert!(lines[2].contains("•••••••••••••"));
+        assert!(lines[2].contains("(13 chars)"));
+    }
+
+    #[test]
+    fn test_render_text_prompt_lines() {
+        let lines_with_def =
+            render_text_prompt_lines("Base URL", Some("https://api.openai.com/v1"), "https://foo");
+        assert_eq!(lines_with_def.len(), 3);
+        assert!(lines_with_def[0].contains("Base URL"));
+        assert!(lines_with_def[0].contains("(default: https://api.openai.com/v1)"));
+        assert!(lines_with_def[0].contains("https://foo"));
+        assert!(lines_with_def[2].contains("↵ Confirm"));
+        assert!(lines_with_def[2].contains("Esc Cancel"));
+
+        let lines_without_def = render_text_prompt_lines("Provider ID", None, "custom");
+        assert_eq!(lines_without_def.len(), 3);
+        assert!(lines_without_def[0].contains("Provider ID"));
+        assert!(!lines_without_def[0].contains("default:"));
+        assert!(lines_without_def[0].contains("custom"));
+    }
+
+    #[test]
+    fn test_handle_api_key_event_paste_and_typing() {
+        let mut buffer = String::new();
+
+        // Paste event
+        let paste_ev = Event::Paste("sk-paste-key\r\n".to_string());
+        let res = handle_api_key_event(&paste_ev, &mut buffer, None);
+        assert_eq!(res, None);
+        assert_eq!(buffer, "sk-paste-key");
+
+        // Char typing
+        let char_ev = make_key_event(
+            KeyCode::Char('-'),
+            KeyModifiers::empty(),
+            KeyEventKind::Press,
+        );
+        assert_eq!(handle_api_key_event(&char_ev, &mut buffer, None), None);
+        assert_eq!(buffer, "sk-paste-key-");
+
+        // Backspace
+        let bs_ev = make_key_event(
+            KeyCode::Backspace,
+            KeyModifiers::empty(),
+            KeyEventKind::Press,
+        );
+        assert_eq!(handle_api_key_event(&bs_ev, &mut buffer, None), None);
+        assert_eq!(buffer, "sk-paste-key");
+
+        // Release event should be ignored
+        let rel_ev = make_key_event(
+            KeyCode::Char('x'),
+            KeyModifiers::empty(),
+            KeyEventKind::Release,
+        );
+        assert_eq!(handle_api_key_event(&rel_ev, &mut buffer, None), None);
+        assert_eq!(buffer, "sk-paste-key");
+    }
+
+    #[test]
+    fn test_handle_api_key_event_cancellation() {
+        let mut buffer = String::from("some-text");
+
+        // Esc
+        let esc_ev = make_key_event(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Press);
+        assert_eq!(handle_api_key_event(&esc_ev, &mut buffer, None), Some(None));
+
+        // Ctrl+C (lowercase)
+        let ctrl_c_lower = make_key_event(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        assert_eq!(
+            handle_api_key_event(&ctrl_c_lower, &mut buffer, None),
+            Some(None)
+        );
+
+        // Ctrl+C (uppercase)
+        let ctrl_c_upper = make_key_event(
+            KeyCode::Char('C'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        assert_eq!(
+            handle_api_key_event(&ctrl_c_upper, &mut buffer, None),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn test_handle_api_key_event_enter() {
+        let enter_ev = make_key_event(KeyCode::Enter, KeyModifiers::empty(), KeyEventKind::Press);
+
+        // 1. Buffer not empty -> trimmed buffer returned
+        let mut buffer = String::from("  sk-entered-key  ");
+        assert_eq!(
+            handle_api_key_event(&enter_ev, &mut buffer, Some("sk-existing")),
+            Some(Some("sk-entered-key".to_string()))
+        );
+
+        // 2. Buffer empty, current key present -> current key returned
+        let mut empty_buffer = String::new();
+        assert_eq!(
+            handle_api_key_event(&enter_ev, &mut empty_buffer, Some("sk-existing")),
+            Some(Some("sk-existing".to_string()))
+        );
+
+        // 3. Buffer whitespace-only, current key present -> current key returned
+        let mut ws_buffer = String::from("   ");
+        assert_eq!(
+            handle_api_key_event(&enter_ev, &mut ws_buffer, Some("sk-existing")),
+            Some(Some("sk-existing".to_string()))
+        );
+
+        // 4. Buffer empty, no current key -> None returned
+        let mut empty_no_cur = String::new();
+        assert_eq!(
+            handle_api_key_event(&enter_ev, &mut empty_no_cur, None),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn test_handle_text_event() {
+        let enter_ev = make_key_event(KeyCode::Enter, KeyModifiers::empty(), KeyEventKind::Press);
+
+        // 1. User typed input
+        let mut buf = String::from("  my-provider  ");
+        assert_eq!(
+            handle_text_event(&enter_ev, &mut buf, Some("default-prov"), false),
+            Some(Some("my-provider".to_string()))
+        );
+
+        // 2. Empty buffer with default value
+        let mut buf_empty = String::new();
+        assert_eq!(
+            handle_text_event(&enter_ev, &mut buf_empty, Some("default-prov"), false),
+            Some(Some("default-prov".to_string()))
+        );
+
+        // 3. Empty buffer without default value, allow_empty == true
+        let mut buf_empty2 = String::new();
+        assert_eq!(
+            handle_text_event(&enter_ev, &mut buf_empty2, None, true),
+            Some(Some(String::new()))
+        );
+
+        // 4. Empty buffer without default value, allow_empty == false -> continues waiting
+        let mut buf_empty3 = String::new();
+        assert_eq!(
+            handle_text_event(&enter_ev, &mut buf_empty3, None, false),
+            None
+        );
+
+        // 5. Esc cancels
+        let esc_ev = make_key_event(KeyCode::Esc, KeyModifiers::empty(), KeyEventKind::Press);
+        assert_eq!(
+            handle_text_event(&esc_ev, &mut buf, None, false),
+            Some(None)
+        );
+    }
+}
