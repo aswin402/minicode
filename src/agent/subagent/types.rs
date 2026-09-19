@@ -342,6 +342,7 @@ pub struct SubagentResult {
 }
 
 /// Specification for dispatching a subagent in a concurrent swarm fan-out
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentTaskSpec {
     pub role: SubagentRole,

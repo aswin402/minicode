@@ -1,78 +1,74 @@
-# Task 3 Execution Report: `merge_subagent_worktree` Tool Primitive & Registry Integration
+# Task 3 Execution Report: Tool Schema Upgrade & Registry Dispatch in `swarms.rs`
 
 ## Status: DONE
 
-- **Commit Hash:** `8b4b519b7e6021655af4d7bc3544fd22e5f59da7`
+- **Commit Hash:** Pending
 - **Brief Reference:** [task-3-brief.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/task-3-brief.md)
-- **Phase:** 133 — Subagent Merge & Conflict Arbitration Engine
+- **Phase:** 134 — Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine
 
 ---
 
 ## Files Modified
 
-- [`src/tools/registry/agent_tools/subagents.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/tools/registry/agent_tools/subagents.rs):
-  - Updated `merge_subagent_worktree` ToolSchema with comprehensive parameters: `subagent_id` (required), `commit` (boolean, default true), `check_cmd` (optional validation command or 'skip'), and `commit_message` (optional custom commit message).
-  - Defined `MergeSubagentWorktreeArgs` struct with serde Deserialize & Serialize derives.
-  - Implemented `pub async fn merge_subagent_worktree(workspace_root: &Path, subagent_id: &str, commit: bool, check_cmd: Option<&str>, commit_message: Option<&str>) -> std::result::Result<String, ToolError>`:
-    1. Locates worktree via `GitWorktreeManager::locate_worktree`.
-    2. Resolves source branch via `GitWorktreeManager::resolve_branch_for`.
-    3. Runs pre-merge verification via `MergeArbitrator::verify_worktree`, returning a structured failure report with stdout/stderr if failed while preserving workspace and worktree.
-    4. Performs mergeability check via `MergeArbitrator::check_mergeability`, returning a structured conflict report with conflicted files if conflicts detected while preserving workspace and worktree.
-    5. Applies merge via `MergeArbitrator::apply_merge` (committed or uncommitted).
-    6. On successful merge, cleans up worktree and branch via `GitWorktreeManager::remove_worktree`.
-    7. Returns formatted markdown success summary with landing mode, commit hash, pre-merge validation duration, and changed files.
-  - Wired `merge_subagent_worktree` into `dispatch()`.
-  - Added unit test suite covering:
-    - `test_merge_subagent_worktree_arg_parsing`
-    - `test_merge_subagent_worktree_not_found`
-    - `test_merge_subagent_worktree_clean_merge`
-    - `test_merge_subagent_worktree_staged_no_commit`
-    - `test_merge_subagent_worktree_verification_failure`
-    - `test_merge_subagent_worktree_conflict`
+- [`src/tools/registry/agent_tools/swarms.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/tools/registry/agent_tools/swarms.rs):
+  - Upgraded `fanout_subagents` `ToolSchema` to expose Phase 134 capabilities:
+    - `tasks` items: `task` (required, with `prompt` accepted as alias), `role` (modern role enums including scout, coder, tester, reviewer, etc.), `workspace_mode` (`auto`, `worktree`, `shared`), `max_iterations`, and `check_cmd`.
+    - `join_mode`: `"all"` (default) or `"race"`.
+    - `auto_merge`: boolean flag (default `false`).
+    - `max_concurrency`: integer (default `4`, min 1, max 16).
+  - Wired `dispatch()` for `"fanout_subagents"` to parse parameters and invoke `FanoutOrchestrator::execute_fanout(workspace_root, task_items, join_mode, auto_merge, max_concurrency)`.
+  - Added unit tests:
+    - `test_fanout_subagents_schema_structure`: verifies required fields, enums, and properties in `get_schemas()`.
+    - `test_fanout_subagents_argument_parsing_and_dispatch`: tests empty task handling, validation error on missing task/prompt, and parameter parsing.
 - [`src/agent/orchestrator.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/orchestrator.rs):
-  - Marked legacy unused `MultiAgentOrchestrator::merge_worktree` with `#[allow(dead_code)]` to ensure zero clippy warnings under `-D warnings`.
-- [`src/constants.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/constants.rs):
-  - Verified `TOTAL_TOOL_COUNT` matches live schema count: 135.
+  - Added `#[allow(dead_code)]` to legacy `FanoutWorkerOutcome`, `fanout_tasks`, and `format_fanout_summary` to maintain clean compilation under `-D warnings`.
+- [`src/agent/subagent/types.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/types.rs):
+  - Added `#[allow(dead_code)]` to `SubagentTaskSpec`.
 
 ---
 
 ## Verification Results
 
-### 1. Targeted Unit Tests: Subagents
-Command: `cargo test -j 1 --lib tools::registry::agent_tools::subagents::tests`
+### 1. Targeted Swarms Unit Tests
+Command: `cargo test -j 1 --lib tools::registry::agent_tools::swarms::tests`
 Output:
 ```text
-running 6 tests
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_arg_parsing ... ok
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_not_found ... ok
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_verification_failure ... ok
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_conflict ... ok
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_staged_no_commit ... ok
-test tools::registry::agent_tools::subagents::tests::test_merge_subagent_worktree_clean_merge ... ok
+running 2 tests
+test tools::registry::agent_tools::swarms::tests::test_fanout_subagents_schema_structure ... ok
+test tools::registry::agent_tools::swarms::tests::test_fanout_subagents_argument_parsing_and_dispatch ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 487 filtered out; finished in 0.09s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 503 filtered out; finished in 0.00s
 ```
 
-### 2. Targeted Unit Tests: Total Tool Count
+### 2. Total Tool Count Preservation
 Command: `cargo test -j 1 --lib tools::tests::test_total_tool_count`
 Output:
 ```text
 running 1 test
 test tools::tests::test_total_tool_count ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 492 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 504 filtered out; finished in 0.01s
+```
+*(Total active tools exactly preserved at 135)*
+
+### 3. Compilation Check
+Command: `cargo check -j 1`
+Output:
+```text
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.02s
+(Exit code 0)
 ```
 
-### 3. Clippy Verification
+### 4. Clippy Verification
 Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
 Output:
 ```text
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.86s
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.97s
 (Exit code 0, zero warnings)
 ```
 
-### 4. Code Formatting
-Command: `cargo fmt --check`
+### 5. Code Formatting
+Command: `cargo fmt`
 Output:
 ```text
 (Exit code 0, clean)
@@ -81,12 +77,11 @@ Output:
 ---
 
 ## Non-Test Code Constraints Audit
-- Non-test `.unwrap()` / `.expect()` count: **0** (verified with script scanner).
-- Error handling: Uses `ToolError` and `Result<T, ToolError>`.
-- Concurrency limit `-j 1`: Strictly respected across all cargo commands.
-- Test scope: ONLY targeted tests (`tools::registry::agent_tools::subagents::tests` and `tools::tests::test_total_tool_count`) were run; full test suite was never run.
+- Non-test `.unwrap()` / `.expect()` count: **0**.
+- Concurrency limit `-j 1`: Strictly respected across all checks and tests.
+- Test scope: ONLY targeted tests (`cargo test -j 1 --lib tools::registry::agent_tools::swarms::tests` and `cargo test -j 1 --lib tools::tests::test_total_tool_count`) were run; full test suite was never run.
 
 ---
 
 ## Concerns / Notes
-- None. All requirements and constraints from `docs/superpowers/plans/task-3-brief.md` are completely met and verified.
+- None. All requirements from `task-3-brief.md` have been implemented and verified.

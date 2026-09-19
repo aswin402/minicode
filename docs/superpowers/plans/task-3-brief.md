@@ -1,75 +1,117 @@
-# Task 3 Brief: `merge_subagent_worktree` Tool Primitive & Registry Integration
+# Task 3 Brief: Tool Schema Upgrade & Registry Dispatch in `swarms.rs`
 
 ## Overview
-Implement the `merge_subagent_worktree` autonomous tool primitive, allowing parent agents to validate, conflict-check, and land subagent worktree changes into the primary workspace with automatic cleanup.
+Upgrade the `fanout_subagents` tool primitive in `src/tools/registry/agent_tools/swarms.rs` to support the modern Phase 134 parallel swarm orchestration engine:
+- Bounded concurrency with `max_concurrency`.
+- Join policies: `all` and `race`.
+- Sequential merge arbitration via `auto_merge`.
+- Modern role presets (`scout`, `coder`, `tester`, `reviewer`, `architect`, `security`, `researcher`, etc.) and `workspace_mode` (`auto`, `worktree`, `shared`).
+- Seamless routing of `fanout_subagents` execution to `FanoutOrchestrator::execute_fanout`.
 
 ## Files to Modify:
-- `src/tools/registry/agent_tools/subagents.rs`
-- `src/constants.rs` (ensure `TOTAL_TOOL_COUNT` matches live schema count: 135)
+- `src/tools/registry/agent_tools/swarms.rs`
 
 ## Interfaces & Requirements:
 
-### 1. `MergeSubagentWorktreeArgs` Struct
-Define in `src/tools/registry/agent_tools/subagents.rs`:
-```rust
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct MergeSubagentWorktreeArgs {
-    pub subagent_id: String,
-    pub commit: Option<bool>,
-    pub check_cmd: Option<String>,
-    pub commit_message: Option<String>,
+### 1. Update `ToolSchema` for `fanout_subagents`:
+In `src/tools/registry/agent_tools/swarms.rs` `get_schemas()`:
+Update `fanout_subagents` schema:
+```json
+{
+  "name": "fanout_subagents",
+  "description": "Concurrently dispatch a batch of specialized subagents across isolated Git Worktrees or shared repository threads. Supports race-to-first-success or all-worker join policies, sequential conflict-free merge arbitration, and executive map-reduce reporting.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "tasks": {
+        "type": "array",
+        "description": "List of subagent task specifications to execute concurrently",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task": {
+              "type": "string",
+              "description": "Detailed task instructions or prompt for this worker"
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Alias for task"
+            },
+            "role": {
+              "type": "string",
+              "enum": ["scout", "coder", "tester", "reviewer", "architect", "security", "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+              "description": "Specialized role preset defining worker capabilities and workspace isolation (default: coder)"
+            },
+            "workspace_mode": {
+              "type": "string",
+              "enum": ["auto", "worktree", "shared"],
+              "description": "Workspace isolation mode (default: auto)"
+            },
+            "max_iterations": {
+              "type": "integer",
+              "description": "Maximum autonomous tool iteration steps for this worker"
+            },
+            "check_cmd": {
+              "type": "string",
+              "description": "Custom validation command to run before merge (e.g. 'cargo check', or 'skip')"
+            }
+          },
+          "required": ["task"]
+        }
+      },
+      "join_mode": {
+        "type": "string",
+        "enum": ["all", "race"],
+        "description": "Join policy: 'all' awaits all workers; 'race' cancels remaining workers upon first success (default: 'all')"
+      },
+      "auto_merge": {
+        "type": "boolean",
+        "description": "If true, sequentially arbitrates and merges successful mutating worktrees into current branch (default: false)"
+      },
+      "max_concurrency": {
+        "type": "integer",
+        "description": "Maximum concurrent workers running simultaneously (default: 4, min: 1, max: 16)"
+      }
+    },
+    "required": ["tasks"]
+  }
 }
 ```
 
-### 2. Update Tool Schema in `ToolRegistry::get_tool_schemas()`:
-Update `merge_subagent_worktree` entry with full schema:
-- `name`: `"merge_subagent_worktree"`
-- `description`: `"Validates and merges code changes from a completed subagent's ephemeral git worktree into the main workspace. Automatically runs project build/test checks before landing changes."`
-- Properties:
-  - `subagent_id`: string (required)
-  - `commit`: boolean (optional, default true)
-  - `check_cmd`: string (optional, validation command or 'skip')
-  - `commit_message`: string (optional custom commit message)
+### 2. Update `dispatch()` for `fanout_subagents`:
+In `src/tools/registry/agent_tools/swarms.rs` `dispatch()`:
+- Parse `tasks_arr`:
+  - For each element in `tasks_arr`:
+    - Read `task` (or fallback to `prompt`). If neither exists or is empty, return `ToolError::InvalidArguments`.
+    - Read `role`: parse string using `SubagentRole::from_str_loose` (defaults to `SubagentRole::Coder` if missing).
+    - Read `workspace_mode`: parse optional string `"worktree"` -> `Some(WorkspaceMode::Worktree)`, `"shared"` -> `Some(WorkspaceMode::Shared)`, `"auto"` -> `Some(WorkspaceMode::Auto)`, else `None`.
+    - Read `max_iterations`: optional integer (`param::opt_u64`).
+    - Read `check_cmd`: optional string (`param::opt_str`).
+    - Construct `FanoutTaskItem`.
+- Parse `join_mode`:
+  - If string == `"race"`, use `FanoutJoinMode::Race`, else `FanoutJoinMode::All`.
+- Parse `auto_merge`:
+  - Boolean flag via `param::opt_bool(args, "auto_merge", false)`.
+- Parse `max_concurrency`:
+  - Optional integer via `param::opt_u64(args, "max_concurrency").unwrap_or(4) as usize`, clamped to `1..=16`.
+- Call:
+  `FanoutOrchestrator::execute_fanout(workspace_root, tasks, join_mode, auto_merge, max_concurrency).await`
+  and map Result to `Result<String>`.
 
-### 3. Tool Implementation & Dispatch:
-In `src/tools/registry/agent_tools/subagents.rs`:
-Implement `pub async fn merge_subagent_worktree(workspace_root: &Path, subagent_id: &str, commit: bool, check_cmd: Option<&str>, commit_message: Option<&str>) -> Result<String, ToolError>`:
-1. Locate worktree path via `GitWorktreeManager::locate_worktree(workspace_root, &AgentId(subagent_id.to_string()))`.
-   If not found, return descriptive `ToolError::ExecutionFailed`.
-2. Resolve source branch via `GitWorktreeManager::resolve_branch_for(workspace_root, &AgentId(subagent_id.to_string()))`.
-3. Pre-merge verification via `MergeArbitrator::verify_worktree(&worktree_path, check_cmd)`.
-   If verification fails, do NOT touch parent workspace or delete worktree; return structured failure report with command, exit code, stdout, and stderr.
-4. Mergeability check via `MergeArbitrator::check_mergeability(workspace_root, &branch_name)`.
-   If conflicts detected (`!mergeability.can_merge_cleanly`), do NOT touch parent workspace or delete worktree; return structured conflict report with list of conflicted files.
-5. Apply merge via `MergeArbitrator::apply_merge(workspace_root, &branch_name, commit, commit_message)`.
-6. On successful merge, clean up worktree and temporary branch via `GitWorktreeManager::remove_worktree`.
-7. Return formatted markdown success summary detailing subagent ID, branch name, landing mode, files changed, commit hash (if committed), and pre-merge validation duration.
-
-Wire into `dispatch_agent_tool` for `"merge_subagent_worktree"`.
-
-### 4. Unit Tests in `src/tools/registry/agent_tools/subagents.rs`:
-- Add `test_merge_subagent_worktree_arg_parsing`:
-  ```rust
-  #[test]
-  fn test_merge_subagent_worktree_arg_parsing() {
-      let json = serde_json::json!({
-          "subagent_id": "coder-1",
-          "commit": true,
-          "check_cmd": "cargo check -j 1",
-          "commit_message": "merge: auth feature"
-      });
-      let args: MergeSubagentWorktreeArgs = serde_json::from_value(json).unwrap();
-      assert_eq!(args.subagent_id, "coder-1");
-      assert_eq!(args.commit, Some(true));
-      assert_eq!(args.check_cmd.as_deref(), Some("cargo check -j 1"));
-      assert_eq!(args.commit_message.as_deref(), Some("merge: auth feature"));
-  }
-  ```
-- Ensure `test_total_tool_count` passes (`cargo test -j 1 --lib tools::tests::test_total_tool_count`).
+### 3. Unit Tests in `src/tools/registry/agent_tools/swarms.rs`:
+- `test_fanout_subagents_schema_structure`:
+  - Validates `fanout_subagents` is registered in `get_schemas()`.
+  - Validates required fields, parameters, and enum values.
+- `test_fanout_subagents_argument_parsing`:
+  - Tests parsing of JSON payload containing `tasks` (with `task` and `prompt` alias), `join_mode: "race"`, `auto_merge: true`, `max_concurrency: 8`.
+- Ensure `test_total_tool_count` passes:
+  `cargo test -j 1 --lib tools::tests::test_total_tool_count` (preserves 135 total tools).
 
 ## Constraints:
-- ONLY run targeted tests: `cargo test -j 1 --lib tools::registry::agent_tools::subagents::tests` and `cargo test -j 1 --lib tools::tests::test_total_tool_count`.
+- ONLY run targeted tests:
+  `cargo test -j 1 --lib tools::registry::agent_tools::swarms::tests`
+  `cargo test -j 1 --lib tools::tests::test_total_tool_count`
 - Zero `.unwrap()` or `.expect()` in non-test code.
 - Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Commit with message: `feat(tools): wire merge_subagent_worktree tool primitive with arbitration engine (Phase 133)`
+- Commit with message: `feat(tools): upgrade fanout_subagents tool primitive with modern swarm orchestration (Phase 134)`.
 - Write execution report to `docs/superpowers/plans/task-3-report.md`.

@@ -7,6 +7,7 @@ use crate::git::worktree::WorktreeManager;
 use std::path::Path;
 
 /// Result of an individual subagent fanout worker.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FanoutWorkerOutcome {
     pub id: String,
@@ -67,6 +68,7 @@ impl MultiAgentOrchestrator {
     }
 
     /// Concurrently executes a batch of subagent tasks with optional Git Worktree isolation.
+    #[allow(dead_code)]
     pub async fn fanout_tasks(
         workspace_root: &Path,
         tasks: Vec<SubagentTaskSpec>,
@@ -230,6 +232,7 @@ impl MultiAgentOrchestrator {
     }
 
     /// Formats a clean markdown report summarizing fan-out results
+    #[allow(dead_code)]
     pub fn format_fanout_summary(results: &[FanoutWorkerOutcome]) -> String {
         let mut out = format!(
             "### Subagent Swarm Fan-Out Completed ({} worker(s) finished)\n\n",
