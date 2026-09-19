@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 133 (v0.3.34) Autonomous Subagent Merge & Conflict Arbitration Engine | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 134 (v0.3.35) Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1876,3 +1876,10 @@
 - [x] 133.3: Implement `merge_subagent_worktree` tool primitive and schema in `src/tools/registry/agent_tools/subagents.rs` supporting configurable landing (`commit: true` vs uncommitted working tree), custom/skipped verification commands, structured conflict diagnostics, and post-merge worktree cleanup
 - [x] 133.4: Implement comprehensive end-to-end integration test suite in `tests/integration_subagent_merge.rs` covering clean merge, conflict detection and safe rejection, full tool primitive execution, and pre-merge verification failure handling
 - [x] 133.5: Pass all targeted unit and integration tests (6 arbitration tests, 6 worktree tests, 6 subagent tests, 4 integration tests), zero clippy warnings, clean formatting, recompile release binary via `./localupdate.sh`, and validate real-world autonomous execution (v0.3.34)
+
+### Phase 134: Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine (v0.3.35)
+- [x] 134.1: Implement `FanoutTaskItem`, `FanoutJoinMode` ("all" vs "race"), `MergeStatus`, `WorkerResult`, and `FanoutOrchestrator` engine in `src/agent/subagent/fanout.rs` with bounded concurrency (`tokio::sync::Semaphore`, clamped 1..=16) and active worker process-group SIGKILL cancellation
+- [x] 134.2: Implement `arbitrate_mutating_workers` and `format_fanout_report` in `src/agent/subagent/fanout.rs` with sequential pre-merge verification, in-memory 3-way `git merge-tree` conflict isolation, safe worktree retention on conflict/failure, clean worktree teardown on merge, and executive Markdown matrix & diagnostics generation
+- [x] 134.3: Upgrade `fanout_subagents` tool schema and registry dispatch in `src/tools/registry/agent_tools/swarms.rs` with typed argument parser `parse_fanout_args`, role & workspace mode resolution, join mode & concurrency clamping, and preserved `TOTAL_TOOL_COUNT` = 135
+- [x] 134.4: Implement comprehensive end-to-end integration test suite in `tests/integration_subagent_fanout.rs` verifying tool argument parsing, sequential multi-worker clean landing, conflict isolation & worktree retention, verification failure isolation, and executive matrix reporting
+- [x] 134.5: Pass all targeted unit and integration tests (10 fanout tests, 5 integration tests, 2 swarm tests), zero clippy warnings, clean formatting, bump version to `v0.3.35`, compile release binary via `./localupdate.sh`, and validate real-world autonomous execution
