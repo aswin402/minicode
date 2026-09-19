@@ -1,30 +1,143 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Specialized role preset for a subagent worker
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubagentRole {
-    /// Read-only deep codebase explorer and web documentation researcher
-    Researcher,
-    /// Multi-axis code reviewer evaluating diffs, AST contracts, and standards
-    CodeReviewer,
-    /// Test runner and failure reproducer
-    TestEngineer,
-    /// Vulnerability, secret leak, and security policy auditor
-    SecurityAuditor,
-    /// Custom user-defined role with custom prompt and toolset
-    Custom(String),
+/// Unique identifier for an agent (coordinator or subagent)
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentId(pub String);
+
+#[allow(dead_code)]
+impl AgentId {
+    /// Returns the standard identifier for the coordinator / parent agent
+    pub fn parent() -> Self {
+        AgentId("parent".to_string())
+    }
+
+    /// Generates a unique subagent identifier with a role prefix and short UUID
+    pub fn new_subagent(prefix: &str) -> Self {
+        let uuid_str = uuid::Uuid::new_v4().to_string();
+        let short_uuid = if uuid_str.len() >= 8 {
+            &uuid_str[..8]
+        } else {
+            &uuid_str
+        };
+        AgentId(format!("{}-{}", prefix, short_uuid))
+    }
+
+    /// Returns true if this agent represents the coordinator / parent agent
+    pub fn is_parent(&self) -> bool {
+        self.0 == "parent"
+    }
+
+    /// Returns a string slice of the agent id
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
+impl fmt::Display for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for AgentId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for AgentId {
+    fn from(s: &str) -> Self {
+        AgentId(s.to_string())
+    }
+}
+
+impl From<String> for AgentId {
+    fn from(s: String) -> Self {
+        AgentId(s)
+    }
+}
+
+/// Workspace isolation mode for a subagent
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMode {
+    Auto,
+    Worktree,
+    Shared,
+}
+
+#[allow(dead_code)]
+impl WorkspaceMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkspaceMode::Auto => "auto",
+            WorkspaceMode::Worktree => "worktree",
+            WorkspaceMode::Shared => "shared",
+        }
+    }
+}
+
+/// Specialized role preset defining subagent capabilities and workspace isolation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentRole {
+    Scout,
+    Coder,
+    Tester,
+    Reviewer,
+}
+
+#[allow(dead_code)]
 impl SubagentRole {
-    /// Returns default tool whitelist for this role
+    /// Returns the default workspace isolation mode for this role
+    pub fn default_workspace_mode(&self) -> WorkspaceMode {
+        match self {
+            SubagentRole::Scout | SubagentRole::Reviewer => WorkspaceMode::Shared,
+            SubagentRole::Coder | SubagentRole::Tester => WorkspaceMode::Worktree,
+        }
+    }
+
+    /// Returns the tool filtering mode ("read_only" vs "standard")
+    pub fn tool_filter_mode(&self) -> &'static str {
+        match self {
+            SubagentRole::Scout | SubagentRole::Reviewer => "read_only",
+            SubagentRole::Coder | SubagentRole::Tester => "standard",
+        }
+    }
+
+    /// Human-readable badge for UI rendering
+    pub fn badge(&self) -> &'static str {
+        match self {
+            SubagentRole::Scout => "Scout",
+            SubagentRole::Coder => "Coder",
+            SubagentRole::Tester => "Tester",
+            SubagentRole::Reviewer => "Reviewer",
+        }
+    }
+
+    /// Flexible case-insensitive role parser
+    pub fn from_str_loose(s: &str) -> Self {
+        let normalized = s.trim().to_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            "scout" | "researcher" | "research" => Self::Scout,
+            "reviewer" | "code_reviewer" | "code_review" | "security" | "security_auditor" => {
+                Self::Reviewer
+            }
+            "tester" | "test_engineer" | "test" => Self::Tester,
+            "coder" => Self::Coder,
+            _ => Self::Coder,
+        }
+    }
+
+    /// Default tool whitelist for this role
     pub fn default_tool_whitelist(&self) -> HashSet<String> {
         let mut set = HashSet::new();
         match self {
-            SubagentRole::Researcher => {
-                // Read-only tools
+            SubagentRole::Scout => {
                 for t in &[
                     "read_file",
                     "grep_search",
@@ -37,8 +150,7 @@ impl SubagentRole {
                     set.insert(t.to_string());
                 }
             }
-            SubagentRole::CodeReviewer => {
-                // Inspection and analysis tools
+            SubagentRole::Reviewer => {
                 for t in &[
                     "read_file",
                     "grep_search",
@@ -51,8 +163,7 @@ impl SubagentRole {
                     set.insert(t.to_string());
                 }
             }
-            SubagentRole::TestEngineer => {
-                // Testing & diagnostic execution
+            SubagentRole::Tester => {
                 for t in &[
                     "read_file",
                     "grep_search",
@@ -60,24 +171,12 @@ impl SubagentRole {
                     "view_outline",
                     "exec_cmd",
                     "write_file",
+                    "patch_file",
                 ] {
                     set.insert(t.to_string());
                 }
             }
-            SubagentRole::SecurityAuditor => {
-                // Security inspection
-                for t in &[
-                    "read_file",
-                    "grep_search",
-                    "file_search",
-                    "locate_symbol",
-                    "view_outline",
-                ] {
-                    set.insert(t.to_string());
-                }
-            }
-            SubagentRole::Custom(_) => {
-                // All standard tools permitted by default for custom
+            SubagentRole::Coder => {
                 for t in &[
                     "read_file",
                     "write_file",
@@ -97,48 +196,23 @@ impl SubagentRole {
         set
     }
 
-    /// Returns default max token budget for this role
+    /// Default token budget for this role
     pub fn default_token_budget(&self) -> usize {
         match self {
-            SubagentRole::Researcher => 24_000,
-            SubagentRole::CodeReviewer => 16_000,
-            SubagentRole::TestEngineer => 32_000,
-            SubagentRole::SecurityAuditor => 16_000,
-            SubagentRole::Custom(_) => 24_000,
+            SubagentRole::Scout => 24_000,
+            SubagentRole::Coder => 32_000,
+            SubagentRole::Tester => 32_000,
+            SubagentRole::Reviewer => 16_000,
         }
     }
 
-    /// Returns default max turns for this role
+    /// Default max turns for this role
     pub fn default_max_turns(&self) -> usize {
         match self {
-            SubagentRole::Researcher => 12,
-            SubagentRole::CodeReviewer => 6,
-            SubagentRole::TestEngineer => 10,
-            SubagentRole::SecurityAuditor => 6,
-            SubagentRole::Custom(_) => 10,
-        }
-    }
-
-    /// Returns a human-readable role badge
-    pub fn badge(&self) -> &'static str {
-        match self {
-            SubagentRole::Researcher => "Researcher",
-            SubagentRole::CodeReviewer => "CodeReviewer",
-            SubagentRole::TestEngineer => "TestEngineer",
-            SubagentRole::SecurityAuditor => "SecurityAuditor",
-            SubagentRole::Custom(_) => "CustomWorker",
-        }
-    }
-
-    /// Flexible case-insensitive role parser
-    pub fn from_str_loose(s: &str) -> Self {
-        let normalized = s.trim().to_lowercase().replace('-', "_");
-        match normalized.as_str() {
-            "researcher" | "research" => Self::Researcher,
-            "code_reviewer" | "reviewer" | "code_review" => Self::CodeReviewer,
-            "test_engineer" | "tester" | "test" => Self::TestEngineer,
-            "security_auditor" | "security" | "auditor" => Self::SecurityAuditor,
-            other => Self::Custom(other.to_string()),
+            SubagentRole::Scout => 12,
+            SubagentRole::Coder => 15,
+            SubagentRole::Tester => 10,
+            SubagentRole::Reviewer => 6,
         }
     }
 }
@@ -147,22 +221,24 @@ impl SubagentRole {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentState {
-    Idle,
+    Starting,
     Running,
+    WaitingForInput,
     Completed,
     Failed(String),
-    Canceled,
+    Terminated,
 }
 
 #[allow(dead_code)]
 impl SubagentState {
     pub fn as_str(&self) -> &str {
         match self {
-            SubagentState::Idle => "idle",
+            SubagentState::Starting => "starting",
             SubagentState::Running => "running",
+            SubagentState::WaitingForInput => "waiting_for_input",
             SubagentState::Completed => "completed",
             SubagentState::Failed(_) => "failed",
-            SubagentState::Canceled => "canceled",
+            SubagentState::Terminated => "terminated",
         }
     }
 }

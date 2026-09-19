@@ -268,14 +268,15 @@ pub async fn dispatch(
             let prompt = param::require_str(args, "prompt", "invoke_subagent")?;
 
             let role = match role_str.to_lowercase().as_str() {
-                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
-                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
-                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
-                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
-                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
+                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
+                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
+                    crate::agent::subagent::SubagentRole::Reviewer
+                }
+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
+                _ => crate::agent::subagent::SubagentRole::Coder,
             };
 
-            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
             }
@@ -289,13 +290,10 @@ pub async fn dispatch(
                 config.system_prompt_override = Some(sys_prompt.to_string());
             }
 
-            let isolate_worktree = param::get_bool(args, "isolate_worktree")
-                .unwrap_or(!matches!(
-                    role,
-                    crate::agent::subagent::SubagentRole::Researcher
-                        | crate::agent::subagent::SubagentRole::CodeReviewer
-                        | crate::agent::subagent::SubagentRole::SecurityAuditor
-                ));
+            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
+            );
+
 
             let res =
                 crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
@@ -326,14 +324,15 @@ pub async fn dispatch(
             let prompt = param::require_str(args, "prompt", "dispatch_subagent")?;
 
             let role = match role_str.to_lowercase().as_str() {
-                "researcher" => crate::agent::subagent::SubagentRole::Researcher,
-                "code_reviewer" | "reviewer" => crate::agent::subagent::SubagentRole::CodeReviewer,
-                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::TestEngineer,
-                "security_auditor" | "security" => crate::agent::subagent::SubagentRole::SecurityAuditor,
-                other => crate::agent::subagent::SubagentRole::Custom(other.to_string()),
+                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
+                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
+                    crate::agent::subagent::SubagentRole::Reviewer
+                }
+                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
+                _ => crate::agent::subagent::SubagentRole::Coder,
             };
 
-            let mut config = crate::agent::subagent::SubagentConfig::for_role(role.clone());
+            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
             }
@@ -348,18 +347,16 @@ pub async fn dispatch(
             }
 
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-            let isolate_worktree = param::get_bool(args, "isolate_worktree")
-                .unwrap_or(!matches!(
-                    role,
-                    crate::agent::subagent::SubagentRole::Researcher
-                        | crate::agent::subagent::SubagentRole::CodeReviewer
-                        | crate::agent::subagent::SubagentRole::SecurityAuditor
-                ));
+            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
+            );
+
 
             let provider = pool.get_or_create_provider().await;
             let id = pool
-                .spawn_background_worker(role.clone(), prompt, Some(config), provider, isolate_worktree)
+                .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                 .await?;
+
 
             let isolation_label = if isolate_worktree {
                 format!("Dedicated Git Worktree (`subagent/{}`)", id)
@@ -436,7 +433,13 @@ pub async fn dispatch(
                     let mut final_info = None;
                     while start.elapsed() < max_dur {
                         if let Some(info) = pool.get_subagent(id).await {
-                            if !matches!(info.state, crate::agent::subagent::types::SubagentState::Running | crate::agent::subagent::types::SubagentState::Idle) {
+                            if !matches!(
+                                info.state,
+                                crate::agent::subagent::types::SubagentState::Running
+                                    | crate::agent::subagent::types::SubagentState::Starting
+                                    | crate::agent::subagent::types::SubagentState::WaitingForInput
+                            ) {
+
                                 final_info = Some(info);
                                 break;
                             }

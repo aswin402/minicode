@@ -51,8 +51,8 @@ impl MultiAgentOrchestrator {
         let provider = pool.get_or_create_provider().await;
         let role = config
             .as_ref()
-            .map(|c| c.role.clone())
-            .unwrap_or(SubagentRole::Researcher);
+            .map(|c| c.role)
+            .unwrap_or(SubagentRole::Scout);
         let timeout = timeout_secs.unwrap_or(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS);
 
         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
@@ -83,25 +83,22 @@ impl MultiAgentOrchestrator {
         let mut launched_descriptions = Vec::new();
 
         for task in tasks {
-            let role = task.role.clone();
+            let role = task.role;
             let prompt = task.prompt.clone();
             let timeout = task.timeout_secs.unwrap_or(120);
 
-            let isolate_worktree = task.isolate_worktree.unwrap_or(!matches!(
-                role,
-                SubagentRole::Researcher
-                    | SubagentRole::CodeReviewer
-                    | SubagentRole::SecurityAuditor
-            ));
+            let isolate_worktree = task.isolate_worktree.unwrap_or(
+                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
+            );
 
-            let mut config = SubagentConfig::for_role(role.clone());
+            let mut config = SubagentConfig::for_role(role);
             if let Some(m) = task.model {
                 config.model = Some(m);
             }
 
             let task_id = pool
                 .spawn_background_worker(
-                    role.clone(),
+                    role,
                     &prompt,
                     Some(config),
                     std::sync::Arc::clone(&provider),
@@ -155,7 +152,8 @@ impl MultiAgentOrchestrator {
                     if !matches!(
                         info.state,
                         crate::agent::subagent::types::SubagentState::Running
-                            | crate::agent::subagent::types::SubagentState::Idle
+                            | crate::agent::subagent::types::SubagentState::Starting
+                            | crate::agent::subagent::types::SubagentState::WaitingForInput
                     ) {
                         final_info = Some(info);
                         break;
@@ -202,8 +200,9 @@ impl MultiAgentOrchestrator {
             let sub_res = SubAgentResult {
                 id: id.clone(),
                 task_id: id.clone(),
-                role: role.clone(),
+                role,
                 success,
+
                 final_summary: summary.clone(),
                 tokens_used,
                 turns_executed,

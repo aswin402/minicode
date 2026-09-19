@@ -202,11 +202,12 @@ impl SubagentDrawer {
         for (i, worker) in workers.iter().enumerate() {
             let is_selected = i == selected_idx;
             let (status_icon, status_color, status_text) = match &worker.state {
+                SubagentState::Starting => ("○", Color::DarkGray, "STARTING"),
                 SubagentState::Running => ("●", Color::Green, "RUNNING"),
+                SubagentState::WaitingForInput => ("◷", Color::Yellow, "WAITING"),
                 SubagentState::Completed => ("✔", Color::Cyan, "DONE"),
                 SubagentState::Failed(_) => ("✗", Color::Red, "FAILED"),
-                SubagentState::Canceled => ("⊘", Color::Yellow, "CANCELED"),
-                SubagentState::Idle => ("○", Color::DarkGray, "IDLE"),
+                SubagentState::Terminated => ("⊘", Color::Yellow, "TERMINATED"),
             };
 
             let prefix = if is_selected { "▶ " } else { "  " };

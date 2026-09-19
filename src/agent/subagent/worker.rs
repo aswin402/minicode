@@ -20,11 +20,7 @@ pub struct SubagentWorker {
 #[allow(dead_code)]
 impl SubagentWorker {
     pub fn new(id: String, prompt: String, config: SubagentConfig, workspace_root: &Path) -> Self {
-        let info = Arc::new(RwLock::new(SubagentInfo::new(
-            id,
-            config.role.clone(),
-            prompt,
-        )));
+        let info = Arc::new(RwLock::new(SubagentInfo::new(id, config.role, prompt)));
 
         Self {
             info,
@@ -41,20 +37,17 @@ impl SubagentWorker {
         }
 
         match &self.config.role {
-            SubagentRole::Researcher => {
-                "You are an expert Research Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
+            SubagentRole::Scout => {
+                "You are an expert Scout Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
             }
-            SubagentRole::CodeReviewer => {
-                "You are a Senior Code Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
+            SubagentRole::Reviewer => {
+                "You are a Senior Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
             }
-            SubagentRole::TestEngineer => {
+            SubagentRole::Tester => {
                 "You are a QA & Test Engineer Subagent. Your mission is to run test suites, analyze test failures, reproduce edge cases, and ensure high test coverage.".to_string()
             }
-            SubagentRole::SecurityAuditor => {
-                "You are a Security Auditor Subagent. Your mission is to check for hardcoded secrets, injection vectors, unvalidated inputs, unsafe blocks, and permissions issues.".to_string()
-            }
-            SubagentRole::Custom(name) => {
-                format!("You are a specialized Subagent ({}) executing an assigned subtask. Fulfill the user's instructions accurately and concisely.", name)
+            SubagentRole::Coder => {
+                "You are a specialized Coder Subagent executing an assigned implementation task. Fulfill the user's instructions accurately and concisely.".to_string()
             }
         }
     }
@@ -68,7 +61,7 @@ impl SubagentWorker {
         Box::pin(async move {
             let (prompt, role, id) = {
                 let info = self.info.read().await;
-                (info.prompt.clone(), info.role.clone(), info.id.clone())
+                (info.prompt.clone(), info.role, info.id.clone())
             };
 
             tracing::info!(subagent_id = %id, role = ?role, "Starting subagent worker");
@@ -110,7 +103,7 @@ impl SubagentWorker {
             let mut step_counter = 0;
             let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
                 &id,
-                role.clone(),
+                role,
                 prompt.clone(),
             );
 
@@ -145,7 +138,7 @@ impl SubagentWorker {
                     let report_md = report.format_markdown();
 
                     let mut info = self.info.write().await;
-                    info.state = SubagentState::Canceled;
+                    info.state = SubagentState::Terminated;
                     info.current_tool = None;
                     info.status_message = Some("Canceled by user".to_string());
                     info.final_summary = Some(report_md.clone());

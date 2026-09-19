@@ -76,7 +76,7 @@ indexmap = { version = "2.6", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["v4"] }
 
 # Linux-only kernel sandbox; excluded on other targets where it cannot build

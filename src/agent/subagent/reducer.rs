@@ -284,8 +284,9 @@ impl SubagentSynthesisReducer {
 
         SubagentReport {
             subagent_id: ctx.subagent_id.to_string(),
-            role: ctx.role.clone(),
+            role: *ctx.role,
             status: ctx.status.to_string(),
+
             success: ctx.success,
             executive_summary,
             files_inspected: ctx.files_inspected.to_vec(),

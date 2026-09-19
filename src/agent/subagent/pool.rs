@@ -105,7 +105,7 @@ impl SubagentPool {
         isolate_worktree: bool,
     ) -> Result<SubagentResult> {
         let id = self.next_id(&role).await;
-        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role.clone()));
+        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role));
 
         // Worktree isolation if requested
         let effective_root = if isolate_worktree {
@@ -169,7 +169,7 @@ impl SubagentPool {
         isolate_worktree: bool,
     ) -> Result<String> {
         let id = self.next_id(&role).await;
-        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role.clone()));
+        let config = custom_config.unwrap_or_else(|| SubagentConfig::for_role(role));
 
         // Worktree isolation if requested
         let effective_root = if isolate_worktree {
@@ -205,7 +205,8 @@ impl SubagentPool {
         }
 
         let worker_id = id.clone();
-        let worker_role = role.clone();
+        let worker_role = role;
+
         let ws_root = self.workspace_root.clone();
 
         tokio::spawn(async move {
@@ -275,7 +276,7 @@ impl SubagentPool {
         if let Some(handle) = workers.get(id) {
             handle.cancel_flag.store(true, Ordering::SeqCst);
             let mut info = handle.info.write().await;
-            info.state = SubagentState::Canceled;
+            info.state = SubagentState::Terminated;
             info.current_tool = None;
             info.status_message = Some("Canceled by user".to_string());
             Ok(())
@@ -293,7 +294,7 @@ impl SubagentPool {
         for handle in workers.values() {
             handle.cancel_flag.store(true, Ordering::SeqCst);
             if let Ok(mut info) = handle.info.try_write() {
-                info.state = SubagentState::Canceled;
+                info.state = SubagentState::Terminated;
                 info.current_tool = None;
                 info.status_message = Some("Canceled by user".to_string());
             }
@@ -315,12 +316,14 @@ impl SubagentPool {
 
         for item in list {
             let status_badge = match &item.state {
-                SubagentState::Idle => "○ Idle",
+                SubagentState::Starting => "○ Starting",
                 SubagentState::Running => "◉ Running",
+                SubagentState::WaitingForInput => "◷ Waiting",
                 SubagentState::Completed => "✔ Done",
                 SubagentState::Failed(_) => "✗ Failed",
-                SubagentState::Canceled => "⊘ Canceled",
+                SubagentState::Terminated => "⊘ Terminated",
             };
+
             let detail = if let Some(ref t) = item.current_tool {
                 format!("⚡ `{}`", t)
             } else if let Some(ref s) = item.status_message {
@@ -358,11 +361,11 @@ mod tests {
         assert_eq!(pool.worker_count(), 0);
         assert!(pool.snapshot_subagents().is_empty());
 
-        let id1 = pool.next_id(&SubagentRole::Researcher).await;
-        assert_eq!(id1, "researcher-1");
+        let id1 = pool.next_id(&SubagentRole::Scout).await;
+        assert_eq!(id1, "scout-1");
 
-        let id2 = pool.next_id(&SubagentRole::TestEngineer).await;
-        assert_eq!(id2, "testengineer-2");
+        let id2 = pool.next_id(&SubagentRole::Tester).await;
+        assert_eq!(id2, "tester-2");
     }
 
     #[tokio::test]
@@ -376,7 +379,7 @@ mod tests {
 
         let id = pool
             .spawn_background_worker(
-                SubagentRole::Researcher,
+                SubagentRole::Scout,
                 "Analyze codebase architecture",
                 None,
                 mock,
@@ -385,13 +388,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(id, "researcher-1");
+        assert_eq!(id, "scout-1");
         assert_eq!(pool.worker_count(), 1);
 
         let snapshots = pool.snapshot_subagents();
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].id, "researcher-1");
-        assert_eq!(snapshots[0].role, SubagentRole::Researcher);
+        assert_eq!(snapshots[0].id, "scout-1");
+        assert_eq!(snapshots[0].role, SubagentRole::Scout);
 
         // Wait briefly for background execution
         for _ in 0..20 {
@@ -404,8 +407,8 @@ mod tests {
         }
 
         let summary = pool.format_swarm_summary().await;
-        assert!(summary.contains("researcher-1"));
-        assert!(summary.contains("Researcher"));
+        assert!(summary.contains("scout-1"));
+        assert!(summary.contains("Scout"));
     }
 
     #[tokio::test]
@@ -417,7 +420,7 @@ mod tests {
         // No responses queued so it would wait or finish
         let id = pool
             .spawn_background_worker(
-                SubagentRole::CodeReviewer,
+                SubagentRole::Reviewer,
                 "Review code changes",
                 None,
                 mock,
@@ -430,7 +433,7 @@ mod tests {
         assert!(kill_res.is_ok());
 
         let info = pool.get_subagent(&id).await.unwrap();
-        assert_eq!(info.state, SubagentState::Canceled);
+        assert_eq!(info.state, SubagentState::Terminated);
         assert_eq!(info.status_message.as_deref(), Some("Canceled by user"));
     }
 }

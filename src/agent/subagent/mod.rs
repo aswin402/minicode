@@ -1,3 +1,5 @@
+pub mod mailbox;
+pub mod message;
 pub mod pool;
 pub mod reducer;
 pub mod scratchpad;
@@ -5,6 +7,10 @@ pub mod transcript;
 pub mod types;
 pub mod worker;
 
+#[allow(unused_imports)]
+pub use mailbox::AgentMailbox;
+#[allow(unused_imports)]
+pub use message::{AgentMessage, MessageIntent};
 #[allow(unused_imports)]
 pub use pool::SubagentPool;
 #[allow(unused_imports)]
@@ -21,7 +27,8 @@ pub use transcript::{
 pub use types::SubagentResult as SubAgentResult;
 #[allow(unused_imports)]
 pub use types::{
-    SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState, SubagentTaskSpec,
+    AgentId, SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState,
+    SubagentTaskSpec, WorkspaceMode,
 };
 #[allow(unused_imports)]
 pub use worker::SubagentWorker;
@@ -230,8 +237,8 @@ impl SubAgent {
         let assigned_role = self
             .config
             .as_ref()
-            .map(|c| c.role.clone())
-            .unwrap_or_else(|| SubagentRole::Custom("worktree_worker".to_string()));
+            .map(|c| c.role)
+            .unwrap_or(SubagentRole::Coder);
 
         Ok(SubagentResult {
             id: self.task_id.clone(),
@@ -247,3 +254,6 @@ impl SubAgent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
