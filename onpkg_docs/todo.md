@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 134 (v0.3.35) Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 135 (v0.3.36) Modern Interactive Setup Wizard (minicode setup) | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1883,3 +1883,11 @@
 - [x] 134.3: Upgrade `fanout_subagents` tool schema and registry dispatch in `src/tools/registry/agent_tools/swarms.rs` with typed argument parser `parse_fanout_args`, role & workspace mode resolution, join mode & concurrency clamping, and preserved `TOTAL_TOOL_COUNT` = 135
 - [x] 134.4: Implement comprehensive end-to-end integration test suite in `tests/integration_subagent_fanout.rs` verifying tool argument parsing, sequential multi-worker clean landing, conflict isolation & worktree retention, verification failure isolation, and executive matrix reporting
 - [x] 134.5: Pass all targeted unit and integration tests (10 fanout tests, 5 integration tests, 2 swarm tests), zero clippy warnings, clean formatting, bump version to `v0.3.35`, compile release binary via `./localupdate.sh`, and validate real-world autonomous execution
+
+### Phase 135: Modern Interactive Setup Wizard (`minicode setup`) (v0.3.36)
+- [x] 135.1: Implement `TerminalGuard` RAII raw mode, cursor visibility, and bracketed paste safety guard with zero `.unwrap()` or `.expect()` calls in `src/ui/setup/guard.rs`
+- [x] 135.2: Implement `InteractiveSelector` and `SelectorItem` in `src/ui/setup/selector.rs` supporting smooth arrow navigation (`↑`/`↓`/`k`/`j`), single-keystroke `Enter` selection, `Esc` cancellation, case-insensitive `Ctrl+C` handling, and in-place ANSI redraw
+- [x] 135.3: Implement `mask_api_key`, `prompt_api_key` with bracketed paste and key counter, and generic `prompt_text` in `src/ui/setup/input.rs` with pixel-perfect right border card geometry
+- [x] 135.4: Implement `SetupWizard` in `src/ui/setup/wizard.rs` with 3-tier menu hierarchy (Main Menu, Provider Menu, 10-Provider Catalog with live status badges `● Active`, `✔ Configured`, `○ Localhost`, `○ Not Set`, unconfigured inline key entry, configured 2-choice prompt, and custom provider onboarding)
+- [x] 135.5: Promote `minicode setup` as the primary configuration CLI command with `configure` and `config` backward-compatible aliases, updated tips across `src/main.rs`, and comprehensive integration test suite in `tests/integration_setup_wizard.rs`
+- [x] 135.6: Pass all targeted unit and integration tests (6 selector tests, 9 input tests, 5 wizard tests, 6 integration tests), zero clippy warnings, clean formatting, bump version to `v0.3.36`, compile release binary via `./localupdate.sh`, and validate real-world CLI execution

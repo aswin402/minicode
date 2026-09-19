@@ -1,1075 +1,573 @@
 diff --git a/docs/superpowers/plans/task-1-brief.md b/docs/superpowers/plans/task-1-brief.md
-index 7ab9058..064e7ce 100644
+index 064e7ce..2d5cbb2 100644
 --- a/docs/superpowers/plans/task-1-brief.md
 +++ b/docs/superpowers/plans/task-1-brief.md
-@@ -1,119 +1,126 @@
--### Task 1: `MergeArbitrator` Core & Sandboxed Verification
+@@ -1,126 +1,45 @@
+-# Task 1 Brief: Core Types, Concurrency Engine & `FanoutOrchestrator` Foundation
 -
--**Files:**
--- Create: `src/sandbox/arbitration.rs`
--- Modify: `src/sandbox/mod.rs`
+-## Overview
+-Implement the core data structures and concurrency runtime for parallel subagent swarm execution in `src/agent/subagent/fanout.rs`, providing bounded concurrency and race/all join policies.
 -
--**Interfaces:**
--- Consumes: `std::path::Path`, `std::process::Command`, `thiserror::Error`.
--- Produces:
--  - `ValidationReport`: `success: bool`, `command: String`, `exit_code: i32`, `stdout: String`, `stderr: String`, `duration_ms: u64`.
--  - `MergeabilityReport`: `can_merge_cleanly: bool`, `conflicted_files: Vec<String>`, `merge_base: Option<String>`.
--  - `MergeSuccessReport`: `subagent_id: String`, `branch_name: String`, `files_changed: Vec<String>`, `committed: bool`, `commit_hash: Option<String>`, `commit_message: Option<String>`.
--  - `ArbitrationError`: Typed error variants for `WorktreeNotFound`, `VerificationFailed`, `MergeConflict`, `GitError`, `IoError`.
--  - `MergeArbitrator::detect_project_validation_cmd(path: &Path) -> Option<Vec<String>>`
--  - `MergeArbitrator::verify_worktree(worktree_path: &Path, check_cmd: Option<&str>) -> Result<ValidationReport, ArbitrationError>`
--  - `MergeArbitrator::check_mergeability(repo_root: &Path, branch_name: &str) -> Result<MergeabilityReport, ArbitrationError>`
--  - `MergeArbitrator::apply_merge(repo_root: &Path, branch_name: &str, commit: bool, commit_msg: Option<&str>) -> Result<MergeSuccessReport, ArbitrationError>`
+-## Files to Create/Modify:
+-- Create: `src/agent/subagent/fanout.rs`
+-- Modify: `src/agent/subagent/mod.rs` (register and export `pub mod fanout;`)
 -
--- [ ] **Step 1: Write failing unit tests for project validation detection, mergeability checking, and merge application**
+-## Interfaces & Requirements:
 -
--In `src/sandbox/arbitration.rs`:
-+# Task 1 Brief: Core Types, Concurrency Engine & `FanoutOrchestrator` Foundation
-+
-+## Overview
-+Implement the core data structures and concurrency runtime for parallel subagent swarm execution in `src/agent/subagent/fanout.rs`, providing bounded concurrency and race/all join policies.
-+
-+## Files to Create/Modify:
-+- Create: `src/agent/subagent/fanout.rs`
-+- Modify: `src/agent/subagent/mod.rs` (register and export `pub mod fanout;`)
-+
-+## Interfaces & Requirements:
-+
-+### 1. Data Structures (`src/agent/subagent/fanout.rs`):
- ```rust
--#[cfg(test)]
--mod tests {
--    use super::*;
+-### 1. Data Structures (`src/agent/subagent/fanout.rs`):
+-```rust
+-use std::path::{Path, PathBuf};
+-use serde::{Deserialize, Serialize};
+-use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
+-use crate::error::ToolError;
 -
--    #[test]
--    fn test_detect_project_validation_cmd_cargo() {
--        let temp = tempfile::tempdir().unwrap();
--        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
--        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
--        assert_eq!(cmd, vec!["cargo", "check", "-j", "1"]);
+-/// Specification for an individual worker in a fanout swarm.
+-#[derive(Debug, Clone, Serialize, Deserialize)]
+-pub struct FanoutTaskItem {
+-    pub task: String,
+-    pub role: SubagentRole,
+-    #[serde(default)]
+-    pub workspace_mode: Option<WorkspaceMode>,
+-    #[serde(default)]
+-    pub max_iterations: Option<usize>,
+-    #[serde(default)]
+-    pub check_cmd: Option<String>,
+-}
+-
+-/// Completion mode for the swarm.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+-#[serde(rename_all = "snake_case")]
+-pub enum FanoutJoinMode {
+-    All,
+-    Race,
+-}
+-
+-impl Default for FanoutJoinMode {
+-    fn default() -> Self {
+-        Self::All
 -    }
-+use std::path::{Path, PathBuf};
-+use serde::{Deserialize, Serialize};
-+use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-+use crate::error::ToolError;
-+
-+/// Specification for an individual worker in a fanout swarm.
-+#[derive(Debug, Clone, Serialize, Deserialize)]
-+pub struct FanoutTaskItem {
-+    pub task: String,
-+    pub role: SubagentRole,
-+    #[serde(default)]
-+    pub workspace_mode: Option<WorkspaceMode>,
-+    #[serde(default)]
-+    pub max_iterations: Option<usize>,
-+    #[serde(default)]
-+    pub check_cmd: Option<String>,
-+}
- 
--    #[test]
--    fn test_detect_project_validation_cmd_package_json() {
--        let temp = tempfile::tempdir().unwrap();
--        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
--        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
--        assert_eq!(cmd, vec!["npm", "test"]);
--    }
-+/// Completion mode for the swarm.
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-+#[serde(rename_all = "snake_case")]
-+pub enum FanoutJoinMode {
-+    All,
-+    Race,
-+}
- 
--    #[test]
--    fn test_verify_worktree_skip() {
--        let temp = tempfile::tempdir().unwrap();
--        let report = MergeArbitrator::verify_worktree(temp.path(), Some("skip")).unwrap();
--        assert!(report.success);
--        assert_eq!(report.command, "skip");
-+impl Default for FanoutJoinMode {
-+    fn default() -> Self {
-+        Self::All
-     }
-+}
- 
--    #[test]
--    fn test_mergeability_and_apply_clean() {
--        let temp = tempfile::tempdir().unwrap();
--        let root = temp.path();
+-}
 -
--        // git init
--        std::process::Command::new("git").args(["init"]).current_dir(root).output().unwrap();
--        std::process::Command::new("git").args(["config", "user.name", "test"]).current_dir(root).output().unwrap();
--        std::process::Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(root).output().unwrap();
+-/// Status of worktree merge arbitration for a worker.
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-pub enum MergeStatus {
+-    NotApplicable,
+-    Merged { commit_hash: Option<String> },
+-    VerificationFailed { command: String, exit_code: i32, stderr: String },
+-    Conflict { conflicted_files: Vec<String> },
+-    RetainedUnmerged,
+-    SkippedCancelled,
+-}
 -
--        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
--        std::process::Command::new("git").args(["add", "."]).current_dir(root).output().unwrap();
--        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(root).output().unwrap();
--
--        // create branch
--        let branch = "minicode/subagent/coder-1";
--        std::process::Command::new("git").args(["branch", branch]).current_dir(root).output().unwrap();
--
--        // modify on branch
--        let worktree_dir = root.join("wt");
--        std::process::Command::new("git").args(["worktree", "add", worktree_dir.to_str().unwrap(), branch]).current_dir(root).output().unwrap();
--        std::fs::write(worktree_dir.join("hello.txt"), "base\nupdated\n").unwrap();
--        std::process::Command::new("git").args(["add", "."]).current_dir(&worktree_dir).output().unwrap();
--        std::process::Command::new("git").args(["commit", "-m", "branch commit"]).current_dir(&worktree_dir).output().unwrap();
--
--        // check mergeability
--        let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
--        assert!(mergeability.can_merge_cleanly);
--        assert!(mergeability.conflicted_files.is_empty());
--
--        // apply merge
--        let success = MergeArbitrator::apply_merge(root, branch, true, Some("merge subagent")).unwrap();
--        assert!(success.committed);
--        assert!(success.files_changed.contains(&"hello.txt".to_string()));
--
--        let content = std::fs::read_to_string(root.join("hello.txt")).unwrap();
--        assert!(content.contains("updated"));
--    }
-+/// Status of worktree merge arbitration for a worker.
-+#[derive(Debug, Clone, PartialEq, Eq)]
-+pub enum MergeStatus {
-+    NotApplicable,
-+    Merged { commit_hash: Option<String> },
-+    VerificationFailed { command: String, exit_code: i32, stderr: String },
-+    Conflict { conflicted_files: Vec<String> },
-+    RetainedUnmerged,
-+    SkippedCancelled,
- }
+-/// Outcome of an individual worker within the swarm.
+-#[derive(Debug, Clone)]
+-pub struct WorkerResult {
+-    pub agent_id: AgentId,
+-    pub role: SubagentRole,
+-    pub task: String,
+-    pub success: bool,
+-    pub duration_ms: u64,
+-    pub tokens_used: usize,
+-    pub files_modified: Vec<String>,
+-    pub worktree_path: Option<PathBuf>,
+-    pub branch_name: Option<String>,
+-    pub merge_status: MergeStatus,
+-    pub summary: String,
+-    pub error: Option<String>,
+-}
 -```
- 
--- [ ] **Step 2: Run targeted tests to verify failure**
--Run: `cargo test -j 1 --lib sandbox::arbitration::tests`
--Expected: FAIL with missing module `sandbox::arbitration`.
 -
--- [ ] **Step 3: Implement `MergeArbitrator` and export in `src/sandbox/mod.rs`**
--Implement:
--- `ArbitrationError` with `thiserror::Error`.
--- Project detector inspecting `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`.
--- Sandboxed command executor with 60s timeout.
--- Git mergeability checker using `git merge-tree` or temporary dry-run merge.
--- Safe branch merger / patch applier.
+-### 2. `FanoutOrchestrator` Implementation:
+-```rust
+-pub struct FanoutOrchestrator;
 -
--- [ ] **Step 4: Run targeted tests to verify they pass**
--Run: `cargo test -j 1 --lib sandbox::arbitration::tests`
--Expected: PASS (4 passed).
+-impl FanoutOrchestrator {
+-    /// Concurrently executes a batch of subagent tasks according to join mode and arbitration policy.
+-    pub async fn execute_fanout(
+-        workspace_root: &Path,
+-        tasks: Vec<FanoutTaskItem>,
+-        join_mode: FanoutJoinMode,
+-        auto_merge: bool,
+-        max_concurrency: usize,
+-    ) -> Result<String, ToolError> {
+-        if tasks.is_empty() {
+-            return Ok("No subagent tasks specified for fan-out.".to_string());
+-        }
 -
--- [ ] **Step 5: Verify formatting and clippy**
--Run: `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`
--Expected: Clean with 0 warnings.
+-        let concurrency = max_concurrency.clamp(1, 16);
+-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+-        let cancel_token = tokio_util::sync::CancellationToken::new();
 -
--- [ ] **Step 6: Commit**
--```bash
--git add src/sandbox/arbitration.rs src/sandbox/mod.rs
--git commit -m "feat(sandbox): implement MergeArbitrator with sandboxed verification and mergeability checks (Phase 133)"
-+/// Outcome of an individual worker within the swarm.
-+#[derive(Debug, Clone)]
-+pub struct WorkerResult {
-+    pub agent_id: AgentId,
-+    pub role: SubagentRole,
-+    pub task: String,
-+    pub success: bool,
-+    pub duration_ms: u64,
-+    pub tokens_used: usize,
-+    pub files_modified: Vec<String>,
-+    pub worktree_path: Option<PathBuf>,
-+    pub branch_name: Option<String>,
-+    pub merge_status: MergeStatus,
-+    pub summary: String,
-+    pub error: Option<String>,
-+}
- ```
- 
-----
-+### 2. `FanoutOrchestrator` Implementation:
-+```rust
-+pub struct FanoutOrchestrator;
+-        // Spawn workers and join according to join_mode
+-        // ...
+-    }
+-}
+-```
+-
+-- In `run_single_worker`:
+-  - Acquires permit from `semaphore`.
+-  - Checks if `cancel_token.is_cancelled()`. If cancelled, returns early with `MergeStatus::SkippedCancelled`.
+-  - Determines workspace isolation: `workspace_mode` or role default (`WorkspaceMode::Worktree` for `coder`/`tester`).
+-  - Spawns child process via `tokio::process::Command` (calling `std::env::current_exe()`) with `kill_on_drop(true)`, `process_group(0)`, and pipes for stdout/stderr.
+-  - Monitors stdout for NDJSON stream events, accumulating tokens, modified files, and final summary.
+-  - If `cancel_token` is cancelled during execution, kills the child process and cleans up any provisioned worktree.
+-  - On child success, if worktree was used, captures diff and preserves worktree for arbitration.
+-  - On child failure, cleans up worktree.
+-- If `join_mode == FanoutJoinMode::Race`:
+-  - When any worker completes with `success == true`, calls `cancel_token.cancel()`.
+-- Generates a baseline report summarizing worker outcomes.
+-
+-### 3. Unit Tests in `src/agent/subagent/fanout.rs`:
+-- `test_fanout_join_mode_serialization`: tests JSON round-trip of `FanoutJoinMode::All` and `FanoutJoinMode::Race`.
+-- `test_fanout_empty_tasks`: tests `execute_fanout` with empty tasks vector returns "No subagent tasks specified for fan-out.".
+-- `test_fanout_task_item_deserialization`: tests deserialization of a full `FanoutTaskItem` from JSON.
+-- `test_merge_status_variants`: tests `MergeStatus` variants equality and formatting.
+-
+-## Constraints:
+-- ONLY run targeted test: `cargo test -j 1 --lib agent::subagent::fanout::tests`.
+-- Zero `.unwrap()` or `.expect()` in non-test code.
+-- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
+-- Commit with message: `feat(subagent): implement FanoutOrchestrator engine with bounded concurrency and race join (Phase 134)`
+-- Write execution report to `docs/superpowers/plans/task-1-report.md`.
++# Task 1 Brief: Terminal Raw Mode Guard & Interactive List Selector Primitives
 +
-+impl FanoutOrchestrator {
-+    /// Concurrently executes a batch of subagent tasks according to join mode and arbitration policy.
-+    pub async fn execute_fanout(
-+        workspace_root: &Path,
-+        tasks: Vec<FanoutTaskItem>,
-+        join_mode: FanoutJoinMode,
-+        auto_merge: bool,
-+        max_concurrency: usize,
-+    ) -> Result<String, ToolError> {
-+        if tasks.is_empty() {
-+            return Ok("No subagent tasks specified for fan-out.".to_string());
-+        }
++## Objective
++Implement `TerminalGuard` (RAII terminal raw mode, cursor visibility, bracketed paste) and `InteractiveSelector` (inline arrow-key navigation, `k`/`j` keys, `Enter` selection, `Esc` back/cancel) in `src/ui/setup/`.
 +
-+        let concurrency = max_concurrency.clamp(1, 16);
-+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
-+        let cancel_token = tokio_util::sync::CancellationToken::new();
++## Files to Create / Modify
++- Create: `src/ui/setup/guard.rs`
++- Create: `src/ui/setup/selector.rs`
++- Create: `src/ui/setup/mod.rs`
++- Modify: `src/ui/mod.rs` (expose `pub mod setup;`)
++- Tests: `src/ui/setup/selector.rs` (inline unit tests)
 +
-+        // Spawn workers and join according to join_mode
-+        // ...
-+    }
-+}
-+```
- 
-+- In `run_single_worker`:
-+  - Acquires permit from `semaphore`.
-+  - Checks if `cancel_token.is_cancelled()`. If cancelled, returns early with `MergeStatus::SkippedCancelled`.
-+  - Determines workspace isolation: `workspace_mode` or role default (`WorkspaceMode::Worktree` for `coder`/`tester`).
-+  - Spawns child process via `tokio::process::Command` (calling `std::env::current_exe()`) with `kill_on_drop(true)`, `process_group(0)`, and pipes for stdout/stderr.
-+  - Monitors stdout for NDJSON stream events, accumulating tokens, modified files, and final summary.
-+  - If `cancel_token` is cancelled during execution, kills the child process and cleans up any provisioned worktree.
-+  - On child success, if worktree was used, captures diff and preserves worktree for arbitration.
-+  - On child failure, cleans up worktree.
-+- If `join_mode == FanoutJoinMode::Race`:
-+  - When any worker completes with `success == true`, calls `cancel_token.cancel()`.
-+- Generates a baseline report summarizing worker outcomes.
-+
-+### 3. Unit Tests in `src/agent/subagent/fanout.rs`:
-+- `test_fanout_join_mode_serialization`: tests JSON round-trip of `FanoutJoinMode::All` and `FanoutJoinMode::Race`.
-+- `test_fanout_empty_tasks`: tests `execute_fanout` with empty tasks vector returns "No subagent tasks specified for fan-out.".
-+- `test_fanout_task_item_deserialization`: tests deserialization of a full `FanoutTaskItem` from JSON.
-+- `test_merge_status_variants`: tests `MergeStatus` variants equality and formatting.
-+
-+## Constraints:
-+- ONLY run targeted test: `cargo test -j 1 --lib agent::subagent::fanout::tests`.
-+- Zero `.unwrap()` or `.expect()` in non-test code.
-+- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
-+- Commit with message: `feat(subagent): implement FanoutOrchestrator engine with bounded concurrency and race join (Phase 134)`
-+- Write execution report to `docs/superpowers/plans/task-1-report.md`.
-diff --git a/src/agent/subagent/fanout.rs b/src/agent/subagent/fanout.rs
++## Constraints & Requirements
++1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
++2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::selector::tests`. NEVER run the full test suite.
++3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Propagate `io::Result<T>`.
++4. **Terminal Safety:** `TerminalGuard` MUST implement `Drop` to ensure `disable_raw_mode()` and `cursor::Show` are always called, preventing broken terminal states.
++5. **Interactive Selector UX:**
++   - Input keys:
++     - `KeyCode::Up` / `KeyCode::Char('k')` -> `prev_index(current, total)`
++     - `KeyCode::Down` / `KeyCode::Char('j')` -> `next_index(current, total)`
++     - `KeyCode::Enter` -> `Ok(Some(current_index))`
++     - `KeyCode::Esc` -> `Ok(None)`
++     - `KeyCode::Char('c')` with `KeyModifiers::CONTROL` -> `Ok(None)` or graceful exit
++   - Rendering:
++     - Draw header / prompt: `\x1b[1m<prompt>\x1b[0m`
++     - Highlight line: `\x1b[1;36m  ❯ \x1b[0m\x1b[1m{label}\x1b[0m {badge} \x1b[90m{hint}\x1b[0m`
++     - Normal line: `    {label} {badge} \x1b[90m{hint}\x1b[0m`
++     - Footer: `\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m\n  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m`
++     - Redraw loop: Move cursor up by line count (`\x1b[{}A`), clear line (`\x1b[2K\r`), and redraw.
++     - On completion: Clear drawn lines so the next screen draws cleanly.
++   - Index helpers:
++     ```rust
++     pub fn prev_index(current: usize, total: usize) -> usize {
++         if total == 0 { 0 } else if current == 0 { total - 1 } else { current - 1 }
++     }
++     pub fn next_index(current: usize, total: usize) -> usize {
++         if total == 0 { 0 } else if current + 1 >= total { 0 } else { current + 1 }
++     }
++     ```
++6. **Code Quality:**
++   - `cargo fmt`
++   - `cargo clippy -j 1 --bin minicode -- -D warnings`
++7. **Commit:**
++   - `feat(ui): implement TerminalGuard and InteractiveSelector primitives for setup wizard`
+diff --git a/src/ui/mod.rs b/src/ui/mod.rs
+index a1f5ae7..535d15b 100644
+--- a/src/ui/mod.rs
++++ b/src/ui/mod.rs
+@@ -10,6 +10,7 @@ pub mod modal;
+ pub mod modals;
+ pub mod pty_drawer;
+ pub mod selection;
++pub mod setup;
+ pub mod status;
+ pub mod subagent_drawer;
+ pub mod theme;
+@@ -33,6 +34,8 @@ pub use layout_utils::{centered_rect, centered_rect_exact};
+ pub use markdown::MarkdownRenderer;
+ pub use modal::ModalState;
+ pub use pty_drawer::PtyDrawer;
++#[allow(unused_imports)]
++pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
+ pub use status::{StatusContext, StatusWidgets};
+ #[allow(unused_imports)]
+ pub use subagent_drawer::SubagentDrawer;
+diff --git a/src/ui/setup/guard.rs b/src/ui/setup/guard.rs
 new file mode 100644
-index 0000000..7fd3b54
+index 0000000..cc34bc2
 --- /dev/null
-+++ b/src/agent/subagent/fanout.rs
-@@ -0,0 +1,811 @@
-+//! Parallel Subagent Swarm Fan-Out & Concurrency Runtime.
-+//!
-+//! Provides bounded concurrent execution of subagent swarms across isolated
-+//! Git worktrees, supporting both `all` and `race` join policies and
-+//! synthesizing unified map-reduce markdown reports.
++++ b/src/ui/setup/guard.rs
+@@ -0,0 +1,35 @@
++use crossterm::{
++    cursor::{Hide, Show},
++    event::{DisableBracketedPaste, EnableBracketedPaste},
++    execute,
++    terminal::{disable_raw_mode, enable_raw_mode},
++};
++use std::io::{self, stdout, Write};
 +
-+use serde::{Deserialize, Serialize};
-+use std::fmt;
-+use std::path::{Path, PathBuf};
-+use std::process::Stdio;
-+use std::sync::Arc;
-+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-+use tokio::process::Command;
-+use tokio_util::sync::CancellationToken;
++/// RAII guard that enables raw terminal mode, hides the cursor, and enables bracketed paste.
++/// When dropped, it automatically restores normal terminal mode, shows the cursor,
++/// and disables bracketed paste.
++pub struct TerminalGuard;
 +
-+use crate::agent::subagent::mailbox::AgentMailbox;
-+use crate::agent::subagent::message::{AgentMessage, MessageIntent};
-+use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-+use crate::agent::types::AgentEvent;
-+use crate::error::ToolError;
-+use crate::sandbox::worktree::GitWorktreeManager;
-+
-+/// Specification for an individual worker in a fanout swarm.
-+#[allow(dead_code)]
-+#[derive(Debug, Clone, Serialize, Deserialize)]
-+pub struct FanoutTaskItem {
-+    #[serde(alias = "prompt", default)]
-+    pub task: String,
-+    pub role: SubagentRole,
-+    #[serde(default)]
-+    pub workspace_mode: Option<WorkspaceMode>,
-+    #[serde(default)]
-+    pub max_iterations: Option<usize>,
-+    #[serde(default)]
-+    pub check_cmd: Option<String>,
-+}
-+
-+/// Completion mode for the swarm.
-+#[allow(dead_code)]
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-+#[serde(rename_all = "snake_case")]
-+pub enum FanoutJoinMode {
-+    #[default]
-+    All,
-+    Race,
-+}
-+
-+impl fmt::Display for FanoutJoinMode {
-+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-+        match self {
-+            Self::All => write!(f, "all"),
-+            Self::Race => write!(f, "race"),
++impl TerminalGuard {
++    /// Enables raw terminal mode, hides the cursor, and enables bracketed paste.
++    pub fn new() -> io::Result<Self> {
++        enable_raw_mode()?;
++        let mut out = stdout();
++        if let Err(e) = execute!(out, Hide, EnableBracketedPaste) {
++            let _ = disable_raw_mode();
++            return Err(e);
 +        }
++        let _ = out.flush();
++        Ok(Self)
 +    }
 +}
 +
-+/// Status of worktree merge arbitration for a worker.
++impl Drop for TerminalGuard {
++    fn drop(&mut self) {
++        let mut out = stdout();
++        let _ = execute!(out, Show, DisableBracketedPaste);
++        let _ = disable_raw_mode();
++        let _ = out.flush();
++    }
++}
+diff --git a/src/ui/setup/mod.rs b/src/ui/setup/mod.rs
+new file mode 100644
+index 0000000..514423e
+--- /dev/null
++++ b/src/ui/setup/mod.rs
+@@ -0,0 +1,9 @@
 +#[allow(dead_code)]
++pub mod guard;
++#[allow(dead_code)]
++pub mod selector;
++
++#[allow(unused_imports)]
++pub use guard::TerminalGuard;
++#[allow(unused_imports)]
++pub use selector::{next_index, prev_index, InteractiveSelector, SelectorItem};
+diff --git a/src/ui/setup/selector.rs b/src/ui/setup/selector.rs
+new file mode 100644
+index 0000000..85662df
+--- /dev/null
++++ b/src/ui/setup/selector.rs
+@@ -0,0 +1,313 @@
++use std::io::{self, Write};
++
++use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
++
++use super::guard::TerminalGuard;
++
++/// Represents an item in an interactive selection list.
 +#[derive(Debug, Clone, PartialEq, Eq)]
-+pub enum MergeStatus {
-+    NotApplicable,
-+    Merged {
-+        commit_hash: Option<String>,
-+    },
-+    VerificationFailed {
-+        command: String,
-+        exit_code: i32,
-+        stderr: String,
-+    },
-+    Conflict {
-+        conflicted_files: Vec<String>,
-+    },
-+    RetainedUnmerged,
-+    SkippedCancelled,
++pub struct SelectorItem {
++    pub id: String,
++    pub label: String,
++    pub badge: Option<String>,
++    pub hint: Option<String>,
 +}
 +
-+impl fmt::Display for MergeStatus {
-+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-+        match self {
-+            MergeStatus::NotApplicable => write!(f, "Not Applicable (Read-Only)"),
-+            MergeStatus::Merged { commit_hash } => match commit_hash {
-+                Some(hash) => write!(f, "Merged ({})", hash),
-+                None => write!(f, "Merged"),
-+            },
-+            MergeStatus::VerificationFailed {
-+                command, exit_code, ..
-+            } => {
-+                write!(
-+                    f,
-+                    "Verification Failed (`{}` exited with code {})",
-+                    command, exit_code
-+                )
-+            }
-+            MergeStatus::Conflict { conflicted_files } => {
-+                write!(f, "Conflict ({} conflicted files)", conflicted_files.len())
-+            }
-+            MergeStatus::RetainedUnmerged => write!(f, "Retained Unmerged"),
-+            MergeStatus::SkippedCancelled => write!(f, "Skipped / Cancelled"),
++impl SelectorItem {
++    /// Creates a new selector item with an ID and display label.
++    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
++        Self {
++            id: id.into(),
++            label: label.into(),
++            badge: None,
++            hint: None,
 +        }
++    }
++
++    /// Adds a status badge to the item (e.g. `Active`, `Configured`).
++    pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
++        self.badge = Some(badge.into());
++        self
++    }
++
++    /// Adds a descriptive hint to the item (e.g. `Configure LLM providers`).
++    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
++        self.hint = Some(hint.into());
++        self
 +    }
 +}
 +
-+/// Outcome of an individual worker within the swarm.
-+#[allow(dead_code)]
-+#[derive(Debug, Clone)]
-+pub struct WorkerResult {
-+    pub agent_id: AgentId,
-+    pub role: SubagentRole,
-+    pub task: String,
-+    pub success: bool,
-+    pub duration_ms: u64,
-+    pub tokens_used: usize,
-+    pub files_modified: Vec<String>,
-+    pub worktree_path: Option<PathBuf>,
-+    pub branch_name: Option<String>,
-+    pub merge_status: MergeStatus,
-+    pub summary: String,
-+    pub error: Option<String>,
++/// Helper to navigate to the previous item index with wrap-around.
++pub fn prev_index(current: usize, total: usize) -> usize {
++    InteractiveSelector::prev_index(current, total)
 +}
 +
-+/// Orchestrator for concurrent subagent swarm execution and map-reduce aggregation.
-+#[allow(dead_code)]
-+pub struct FanoutOrchestrator;
++/// Helper to navigate to the next item index with wrap-around.
++pub fn next_index(current: usize, total: usize) -> usize {
++    InteractiveSelector::next_index(current, total)
++}
 +
-+#[allow(dead_code)]
-+impl FanoutOrchestrator {
-+    /// Concurrently executes a batch of subagent tasks according to join mode and arbitration policy.
-+    pub async fn execute_fanout(
-+        workspace_root: &Path,
-+        tasks: Vec<FanoutTaskItem>,
-+        join_mode: FanoutJoinMode,
-+        _auto_merge: bool,
-+        max_concurrency: usize,
-+    ) -> Result<String, ToolError> {
-+        if tasks.is_empty() {
-+            return Ok("No subagent tasks specified for fan-out.".to_string());
-+        }
++/// Interactive terminal selector supporting arrow keys, vim keys (j/k), Enter, and Esc.
++#[derive(Debug, Default, Clone)]
++pub struct InteractiveSelector;
 +
-+        let total_tasks = tasks.len();
-+        let concurrency = max_concurrency.clamp(1, 16);
-+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-+        let cancel_token = CancellationToken::new();
-+
-+        let mut join_set = tokio::task::JoinSet::new();
-+
-+        for (idx, task_item) in tasks.into_iter().enumerate() {
-+            let root = workspace_root.to_path_buf();
-+            let sem = Arc::clone(&semaphore);
-+            let token = cancel_token.clone();
-+
-+            join_set.spawn(async move {
-+                let res = Self::run_single_worker(&root, task_item, sem, token).await;
-+                (idx, res)
-+            });
-+        }
-+
-+        let mut results: Vec<Option<WorkerResult>> = (0..total_tasks).map(|_| None).collect();
-+
-+        while let Some(join_res) = join_set.join_next().await {
-+            match join_res {
-+                Ok((idx, Ok(worker_result))) => {
-+                    if join_mode == FanoutJoinMode::Race
-+                        && worker_result.success
-+                        && !cancel_token.is_cancelled()
-+                    {
-+                        cancel_token.cancel();
-+                    }
-+                    results[idx] = Some(worker_result);
-+                }
-+                Ok((idx, Err(e))) => {
-+                    tracing::error!(task_index = idx, error = %e, "Worker failed with error");
-+                    results[idx] = Some(WorkerResult {
-+                        agent_id: AgentId::new_subagent("failed"),
-+                        role: SubagentRole::Coder,
-+                        task: String::new(),
-+                        success: false,
-+                        duration_ms: 0,
-+                        tokens_used: 0,
-+                        files_modified: Vec::new(),
-+                        worktree_path: None,
-+                        branch_name: None,
-+                        merge_status: MergeStatus::NotApplicable,
-+                        summary: format!("Worker failed to execute: {}", e),
-+                        error: Some(e.to_string()),
-+                    });
-+                }
-+                Err(e) => {
-+                    tracing::error!(error = %e, "Task join error in fanout JoinSet");
-+                }
-+            }
-+        }
-+
-+        let completed_results: Vec<WorkerResult> = results.into_iter().flatten().collect();
-+
-+        let report = Self::format_baseline_report(&completed_results, join_mode);
-+        Ok(report)
++impl InteractiveSelector {
++    /// Creates a new interactive selector.
++    pub fn new() -> Self {
++        Self
 +    }
 +
-+    /// Executes an individual subagent worker under semaphore bounds and cancellation control.
-+    pub async fn run_single_worker(
-+        workspace_root: &Path,
-+        task_item: FanoutTaskItem,
-+        semaphore: Arc<tokio::sync::Semaphore>,
-+        cancel_token: CancellationToken,
-+    ) -> Result<WorkerResult, ToolError> {
-+        let agent_id = AgentId::new_subagent(task_item.role.as_str());
-+
-+        // 1. Acquire concurrency permit, respecting early cancellation
-+        let _permit = tokio::select! {
-+            _ = cancel_token.cancelled() => {
-+                return Ok(WorkerResult {
-+                    agent_id,
-+                    role: task_item.role,
-+                    task: task_item.task,
-+                    success: false,
-+                    duration_ms: 0,
-+                    tokens_used: 0,
-+                    files_modified: Vec::new(),
-+                    worktree_path: None,
-+                    branch_name: None,
-+                    merge_status: MergeStatus::SkippedCancelled,
-+                    summary: "Task cancelled before acquiring concurrency permit.".to_string(),
-+                    error: Some("Cancelled".to_string()),
-+                });
-+            }
-+            permit_res = semaphore.acquire() => {
-+                match permit_res {
-+                    Ok(p) => p,
-+                    Err(_) => {
-+                        return Err(ToolError::ExecutionFailed(
-+                            "Concurrency semaphore closed".to_string(),
-+                        ));
-+                    }
-+                }
-+            }
-+        };
-+
-+        // 2. Check if cancelled before provisioning workspace
-+        if cancel_token.is_cancelled() {
-+            return Ok(WorkerResult {
-+                agent_id,
-+                role: task_item.role,
-+                task: task_item.task,
-+                success: false,
-+                duration_ms: 0,
-+                tokens_used: 0,
-+                files_modified: Vec::new(),
-+                worktree_path: None,
-+                branch_name: None,
-+                merge_status: MergeStatus::SkippedCancelled,
-+                summary: "Task cancelled before execution.".to_string(),
-+                error: Some("Cancelled".to_string()),
-+            });
-+        }
-+
-+        // 3. Determine workspace isolation mode
-+        let should_isolate = match task_item.workspace_mode {
-+            Some(WorkspaceMode::Worktree) => true,
-+            Some(WorkspaceMode::Shared) => false,
-+            Some(WorkspaceMode::Auto) | None => {
-+                task_item.role.default_workspace_mode() == WorkspaceMode::Worktree
-+            }
-+        };
-+
-+        let (worktree_handle, target_dir) = if should_isolate {
-+            match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
-+                Ok(handle) => {
-+                    let path = handle.worktree_path.clone();
-+                    (Some(handle), path)
-+                }
-+                Err(e) => {
-+                    tracing::warn!(
-+                        agent_id = %agent_id,
-+                        error = %e,
-+                        "Worktree creation failed or repository is not Git; falling back to workspace root"
-+                    );
-+                    (None, workspace_root.to_path_buf())
-+                }
-+            }
++    /// Calculates previous index with bounds check and wrap-around.
++    pub fn prev_index(current: usize, total: usize) -> usize {
++        if total == 0 {
++            0
++        } else if current == 0 || current >= total {
++            total - 1
 +        } else {
-+            (None, workspace_root.to_path_buf())
-+        };
++            current - 1
++        }
++    }
 +
-+        // 4. Initialize child agent mailbox directory
-+        let child_agent_dir = workspace_root
-+            .join(".minicode")
-+            .join("agents")
-+            .join(&agent_id.0);
-+        if let Ok(child_mailbox) = AgentMailbox::new(agent_id.clone(), &child_agent_dir) {
-+            let init_msg = AgentMessage::new(
-+                AgentId::parent(),
-+                agent_id.clone(),
-+                MessageIntent::TaskInit,
-+                &task_item.task,
-+            );
-+            let _ = child_mailbox.post(init_msg);
++    /// Calculates next index with bounds check and wrap-around.
++    pub fn next_index(current: usize, total: usize) -> usize {
++        if total == 0 || current + 1 >= total {
++            0
++        } else {
++            current + 1
++        }
++    }
++
++    /// Formats an individual selector item into an ANSI styled string line.
++    pub fn format_item(item: &SelectorItem, is_selected: bool) -> String {
++        let mut s = String::new();
++        if is_selected {
++            s.push_str("\x1b[1;36m  ❯ \x1b[0m\x1b[1m");
++            s.push_str(&item.label);
++            s.push_str("\x1b[0m");
++        } else {
++            s.push_str("    ");
++            s.push_str(&item.label);
 +        }
 +
-+        // 5. Spawn child minicode process
-+        let current_exe = match std::env::current_exe() {
-+            Ok(exe) => exe,
-+            Err(e) => {
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                return Err(ToolError::ExecutionFailed(format!(
-+                    "Failed to determine current executable: {}",
-+                    e
-+                )));
++        if let Some(badge) = &item.badge {
++            if !badge.is_empty() {
++                s.push(' ');
++                s.push_str(badge);
 +            }
-+        };
-+
-+        let mut cmd = Command::new(current_exe);
-+        cmd.arg("run");
-+        cmd.arg("-d").arg(&target_dir);
-+        cmd.arg("-y");
-+        cmd.arg("--json-stream");
-+        cmd.arg("--tools").arg(task_item.role.tool_filter_mode());
-+
-+        if let Some(max_iter) = task_item.max_iterations {
-+            cmd.arg("--max-iterations").arg(max_iter.to_string());
 +        }
 +
-+        cmd.arg(&task_item.task);
-+        cmd.stdin(Stdio::null());
-+        cmd.stdout(Stdio::piped());
-+        cmd.stderr(Stdio::piped());
-+        cmd.kill_on_drop(true);
-+
-+        #[cfg(unix)]
-+        {
-+            cmd.process_group(0);
++        if let Some(hint) = &item.hint {
++            if !hint.is_empty() {
++                s.push_str(" \x1b[90m");
++                s.push_str(hint);
++                s.push_str("\x1b[0m");
++            }
 +        }
 +
-+        let mut child = match cmd.spawn() {
-+            Ok(c) => c,
-+            Err(e) => {
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                return Err(ToolError::ExecutionFailed(format!(
-+                    "Failed to spawn subagent process: {}",
-+                    e
-+                )));
++        s
++    }
++
++    /// Generates all rendered lines for the current prompt, items, and navigation footer.
++    pub fn render_lines(prompt: &str, items: &[SelectorItem], current_index: usize) -> Vec<String> {
++        let mut lines = Vec::new();
++        if !prompt.is_empty() {
++            for line in prompt.lines() {
++                lines.push(format!("\x1b[1m{}\x1b[0m", line));
 +            }
-+        };
++        }
++        for (i, item) in items.iter().enumerate() {
++            lines.push(Self::format_item(item, i == current_index));
++        }
++        lines.push(
++            "\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m"
++                .to_string(),
++        );
++        lines.push("  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m".to_string());
++        lines
++    }
 +
-+        let child_id = child.id();
-+        let stdout = match child.stdout.take() {
-+            Some(out) => out,
-+            None => {
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                return Err(ToolError::ExecutionFailed(
-+                    "Failed to capture child process stdout".to_string(),
-+                ));
++    fn redraw<W: Write>(
++        out: &mut W,
++        prompt: &str,
++        items: &[SelectorItem],
++        current_index: usize,
++        total_lines: usize,
++    ) -> io::Result<()> {
++        if total_lines > 0 {
++            write!(out, "\x1b[{}A", total_lines)?;
++        }
++        let lines = Self::render_lines(prompt, items, current_index);
++        for line in &lines {
++            write!(out, "\x1b[2K\r{}\r\n", line)?;
++        }
++        out.flush()
++    }
++
++    fn clear_lines<W: Write>(out: &mut W, total_lines: usize) -> io::Result<()> {
++        if total_lines > 0 {
++            write!(out, "\x1b[{}A", total_lines)?;
++            for _ in 0..total_lines {
++                write!(out, "\x1b[2K\r\n")?;
 +            }
-+        };
-+        let stderr = child.stderr.take();
++            write!(out, "\x1b[{}A\r", total_lines)?;
++            out.flush()?;
++        }
++        Ok(())
++    }
 +
-+        let start_time = std::time::Instant::now();
-+        let mut final_response = String::new();
-+        let mut files_modified: Vec<String> = Vec::new();
-+        let mut tokens_used = 0;
-+        let mut child_success = true;
-+        let mut error_msg: Option<String> = None;
-+        let mut captured_stderr = String::new();
++    /// Prompts the user with an interactive terminal selector.
++    /// Returns `Ok(Some(index))` if confirmed with Enter, or `Ok(None)` if cancelled with Esc / Ctrl+C.
++    pub fn select(
++        &self,
++        prompt: &str,
++        items: &[SelectorItem],
++        initial_index: usize,
++    ) -> io::Result<Option<usize>> {
++        if items.is_empty() {
++            return Ok(None);
++        }
 +
-+        let reader = BufReader::new(stdout);
-+        let mut lines = reader.lines();
++        let _guard = TerminalGuard::new()?;
++        let mut out = io::stdout();
 +
-+        let execution_future = async {
-+            while let Ok(Some(line)) = lines.next_line().await {
-+                let trimmed = line.trim();
-+                if trimmed.is_empty() {
++        let mut current_index = initial_index.min(items.len() - 1);
++        let lines = Self::render_lines(prompt, items, current_index);
++        let total_lines = lines.len();
++
++        for line in &lines {
++            write!(out, "{}\r\n", line)?;
++        }
++        out.flush()?;
++
++        loop {
++            let ev = crossterm::event::read()?;
++            if let Event::Key(key_event) = ev {
++                if key_event.kind == KeyEventKind::Release {
 +                    continue;
 +                }
-+                if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-+                    match event {
-+                        AgentEvent::StreamDelta { delta, .. } => {
-+                            final_response.push_str(&delta);
++
++                if key_event.modifiers.contains(KeyModifiers::CONTROL)
++                    && key_event.code == KeyCode::Char('c')
++                {
++                    Self::clear_lines(&mut out, total_lines)?;
++                    return Ok(None);
++                }
++
++                match key_event.code {
++                    KeyCode::Up | KeyCode::Char('k') => {
++                        let new_index = Self::prev_index(current_index, items.len());
++                        if new_index != current_index {
++                            current_index = new_index;
++                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
 +                        }
-+                        AgentEvent::FileModified { path, .. } => {
-+                            if !files_modified.contains(&path) {
-+                                files_modified.push(path);
-+                            }
-+                        }
-+                        AgentEvent::TurnEnd {
-+                            total_tokens_used,
-+                            files_modified: modified,
-+                            status,
-+                            ..
-+                        } => {
-+                            tokens_used = total_tokens_used;
-+                            for f in modified {
-+                                if !files_modified.contains(&f) {
-+                                    files_modified.push(f);
-+                                }
-+                            }
-+                            if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
-+                                || status == crate::constants::TURN_STATUS_CANCELLED
-+                            {
-+                                child_success = false;
-+                            }
-+                        }
-+                        AgentEvent::Error { message, .. } => {
-+                            tracing::error!(agent_id = %agent_id, message = %message, "Subagent encountered error");
-+                            child_success = false;
-+                            error_msg = Some(message);
-+                        }
-+                        _ => {}
 +                    }
-+                }
-+            }
-+
-+            if let Some(mut err_stream) = stderr {
-+                let _ = err_stream.read_to_string(&mut captured_stderr).await;
-+            }
-+
-+            child.wait().await
-+        };
-+
-+        let exit_status = tokio::select! {
-+            _ = cancel_token.cancelled() => {
-+                let _ = child.kill().await;
-+                #[cfg(unix)]
-+                if let Some(pid) = child_id {
-+                    unsafe {
-+                        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-+                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
-+                    }
-+                }
-+                if let Some(ref handle) = worktree_handle {
-+                    let _ = GitWorktreeManager::remove_worktree(handle);
-+                }
-+                let duration_ms = start_time.elapsed().as_millis() as u64;
-+                return Ok(WorkerResult {
-+                    agent_id,
-+                    role: task_item.role,
-+                    task: task_item.task,
-+                    success: false,
-+                    duration_ms,
-+                    tokens_used,
-+                    files_modified,
-+                    worktree_path: None,
-+                    branch_name: None,
-+                    merge_status: MergeStatus::SkippedCancelled,
-+                    summary: "Worker execution was cancelled.".to_string(),
-+                    error: Some("Worker cancelled".to_string()),
-+                });
-+            }
-+            wait_res = execution_future => {
-+                match wait_res {
-+                    Ok(status) => status,
-+                    Err(e) => {
-+                        if let Some(ref handle) = worktree_handle {
-+                            let _ = GitWorktreeManager::remove_worktree(handle);
++                    KeyCode::Down | KeyCode::Char('j') => {
++                        let new_index = Self::next_index(current_index, items.len());
++                        if new_index != current_index {
++                            current_index = new_index;
++                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
 +                        }
-+                        let duration_ms = start_time.elapsed().as_millis() as u64;
-+                        return Ok(WorkerResult {
-+                            agent_id,
-+                            role: task_item.role,
-+                            task: task_item.task,
-+                            success: false,
-+                            duration_ms,
-+                            tokens_used,
-+                            files_modified,
-+                            worktree_path: None,
-+                            branch_name: None,
-+                            merge_status: MergeStatus::NotApplicable,
-+                            summary: format!("Subagent child wait error: {}", e),
-+                            error: Some(e.to_string()),
-+                        });
 +                    }
-+                }
-+            }
-+        };
-+
-+        let duration_ms = start_time.elapsed().as_millis() as u64;
-+
-+        if !exit_status.success() {
-+            child_success = false;
-+        }
-+
-+        if final_response.trim().is_empty() {
-+            if child_success {
-+                final_response = "Task executed successfully without stream output.".to_string();
-+            } else {
-+                final_response = error_msg.clone().unwrap_or_else(|| {
-+                    let trimmed_err = captured_stderr.trim();
-+                    if !trimmed_err.is_empty() {
-+                        trimmed_err.to_string()
-+                    } else {
-+                        format!(
-+                            "Subagent process failed with exit code {:?}",
-+                            exit_status.code()
-+                        )
++                    KeyCode::Enter => {
++                        Self::clear_lines(&mut out, total_lines)?;
++                        return Ok(Some(current_index));
 +                    }
-+                });
-+            }
-+        }
-+
-+        if child_success {
-+            let (wt_path, br_name) = if let Some(ref handle) = worktree_handle {
-+                let diff = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
-+                if !diff.is_empty() {
-+                    final_response
-+                        .push_str(&format!("\n\n### Worktree Diff\n```diff\n{}\n```", diff));
++                    KeyCode::Esc => {
++                        Self::clear_lines(&mut out, total_lines)?;
++                        return Ok(None);
++                    }
++                    _ => {}
 +                }
-+                (
-+                    Some(handle.worktree_path.clone()),
-+                    Some(handle.branch_name.clone()),
-+                )
-+            } else {
-+                (None, None)
-+            };
-+
-+            let merge_status = if wt_path.is_some() {
-+                MergeStatus::RetainedUnmerged
-+            } else {
-+                MergeStatus::NotApplicable
-+            };
-+
-+            Ok(WorkerResult {
-+                agent_id,
-+                role: task_item.role,
-+                task: task_item.task,
-+                success: true,
-+                duration_ms,
-+                tokens_used,
-+                files_modified,
-+                worktree_path: wt_path,
-+                branch_name: br_name,
-+                merge_status,
-+                summary: final_response.trim().to_string(),
-+                error: None,
-+            })
-+        } else {
-+            // Clean up worktree on failure
-+            if let Some(ref handle) = worktree_handle {
-+                let _ = GitWorktreeManager::remove_worktree(handle);
 +            }
-+
-+            let error_detail = error_msg.or_else(|| {
-+                let trimmed_err = captured_stderr.trim();
-+                if !trimmed_err.is_empty() {
-+                    Some(trimmed_err.to_string())
-+                } else {
-+                    Some(format!(
-+                        "Process exited with status {:?}",
-+                        exit_status.code()
-+                    ))
-+                }
-+            });
-+
-+            Ok(WorkerResult {
-+                agent_id,
-+                role: task_item.role,
-+                task: task_item.task,
-+                success: false,
-+                duration_ms,
-+                tokens_used,
-+                files_modified,
-+                worktree_path: None,
-+                branch_name: None,
-+                merge_status: MergeStatus::NotApplicable,
-+                summary: final_response.trim().to_string(),
-+                error: error_detail,
-+            })
 +        }
-+    }
-+
-+    /// Synthesizes a baseline map-reduce markdown report summarizing swarm outcomes.
-+    pub fn format_baseline_report(results: &[WorkerResult], join_mode: FanoutJoinMode) -> String {
-+        let total = results.len();
-+        let successful = results.iter().filter(|r| r.success).count();
-+        let total_tokens: usize = results.iter().map(|r| r.tokens_used).sum();
-+        let total_duration_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
-+
-+        let mut report = String::new();
-+        report.push_str("## Parallel Swarm Fan-Out Execution Report\n\n");
-+        report.push_str(&format!("- **Join Mode**: `{}`\n", join_mode));
-+        report.push_str(&format!("- **Tasks Executed**: {}\n", total));
-+        report.push_str(&format!(
-+            "- **Successful Workers**: {}/{}\n",
-+            successful, total
-+        ));
-+        report.push_str(&format!("- **Total Tokens Used**: {}\n", total_tokens));
-+        report.push_str(&format!(
-+            "- **Aggregate Duration**: {}ms\n\n",
-+            total_duration_ms
-+        ));
-+
-+        report.push_str("### Swarm Worker Outcomes\n\n");
-+        report.push_str(
-+            "| Worker ID | Role | Status | Duration | Tokens | Files Modified | Merge Status |\n",
-+        );
-+        report.push_str(
-+            "|-----------|------|--------|----------|--------|----------------|--------------|\n",
-+        );
-+
-+        for r in results {
-+            let status_icon = if r.success {
-+                "✔ Success"
-+            } else if r.merge_status == MergeStatus::SkippedCancelled {
-+                "⏹ Cancelled"
-+            } else {
-+                "❌ Failed"
-+            };
-+            let files_str = if r.files_modified.is_empty() {
-+                "None".to_string()
-+            } else {
-+                r.files_modified.join(", ")
-+            };
-+            report.push_str(&format!(
-+                "| `{}` | {} | {} | {}ms | {} | {} | {} |\n",
-+                r.agent_id,
-+                r.role.badge(),
-+                status_icon,
-+                r.duration_ms,
-+                r.tokens_used,
-+                files_str,
-+                r.merge_status,
-+            ));
-+        }
-+
-+        report.push_str("\n### Worker Summaries & Findings\n\n");
-+        for r in results {
-+            report.push_str(&format!("#### `[{}]` ({})\n", r.agent_id, r.role.badge()));
-+            report.push_str(&format!("**Task**: {}\n\n", r.task));
-+            if let Some(ref err) = r.error {
-+                report.push_str(&format!("**Error**: {}\n\n", err));
-+            }
-+            if !r.summary.is_empty() {
-+                report.push_str(&format!("{}\n\n", r.summary));
-+            }
-+            if let Some(ref wt) = r.worktree_path {
-+                report.push_str(&format!("*Worktree*: `{}`\n\n", wt.display()));
-+            }
-+            report.push_str("---\n\n");
-+        }
-+
-+        report
 +    }
 +}
 +
 +#[cfg(test)]
-+pub mod tests {
++mod tests {
 +    use super::*;
 +
 +    #[test]
-+    fn test_fanout_join_mode_serialization() {
-+        let all_mode = FanoutJoinMode::All;
-+        let json_all = serde_json::to_string(&all_mode).expect("serialize All");
-+        assert_eq!(json_all, "\"all\"");
-+        let de_all: FanoutJoinMode = serde_json::from_str(&json_all).expect("deserialize All");
-+        assert_eq!(de_all, FanoutJoinMode::All);
-+
-+        let race_mode = FanoutJoinMode::Race;
-+        let json_race = serde_json::to_string(&race_mode).expect("serialize Race");
-+        assert_eq!(json_race, "\"race\"");
-+        let de_race: FanoutJoinMode = serde_json::from_str(&json_race).expect("deserialize Race");
-+        assert_eq!(de_race, FanoutJoinMode::Race);
-+
-+        assert_eq!(FanoutJoinMode::default(), FanoutJoinMode::All);
-+        assert_eq!(format!("{}", FanoutJoinMode::All), "all");
-+        assert_eq!(format!("{}", FanoutJoinMode::Race), "race");
-+    }
-+
-+    #[tokio::test]
-+    async fn test_fanout_empty_tasks() {
-+        let temp_dir = tempfile::tempdir().expect("tempdir");
-+        let result = FanoutOrchestrator::execute_fanout(
-+            temp_dir.path(),
-+            Vec::new(),
-+            FanoutJoinMode::All,
-+            false,
-+            4,
-+        )
-+        .await;
-+
-+        assert!(
-+            result.is_ok(),
-+            "execute_fanout should return Ok for empty tasks"
-+        );
-+        assert_eq!(
-+            result.expect("result ok"),
-+            "No subagent tasks specified for fan-out."
-+        );
++    fn test_selector_item_builder() {
++        let item = SelectorItem::new("provider", "⚡ Provider")
++            .with_badge("Active")
++            .with_hint("Configure LLM providers");
++        assert_eq!(item.id, "provider");
++        assert_eq!(item.label, "⚡ Provider");
++        assert_eq!(item.badge.as_deref(), Some("Active"));
++        assert_eq!(item.hint.as_deref(), Some("Configure LLM providers"));
 +    }
 +
 +    #[test]
-+    fn test_fanout_task_item_deserialization() {
-+        let json_str = r#"{
-+            "task": "Refactor authentication flow",
-+            "role": "coder",
-+            "workspace_mode": "worktree",
-+            "max_iterations": 10,
-+            "check_cmd": "cargo test"
-+        }"#;
-+        let item: FanoutTaskItem =
-+            serde_json::from_str(json_str).expect("deserialize FanoutTaskItem");
-+        assert_eq!(item.task, "Refactor authentication flow");
-+        assert_eq!(item.role, SubagentRole::Coder);
-+        assert_eq!(item.workspace_mode, Some(WorkspaceMode::Worktree));
-+        assert_eq!(item.max_iterations, Some(10));
-+        assert_eq!(item.check_cmd, Some("cargo test".to_string()));
-+
-+        // Test alias 'prompt' and omitted defaults
-+        let json_alias = r#"{
-+            "prompt": "Inspect database schemas",
-+            "role": "scout"
-+        }"#;
-+        let item_alias: FanoutTaskItem =
-+            serde_json::from_str(json_alias).expect("deserialize alias prompt");
-+        assert_eq!(item_alias.task, "Inspect database schemas");
-+        assert_eq!(item_alias.role, SubagentRole::Scout);
-+        assert!(item_alias.workspace_mode.is_none());
-+        assert!(item_alias.max_iterations.is_none());
-+        assert!(item_alias.check_cmd.is_none());
++    fn test_navigation_wrap_and_bounds() {
++        assert_eq!(InteractiveSelector::prev_index(0, 3), 2);
++        assert_eq!(InteractiveSelector::prev_index(1, 3), 0);
++        assert_eq!(InteractiveSelector::next_index(2, 3), 0);
++        assert_eq!(InteractiveSelector::next_index(1, 3), 2);
 +    }
 +
 +    #[test]
-+    fn test_merge_status_variants() {
-+        let not_app = MergeStatus::NotApplicable;
-+        let merged_with_hash = MergeStatus::Merged {
-+            commit_hash: Some("7fa81c0".to_string()),
-+        };
-+        let merged_no_hash = MergeStatus::Merged { commit_hash: None };
-+        let failed = MergeStatus::VerificationFailed {
-+            command: "cargo test".to_string(),
-+            exit_code: 101,
-+            stderr: "assertion failed".to_string(),
-+        };
-+        let conflict = MergeStatus::Conflict {
-+            conflicted_files: vec!["src/main.rs".to_string(), "Cargo.toml".to_string()],
-+        };
-+        let retained = MergeStatus::RetainedUnmerged;
-+        let skipped = MergeStatus::SkippedCancelled;
++    fn test_navigation_edge_cases() {
++        // Zero items
++        assert_eq!(InteractiveSelector::prev_index(0, 0), 0);
++        assert_eq!(InteractiveSelector::next_index(0, 0), 0);
 +
-+        assert_eq!(not_app, MergeStatus::NotApplicable);
-+        assert_eq!(retained, MergeStatus::RetainedUnmerged);
-+        assert_eq!(skipped, MergeStatus::SkippedCancelled);
-+        assert_ne!(not_app, retained);
-+        assert_ne!(retained, skipped);
++        // Single item
++        assert_eq!(InteractiveSelector::prev_index(0, 1), 0);
++        assert_eq!(InteractiveSelector::next_index(0, 1), 0);
 +
-+        assert!(format!("{}", not_app).contains("Not Applicable"));
-+        assert!(format!("{}", merged_with_hash).contains("7fa81c0"));
-+        assert!(format!("{}", merged_no_hash).contains("Merged"));
-+        assert!(format!("{}", failed).contains("cargo test"));
-+        assert!(format!("{}", failed).contains("101"));
-+        assert!(format!("{}", conflict).contains("2 conflicted files"));
-+        assert!(format!("{}", retained).contains("Retained Unmerged"));
-+        assert!(format!("{}", skipped).contains("Skipped / Cancelled"));
-+    }
++        // Standalone functions
++        assert_eq!(prev_index(0, 3), 2);
++        assert_eq!(next_index(2, 3), 0);
 +
-+    #[tokio::test]
-+    async fn test_run_single_worker_cancelled_early() {
-+        let temp_dir = tempfile::tempdir().expect("tempdir");
-+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
-+        let token = CancellationToken::new();
-+        token.cancel();
-+
-+        let task_item = FanoutTaskItem {
-+            task: "Inspect codebase".to_string(),
-+            role: SubagentRole::Scout,
-+            workspace_mode: Some(WorkspaceMode::Shared),
-+            max_iterations: None,
-+            check_cmd: None,
-+        };
-+
-+        let res =
-+            FanoutOrchestrator::run_single_worker(temp_dir.path(), task_item, sem, token).await;
-+
-+        assert!(
-+            res.is_ok(),
-+            "run_single_worker should return Ok with SkippedCancelled"
-+        );
-+        let worker_res = res.expect("worker result");
-+        assert_eq!(worker_res.merge_status, MergeStatus::SkippedCancelled);
-+        assert!(!worker_res.success);
-+        assert!(worker_res.summary.contains("cancelled"));
++        // Out of bounds current
++        assert_eq!(InteractiveSelector::prev_index(5, 3), 2);
++        assert_eq!(InteractiveSelector::next_index(5, 3), 0);
 +    }
 +
 +    #[test]
-+    fn test_worker_result_and_report_formatting() {
-+        let worker = WorkerResult {
-+            agent_id: AgentId("coder-test".to_string()),
-+            role: SubagentRole::Coder,
-+            task: "Fix parser bug".to_string(),
-+            success: true,
-+            duration_ms: 1500,
-+            tokens_used: 500,
-+            files_modified: vec!["src/parser.rs".to_string()],
-+            worktree_path: Some(PathBuf::from("/tmp/wt-1")),
-+            branch_name: Some("minicode/subagent/coder-test".to_string()),
-+            merge_status: MergeStatus::RetainedUnmerged,
-+            summary: "Resolved edge case in token parser.".to_string(),
-+            error: None,
-+        };
++    fn test_format_item_highlighted_and_normal() {
++        let item = SelectorItem::new("test", "Test Item")
++            .with_badge("[Active]")
++            .with_hint("Hint text");
 +
-+        let report = FanoutOrchestrator::format_baseline_report(&[worker], FanoutJoinMode::All);
-+        assert!(report.contains("coder-test"));
-+        assert!(report.contains("Fix parser bug"));
-+        assert!(report.contains("Resolved edge case in token parser."));
-+        assert!(report.contains("src/parser.rs"));
-+        assert!(report.contains("Retained Unmerged"));
-+        assert!(report.contains("Parallel Swarm Fan-Out Execution Report"));
++        let highlighted = InteractiveSelector::format_item(&item, true);
++        assert!(highlighted.contains("  ❯ "));
++        assert!(highlighted.contains("Test Item"));
++        assert!(highlighted.contains("[Active]"));
++        assert!(highlighted.contains("Hint text"));
++
++        let normal = InteractiveSelector::format_item(&item, false);
++        assert!(normal.starts_with("    "));
++        assert!(!normal.contains("❯"));
++        assert!(normal.contains("Test Item"));
++        assert!(normal.contains("[Active]"));
++        assert!(normal.contains("Hint text"));
++    }
++
++    #[test]
++    fn test_render_lines_structure() {
++        let items = vec![
++            SelectorItem::new("1", "First"),
++            SelectorItem::new("2", "Second"),
++        ];
++
++        let lines = InteractiveSelector::render_lines("Choose:", &items, 0);
++        assert_eq!(lines.len(), 5); // 1 header + 2 items + 1 separator + 1 footer
++        assert!(lines[0].contains("Choose:"));
++        assert!(lines[1].contains("First"));
++        assert!(lines[1].contains("❯")); // Selected
++        assert!(lines[2].contains("Second"));
++        assert!(!lines[2].contains("❯")); // Not selected
++        assert!(lines[3].contains("───"));
++        assert!(lines[4].contains("↑/↓ Navigate"));
++    }
++
++    #[test]
++    fn test_empty_items_select() {
++        let selector = InteractiveSelector::new();
++        let result = selector.select("Empty", &[], 0);
++        assert!(result.is_ok());
++        assert_eq!(result.unwrap(), None);
 +    }
 +}
-diff --git a/src/agent/subagent/mod.rs b/src/agent/subagent/mod.rs
-index ea56bb8..0db62a2 100644
---- a/src/agent/subagent/mod.rs
-+++ b/src/agent/subagent/mod.rs
-@@ -1,3 +1,4 @@
-+pub mod fanout;
- pub mod mailbox;
- pub mod message;
- pub mod orchestrator;
-@@ -8,6 +9,8 @@ pub mod transcript;
- pub mod types;
- pub mod worker;
- 
-+#[allow(unused_imports)]
-+pub use fanout::{FanoutJoinMode, FanoutOrchestrator, FanoutTaskItem, MergeStatus, WorkerResult};
- #[allow(unused_imports)]
- pub use mailbox::AgentMailbox;
- #[allow(unused_imports)]
+f29da22 feat(ui): implement TerminalGuard and InteractiveSelector primitives for setup wizard

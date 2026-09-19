@@ -1,117 +1,68 @@
-# Task 3 Brief: Tool Schema Upgrade & Registry Dispatch in `swarms.rs`
+# Task 3 Brief: Provider Workflow & Interactive Menu Hierarchy
 
-## Overview
-Upgrade the `fanout_subagents` tool primitive in `src/tools/registry/agent_tools/swarms.rs` to support the modern Phase 134 parallel swarm orchestration engine:
-- Bounded concurrency with `max_concurrency`.
-- Join policies: `all` and `race`.
-- Sequential merge arbitration via `auto_merge`.
-- Modern role presets (`scout`, `coder`, `tester`, `reviewer`, `architect`, `security`, `researcher`, etc.) and `workspace_mode` (`auto`, `worktree`, `shared`).
-- Seamless routing of `fanout_subagents` execution to `FanoutOrchestrator::execute_fanout`.
+## Objective
+Implement `SetupWizard` in `src/ui/setup/wizard.rs` providing the modern hierarchical interactive menu flow (Main Menu -> Provider Menu -> Available Providers / Custom Provider), wire inline API key input and auto-activation, and connect `ConfigMenu::run_interactive` to `SetupWizard::run`.
 
-## Files to Modify:
-- `src/tools/registry/agent_tools/swarms.rs`
+## Files to Create / Modify
+- Create: `src/ui/setup/wizard.rs`
+- Modify: `src/ui/setup/mod.rs` (export `pub mod wizard;` and re-export `SetupWizard`)
+- Modify: `src/ui/configure.rs` (delegate `ConfigMenu::run_interactive` to `SetupWizard::run(workspace)`)
+- Test: `src/ui/setup/wizard.rs` (inline unit tests)
 
-## Interfaces & Requirements:
-
-### 1. Update `ToolSchema` for `fanout_subagents`:
-In `src/tools/registry/agent_tools/swarms.rs` `get_schemas()`:
-Update `fanout_subagents` schema:
-```json
-{
-  "name": "fanout_subagents",
-  "description": "Concurrently dispatch a batch of specialized subagents across isolated Git Worktrees or shared repository threads. Supports race-to-first-success or all-worker join policies, sequential conflict-free merge arbitration, and executive map-reduce reporting.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "tasks": {
-        "type": "array",
-        "description": "List of subagent task specifications to execute concurrently",
-        "items": {
-          "type": "object",
-          "properties": {
-            "task": {
-              "type": "string",
-              "description": "Detailed task instructions or prompt for this worker"
-            },
-            "prompt": {
-              "type": "string",
-              "description": "Alias for task"
-            },
-            "role": {
-              "type": "string",
-              "enum": ["scout", "coder", "tester", "reviewer", "architect", "security", "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
-              "description": "Specialized role preset defining worker capabilities and workspace isolation (default: coder)"
-            },
-            "workspace_mode": {
-              "type": "string",
-              "enum": ["auto", "worktree", "shared"],
-              "description": "Workspace isolation mode (default: auto)"
-            },
-            "max_iterations": {
-              "type": "integer",
-              "description": "Maximum autonomous tool iteration steps for this worker"
-            },
-            "check_cmd": {
-              "type": "string",
-              "description": "Custom validation command to run before merge (e.g. 'cargo check', or 'skip')"
-            }
-          },
-          "required": ["task"]
-        }
-      },
-      "join_mode": {
-        "type": "string",
-        "enum": ["all", "race"],
-        "description": "Join policy: 'all' awaits all workers; 'race' cancels remaining workers upon first success (default: 'all')"
-      },
-      "auto_merge": {
-        "type": "boolean",
-        "description": "If true, sequentially arbitrates and merges successful mutating worktrees into current branch (default: false)"
-      },
-      "max_concurrency": {
-        "type": "integer",
-        "description": "Maximum concurrent workers running simultaneously (default: 4, min: 1, max: 16)"
-      }
-    },
-    "required": ["tasks"]
-  }
-}
-```
-
-### 2. Update `dispatch()` for `fanout_subagents`:
-In `src/tools/registry/agent_tools/swarms.rs` `dispatch()`:
-- Parse `tasks_arr`:
-  - For each element in `tasks_arr`:
-    - Read `task` (or fallback to `prompt`). If neither exists or is empty, return `ToolError::InvalidArguments`.
-    - Read `role`: parse string using `SubagentRole::from_str_loose` (defaults to `SubagentRole::Coder` if missing).
-    - Read `workspace_mode`: parse optional string `"worktree"` -> `Some(WorkspaceMode::Worktree)`, `"shared"` -> `Some(WorkspaceMode::Shared)`, `"auto"` -> `Some(WorkspaceMode::Auto)`, else `None`.
-    - Read `max_iterations`: optional integer (`param::opt_u64`).
-    - Read `check_cmd`: optional string (`param::opt_str`).
-    - Construct `FanoutTaskItem`.
-- Parse `join_mode`:
-  - If string == `"race"`, use `FanoutJoinMode::Race`, else `FanoutJoinMode::All`.
-- Parse `auto_merge`:
-  - Boolean flag via `param::opt_bool(args, "auto_merge", false)`.
-- Parse `max_concurrency`:
-  - Optional integer via `param::opt_u64(args, "max_concurrency").unwrap_or(4) as usize`, clamped to `1..=16`.
-- Call:
-  `FanoutOrchestrator::execute_fanout(workspace_root, tasks, join_mode, auto_merge, max_concurrency).await`
-  and map Result to `Result<String>`.
-
-### 3. Unit Tests in `src/tools/registry/agent_tools/swarms.rs`:
-- `test_fanout_subagents_schema_structure`:
-  - Validates `fanout_subagents` is registered in `get_schemas()`.
-  - Validates required fields, parameters, and enum values.
-- `test_fanout_subagents_argument_parsing`:
-  - Tests parsing of JSON payload containing `tasks` (with `task` and `prompt` alias), `join_mode: "race"`, `auto_merge: true`, `max_concurrency: 8`.
-- Ensure `test_total_tool_count` passes:
-  `cargo test -j 1 --lib tools::tests::test_total_tool_count` (preserves 135 total tools).
-
-## Constraints:
-- ONLY run targeted tests:
-  `cargo test -j 1 --lib tools::registry::agent_tools::swarms::tests`
-  `cargo test -j 1 --lib tools::tests::test_total_tool_count`
-- Zero `.unwrap()` or `.expect()` in non-test code.
-- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Commit with message: `feat(tools): upgrade fanout_subagents tool primitive with modern swarm orchestration (Phase 134)`.
-- Write execution report to `docs/superpowers/plans/task-3-report.md`.
+## Constraints & Requirements
+1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
+2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::wizard::tests`. NEVER run the full test suite.
+3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Propagate `crate::error::Result<T>`.
+4. **Interactive TTY Check:**
+   - Detect `!std::io::stdin().is_terminal()`. If running non-interactively, return `crate::error::ConfigError` or `anyhow::bail!("'minicode setup' requires an interactive terminal.")`.
+5. **Menu Hierarchy & Flow:**
+   - **Level 1: Main Menu**
+     - Header:
+       ```text
+       ⚡ minicode — Interactive Setup Wizard
+       Active Provider: {provider} | Active Model: {model}
+       ```
+     - Items:
+       - `SelectorItem::new("provider", "⚡ Provider").with_hint("Setup & manage AI providers")`
+       - `SelectorItem::new("back", "◄ Back / Exit").with_hint("Save changes and return to shell")`
+     - On "back" / Esc / Ctrl+C: save with `ConfigMenu::save_all(&config, workspace)?`, print confirmation receipt, and exit cleanly.
+   - **Level 2: Provider Menu**
+     - Header: `=== Provider Configuration ===`
+     - Items:
+       - `SelectorItem::new("available", "🌐 Available Providers").with_hint("MiniMax, Z.ai, OpenRouter, Gemini, OpenAI, etc.")`
+       - `SelectorItem::new("custom", "🔌 Custom Provider").with_hint("OpenAI-compatible endpoints (vLLM, Ollama, etc.)")`
+       - `SelectorItem::new("back", "◄ Back").with_hint("Return to main menu")`
+   - **Level 3: Available Providers**
+     - Catalog (10 providers):
+       - `openrouter` ("OpenRouter", "OPENROUTER_API_KEY", "100+ models: Claude, DeepSeek, Qwen")
+       - `gemini` ("Google Gemini", "GEMINI_API_KEY", "Gemini 2.5 Pro & Flash")
+       - `openai` ("OpenAI", "OPENAI_API_KEY", "GPT-4o, o3-mini")
+       - `deepseek` ("DeepSeek", "DEEPSEEK_API_KEY", "DeepSeek-V3, R1 — ultra-low cost")
+       - `groq` ("Groq", "GROQ_API_KEY", "Llama 3.3, Qwen — fast inference")
+       - `minimax` ("MiniMax", "MINIMAX_API_KEY", "MiniMax-M2.7, Text-01")
+       - `z.ai` ("Z.ai / Zhipu GLM", "ZHIPU_API_KEY", "GLM-4-Plus, GLM-4-Flash")
+       - `together` ("Together AI", "TOGETHER_API_KEY", "Open-source model hosting")
+       - `mistral` ("Mistral AI", "MISTRAL_API_KEY", "Codestral, Mistral Large")
+       - `ollama` ("Ollama (Local)", "OLLAMA_API_KEY", "100% Free local at localhost:11434")
+     - Live badges:
+       - If `config.provider.default == id`: `● Active`
+       - Else if key exists: `✔ Configured (sk-••••)`
+       - Else if `ollama`: `○ Localhost`
+       - Else: `○ Not Set`
+     - Selection logic:
+       - If `ollama`: activate immediately, save, print receipt.
+       - If NOT configured: call `prompt_api_key`. If key entered, save key, set default, call `ConfigMenu::save_all`, print receipt.
+       - If ALREADY configured: prompt 2-choice selector:
+         - `[1] ⚡ Set as Active Provider` -> set default, save, print receipt.
+         - `[2] 🔑 Reconfigure API Key` -> prompt new key, update key, set default, save, print receipt.
+         - `[0] ◄ Back` -> return to list.
+   - **Level 3: Custom Provider**
+     - Prompt name: `prompt_text("Provider Identifier Name (e.g. 'vllm-local')", None, false)`
+     - Prompt base URL: `prompt_text("OpenAI-Compatible Base URL", Some("http://localhost:8000/v1"), false)`
+     - Prompt key: `prompt_text("API Key (optional, press Enter to skip)", None, true)`
+     - Store in `config.provider.custom_endpoints`, `config.provider.api_keys`, set default, save, print receipt.
+6. **Code Quality:**
+   - `cargo fmt`
+   - `cargo clippy -j 1 --bin minicode -- -D warnings`
+7. **Commit:**
+   - `feat(ui): implement modern hierarchical interactive setup wizard`

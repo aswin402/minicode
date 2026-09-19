@@ -1,70 +1,60 @@
-# Task 2 Brief: Sequential Arbitration & Auto-Merge Pipeline
+# Task 2 Brief: API Key Paste Box & Masked Input Primitive
 
-## Overview
-Implement sequential conflict-free arbitration and auto-merging of mutating subagent worktrees in `src/agent/subagent/fanout.rs`, and generate a comprehensive map-reduce markdown report.
+## Objective
+Implement API key masking, bracketed paste input handling, and text prompt primitives in `src/ui/setup/input.rs`.
 
-## Files to Modify:
-- `src/agent/subagent/fanout.rs`
+## Files to Create / Modify
+- Create: `src/ui/setup/input.rs`
+- Modify: `src/ui/setup/mod.rs` (export `pub mod input;` and re-export `mask_api_key`, `prompt_api_key`, `prompt_text`)
+- Test: `src/ui/setup/input.rs` (inline unit tests)
 
-## Interfaces & Requirements:
-
-### 1. `arbitrate_mutating_workers`:
-Implement `pub async fn arbitrate_mutating_workers(workspace_root: &Path, results: &mut [WorkerResult], tasks: &[FanoutTaskItem])`:
-- Iterates sequentially through `results`.
-- For each worker with `success == true`, `worktree_path.is_some()`, and `branch_name.is_some()`:
-  1. Runs `MergeArbitrator::verify_worktree(worktree_path, check_cmd)`.
-     - On failure: sets `res.merge_status = MergeStatus::VerificationFailed { command, exit_code, stderr }`.
-     - Worktree directory is preserved on disk for remediation. Skips to next worker.
-  2. Runs `MergeArbitrator::check_mergeability(workspace_root, branch_name)`.
-     - If `!report.can_merge_cleanly`: sets `res.merge_status = MergeStatus::Conflict { conflicted_files: report.conflicted_files }`.
-     - Worktree directory is preserved on disk. Skips to next worker.
-  3. Runs `MergeArbitrator::apply_merge(workspace_root, branch_name, true, Some(&commit_message))`.
-     - On success: sets `res.merge_status = MergeStatus::Merged { commit_hash: report.commit_hash }`.
-     - Tears down worktree and branch via `GitWorktreeManager::remove_worktree`.
-     - On conflict: sets `res.merge_status = MergeStatus::Conflict { conflicted_files }`.
-
-### 2. Wire into `execute_fanout`:
-In `FanoutOrchestrator::execute_fanout`:
-- If `auto_merge == true`:
-  Calls `Self::arbitrate_mutating_workers(workspace_root, &mut completed_results, &tasks).await;`.
-- Formats final report via `Self::format_fanout_report(&completed_results, join_mode, auto_merge, total_duration_ms)`.
-
-### 3. `format_fanout_report`:
-Implement `pub fn format_fanout_report(results: &[WorkerResult], join_mode: FanoutJoinMode, auto_merge: bool, total_duration_ms: u64) -> String`:
-- Displays swarm header with worker count, total elapsed time, join mode, and auto-merge status.
-- Renders an executive markdown matrix table:
-  `| # | Worker ID | Role | Status | Duration | Tokens | Files | Merge Outcome |`
-- Formats merge outcomes cleanly:
-  - `✔ Merged (hash)`
-  - `❌ Verification Failed (cmd)`
-  - `⚠️ Conflict (files)`
-  - `📁 Retained (path)`
-  - `⏹ Cancelled (race)`
-  - `—` (Not Applicable)
-- Includes per-worker executive summaries and diffs.
-- Includes clear diagnostic alerts for any conflicts or failed verifications with preserved worktree paths.
-
-### 4. Unit Tests in `src/agent/subagent/fanout.rs`:
-- `test_arbitrate_mutating_workers_clean_merge`:
-  - Sets up temp git repo.
-  - Provisions worktree for worker 1 modifying `file_a.txt` and commits.
-  - Runs `arbitrate_mutating_workers`.
-  - Asserts `res.merge_status` is `MergeStatus::Merged { .. }`.
-  - Asserts `file_a.txt` exists in parent workspace and worktree directory is removed.
-- `test_arbitrate_mutating_workers_conflict`:
-  - Sets up temp git repo.
-  - Creates base commit with `shared.txt`.
-  - Main modifies `shared.txt` to B and commits.
-  - Worktree modifies `shared.txt` to A and commits.
-  - Runs `arbitrate_mutating_workers`.
-  - Asserts `res.merge_status` is `MergeStatus::Conflict { .. }`.
-  - Asserts worktree directory still exists on disk.
-- `test_format_fanout_report`:
-  - Tests rendering of `format_fanout_report` across various `MergeStatus` variants.
-
-## Constraints:
-- ONLY run targeted test: `cargo test -j 1 --lib agent::subagent::fanout::tests`.
-- Zero `.unwrap()` or `.expect()` in non-test code.
-- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
-- Commit with message: `feat(subagent): implement sequential merge arbitration and map-reduce reporting (Phase 134)`
-- Write execution report to `docs/superpowers/plans/task-2-report.md`.
+## Constraints & Requirements
+1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
+2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::input::tests`. NEVER run the full test suite.
+3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Return `std::io::Result`.
+4. **API Key Masking:**
+   ```rust
+   pub fn mask_api_key(key: &str) -> String
+   ```
+   - If empty: return `""`.
+   - If length <= 10: return bullets for each char (e.g. `•`.repeat(len)).
+   - If length > 10: take first 6 chars (e.g. `sk-min`), append `••••`, and take last 4 chars (e.g. `sk-min••••6789`).
+5. **Interactive API Key Prompt:**
+   ```rust
+   pub fn prompt_api_key(provider_name: &str, current_key: Option<&str>) -> io::Result<Option<String>>
+   ```
+   - Uses `TerminalGuard` to ensure raw mode.
+   - Renders a styled input card:
+     ```text
+     ┌─ Configure {provider_name} API Key ───────────────────────────────────────────┐
+     │ Current: {masked_current}                                                     │
+     │ Paste key: {bullets} ({len} chars)                                            │
+     │                                                                               │
+     │ [Enter] Save & Set as Active    [Esc] Cancel                                  │
+     └───────────────────────────────────────────────────────────────────────────────┘
+     ```
+   - Event Handling:
+     - `Event::Paste(pasted)`: Appends pasted string to buffer.
+     - `Event::Key`:
+       - Skip `KeyEventKind::Release`.
+       - `Ctrl+C` (case-insensitive): clear prompt block and return `Ok(None)`.
+       - `Esc`: clear prompt block and return `Ok(None)`.
+       - `Backspace`: pop last char.
+       - `Char(c)`: append char.
+       - `Enter`:
+         - If buffer is not empty: trim whitespace, clear prompt block, return `Ok(Some(trimmed))`.
+         - If buffer is empty and `current_key` is present: clear prompt block, return `Ok(Some(current_key.to_string()))`.
+         - If buffer is empty and no current key: clear prompt block, return `Ok(None)`.
+   - Redraw loop: rewrite in place with `\x1b[{}A` and `\x1b[2K\r`.
+   - Teardown: erase prompt lines so the screen stays clean.
+6. **Generic Text Prompt:**
+   ```rust
+   pub fn prompt_text(prompt_label: &str, default_value: Option<&str>, allow_empty: bool) -> io::Result<Option<String>>
+   ```
+   - For custom provider identifier name and base URL.
+   - Handles typing, backspace, paste, Enter, Esc, Ctrl+C.
+7. **Code Quality:**
+   - `cargo fmt`
+   - `cargo clippy -j 1 --bin minicode -- -D warnings`
+8. **Commit:**
+   - `feat(ui): implement masked API key input and text prompt primitives`

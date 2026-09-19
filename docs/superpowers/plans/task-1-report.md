@@ -1,61 +1,71 @@
-# Task 1 Execution Report: Core Types, Concurrency Engine & `FanoutOrchestrator` Foundation
+# Task 1 Execution Report: Terminal Raw Mode Guard & Interactive List Selector Primitives
 
 ## Status: DONE
 
-- **Commit Hash:** `526af67e0fb7ba41445827c9df62d0bb0a4d538a`
-- **Target Components:** `src/agent/subagent/fanout.rs`, `src/agent/subagent/mod.rs`
-- **Phase:** Phase 134 (Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine)
+- **Commit Hash:** `f29da221fec5cb714f6413a003c1a91df0dae190`
+- **Target Components:**
+  - `src/ui/setup/guard.rs`
+  - `src/ui/setup/selector.rs`
+  - `src/ui/setup/mod.rs`
+  - `src/ui/mod.rs`
+- **Phase:** Modern Interactive Setup Wizard (`minicode setup` / Phase 135)
 
 ---
 
 ## 1. Summary of Changes
 
-1. **Created `src/agent/subagent/fanout.rs`:**
-   - **Data Contracts:**
-     - `FanoutTaskItem`: Task prompt (with `prompt` alias support), specialized `SubagentRole`, optional `WorkspaceMode`, optional `max_iterations`, and optional `check_cmd`.
-     - `FanoutJoinMode`: `All` (default) and `Race` modes with snake_case JSON serialization/deserialization and `Display` implementation.
-     - `MergeStatus`: `NotApplicable`, `Merged`, `VerificationFailed`, `Conflict`, `RetainedUnmerged`, and `SkippedCancelled` variants with human-readable `Display` rendering.
-     - `WorkerResult`: Detailed outcome record tracking `agent_id`, `role`, `task`, `success`, `duration_ms`, `tokens_used`, `files_modified`, `worktree_path`, `branch_name`, `merge_status`, `summary`, and `error`.
-   - **`FanoutOrchestrator` Engine:**
-     - `execute_fanout`: Validates non-empty tasks (returns early notice if empty), bounds concurrency via `tokio::sync::Semaphore` (clamped between 1 and 16), executes workers in `tokio::task::JoinSet`, triggers `cancel_token.cancel()` when the first worker succeeds in `FanoutJoinMode::Race`, and synthesizes a map-reduce markdown report.
-     - `run_single_worker`: Acquires a concurrency permit while respecting cancellation tokens; provisions Git worktree for mutating roles (`coder`, `tester`) or falls back safely; initializes mailbox; spawns headless `minicode run` child process with `kill_on_drop(true)` and `process_group(0)`; streams NDJSON events (`StreamDelta`, `FileModified`, `TurnEnd`, `Error`); on cancellation kills the process group with `SIGKILL` and cleans up worktrees; retains worktrees on success for arbitration.
-     - `format_baseline_report`: Generates executive summary metrics, outcome table, and sectioned worker findings.
-   - **Zero `.unwrap()` or `.expect()`** in non-test production code.
+1. **Created `src/ui/setup/guard.rs` (`TerminalGuard`):**
+   - Implemented RAII terminal safety guard.
+   - `TerminalGuard::new()` enables raw mode via `crossterm::terminal::enable_raw_mode()`, hides the cursor via `crossterm::cursor::Hide`, and enables bracketed paste via `EnableBracketedPaste`. If setup fails at any stage, raw mode is safely disabled before propagating `io::Error`.
+   - `impl Drop for TerminalGuard` restores cursor (`Show`), disables bracketed paste (`DisableBracketedPaste`), restores terminal mode (`disable_raw_mode()`), and flushes `stdout`, guaranteeing safe recovery even during abnormal control flows or panics.
+   - Zero `.unwrap()` or `.expect()` calls in non-test code.
 
-2. **Registered & Re-exported in `src/agent/subagent/mod.rs`:**
-   - Registered `pub mod fanout;`.
-   - Re-exported `FanoutJoinMode`, `FanoutOrchestrator`, `FanoutTaskItem`, `MergeStatus`, `WorkerResult`.
+2. **Created `src/ui/setup/selector.rs` (`InteractiveSelector`, `SelectorItem`):**
+   - `SelectorItem`: Models selectable menu entries with `id`, `label`, `badge: Option<String>`, and `hint: Option<String>`. Provides fluent builder API (`new`, `with_badge`, `with_hint`).
+   - `InteractiveSelector`: Inline ANSI terminal selector primitive:
+     - Navigation helpers `prev_index(current, total)` and `next_index(current, total)` with boundary safety and seamless wrap-around.
+     - `format_item`: Formats highlighted rows with cyan bold indicator `\x1b[1;36m  ❯ \x1b[0m\x1b[1m{label}\x1b[0m {badge} \x1b[90m{hint}\x1b[0m` and unselected rows with four-space indentation matching cursor columns.
+     - `render_lines`: Constructs header prompt, items, and standardized footer separator (`\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m`) and navigation instructions (`  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m`).
+     - Event loop: Handles `KeyCode::Up` / `KeyCode::Char('k')`, `KeyCode::Down` / `KeyCode::Char('j')`, `KeyCode::Enter` (`Ok(Some(index))`), `KeyCode::Esc` (`Ok(None)`), and `Ctrl+C` (`Ok(None)`). Filters out `KeyEventKind::Release`.
+     - In-place redraw loop: Accurately moves cursor up by `total_lines` (`\x1b[{}A`), clears line (`\x1b[2K\r`), and redraws without line drift.
+     - Clean exit: Erases drawn lines on selection/exit (`\x1b[2K\r\n`), leaving cursor cleanly positioned for subsequent prompts.
+
+3. **Created `src/ui/setup/mod.rs` & Modified `src/ui/mod.rs`:**
+   - Modularized `src/ui/setup/` subcrate, exposing `TerminalGuard`, `InteractiveSelector`, and `SelectorItem`.
+   - Re-exported `pub mod setup;` in `src/ui/mod.rs`.
 
 ---
 
 ## 2. Test Verification Output
 
 ### Targeted Test Suite:
-```
-cargo test -j 1 --lib agent::subagent::fanout::tests
+```bash
+cargo test -j 1 --lib ui::setup::selector::tests
 ```
 
-```
-   Compiling minicode v0.3.34 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.60s
-     Running unittests src/lib.rs (target/debug/deps/minicode-291e47a2b1d832c6)
+```text
+   Compiling minicode v0.3.35 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.07s
+     Running unittests src/lib.rs (target/debug/deps/minicode-4efcd93e47b73671)
 
 running 6 tests
-test agent::subagent::fanout::tests::test_fanout_join_mode_serialization ... ok
-test agent::subagent::fanout::tests::test_merge_status_variants ... ok
-test agent::subagent::fanout::tests::test_fanout_task_item_deserialization ... ok
-test agent::subagent::fanout::tests::test_worker_result_and_report_formatting ... ok
-test agent::subagent::fanout::tests::test_run_single_worker_cancelled_early ... ok
-test agent::subagent::fanout::tests::test_fanout_empty_tasks ... ok
+test ui::setup::selector::tests::test_empty_items_select ... ok
+test ui::setup::selector::tests::test_navigation_edge_cases ... ok
+test ui::setup::selector::tests::test_navigation_wrap_and_bounds ... ok
+test ui::setup::selector::tests::test_format_item_highlighted_and_normal ... ok
+test ui::setup::selector::tests::test_selector_item_builder ... ok
+test ui::setup::selector::tests::test_render_lines_structure ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 493 filtered out; finished in 0.00s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 506 filtered out; finished in 0.00s
 ```
 
 ### Quality Gates:
 - `cargo fmt --check`: Clean formatting passed with zero diffs.
-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Finished cleanly with 0 warnings.
+- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings.
+- `cargo check -j 1`: Passed cleanly with code 0.
 
 ---
 
 ## 3. Concerns & Follow-ups
-- **Concerns:** None. Core concurrency engine, race/all join policies, bounded semaphore pool, and cancellation teardown are validated and ready for Task 2 (`arbitrate_mutating_workers` and the auto-merge pipeline).
+- **Concerns:** None. Primitives are robust, unit-tested, and comply with all terminal safety requirements.
+- **Ready for Task 2:** API Key Paste Box & Masked Input Primitive (`prompt_api_key`, `mask_api_key`, `prompt_text` in `src/ui/setup/input.rs`).

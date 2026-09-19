@@ -1,373 +1,260 @@
-diff --git a/tests/integration_subagent_merge.rs b/tests/integration_subagent_merge.rs
+diff --git a/src/main.rs b/src/main.rs
+index b8c6f17..f6d8784 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -23,7 +23,6 @@ use error::Result;
+ use std::path::{Path, PathBuf};
+ use std::sync::OnceLock;
+ use tokio::sync::mpsc;
+-use ui::ConfigMenu;
+ 
+ fn get_version_banner() -> &'static str {
+     static BANNER: OnceLock<String> = OnceLock::new();
+@@ -125,9 +124,9 @@ struct Cli {
+ 
+ #[derive(Subcommand, Debug)]
+ enum Commands {
+-    /// Interactive configuration wizard (select provider, model, API keys, approval policy)
+-    #[command(alias = "config", alias = "setup")]
+-    Configure,
++    /// Interactive configuration wizard (setup active provider, models, and API keys)
++    #[command(alias = "configure", alias = "config")]
++    Setup,
+ 
+     /// Execute a one-shot autonomous task non-interactively
+     Run {
+@@ -294,9 +293,9 @@ async fn main() -> anyhow::Result<()> {
+     }
+     let workspace_canonical = std::fs::canonicalize(&workspace_dir).unwrap_or(workspace_dir);
+ 
+-    // 2. Dispatch early commands (configure, logs) immediately before file logger initialization
+-    if let Some(Commands::Configure) = cli.command {
+-        ConfigMenu::run_interactive(&workspace_canonical).await?;
++    // 2. Dispatch early commands (setup, logs) immediately before file logger initialization
++    if let Some(Commands::Setup) = cli.command {
++        ui::setup::SetupWizard::run(&workspace_canonical).await?;
+         return Ok(());
+     }
+     if let Some(Commands::Logs {
+@@ -384,7 +383,7 @@ async fn main() -> anyhow::Result<()> {
+ 
+     // 5. Dispatch execution mode
+     match cli.command {
+-        Some(Commands::Configure) => unreachable!(), // Handled earlier
++        Some(Commands::Setup) => unreachable!(), // Handled earlier
+         Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
+         Some(Commands::Run { task }) => {
+             let resume_session_id = if cli.continue_session {
+@@ -662,7 +661,7 @@ async fn run_headless_task(
+         Err(e) => {
+             eprintln!(
+                 "\n\x1b[31m✗ Configuration error:\x1b[0m {}\n\
+-                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
++                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
+                 e
+             );
+             return Err(e);
+@@ -820,7 +819,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
+         Ok(key) => key,
+         Err(e) => {
+             emit_invalid_command(&format!(
+-                "Startup failed: {}. Fix the configuration with 'minicode configure', then reconnect.",
++                "Startup failed: {}. Fix the configuration with 'minicode setup', then reconnect.",
+                 e
+             ));
+             return Err(e);
+@@ -1085,7 +1084,7 @@ async fn run_interactive_mode(
+         if let Some(ref err_msg) = startup_err {
+             println!(
+                 "\x1b[33m⚠️ Provider warning:\x1b[0m {}\n\
+-                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
++                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
+                 err_msg
+             );
+         }
+diff --git a/src/ui/mod.rs b/src/ui/mod.rs
+index 535d15b..00feb8e 100644
+--- a/src/ui/mod.rs
++++ b/src/ui/mod.rs
+@@ -23,6 +23,7 @@ pub use animation::{render_live_activity_line, AgentActivity};
+ pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
+ #[allow(unused_imports)]
+ pub use clipboard::copy_to_clipboard;
++#[allow(unused_imports)]
+ pub use configure::ConfigMenu;
+ #[allow(unused_imports)]
+ pub use diff_viewer::DiffViewer;
+@@ -35,7 +36,7 @@ pub use markdown::MarkdownRenderer;
+ pub use modal::ModalState;
+ pub use pty_drawer::PtyDrawer;
+ #[allow(unused_imports)]
+-pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
++pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
+ pub use status::{StatusContext, StatusWidgets};
+ #[allow(unused_imports)]
+ pub use subagent_drawer::SubagentDrawer;
+diff --git a/tests/integration_setup_wizard.rs b/tests/integration_setup_wizard.rs
 new file mode 100644
-index 0000000..cefbd6e
+index 0000000..4d08a47
 --- /dev/null
-+++ b/tests/integration_subagent_merge.rs
-@@ -0,0 +1,367 @@
-+//! End-to-End Integration Test Suite for Subagent Worktree Merge & Conflict Arbitration Engine.
-+//!
-+//! Validates the complete arbitration lifecycle:
-+//! 1. Clean merge lifecycle (creation, modification, pre-merge verification, mergeability check, merge application, cleanup).
-+//! 2. Merge conflict arbitration (competing concurrent modifications, conflict detection via git merge-tree, safe rejection).
-+//! 3. Tool primitive end-to-end execution (`merge_subagent_worktree`).
-+//! 4. Pre-merge verification failure handling (preserving worktree on disk, aborting merge cleanly).
-+
-+use minicode::agent::subagent::types::AgentId;
-+use minicode::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator};
-+use minicode::tools::registry::agent_tools::subagents::merge_subagent_worktree;
-+use std::path::Path;
-+use std::process::Command;
-+
-+/// Initializes a temporary Git repository with local user identity and signing disabled.
-+fn setup_git_repo(root: &Path) {
-+    let run = |args: &[&str]| {
-+        let output = Command::new("git")
-+            .args(args)
-+            .current_dir(root)
-+            .output()
-+            .unwrap_or_else(|e| panic!("failed to run git {:?}: {}", args, e));
-+        assert!(
-+            output.status.success(),
-+            "git {:?} failed: {}",
-+            args,
-+            String::from_utf8_lossy(&output.stderr)
-+        );
-+    };
-+
-+    run(&["init"]);
-+    run(&["config", "user.name", "test-user"]);
-+    run(&["config", "user.email", "test@example.com"]);
-+    run(&["config", "commit.gpgsign", "false"]);
-+
-+    std::fs::write(root.join(".gitignore"), ".minicode/\n").unwrap();
-+    run(&["add", ".gitignore"]);
-+    run(&["commit", "-m", "ignore minicode"]);
-+}
++++ b/tests/integration_setup_wizard.rs
+@@ -0,0 +1,158 @@
++use minicode::ui::setup::SetupWizard;
++use std::process::{Command, Stdio};
 +
 +#[test]
-+fn test_integration_subagent_worktree_clean_merge() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let root = temp.path();
-+    setup_git_repo(root);
-+
-+    // Initial base commit in parent workspace
-+    std::fs::write(root.join("lib.rs"), "// base\n").unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(root)
++fn test_setup_help_command() {
++    let bin = env!("CARGO_BIN_EXE_minicode");
++    let output = Command::new(bin)
++        .args(["setup", "--help"])
 +        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "init"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
++        .expect("Failed to execute minicode setup --help");
 +
-+    // 1. Create worktree via GitWorktreeManager::create_worktree
-+    let agent_id = AgentId("coder-clean".to_string());
-+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
-+    assert!(handle.worktree_path.exists());
-+
-+    // 2. Modify and commit changes in the worktree
-+    std::fs::write(
-+        handle.worktree_path.join("lib.rs"),
-+        "// base\npub fn subagent_feature() -> bool { true }\n",
-+    )
-+    .unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "feat: subagent add feature"])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+
-+    // 3. Run MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip"))
-+    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("skip")).unwrap();
-+    assert!(v_report.success);
-+    assert_eq!(v_report.command, "skip");
-+
-+    // 4. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
-+    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
-+    assert!(m_report.can_merge_cleanly);
-+    assert!(m_report.conflicted_files.is_empty());
-+
-+    // 5. Apply merge via MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
-+    let merge_res =
-+        MergeArbitrator::apply_merge(root, &handle.branch_name, true, Some("merge commit"))
-+            .unwrap();
-+    assert!(merge_res.committed);
-+    assert!(merge_res.files_changed.contains(&"lib.rs".to_string()));
-+    assert!(merge_res.commit_hash.is_some());
-+
-+    // 6. Clean up worktree via GitWorktreeManager::remove_worktree
-+    GitWorktreeManager::remove_worktree(&handle).unwrap();
-+    assert!(!handle.worktree_path.exists());
-+
-+    // 7. Assert file modifications are present in parent workspace
-+    let merged_content = std::fs::read_to_string(root.join("lib.rs")).unwrap();
-+    assert!(merged_content.contains("pub fn subagent_feature() -> bool { true }"));
-+}
-+
-+#[test]
-+fn test_integration_subagent_worktree_conflict_detection() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let root = temp.path();
-+    setup_git_repo(root);
-+
-+    // Initial base commit modifying conflict.txt
-+    std::fs::write(
-+        root.join("conflict.txt"),
-+        "original line 1\noriginal line 2\n",
-+    )
-+    .unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "init base"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+
-+    // 1. Create worktree and commit changes to conflict.txt on subagent branch
-+    let agent_id = AgentId("coder-conflict".to_string());
-+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
-+    assert!(handle.worktree_path.exists());
-+
-+    std::fs::write(
-+        handle.worktree_path.join("conflict.txt"),
-+        "original line 1\nsubagent branch change\n",
-+    )
-+    .unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "subagent conflict edit"])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+
-+    // 2. Make conflicting commit to conflict.txt on main branch in parent workspace
-+    std::fs::write(
-+        root.join("conflict.txt"),
-+        "original line 1\nparent main conflicting change\n",
-+    )
-+    .unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "parent conflicting edit"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+
-+    // 3. Run MergeArbitrator::check_mergeability(root, &handle.branch_name)
-+    let m_report = MergeArbitrator::check_mergeability(root, &handle.branch_name).unwrap();
-+
-+    // 4. Assert can_merge_cleanly == false and conflicted_files contains "conflict.txt"
-+    assert!(!m_report.can_merge_cleanly);
-+    assert!(m_report
-+        .conflicted_files
-+        .contains(&"conflict.txt".to_string()));
-+
-+    // 5. Assert MergeArbitrator::apply_merge returns Err(ArbitrationError::MergeConflict(_))
-+    let apply_res = MergeArbitrator::apply_merge(
-+        root,
-+        &handle.branch_name,
-+        true,
-+        Some("attempt conflict merge"),
++    assert!(
++        output.status.success(),
++        "minicode setup --help failed with status: {:?}",
++        output.status
 +    );
-+    assert!(matches!(apply_res, Err(ArbitrationError::MergeConflict(_))));
-+    if let Err(ArbitrationError::MergeConflict(conflicts)) = apply_res {
-+        assert!(conflicts.contains(&"conflict.txt".to_string()));
-+    }
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    assert!(
++        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
++        "Help output should describe setup command: {}",
++        stdout
++    );
++}
 +
-+    // 6. Clean up worktree and verify parent workspace is unharmed
-+    GitWorktreeManager::remove_worktree(&handle).unwrap();
-+    assert!(!handle.worktree_path.exists());
++#[test]
++fn test_configure_alias_help() {
++    let bin = env!("CARGO_BIN_EXE_minicode");
++    let output = Command::new(bin)
++        .args(["configure", "--help"])
++        .output()
++        .expect("Failed to execute minicode configure --help");
 +
-+    let parent_content = std::fs::read_to_string(root.join("conflict.txt")).unwrap();
++    assert!(
++        output.status.success(),
++        "minicode configure --help failed with status: {:?}",
++        output.status
++    );
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    assert!(
++        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
++        "Help output should describe setup/configure command: {}",
++        stdout
++    );
++}
++
++#[test]
++fn test_config_alias_help() {
++    let bin = env!("CARGO_BIN_EXE_minicode");
++    let output = Command::new(bin)
++        .args(["config", "--help"])
++        .output()
++        .expect("Failed to execute minicode config --help");
++
++    assert!(
++        output.status.success(),
++        "minicode config --help failed with status: {:?}",
++        output.status
++    );
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    assert!(
++        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
++        "Help output should describe setup/config command: {}",
++        stdout
++    );
++}
++
++#[test]
++fn test_setup_non_interactive_fails_gracefully() {
++    let bin = env!("CARGO_BIN_EXE_minicode");
++    let output = Command::new(bin)
++        .arg("setup")
++        .stdin(Stdio::null())
++        .output()
++        .expect("Failed to execute minicode setup with Stdio::null");
++
++    assert!(
++        !output.status.success(),
++        "minicode setup must fail when executed non-interactively"
++    );
++
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let combined = format!("{stdout}\n{stderr}");
++
++    assert!(
++        !stderr.contains("panicked at"),
++        "minicode setup should not panic in non-interactive environment: {}",
++        stderr
++    );
++    assert!(
++        combined.contains("interactive terminal"),
++        "Expected error message mentioning interactive terminal, got: {}",
++        combined
++    );
++}
++
++#[test]
++fn test_setup_wizard_provider_catalog_completeness() {
++    let catalog = SetupWizard::provider_catalog();
 +    assert_eq!(
-+        parent_content,
-+        "original line 1\nparent main conflicting change\n"
++        catalog.len(),
++        10,
++        "Expected exactly 10 canonical providers in catalog"
 +    );
 +
-+    // Parent working tree is clean and unchanged
-+    let status_out = Command::new("git")
-+        .args(["status", "--porcelain"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+    assert!(status_out.status.success());
-+    assert!(String::from_utf8_lossy(&status_out.stdout)
-+        .trim()
-+        .is_empty());
++    let expected_providers = [
++        ("openrouter", "OPENROUTER_API_KEY"),
++        ("gemini", "GEMINI_API_KEY"),
++        ("openai", "OPENAI_API_KEY"),
++        ("deepseek", "DEEPSEEK_API_KEY"),
++        ("groq", "GROQ_API_KEY"),
++        ("minimax", "MINIMAX_API_KEY"),
++        ("z.ai", "ZHIPU_API_KEY"),
++        ("together", "TOGETHER_API_KEY"),
++        ("mistral", "MISTRAL_API_KEY"),
++        ("ollama", "OLLAMA_API_KEY"),
++    ];
++
++    for (id, expected_env) in expected_providers {
++        let entry = catalog.iter().find(|(cat_id, _, _)| *cat_id == id);
++        assert!(
++            entry.is_some(),
++            "Provider '{}' must be present in provider_catalog",
++            id
++        );
++
++        let env_var = SetupWizard::env_var_for_provider(id);
++        assert_eq!(
++            env_var, expected_env,
++            "Environment variable for '{}' must match {}",
++            id, expected_env
++        );
++
++        let custom_env = SetupWizard::custom_env_var(id);
++        assert_eq!(
++            custom_env, expected_env,
++            "custom_env_var for '{}' must match {}",
++            id, expected_env
++        );
++    }
 +}
 +
-+#[tokio::test]
-+async fn test_integration_subagent_tool_full_lifecycle() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let root = temp.path();
-+    setup_git_repo(root);
-+
-+    // Base commit in parent workspace
-+    std::fs::write(root.join("app.rs"), "// initial app\n").unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(root)
++#[test]
++fn test_main_help_lists_setup_subcommand() {
++    let bin = env!("CARGO_BIN_EXE_minicode");
++    let output = Command::new(bin)
++        .arg("--help")
 +        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "init app"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
++        .expect("Failed to execute minicode --help");
 +
-+    // 1. Create worktree for subagent coder-integration
-+    let agent_id = AgentId("coder-integration".to_string());
-+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
-+    assert!(handle.worktree_path.exists());
-+
-+    // 2. Modify and commit files in worktree
-+    std::fs::write(
-+        handle.worktree_path.join("feature.rs"),
-+        "pub fn integration_test() -> i32 { 42 }\n",
-+    )
-+    .unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "coder adds feature"])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+
-+    // 3. Execute merge_subagent_worktree(root, "coder-integration", true, Some("skip"), Some("feat: integrated"))
-+    let res = merge_subagent_worktree(
-+        root,
-+        "coder-integration",
-+        true,
-+        Some("skip"),
-+        Some("feat: integrated"),
-+    )
-+    .await;
-+
-+    // 4. Assert result is Ok(summary) containing success message and files changed
-+    assert!(res.is_ok());
-+    let summary = res.unwrap();
-+    assert!(summary.contains("Successfully merged subagent worktree changes"));
-+    assert!(summary.contains("coder-integration"));
-+    assert!(summary.contains("feature.rs"));
-+
-+    // 5. Assert worktree is automatically cleaned up and files exist in main repo
-+    assert!(!handle.worktree_path.exists());
-+    assert!(GitWorktreeManager::locate_worktree(root, &agent_id).is_none());
-+
-+    let main_feature_file = root.join("feature.rs");
-+    assert!(main_feature_file.exists());
-+    let content = std::fs::read_to_string(main_feature_file).unwrap();
-+    assert!(content.contains("pub fn integration_test() -> i32 { 42 }"));
++    assert!(output.status.success());
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    assert!(
++        stdout.contains("setup") && stdout.contains("Interactive configuration wizard"),
++        "minicode --help should list 'setup' subcommand: {}",
++        stdout
++    );
 +}
-+
-+#[tokio::test]
-+async fn test_integration_subagent_worktree_verification_failure() {
-+    let temp = tempfile::tempdir().unwrap();
-+    let root = temp.path();
-+    setup_git_repo(root);
-+
-+    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "init"])
-+        .current_dir(root)
-+        .output()
-+        .unwrap();
-+
-+    // 1. Create worktree
-+    let agent_id = AgentId("tester-verification".to_string());
-+    let handle = GitWorktreeManager::create_worktree(root, &agent_id).unwrap();
-+    assert!(handle.worktree_path.exists());
-+
-+    // 2. Modify file in worktree
-+    std::fs::write(handle.worktree_path.join("broken.rs"), "syntax error;\n").unwrap();
-+    Command::new("git")
-+        .args(["add", "."])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+    Command::new("git")
-+        .args(["commit", "-m", "wip broken code"])
-+        .current_dir(&handle.worktree_path)
-+        .output()
-+        .unwrap();
-+
-+    // 3. Run verify_worktree with a failing command ("false")
-+    let v_report = MergeArbitrator::verify_worktree(&handle.worktree_path, Some("false")).unwrap();
-+    assert!(!v_report.success);
-+    assert_ne!(v_report.exit_code, 0);
-+
-+    // 4. Test tool primitive pre-merge failure handling:
-+    // Calling merge_subagent_worktree with failing verification aborts merge,
-+    // leaves parent workspace untouched, and preserves worktree on disk.
-+    let tool_res = merge_subagent_worktree(
-+        root,
-+        "tester-verification",
-+        true,
-+        Some("false"),
-+        Some("should not land"),
-+    )
-+    .await
-+    .unwrap();
-+
-+    assert!(tool_res.contains("Pre-merge verification failed"));
-+    assert!(tool_res.contains("Parent workspace untouched and worktree preserved"));
-+
-+    // 5. Verify worktree path still exists on disk for remediation
-+    assert!(handle.worktree_path.exists());
-+    assert!(handle.worktree_path.join("broken.rs").exists());
-+
-+    // Parent repo untouched
-+    assert!(!root.join("broken.rs").exists());
-+
-+    // 6. Verify non-existent worktree returns ArbitrationError::WorktreeNotFound
-+    let non_existent = root
-+        .join(".minicode")
-+        .join("worktrees")
-+        .join("subagent-ghost");
-+    let not_found_res = MergeArbitrator::verify_worktree(&non_existent, Some("skip"));
-+    assert!(matches!(
-+        not_found_res,
-+        Err(ArbitrationError::WorktreeNotFound(_))
-+    ));
-+
-+    // 7. Verify ArbitrationError::VerificationFailed display format
-+    let err =
-+        ArbitrationError::VerificationFailed("cargo check failed with exit code 1".to_string());
-+    assert!(err.to_string().contains("Pre-merge verification failed"));
-+    assert!(err
-+        .to_string()
-+        .contains("cargo check failed with exit code 1"));
-+
-+    // Cleanup
-+    GitWorktreeManager::remove_worktree(&handle).unwrap();
-+    assert!(!handle.worktree_path.exists());
-+}
+3994102 feat(cli): promote minicode setup as primary configuration command with configure alias

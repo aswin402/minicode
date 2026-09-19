@@ -1,101 +1,76 @@
-# Task 4 Execution Report: End-to-End Integration Test Suite
+# Task 4 Execution Report: CLI Alignment (`minicode setup`), Alias Wiring & Integration Tests
 
 ## Status: DONE
 
-- **Commit Hash:** Pending
-- **Component:** `tests/integration_subagent_fanout.rs`
-- **Phase:** Phase 134 (Parallel Subagent Swarm Fan-Out & Aggregate Arbitration Engine)
+- **Commit Hash:** `39941023e3a93c68037d7423c00fdaac6a85e063` (`3994102`)
+- **Brief Reference:** [task-4-brief.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/task-4-brief.md)
+- **Phase:** 135 — Modern Interactive Setup Wizard
 
 ---
 
-## 1. Summary of Test Suite Implementation
+## Summary of Implementation
 
-Created `tests/integration_subagent_fanout.rs` implementing end-to-end integration tests for the complete swarm fan-out and arbitration lifecycle:
+### 1. [`src/main.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/main.rs)
+- **Promoted Primary Subcommand:** Updated `Commands::Configure` to `Commands::Setup` with doc comment `/// Interactive configuration wizard (setup active provider, models, and API keys)` and aliases `#[command(alias = "configure", alias = "config")]`.
+- **Early Dispatch:** Updated early subcommand handler to match `Some(Commands::Setup)` and dispatch directly to `ui::setup::SetupWizard::run(&workspace_canonical).await?;`.
+- **Unreachable Match Arm:** Updated step 5 execution dispatch match arm to `Some(Commands::Setup) => unreachable!()`.
+- **Removed Unused Import:** Cleaned up unused `use ui::ConfigMenu;` import.
+- **Tip Strings Alignment:**
+  - Headless task config error (line ~665): updated tip to `Run minicode setup to set up your providers and API keys.`
+  - NDJSON streaming mode error (line ~823): updated error message to `Fix the configuration with 'minicode setup', then reconnect.`
+  - Interactive mode provider warning (line ~1088): updated tip to `Run minicode setup to set up providers or API keys.`
 
-1. **Tool Dispatch & Argument Parsing (`test_integration_fanout_dispatch_and_validation`)**:
-   - Dispatches `fanout_subagents` with empty tasks array; verifies clean advisory message.
-   - Dispatches `fanout_subagents` with missing task/prompt; verifies `ToolError::InvalidArguments`.
-   - Tests `parse_fanout_args` with task/prompt alias resolution, role parsing, workspace mode mapping, join mode, auto-merge, and concurrency bounds.
+### 2. [`src/ui/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/ui/mod.rs)
+- Re-exported `SetupWizard` in `pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};`.
+- Added `#[allow(unused_imports)]` to `pub use configure::ConfigMenu;` to ensure warning-free compilation when building binary targets.
 
-2. **Sequential Multi-Worker Clean Merge Arbitration (`test_integration_fanout_sequential_multi_worker_merge`)**:
-   - Initialized temporary Git repository.
-   - Provisioned 2 concurrent mutating workers (`worker-alpha` and `worker-beta`) with distinct branches and worktrees modifying different files (`alpha.rs` and `beta.rs`).
-   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
-   - Asserted both workers achieved `MergeStatus::Merged`.
-   - Verified both `alpha.rs` and `beta.rs` landed in the parent repository.
-   - Verified both worktrees were cleanly removed from disk.
-
-3. **Competing Modifications & Conflict Isolation (`test_integration_fanout_conflict_isolation_retains_worktree`)**:
-   - Initialized temporary Git repository with base commit containing `config.json`.
-   - Worker 1 modifies `config.json` on `wt-first`.
-   - Worker 2 modifies `config.json` concurrently on `wt-second`.
-   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
-   - Verified Worker 1 merges cleanly and its worktree is removed.
-   - Verified Worker 2 detects a 3-way merge conflict (`MergeStatus::Conflict { conflicted_files }`) against the newly merged HEAD without dirtying or modifying the parent workspace.
-   - Verified Worker 2's worktree is preserved on disk for developer remediation.
-   - Verified parent repository contains Worker 1's landed code with no merge conflict markers.
-
-4. **Pre-Merge Verification Failure Handling (`test_integration_fanout_verification_failure_isolation`)**:
-   - Provisioned worker with `check_cmd: Some("false")`.
-   - Executed `FanoutOrchestrator::arbitrate_mutating_workers`.
-   - Verified worker status is `MergeStatus::VerificationFailed { command: "false", exit_code: != 0, .. }`.
-   - Verified worker's worktree is preserved on disk.
-   - Verified parent repository is untouched.
-
-5. **Executive Map-Reduce Matrix Report Formatting (`test_integration_fanout_matrix_reporting`)**:
-   - Constructed swarm results across all `MergeStatus` variants (Merged, Conflict, VerificationFailed, RetainedUnmerged, SkippedCancelled, NotApplicable).
-   - Generated report via `FanoutOrchestrator::format_fanout_report`.
-   - Verified header metrics, Markdown table structure, merge outcome tags, diagnostics callout blocks, and individual summaries.
+### 3. [`tests/integration_setup_wizard.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/tests/integration_setup_wizard.rs)
+Implemented end-to-end integration test suite containing 6 tests:
+- `test_setup_help_command`: runs `minicode setup --help` and asserts exit status 0 and presence of command description.
+- `test_configure_alias_help`: runs `minicode configure --help` and asserts exit status 0 and backward-compatible alias resolution.
+- `test_config_alias_help`: runs `minicode config --help` and asserts exit status 0 and short alias resolution.
+- `test_main_help_lists_setup_subcommand`: runs `minicode --help` and asserts `setup` is listed as a primary subcommand.
+- `test_setup_non_interactive_fails_gracefully`: runs `minicode setup` with `.stdin(Stdio::null())` and asserts non-zero exit code without panic, containing descriptive message that an interactive terminal is required.
+- `test_setup_wizard_provider_catalog_completeness`: asserts `SetupWizard::provider_catalog()` contains all 10 canonical providers (`openrouter`, `gemini`, `openai`, `deepseek`, `groq`, `minimax`, `z.ai`, `together`, `mistral`, `ollama`) and matches standard and custom environment variable naming mappings.
 
 ---
 
-## 2. Verification Results
+## Verification Results
 
-### 1. Targeted Integration Test Suite
-Command: `cargo test -j 1 --test integration_subagent_fanout`
-Output:
-```text
-running 5 tests
-test test_integration_fanout_matrix_reporting ... ok
-test test_integration_fanout_dispatch_and_validation ... ok
-test test_integration_fanout_verification_failure_isolation ... ok
-test test_integration_fanout_conflict_isolation_retains_worktree ... ok
-test test_integration_fanout_sequential_multi_worker_merge ... ok
+### 1. Targeted Integration Tests
+Command: `cargo test -j 1 --test integration_setup_wizard`
+```
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running tests/integration_setup_wizard.rs (target/debug/deps/integration_setup_wizard-9e8d5e88d8d3d8f8)
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+running 6 tests
+test test_setup_wizard_provider_catalog_completeness ... ok
+test test_config_alias_help ... ok
+test test_setup_help_command ... ok
+test test_setup_non_interactive_fails_gracefully ... ok
+test test_main_help_lists_setup_subcommand ... ok
+test test_configure_alias_help ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 ```
 
 ### 2. Clippy Verification
 Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
-Output:
-```text
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.49s
-(Exit code 0, zero warnings)
+```
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.39s
+```
+Status: PASS (0 warnings, 0 errors).
+
+### 3. Formatting Verification
+Command: `cargo fmt --check`
+```
+Status: PASS (clean formatting).
 ```
 
-### 3. Code Formatting
-Command: `cargo fmt`
-Output:
-```text
-(Exit code 0, clean)
-```
+### 4. Zero Unwraps Audit
+Zero `.unwrap()` or `.expect()` calls in non-test code. All errors properly handled via `Result` and `?`.
 
 ---
 
-## 3. Non-Test Code Constraints Audit
-- Non-test `.unwrap()` / `.expect()` count: **0** in production code.
-- Concurrency limit `-j 1`: Strictly respected across all cargo commands.
-- Test scope: ONLY targeted test `cargo test -j 1 --test integration_subagent_fanout` was run; full test suite was never run.
-
----
-
-## 4. Code Review Polish & Improvements
-- Replaced all ad-hoc git `Command::new("git")` subprocess invocations across all test fixtures with the shared helper `run_git`.
-- Tightened sequential merge assertions to explicitly check `matches!(..., MergeStatus::Merged { commit_hash: Some(_) })`.
-- Added a 6th worker with `MergeStatus::RetainedUnmerged` to `test_integration_fanout_matrix_reporting` (`/tmp/wt-retained`), verified total token calculation `3340 tokens used`, and asserted retention diagnostic output `📁 Retained (/tmp/wt-retained)`.
-- Re-verified targeted integration test suite: 5 passed, 0 failed.
-
----
-
-## 5. Concerns & Notes
-- None. All 5 integration test scenarios pass reliably in 0.15s.
+## Concerns / Blockers
+None. All criteria and constraints met.
