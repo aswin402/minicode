@@ -18,7 +18,7 @@ use crate::agent::subagent::message::{AgentMessage, MessageIntent};
 use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
 use crate::agent::types::AgentEvent;
 use crate::error::ToolError;
-use crate::sandbox::worktree::GitWorktreeManager;
+use crate::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator, WorktreeHandle};
 
 /// Specification for an individual worker in a fanout swarm.
 #[allow(dead_code)]
@@ -129,13 +129,14 @@ impl FanoutOrchestrator {
         workspace_root: &Path,
         tasks: Vec<FanoutTaskItem>,
         join_mode: FanoutJoinMode,
-        _auto_merge: bool,
+        auto_merge: bool,
         max_concurrency: usize,
     ) -> Result<String, ToolError> {
         if tasks.is_empty() {
             return Ok("No subagent tasks specified for fan-out.".to_string());
         }
 
+        let start_time = std::time::Instant::now();
         let total_tasks = tasks.len();
         let concurrency = max_concurrency.clamp(1, 16);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -191,9 +192,19 @@ impl FanoutOrchestrator {
             }
         }
 
-        let completed_results: Vec<WorkerResult> = results.into_iter().flatten().collect();
+        let mut completed_results: Vec<WorkerResult> = results.into_iter().flatten().collect();
 
-        let report = Self::format_baseline_report(&completed_results, join_mode);
+        if auto_merge {
+            Self::arbitrate_mutating_workers(workspace_root, &mut completed_results, &tasks).await;
+        }
+
+        let total_duration_ms = start_time.elapsed().as_millis() as u64;
+        let report = Self::format_fanout_report(
+            &completed_results,
+            join_mode,
+            auto_merge,
+            total_duration_ms,
+        );
         Ok(report)
     }
 
@@ -582,6 +593,281 @@ impl FanoutOrchestrator {
         }
     }
 
+    /// Sequentially validates, conflict-checks, and merges mutating subagent worktrees.
+    pub async fn arbitrate_mutating_workers(
+        workspace_root: &Path,
+        results: &mut [WorkerResult],
+        tasks: &[FanoutTaskItem],
+    ) {
+        for (i, res) in results.iter_mut().enumerate() {
+            if !res.success {
+                continue;
+            }
+            let (worktree_path, branch_name) = match (&res.worktree_path, &res.branch_name) {
+                (Some(wt), Some(br)) => (wt.clone(), br.clone()),
+                _ => continue,
+            };
+
+            // 1. Pre-merge verification
+            let check_cmd = tasks.get(i).and_then(|t| t.check_cmd.as_deref());
+            let v_res = MergeArbitrator::verify_worktree(&worktree_path, check_cmd);
+            match v_res {
+                Ok(v_rep) if !v_rep.success => {
+                    res.merge_status = MergeStatus::VerificationFailed {
+                        command: v_rep.command,
+                        exit_code: v_rep.exit_code,
+                        stderr: v_rep.stderr,
+                    };
+                    continue;
+                }
+                Ok(_) => {}
+                Err(ArbitrationError::VerificationFailed(msg)) => {
+                    res.merge_status = MergeStatus::VerificationFailed {
+                        command: check_cmd.unwrap_or("auto").to_string(),
+                        exit_code: 1,
+                        stderr: msg,
+                    };
+                    continue;
+                }
+                Err(e) => {
+                    res.merge_status = MergeStatus::VerificationFailed {
+                        command: check_cmd.unwrap_or("auto").to_string(),
+                        exit_code: 1,
+                        stderr: e.to_string(),
+                    };
+                    continue;
+                }
+            }
+
+            // 2. In-memory 3-way mergeability check against current HEAD
+            let m_res = MergeArbitrator::check_mergeability(workspace_root, &branch_name);
+            match m_res {
+                Ok(report) => {
+                    if !report.can_merge_cleanly {
+                        res.merge_status = MergeStatus::Conflict {
+                            conflicted_files: report.conflicted_files,
+                        };
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    res.merge_status = MergeStatus::Conflict {
+                        conflicted_files: vec![format!("Mergeability check error: {}", e)],
+                    };
+                    continue;
+                }
+            }
+
+            // 3. Apply clean merge with commit: true
+            let commit_msg = format!(
+                "merge(subagent): integrate changes from worker `{}` ({})",
+                res.agent_id,
+                res.role.badge()
+            );
+            let apply_res =
+                MergeArbitrator::apply_merge(workspace_root, &branch_name, true, Some(&commit_msg));
+            match apply_res {
+                Ok(merge_success) => {
+                    res.merge_status = MergeStatus::Merged {
+                        commit_hash: merge_success.commit_hash,
+                    };
+                    let handle = WorktreeHandle {
+                        worktree_path: worktree_path.clone(),
+                        branch_name: branch_name.clone(),
+                        agent_id: res.agent_id.clone(),
+                        repo_root: workspace_root.to_path_buf(),
+                    };
+                    let _ = GitWorktreeManager::remove_worktree(&handle);
+                }
+                Err(ArbitrationError::MergeConflict(files)) => {
+                    res.merge_status = MergeStatus::Conflict {
+                        conflicted_files: files,
+                    };
+                }
+                Err(e) => {
+                    res.merge_status = MergeStatus::Conflict {
+                        conflicted_files: vec![e.to_string()],
+                    };
+                }
+            }
+        }
+    }
+
+    /// Formats an executive map-reduce markdown report summarizing swarm outcomes and arbitration.
+    pub fn format_fanout_report(
+        results: &[WorkerResult],
+        join_mode: FanoutJoinMode,
+        auto_merge: bool,
+        total_duration_ms: u64,
+    ) -> String {
+        let total_workers = results.len();
+        let successful_workers = results.iter().filter(|r| r.success).count();
+        let cancelled_workers = results
+            .iter()
+            .filter(|r| r.merge_status == MergeStatus::SkippedCancelled)
+            .count();
+        let total_tokens: usize = results.iter().map(|r| r.tokens_used).sum();
+
+        let join_mode_str = match join_mode {
+            FanoutJoinMode::All => "all (wait for all)",
+            FanoutJoinMode::Race => "race (first success wins)",
+        };
+        let auto_merge_str = if auto_merge {
+            "enabled (sequential arbitration)"
+        } else {
+            "disabled (retained for inspection)"
+        };
+
+        let mut out = format!(
+            "### 🐝 Subagent Swarm Fan-Out Completed ({} / {} worker(s) finished in {:.2}s)\n\n\
+             • **Join Policy**: {}\n\
+             • **Auto-Merge**: {}\n\
+             • **Aggregate Metrics**: {} tokens used across {} active worker(s)\n\n",
+            successful_workers,
+            total_workers,
+            total_duration_ms as f64 / 1000.0,
+            join_mode_str,
+            auto_merge_str,
+            total_tokens,
+            total_workers.saturating_sub(cancelled_workers),
+        );
+
+        // Executive Markdown Matrix Table
+        out.push_str(
+            "| # | Worker ID | Role | Status | Duration | Tokens | Files | Merge Outcome |\n",
+        );
+        out.push_str("| :-: | :--- | :--- | :-: | :-: | :-: | :-: | :--- |\n");
+
+        for (i, r) in results.iter().enumerate() {
+            let status_badge = if r.success {
+                "✔ Success"
+            } else if r.merge_status == MergeStatus::SkippedCancelled {
+                "⏹ Cancelled"
+            } else {
+                "✗ Failed"
+            };
+
+            let duration_str = format!("{:.1}s", r.duration_ms as f64 / 1000.0);
+            let files_str = if r.files_modified.is_empty() {
+                "None".to_string()
+            } else {
+                format!("{} file(s)", r.files_modified.len())
+            };
+
+            let merge_outcome_str = match &r.merge_status {
+                MergeStatus::NotApplicable => "— (read-only)".to_string(),
+                MergeStatus::Merged { commit_hash } => {
+                    if let Some(ref hash) = commit_hash {
+                        format!("✔ Merged (`{}`)", hash)
+                    } else {
+                        "✔ Merged".to_string()
+                    }
+                }
+                MergeStatus::VerificationFailed {
+                    command, exit_code, ..
+                } => {
+                    format!("❌ Verify Failed (`{}` exit {})", command, exit_code)
+                }
+                MergeStatus::Conflict { conflicted_files } => {
+                    format!("⚠️ Conflict ({} file(s))", conflicted_files.len())
+                }
+                MergeStatus::RetainedUnmerged => {
+                    if let Some(ref path) = r.worktree_path {
+                        format!("📁 Retained (`{}`)", path.display())
+                    } else {
+                        "📁 Retained".to_string()
+                    }
+                }
+                MergeStatus::SkippedCancelled => "⏹ Cancelled".to_string(),
+            };
+
+            out.push_str(&format!(
+                "| {} | `{}` | **{}** | {} | {} | {} | {} | {} |\n",
+                i + 1,
+                r.agent_id,
+                r.role.badge(),
+                status_badge,
+                duration_str,
+                r.tokens_used,
+                files_str,
+                merge_outcome_str
+            ));
+        }
+
+        // Diagnostics section for conflicts or verification failures
+        let mut diagnostics = Vec::new();
+        for r in results {
+            match &r.merge_status {
+                MergeStatus::VerificationFailed {
+                    command,
+                    exit_code,
+                    stderr,
+                } => {
+                    diagnostics.push(format!(
+                        "#### ❌ Worker `{}` Pre-Merge Verification Failed\n\
+                         • **Command**: `{}`\n\
+                         • **Exit Code**: {}\n\
+                         • **Worktree Preserved At**: `{}`\n\n\
+                         ```\n{}\n```\n",
+                        r.agent_id,
+                        command,
+                        exit_code,
+                        r.worktree_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "N/A".to_string()),
+                        stderr.trim()
+                    ));
+                }
+                MergeStatus::Conflict { conflicted_files } => {
+                    diagnostics.push(format!(
+                        "#### ⚠️ Worker `{}` Merge Conflicts Detected\n\
+                         • **Conflicted Files ({})**:\n{}\n\
+                         • **Worktree Preserved At**: `{}`\n\
+                         💡 *Changes were NOT applied to parent workspace to avoid corrupting working directory.*\n",
+                        r.agent_id,
+                        conflicted_files.len(),
+                        conflicted_files.iter().map(|f| format!("  - `{}`", f)).collect::<Vec<_>>().join("\n"),
+                        r.worktree_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "N/A".to_string())
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if !diagnostics.is_empty() {
+            out.push_str("\n### ⚠️ Arbitration Diagnostics & Conflicts:\n\n");
+            for diag in diagnostics {
+                out.push_str(&diag);
+                out.push('\n');
+            }
+        }
+
+        // Executive Summaries & Findings
+        out.push_str("\n### 📋 Executive Summaries & Findings:\n\n");
+        for (i, r) in results.iter().enumerate() {
+            out.push_str(&format!(
+                "#### {}. `{}` — {}\n",
+                i + 1,
+                r.agent_id,
+                r.role.badge()
+            ));
+            out.push_str(&format!("**Task**: {}\n\n", r.task));
+            if let Some(ref e) = r.error {
+                out.push_str(&format!("**Error**: {}\n\n", e));
+            }
+            if !r.summary.is_empty() {
+                out.push_str(&format!("{}\n\n", r.summary.trim()));
+            }
+            if let Some(ref wt) = r.worktree_path {
+                out.push_str(&format!("*Worktree*: `{}`\n\n", wt.display()));
+            }
+            out.push_str("---\n\n");
+        }
+
+        out
+    }
+
     /// Synthesizes a baseline map-reduce markdown report summarizing swarm outcomes.
     pub fn format_baseline_report(results: &[WorkerResult], join_mode: FanoutJoinMode) -> String {
         let total = results.len();
@@ -818,5 +1104,321 @@ pub mod tests {
         assert!(report.contains("src/parser.rs"));
         assert!(report.contains("Retained Unmerged"));
         assert!(report.contains("Parallel Swarm Fan-Out Execution Report"));
+    }
+
+    #[tokio::test]
+    async fn test_arbitrate_mutating_workers_clean_merge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.name");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.email");
+
+        std::fs::write(root.join("base.txt"), "base content\n").expect("write base");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add base");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("git commit base");
+
+        let branch = "minicode/subagent/worker-1";
+        std::process::Command::new("git")
+            .args(["branch", branch])
+            .current_dir(root)
+            .output()
+            .expect("git branch");
+
+        let wt_dir = root.join("wt-1");
+        std::process::Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
+            .current_dir(root)
+            .output()
+            .expect("git worktree add");
+
+        std::fs::write(wt_dir.join("file_a.txt"), "file_a content\n").expect("write file_a");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git add file_a");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "worker 1 adds file_a"])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git commit file_a");
+
+        let mut results = vec![WorkerResult {
+            agent_id: AgentId("worker-1".to_string()),
+            role: SubagentRole::Coder,
+            task: "Add file_a.txt".to_string(),
+            success: true,
+            duration_ms: 120,
+            tokens_used: 150,
+            files_modified: vec!["file_a.txt".to_string()],
+            worktree_path: Some(wt_dir.clone()),
+            branch_name: Some(branch.to_string()),
+            merge_status: MergeStatus::RetainedUnmerged,
+            summary: "Successfully added file_a.txt".to_string(),
+            error: None,
+        }];
+
+        let tasks = vec![FanoutTaskItem {
+            task: "Add file_a.txt".to_string(),
+            role: SubagentRole::Coder,
+            workspace_mode: Some(WorkspaceMode::Worktree),
+            max_iterations: None,
+            check_cmd: Some("skip".to_string()),
+        }];
+
+        FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
+
+        assert!(
+            matches!(results[0].merge_status, MergeStatus::Merged { .. }),
+            "Expected worker-1 to be Merged, got: {:?}",
+            results[0].merge_status
+        );
+        assert!(
+            root.join("file_a.txt").exists(),
+            "file_a.txt should exist in root repo after merge"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "Worktree directory should be removed after clean merge"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_arbitrate_mutating_workers_conflict() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        // git init
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "test"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.name");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(root)
+            .output()
+            .expect("git config user.email");
+
+        std::fs::write(root.join("shared.txt"), "base content\n").expect("write shared base");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add base");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(root)
+            .output()
+            .expect("git commit base");
+
+        let branch = "minicode/subagent/worker-conflict";
+        std::process::Command::new("git")
+            .args(["branch", branch])
+            .current_dir(root)
+            .output()
+            .expect("git branch");
+
+        let wt_dir = root.join("wt-conflict");
+        std::process::Command::new("git")
+            .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
+            .current_dir(root)
+            .output()
+            .expect("git worktree add");
+
+        // Worktree modifies shared.txt
+        std::fs::write(wt_dir.join("shared.txt"), "worker conflicting content\n")
+            .expect("write worker shared");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git add worker shared");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "worker commit on branch"])
+            .current_dir(&wt_dir)
+            .output()
+            .expect("git commit worker shared");
+
+        // Main modifies shared.txt
+        std::fs::write(root.join("shared.txt"), "main conflicting content\n")
+            .expect("write main shared");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(root)
+            .output()
+            .expect("git add main shared");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "main conflicting commit"])
+            .current_dir(root)
+            .output()
+            .expect("git commit main shared");
+
+        let mut results = vec![WorkerResult {
+            agent_id: AgentId("worker-conflict".to_string()),
+            role: SubagentRole::Coder,
+            task: "Update shared.txt".to_string(),
+            success: true,
+            duration_ms: 150,
+            tokens_used: 120,
+            files_modified: vec!["shared.txt".to_string()],
+            worktree_path: Some(wt_dir.clone()),
+            branch_name: Some(branch.to_string()),
+            merge_status: MergeStatus::RetainedUnmerged,
+            summary: "Updated shared.txt".to_string(),
+            error: None,
+        }];
+
+        let tasks = vec![FanoutTaskItem {
+            task: "Update shared.txt".to_string(),
+            role: SubagentRole::Coder,
+            workspace_mode: Some(WorkspaceMode::Worktree),
+            max_iterations: None,
+            check_cmd: Some("skip".to_string()),
+        }];
+
+        FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
+
+        match &results[0].merge_status {
+            MergeStatus::Conflict { conflicted_files } => {
+                assert!(
+                    conflicted_files.contains(&"shared.txt".to_string()),
+                    "conflicted_files should contain shared.txt: {:?}",
+                    conflicted_files
+                );
+            }
+            other => panic!("Expected MergeStatus::Conflict, got: {:?}", other),
+        }
+
+        assert!(
+            wt_dir.exists(),
+            "Worktree directory must be preserved on disk for manual remediation"
+        );
+    }
+
+    #[test]
+    fn test_format_fanout_report() {
+        let results = vec![
+            WorkerResult {
+                agent_id: AgentId("scout-1".to_string()),
+                role: SubagentRole::Scout,
+                task: "Audit repo structure".to_string(),
+                success: true,
+                duration_ms: 800,
+                tokens_used: 350,
+                files_modified: vec![],
+                worktree_path: None,
+                branch_name: None,
+                merge_status: MergeStatus::NotApplicable,
+                summary: "Scouted directories and identified entrypoints.".to_string(),
+                error: None,
+            },
+            WorkerResult {
+                agent_id: AgentId("coder-1".to_string()),
+                role: SubagentRole::Coder,
+                task: "Implement feature A".to_string(),
+                success: true,
+                duration_ms: 2200,
+                tokens_used: 900,
+                files_modified: vec!["src/feature.rs".to_string()],
+                worktree_path: Some(PathBuf::from("/tmp/wt-coder-1")),
+                branch_name: Some("minicode/subagent/coder-1".to_string()),
+                merge_status: MergeStatus::Merged {
+                    commit_hash: Some("abc1234".to_string()),
+                },
+                summary: "Implemented feature A cleanly.".to_string(),
+                error: None,
+            },
+            WorkerResult {
+                agent_id: AgentId("coder-2".to_string()),
+                role: SubagentRole::Coder,
+                task: "Implement feature B".to_string(),
+                success: true,
+                duration_ms: 2100,
+                tokens_used: 850,
+                files_modified: vec!["src/feature.rs".to_string()],
+                worktree_path: Some(PathBuf::from("/tmp/wt-coder-2")),
+                branch_name: Some("minicode/subagent/coder-2".to_string()),
+                merge_status: MergeStatus::Conflict {
+                    conflicted_files: vec!["src/feature.rs".to_string()],
+                },
+                summary: "Implemented feature B with overlapping edits.".to_string(),
+                error: None,
+            },
+            WorkerResult {
+                agent_id: AgentId("coder-3".to_string()),
+                role: SubagentRole::Coder,
+                task: "Implement feature C".to_string(),
+                success: true,
+                duration_ms: 1500,
+                tokens_used: 400,
+                files_modified: vec!["src/bad.rs".to_string()],
+                worktree_path: Some(PathBuf::from("/tmp/wt-coder-3")),
+                branch_name: Some("minicode/subagent/coder-3".to_string()),
+                merge_status: MergeStatus::VerificationFailed {
+                    command: "cargo check -j 1".to_string(),
+                    exit_code: 101,
+                    stderr: "syntax error: expected `;`".to_string(),
+                },
+                summary: "Broke build during implementation.".to_string(),
+                error: None,
+            },
+            WorkerResult {
+                agent_id: AgentId("tester-1".to_string()),
+                role: SubagentRole::Tester,
+                task: "Race candidate test".to_string(),
+                success: false,
+                duration_ms: 300,
+                tokens_used: 100,
+                files_modified: vec![],
+                worktree_path: None,
+                branch_name: None,
+                merge_status: MergeStatus::SkippedCancelled,
+                summary: "Task cancelled due to race completion.".to_string(),
+                error: Some("cancelled".to_string()),
+            },
+        ];
+
+        let report =
+            FanoutOrchestrator::format_fanout_report(&results, FanoutJoinMode::Race, true, 2500);
+
+        assert!(report.contains("Subagent Swarm Fan-Out Completed"));
+        assert!(report.contains("race (first success wins)"));
+        assert!(report.contains("enabled (sequential arbitration)"));
+        assert!(report.contains("✔ Merged (`abc1234`)"));
+        assert!(report.contains("⚠️ Conflict (1 file(s))"));
+        assert!(report.contains("❌ Verify Failed (`cargo check -j 1` exit 101)"));
+        assert!(report.contains("⏹ Cancelled"));
+        assert!(report.contains("Arbitration Diagnostics & Conflicts"));
+        assert!(report.contains("src/feature.rs"));
+        assert!(report.contains("syntax error: expected `;`"));
     }
 }
