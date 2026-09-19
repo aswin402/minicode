@@ -91,9 +91,10 @@ impl GitWorktreeManager {
         };
 
         if let Some(existing_wt) = Self::locate_worktree(repo_root, agent_id) {
+            let existing_branch = Self::resolve_branch_for(repo_root, agent_id);
             let existing_handle = WorktreeHandle {
                 worktree_path: existing_wt,
-                branch_name: branch_name.clone(),
+                branch_name: existing_branch,
                 agent_id: agent_id.clone(),
                 repo_root: repo_root.to_path_buf(),
             };
