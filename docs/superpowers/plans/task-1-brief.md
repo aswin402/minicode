@@ -1,86 +1,100 @@
-# Task 1 Brief: MicroCompactor Engine & Superseded File Read Detection
+# Task 1 Brief: Subagent Core Types & A2A Messaging Infrastructure
 
-## Overview
-Implement the core `MicroCompactor` struct and data structures in `src/context/budget/micro_compact.rs`, register it in `src/context/budget/mod.rs`, and implement the detection and condensation of superseded file reads backed by `CcrCache`.
+## Scope & Objective
+Implement the foundational data structures and reactive file-backed mailbox for the multi-agent delegation runtime in `minicode`.
 
-## Files
-- Create: `src/context/budget/micro_compact.rs`
-- Modify: `src/context/budget/mod.rs`
-- Test: `src/context/budget/micro_compact.rs` (inline unit tests)
+## Files to Create/Modify
+- Create: `src/agent/subagent/types.rs`
+- Create: `src/agent/subagent/message.rs`
+- Create: `src/agent/subagent/mailbox.rs`
+- Create: `src/agent/subagent/mod.rs`
+- Modify: `src/agent/mod.rs` (expose `pub mod subagent;`)
 
-## Constraints
-1. **Targeted Tests ONLY**: `cargo test -j 1 --lib context::budget::micro_compact::tests`. NEVER run the full test suite.
-2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
-3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
-4. **Error handling**: Return `Option` / `Result` where appropriate.
-5. **Lossless CCR**: Use `crate::context::budget::ccr_cache::CcrCache::store(&raw_output)` to store the exact raw output before replacing it with a concise 1-line receipt:
-   `[read_file: <path> (<lines> lines read, superseded by modification. Use retrieve_observation(id="<ccr_id>") for raw content)]`
-6. **Recent Turn Preservation**: If `preserve_recent_turns > 0`, the tool results belonging to the last `preserve_recent_turns` turns MUST be left 100% untouched.
+## Specifications & Requirements
 
-## Interfaces
-```rust
-use crate::agent::types::{Message, Role, ToolCall};
-use crate::context::budget::ccr_cache::CcrCache;
-use serde::{Deserialize, Serialize};
+### 1. `src/agent/subagent/types.rs`
+- `AgentId(pub String)`:
+  - `parent() -> Self`: returns `AgentId("parent".to_string())`.
+  - `new_subagent(prefix: &str) -> Self`: generates a unique ID like `format!("{}-{}", prefix, &uuid::Uuid::new_v4().to_string()[..8])`.
+  - `is_parent(&self) -> bool`: returns `self.0 == "parent"`.
+  - Implements: `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`.
+- `SubagentRole`:
+  - Variants: `Scout`, `Coder`, `Tester`, `Reviewer`.
+  - `default_workspace_mode(&self) -> WorkspaceMode`:
+    - `Scout | Reviewer` -> `WorkspaceMode::Shared`
+    - `Coder | Tester` -> `WorkspaceMode::Worktree`
+  - `tool_filter_mode(&self) -> &'static str`:
+    - `Scout | Reviewer` -> `"read_only"`
+    - `Coder | Tester` -> `"standard"`
+  - Implements: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Serialize`, `Deserialize` with `#[serde(rename_all = "snake_case")]`.
+- `WorkspaceMode`:
+  - Variants: `Auto`, `Worktree`, `Shared`.
+  - Implements: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Serialize`, `Deserialize` with `#[serde(rename_all = "snake_case")]`.
+- `SubagentState`:
+  - Variants: `Starting`, `Running`, `WaitingForInput`, `Completed`, `Failed(String)`, `Terminated`.
+  - Implements: `Debug`, `Clone`, `PartialEq`, `Eq`, `Serialize`, `Deserialize` with `#[serde(rename_all = "snake_case")]`.
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct MicroCompactMetrics {
-    pub superseded_reads_compacted: usize,
-    pub duplicate_reads_compacted: usize,
-    pub mutation_echoes_compacted: usize,
-    pub search_results_compacted: usize,
-    pub tokens_saved_estimate: usize,
-}
+### 2. `src/agent/subagent/message.rs`
+- `MessageIntent`:
+  - Variants: `TaskInit`, `StatusUpdate`, `ClarificationRequest`, `ClarificationResponse`, `Feedback`, `Handoff`, `TaskComplete`.
+  - Implements: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Serialize`, `Deserialize` with `#[serde(rename_all = "snake_case")]`.
+- `AgentMessage`:
+  - Fields:
+    - `pub id: String`
+    - `pub sender: AgentId`
+    - `pub recipient: AgentId`
+    - `pub intent: MessageIntent`
+    - `pub content: String`
+    - `pub timestamp: chrono::DateTime<chrono::Utc>`
+    - `pub metadata: Option<serde_json::Value>`
+  - `format_for_prompt(&self) -> String`:
+    Formats as:
+    ```rust
+    format!(
+        "<agent_message from=\"{}\" intent=\"{:?}\" timestamp=\"{}\">\n{}\n</agent_message>",
+        self.sender.0,
+        serde_json::to_string(&self.intent).unwrap_or_else(|_| "message".to_string()).trim_matches('"'),
+        self.timestamp.to_rfc3339(),
+        self.content.trim()
+    )
+    ```
+  - Implements: `Debug`, `Clone`, `Serialize`, `Deserialize`.
 
-pub struct MicroCompactor;
+### 3. `src/agent/subagent/mailbox.rs`
+- `AgentMailbox`:
+  - Fields:
+    - `agent_id: AgentId`
+    - `mailbox_path: std::path::PathBuf`
+  - `new(agent_id: AgentId, agent_dir: &std::path::Path) -> std::io::Result<Self>`:
+    - Ensures `agent_dir` exists via `std::fs::create_dir_all`.
+    - Sets `mailbox_path = agent_dir.join("mailbox.jsonl")`.
+  - `post(&self, msg: AgentMessage) -> std::io::Result<()>`:
+    - Serializes `msg` as JSON line.
+    - Opens `mailbox_path` with `OpenOptions::new().create(true).append(true).open(...)`.
+    - Writes line + newline, calls `file.sync_all()`.
+  - `drain_unread(&self) -> std::io::Result<Vec<AgentMessage>>`:
+    - If `mailbox_path` does not exist, return `Ok(vec![])`.
+    - Safely renames `mailbox_path` to a temporary processing file (e.g. `mailbox.processing.<timestamp>.jsonl`) to ensure no race condition on concurrent appends, reads all lines, deserializes each line, and removes the processing file.
+  - `unread_count(&self) -> std::io::Result<usize>`:
+    - If `mailbox_path` does not exist, returns `Ok(0)`.
+    - Reads line count of `mailbox_path`.
 
-impl MicroCompactor {
-    pub fn compact_messages(messages: &mut [Message], preserve_recent_turns: usize) -> MicroCompactMetrics;
-    pub fn extract_target_path(tool_call: &ToolCall) -> Option<String>;
-    pub fn extract_search_query(tool_call: &ToolCall) -> Option<String>;
-}
-```
+### 4. `src/agent/subagent/mod.rs` & `src/agent/mod.rs`
+- `pub mod types;`
+- `pub mod message;`
+- `pub mod mailbox;`
+- Re-export common types.
+- In `src/agent/mod.rs`, add `pub mod subagent;`.
 
-## Implementation Requirements
-1. `extract_target_path(tool_call: &ToolCall) -> Option<String>`:
-   Check `tool_call.arguments` (JSON Object) dynamically for keys: `path`, `target_file`, `file_path`, `file`, `TargetFile`, `AbsolutePath`, `target`. Return cleaned trimmed path string.
-2. `extract_search_query(tool_call: &ToolCall) -> Option<String>`:
-   Check `tool_call.arguments` for keys: `query`, `pattern`, `term`, `regex`, `Query`, `Pattern`. Return cleaned trimmed query string.
-3. Turn boundaries in `messages`:
-   A "turn" can be demarcated by user messages (`role == Role::User`) or by assistant messages. Count user messages or distinct assistant-user rounds to identify turn indices. The messages belonging to the last `preserve_recent_turns` turns must not have their tool results modified.
-4. Pass 1: Build map of modified files across the conversation:
-   - Identify all tool calls where `tool_name` is in `["write_file", "patch_file", "replace_file_content", "edit_file"]` or starts with `write_` / `patch_` / `edit_`.
-   - Extract the target file path and record the message index of the mutation.
-5. Pass 2: For each tool result message (`role == Role::Tool`) outside the preserved recent window:
-   - If `tool_name` is in `["read_file", "view_file", "cat"]` or starts with `read_` / `view_`:
-     - If the target file was modified in a later message:
-       - Compute line count of raw content.
-       - If raw content is already a condensed receipt (`starts_with("[read_file:")`), skip.
-       - Store raw content in `CcrCache::store(&msg.content)`.
-       - Estimate tokens saved (~1 token per 4 chars).
-       - Replace `msg.content` with receipt:
-         `format!("[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]", path, line_count, ccr_id)`
-       - Increment `metrics.superseded_reads_compacted`.
+## Unit Tests Required
+In `src/agent/subagent/types.rs` and `src/agent/subagent/mailbox.rs`:
+- `test_agent_id_and_roles`
+- `test_agent_message_format_for_prompt`
+- `test_agent_mailbox_fifo_and_disk_persistence`
 
-## Unit Tests to Write
-1. `test_extract_target_path_various_schemas`:
-   Test with `{"path": "foo.rs"}`, `{"target_file": "bar.rs"}`, `{"file_path": "baz.rs"}`, `{"TargetFile": "qux.rs"}`.
-2. `test_superseded_file_read_compaction`:
-   Message 0: User "Edit main.rs"
-   Message 1: Assistant calls `read_file(path="src/main.rs")`
-   Message 2: Tool result with 50 lines of code
-   Message 3: Assistant calls `write_file(path="src/main.rs")`
-   Message 4: Tool result "ok"
-   Message 5: User "Now test it"
-   Message 6: Assistant "Testing"
-   Run `MicroCompactor::compact_messages(&mut messages, 1)`.
-   Assert Message 2 was replaced with receipt containing `[read_file: src/main.rs` and `ccr_`.
-   Assert `CcrCache::retrieve(&ccr_id, None, None)` returns the original 50 lines.
-3. `test_recent_turn_preserved_uncompacted`:
-   Ensure tool result in the most recent turn is never touched even if the file was modified in an earlier turn.
-
-## Success Criteria
-- Targeted test passes: `cargo test -j 1 --lib context::budget::micro_compact::tests`
-- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
-- Code formatting passes: `cargo fmt --check`
-- Commit with message: `feat(budget): implement MicroCompactor core with superseded read detection`
+## Critical Constraints
+1. ONLY run targeted tests: `cargo test -j 1 --lib agent::subagent::tests`. NEVER run the full test suite.
+2. Error handling: `std::io::Result` / `Result<T, E>`. Zero `.unwrap()` or `.expect()` in non-test code.
+3. Concurrency: Use `-j 1` for `cargo check` and `cargo test`.
+4. Verification: `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
+5. Commit message: `feat(subagent): implement core types, A2A message schema, and reactive mailbox (Phase 132)`.

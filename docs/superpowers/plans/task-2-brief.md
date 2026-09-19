@@ -1,83 +1,76 @@
-# Task 2 Brief: Duplicate Read & Historical Mutation Echo Condensation
+# Task 2 Brief: Ephemeral Git Worktree Sandboxing Engine
 
-## Overview
-Extend `MicroCompactor` in `src/context/budget/micro_compact.rs` to detect and condense duplicate consecutive reads and historical large mutation echoes (>2 turns old), while also implementing the Reviewer's optimization suggestions (lightweight metadata, cross-platform path normalization, and preventing negative compression).
+## Scope & Objective
+Implement the Git worktree sandboxing engine in `src/sandbox/worktree.rs` that provisions, manages, inspects, and cleans up isolated Git worktrees for mutating subagents (`coder`, `tester`).
 
-## Files
-- Modify: `src/context/budget/micro_compact.rs`
-- Test: `src/context/budget/micro_compact.rs` (inline unit tests)
+## Files to Create/Modify
+- Create: `src/sandbox/worktree.rs`
+- Modify: `src/sandbox/mod.rs` (expose `pub mod worktree;`)
 
-## Constraints
-1. **Targeted Tests ONLY**: `cargo test -j 1 --lib context::budget::micro_compact::tests`. NEVER run the full test suite.
-2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
-3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
-4. **Lossless CCR**: Use `CcrCache::store(&raw_output)` before replacing content.
-5. **Preserve recent turns**: If `preserve_recent_turns > 0`, the tool results belonging to the last `preserve_recent_turns` turns MUST remain 100% untouched.
+## Specifications & Requirements
 
-## Detailed Requirements
+### 1. `WorktreeHandle` Data Structure
+In `src/sandbox/worktree.rs`:
+```rust
+use std::path::PathBuf;
+use crate::agent::subagent::types::AgentId;
 
-### 1. Address Task 1 Reviewer Suggestions
-- **Lightweight Tool Metadata**:
-  Do NOT clone full `ToolCall` structs (which contain heavy `arguments: serde_json::Value`). Instead define a lightweight internal struct:
-  ```rust
-  #[derive(Debug, Clone)]
-  struct CompactToolMeta {
-      name: String,
-      target_path: Option<String>,
-      query: Option<String>,
-  }
-  ```
-  Extract `target_path` and `query` once during Pass 1 and store only `CompactToolMeta`.
-- **Cross-Platform Path Normalization**:
-  In `normalize_path_for_compare(path: &str) -> String`:
-  Replace all `\\` with `/`, strip leading `./`, and trim leading `/` so Windows and Unix paths compare identically.
-- **Prevent Negative Compression**:
-  Never replace a tool output if `msg.content.len() <= 128` (or if raw content is shorter than the receipt template), because replacing a 30-byte observation with a 130-byte receipt would inflate the context window!
+#[derive(Debug, Clone)]
+pub struct WorktreeHandle {
+    pub worktree_path: PathBuf,
+    pub branch_name: String,
+    pub agent_id: AgentId,
+    pub repo_root: PathBuf,
+}
+```
 
-### 2. Duplicate Read Condensation
-- If a file `path` was read in message $i$, and read again in message $j > i$ WITHOUT any modifying tool call (`write_file`, `patch_file`, etc.) between $i$ and $j$:
-  - Message $i$ is redundant (message $j$ has the same or fresher content).
-  - If message $i$ is outside the preserved recent turn window and longer than 128 bytes:
-    - Store message $i$'s raw content in `CcrCache::store`.
-    - Replace message $i$'s content with:
-      `format!("[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]", path, ccr_id)`
-    - Increment `metrics.duplicate_reads_compacted`.
-    - Estimate tokens saved and add to `metrics.tokens_saved_estimate`.
+### 2. `GitWorktreeManager` Implementation
+Provide the following functions / methods on `GitWorktreeManager`:
+- `pub fn create_worktree(repo_root: &Path, agent_id: &AgentId) -> std::io::Result<WorktreeHandle>`:
+  1. Determine worktree path: `repo_root.join(".minicode").join("worktrees").join(&agent_id.0)`.
+  2. Branch name: `format!("minicode-task-{}", &agent_id.0)`.
+  3. Ensure `.minicode/worktrees/` parent exists.
+  4. If `worktree_path` already exists, invoke `remove_worktree` or remove it first.
+  5. Run `git worktree add -b <branch_name> <worktree_path> HEAD` with `current_dir(repo_root)`.
+  6. If the command fails (e.g. not a git repo, or HEAD invalid), return `std::io::Error::new(std::io::ErrorKind::Other, format!("git worktree add failed: {}", stderr))`.
+  7. Return `WorktreeHandle`.
 
-### 3. Historical Mutation Echo Condensation
-- When a file writing tool (`write_file`, `patch_file`, `replace_file_content`, `edit_file`) executes, its tool output often contains a large diff, the echoed new content, or verbose confirmation (> 256 bytes).
-- For such mutation tool results that are outside the preserved recent turn window:
-  - If the output is already a condensed receipt (`starts_with("[write_file:")` or `starts_with("[patch_file:")`), skip.
-  - If `content.len() > 256`:
-    - Store raw output in `CcrCache::store`.
-    - Replace with:
-      `format!("[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]", tool_name, path, content.len(), ccr_id)`
-    - Increment `metrics.mutation_echoes_compacted`.
-    - Add saved tokens to `metrics.tokens_saved_estimate`.
+- `pub fn capture_diff(handle: &WorktreeHandle) -> std::io::Result<String>`:
+  1. In `handle.worktree_path`, run `git add -N .` (so untracked files are visible to diff) then `git diff HEAD`.
+  2. If `git diff HEAD` fails or has no commits yet, fallback to `git diff` or return the diff output.
+  3. Return the diff string (trimmed).
 
-## Unit Tests to Implement
-1. `test_duplicate_consecutive_reads`:
-   - Turn 1: `read_file("src/main.rs")` (50 lines)
-   - Turn 2: User asks question, assistant answers
-   - Turn 3: `read_file("src/main.rs")` (50 lines)
-   - Turn 4: Recent turn
-   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
-   - Assert Turn 1 read is condensed with `superseded by subsequent read`.
-   - Assert Turn 3 read is preserved (or preserved because within recent window).
-2. `test_historical_mutation_echo_condensation`:
-   - Turn 1: `write_file("src/main.rs")` returning 500 bytes of unified diff / echo.
-   - Turn 2: User prompt + assistant action
-   - Turn 3: Recent turn
-   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
-   - Assert Turn 1 mutation output is condensed to `[write_file: src/main.rs (successfully applied, 500 bytes...)]`.
-   - Assert raw 500 bytes is retrievable via `CcrCache::retrieve`.
-3. `test_no_negative_compression_on_tiny_output`:
-   - A tool result of `"ok"` or 20 bytes is NOT replaced with a 130-byte receipt.
-4. `test_cross_platform_path_normalization`:
-   - `read_file` with `"src\\main.rs"` is recognized as superseded by `write_file` with `"src/main.rs"`.
+- `pub fn remove_worktree(handle: &WorktreeHandle) -> std::io::Result<()>`:
+  1. Run `git worktree remove --force <worktree_path>` with `current_dir(&handle.repo_root)`.
+  2. Run `git branch -D <branch_name>` with `current_dir(&handle.repo_root)`.
+  3. If `handle.worktree_path.exists()`, remove it with `std::fs::remove_dir_all`.
+  4. Run `git worktree prune` with `current_dir(&handle.repo_root)`.
+  5. Return `Ok(())`.
 
-## Success Criteria
-- Targeted test passes: `cargo test -j 1 --lib context::budget::micro_compact::tests`
-- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
-- Code formatting passes: `cargo fmt --check`
-- Commit with message: `feat(budget): add duplicate read and historical mutation echo compaction`
+- `pub fn cleanup_stale_worktrees(repo_root: &Path) -> std::io::Result<usize>`:
+  1. Check `.minicode/worktrees/`. If it doesn't exist, return `Ok(0)`.
+  2. Run `git worktree prune` in `repo_root`.
+  3. Remove any remaining directories inside `.minicode/worktrees/`.
+  4. Return count of directories cleaned.
+
+### 3. Unit Tests Required
+In `src/sandbox/worktree.rs`:
+- `test_worktree_lifecycle_in_git_repo`:
+  - Creates a temporary git repository using `tempfile::tempdir()`.
+  - Runs `git init`, creates `file.txt`, commits `init`.
+  - Calls `GitWorktreeManager::create_worktree`.
+  - Verifies worktree directory exists and branch is created.
+  - Modifies file in worktree.
+  - Calls `GitWorktreeManager::capture_diff` and asserts diff contains modification.
+  - Calls `GitWorktreeManager::remove_worktree`.
+  - Asserts worktree directory no longer exists.
+- `test_non_git_repo_worktree_error`:
+  - Calls `create_worktree` on an empty non-git directory.
+  - Asserts that it returns an `Err`.
+
+## Critical Constraints
+1. ONLY run targeted tests: `cargo test -j 1 --lib sandbox::worktree::tests`. NEVER run the full test suite.
+2. Error handling: `std::io::Result`. Zero `.unwrap()` or `.expect()` in non-test code.
+3. Concurrency: Use `-j 1` for `cargo check` and `cargo test`.
+4. Verification: `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
+5. Commit message: `feat(sandbox): implement ephemeral Git worktree manager for subagent isolation`.

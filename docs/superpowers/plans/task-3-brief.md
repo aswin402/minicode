@@ -1,66 +1,87 @@
-# Task 3 Brief: Bulky Search/Grep Result Condensation
+# Task 3 Brief: Subagent Tool Primitives & Process Orchestrator
 
-## Overview
-Extend `MicroCompactor` in `src/context/budget/micro_compact.rs` to detect and condense historical bulky search and grep observations (>25 lines or >300 bytes) outside the preserved recent turn window, and implement the Task 2 Reviewer suggestions (zero-allocation receipt prefix checking and shared backward scan helper).
+## Scope & Objective
+Implement the `SubagentOrchestrator` in `src/agent/subagent/orchestrator.rs` and register the `spawn_subagent` tool primitive along with enhanced `send_message` and `manage_subagents` in `src/tools/registry/agent_tools/subagents.rs`. Connect them with `GitWorktreeManager` for worktree isolation and `AgentMailbox` for durable messaging. Update `TOTAL_TOOL_COUNT` to 135 in `src/constants.rs`.
 
-## Files
-- Modify: `src/context/budget/micro_compact.rs`
-- Test: `src/context/budget/micro_compact.rs` (inline unit tests)
+## Files to Create/Modify
+- Create: `src/agent/subagent/orchestrator.rs`
+- Modify: `src/agent/subagent/mod.rs` (export `pub mod orchestrator;`)
+- Modify: `src/tools/registry/agent_tools/subagents.rs` (add `spawn_subagent` schema & dispatch wiring, enhance `send_message` with `AgentMailbox` posting)
+- Modify: `src/constants.rs` (update `TOTAL_TOOL_COUNT` to 135)
 
-## Constraints
-1. **Targeted Tests ONLY**: `cargo test -j 1 --lib context::budget::micro_compact::tests`. NEVER run the full test suite.
-2. **Resource limits**: `-j 1` on cargo check/test, `-j 2` on build.
-3. **Pure Rust**: Zero non-test `.unwrap()` or `.expect()`.
-4. **Lossless CCR**: Use `CcrCache::store(&raw_output)` before replacing content.
-5. **Preserve recent turns**: If `preserve_recent_turns > 0`, the tool results belonging to the last `preserve_recent_turns` turns MUST remain 100% untouched.
+## Specifications & Requirements
 
-## Detailed Requirements
+### 1. `src/agent/subagent/orchestrator.rs`
+- Implement `SubagentOrchestrator`:
+  - `pub async fn spawn_subagent(workspace_root: &Path, task: &str, role: SubagentRole, workspace_mode: WorkspaceMode, max_iterations: Option<usize>) -> Result<String, crate::error::ToolError>`:
+    1. Generate child `AgentId::new_subagent(role.as_str())`.
+    2. Determine whether to isolate via Git worktree:
+       - If `workspace_mode == WorkspaceMode::Worktree` or (`workspace_mode == WorkspaceMode::Auto` && role.default_workspace_mode() == WorkspaceMode::Worktree), attempt `GitWorktreeManager::create_worktree(workspace_root, &agent_id)`.
+       - If worktree succeeds, target directory is `worktree_handle.worktree_path`.
+       - If worktree is not used or fails gracefully (e.g. non-git directory), target directory is `workspace_root.to_path_buf()`.
+    3. Initialize child agent mailbox directory `.minicode/agents/<agent_id>/`.
+    4. Post initial `AgentMessage` with `intent: MessageIntent::TaskInit` from `AgentId::parent()` to child mailbox.
+    5. Spawn headless child `minicode` process:
+       - Command: `std::env::current_exe()?`
+       - Arguments:
+         `["run", "-d", target_dir.to_str(), "-y", "--json-stream", "--tools", role.tool_filter_mode()]`
+         If `max_iterations` provided: `--max-iterations <N>`
+         Task arg: `task`
+       - Set `stdout(Stdio::piped())`, `stderr(Stdio::piped())`, `kill_on_drop(true)`.
+       - On Unix: configure `process_group(0)`.
+    6. Asynchronously read lines from child stdout using `tokio::io::BufReader`:
+       - Parse NDJSON lines into events (track tokens used, tools executed, stream deltas, turn ends).
+    7. Await child completion or timeout (e.g. 120s):
+       - If child succeeded:
+         - If worktree was used, capture diff with `GitWorktreeManager::capture_diff(&handle)` and remove worktree with `GitWorktreeManager::remove_worktree(&handle)`.
+         - Format a clean structured report containing subagent ID, role badge, tokens used, tools executed, files modified/diff, and summary.
+         - Return formatted report string.
+       - If child failed or timed out:
+         - Clean up worktree if one was created.
+         - Return informative `ToolError::ExecutionFailed`.
 
-### 1. Task 2 Reviewer Refinements
-- **Zero-allocation receipt prefix check**:
-  Instead of allocating temporary formatted strings, check if a message starts with `[` followed by the tool name and `:` without heap allocations:
-  ```rust
-  fn is_already_receipt(content: &str, tool_name: &str) -> bool {
-      content
-          .strip_prefix('[')
-          .and_then(|s| s.strip_prefix(tool_name))
-          .map(|s| s.starts_with(':'))
-          .unwrap_or(false)
-  }
-  ```
-- **Helper for Backward Resolution**:
-  Deduplicate the backwards search for tool call metadata into a helper function:
-  `resolve_tool_call_meta(messages: &[Message], idx: usize, tool_meta_by_id: &HashMap<String, CompactToolMeta>) -> Option<CompactToolMeta>`
+  - `pub fn send_message(workspace_root: &Path, sender: &AgentId, recipient: &AgentId, message: &str, intent: Option<MessageIntent>) -> Result<String, crate::error::ToolError>`:
+    1. Resolve recipient agent directory:
+       - If `recipient.is_parent()`: `workspace_root.join(".minicode").join("agents").join("parent")`.
+       - Else: `workspace_root.join(".minicode").join("agents").join(&recipient.0)`.
+    2. Create or load `AgentMailbox::new(recipient.clone(), &agent_dir)`.
+    3. Construct `AgentMessage` with unique UUID, `sender`, `recipient`, `intent.unwrap_or(MessageIntent::StatusUpdate)`, `message`, and current timestamp.
+    4. Call `mailbox.post(msg)`.
+    5. Return confirmation string: `"✔ Message delivered to agent `<recipient>` mailbox."`.
 
-### 2. Search & Grep Observation Condensation
-- For each tool result message in `messages` where:
-  - `idx < cutoff` (outside the preserved recent turn window).
-  - `tool_name` is in `["grep_search", "find_by_name", "file_search", "glob", "grep", "search"]` or contains `grep` or `search`.
-  - Not already a receipt (`!is_already_receipt(&msg.content, &tname)`).
-  - Line count `lines().count() > 25` OR byte length `content.len() > 300`:
-    - Extract query using `meta.query.as_deref().unwrap_or("...")`.
-    - Store full raw search output in `CcrCache::store(&msg.content)`.
-    - Replace `msg.content` with:
-      `format!("[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]", tname, query, line_count, ccr_id)`
-    - Increment `metrics.search_results_compacted`.
-    - Add estimated saved tokens (`(raw_len - receipt_len) / 4`) to `metrics.tokens_saved_estimate`.
+### 2. `src/tools/registry/agent_tools/subagents.rs`
+- Add `spawn_subagent` schema to `get_schemas()`:
+  - `name`: `"spawn_subagent"`
+  - `description`: `"Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree."`
+  - `parameters`:
+    - `task` (string, required): Task instructions.
+    - `role` (string, required): Enum `["scout", "coder", "tester", "reviewer"]`.
+    - `workspace_mode` (string, optional): Enum `["auto", "worktree", "shared"]`.
+    - `max_iterations` (integer, optional): Maximum tool loop iterations.
+- In `dispatch()`:
+  - Map `"spawn_subagent"` to invoke `SubagentOrchestrator::spawn_subagent(...)`.
+  - In `"send_message"`:
+    - Extract `recipient` (or `subagent_id`), `message`, and optional `intent`.
+    - Invoke `SubagentOrchestrator::send_message(...)`.
+  - In `"manage_subagents"`:
+    - Support `"list"`, `"status"`, `"await"`/`"wait"`, `"kill"`.
 
-## Unit Tests to Implement
-1. `test_historical_search_result_condensation`:
-   - Turn 1: `grep_search(query="AuthService")` returning 80 lines of matches (>1000 bytes).
-   - Turn 2: User prompt + assistant action.
-   - Turn 3: Recent turn.
-   - Run `MicroCompactor::compact_messages(&mut messages, 1)`.
-   - Assert Turn 1 is condensed to `[grep_search: query "AuthService" returned 80 lines. Use retrieve_observation(id="ccr_...")]`.
-   - Assert raw 80 lines is losslessly retrievable via `CcrCache::retrieve`.
-   - Assert `metrics.search_results_compacted == 1`.
-2. `test_recent_search_result_uncompacted`:
-   - Search in the most recent turn remains uncompacted.
-3. `test_small_search_result_uncompacted`:
-   - A search result with only 3 lines / 100 bytes is not condensed (negative compression prevention).
+### 3. `src/constants.rs`
+- Update `TOTAL_TOOL_COUNT` constant:
+  - Currently 134. With `spawn_subagent` added to `subagents.rs`, increment by 1 -> `pub const TOTAL_TOOL_COUNT: usize = 135;`.
 
-## Success Criteria
-- Targeted test passes: `cargo test -j 1 --lib context::budget::micro_compact::tests`
-- Clippy passes: `cargo clippy -j 1 --bin minicode -- -D warnings`
-- Code formatting passes: `cargo fmt --check`
-- Commit with message: `feat(budget): condense historical search and grep observations`
+### 4. Unit Tests Required
+In `src/agent/subagent/orchestrator.rs` and `src/tools/registry/agent_tools/subagents.rs`:
+- `test_spawn_subagent_schema_valid`: verify `spawn_subagent` exists in `ToolRegistry::get_tool_schemas()`.
+- `test_total_tool_count_matches`: ensure `ToolRegistry::get_tool_schemas().len() == TOTAL_TOOL_COUNT` passes.
+- `test_send_message_routes_to_mailbox`: verify `send_message` creates and appends to target agent's `mailbox.jsonl`.
+
+## Critical Constraints
+1. ONLY run targeted tests:
+   - `cargo test -j 1 --lib agent::subagent::orchestrator::tests`
+   - `cargo test -j 1 --lib tools::tests::test_total_tool_count`
+   NEVER run the full test suite.
+2. Error handling: `ToolError` / `Result<T, ToolError>`. Zero `.unwrap()` or `.expect()` in non-test code.
+3. Concurrency: Use `-j 1` for `cargo check` and `cargo test`.
+4. Verification: `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
+5. Commit message: `feat(tools): add spawn_subagent primitive and wire orchestrator with worktree and mailbox (Phase 132)`.

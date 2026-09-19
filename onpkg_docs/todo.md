@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 131 (v0.3.32) Semantic Micro-Compaction of Tool Observations | **Status:** ✅ Complete (134 Tools)
+> **Current Phase:** Phase 132 (v0.3.33) Multi-Agent Subagent Delegation & A2A Communication Runtime | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1861,8 +1861,11 @@
 - [x] 131.3: Implement historical mutation echo condensation (>256 bytes) and bulky search/grep observation condensation (>25 lines or >300 bytes) with negative compression prevention guards
 - [x] 131.4: Wire `MicroCompactor` into `AgentLoop` in `src/agent/loop.rs` at turn start (`execute_turn`) and post-file mutation hook with active turn preservation
 - [x] 131.5: Pass all 20 unit tests in `src/context/budget/micro_compact.rs` and 4 comprehensive integration tests in `tests/integration_micro_compaction.rs`
-- [x] 131.6: Pass all quality gates (`cargo clippy -j 1 --bin minicode -- -D warnings`, `cargo fmt --check`), recompile global binary via `./localupdate.sh`, and validate in real-world autonomous execution (v0.3.32)
 
-
-
-
+### Phase 132: Multi-Agent Subagent Delegation & A2A Communication Runtime (v0.3.33)
+- [x] 132.1: Implement core subagent types (`AgentId`, `SubagentRole`, `WorkspaceMode`, `SubagentState`, `MessageIntent`, `AgentMessage`) and durable FIFO `AgentMailbox` with atomic append and rename on drain in `src/agent/subagent/`
+- [x] 132.2: Implement ephemeral Git worktree manager (`GitWorktreeManager`, `WorktreeHandle`) with isolated branch creation, zero-copy HEAD branching, diff capture, and safe teardown in `src/sandbox/worktree.rs`
+- [x] 132.3: Implement `SubagentOrchestrator`, `spawn_subagent`, `send_message`, and `manage_subagents` tool primitives in `src/tools/registry/agent_tools/subagents.rs`, and bump `TOTAL_TOOL_COUNT` to 135
+- [x] 132.4: Extend `ToolFilterMode` with `ReadOnly` and `Standard` variants to enforce role tool boundaries, and add `SubagentProgress` and `SubagentCompleted` to `AgentEvent`
+- [x] 132.5: Wire `AgentMailbox` turn draining into `AgentLoop::execute_turn` with automatic `<agent_message>` context injection and render live subagent cards in `TimelineView` (`src/ui/view.rs`)
+- [x] 132.6: Pass all 7 integration tests in `tests/integration_subagent_delegation.rs`, all orchestrator and worktree tests, zero clippy warnings, recompile release binary via `./localupdate.sh`, and validate real-world autonomous execution (v0.3.33)

@@ -1,559 +1,928 @@
-8679f82 feat(budget): condense historical search and grep observations
-
---- STAT ---
-
- src/context/budget/micro_compact.rs | 397 ++++++++++++++++++++++++++++++------
- 1 file changed, 334 insertions(+), 63 deletions(-)
-
---- DIFF ---
-
-diff --git a/src/context/budget/micro_compact.rs b/src/context/budget/micro_compact.rs
-index 2093f1a..b2cf4d3 100644
---- a/src/context/budget/micro_compact.rs
-+++ b/src/context/budget/micro_compact.rs
-@@ -59,20 +59,30 @@ fn is_mutation_tool(name: &str) -> bool {
- }
+c15fb7c feat(tools): add spawn_subagent primitive and wire orchestrator with worktree and mailbox (Phase 132)
+=== STAT ===
+ src/agent/subagent/mod.rs                   |   3 +
+ src/agent/subagent/orchestrator.rs          | 475 ++++++++++++++++++++++++++++
+ src/agent/subagent/types.rs                 |  10 +
+ src/constants.rs                            |   2 +-
+ src/error.rs                                |   3 +
+ src/tools/concurrency.rs                    |   3 +-
+ src/tools/mod.rs                            |   6 +
+ src/tools/registry/agent_tools/subagents.rs | 140 ++++++--
+ 8 files changed, 620 insertions(+), 22 deletions(-)
+=== DIFF ===
+diff --git a/src/agent/subagent/mod.rs b/src/agent/subagent/mod.rs
+index 30b04b7..ea56bb8 100644
+--- a/src/agent/subagent/mod.rs
++++ b/src/agent/subagent/mod.rs
+@@ -1,24 +1,27 @@
+ pub mod mailbox;
+ pub mod message;
++pub mod orchestrator;
+ pub mod pool;
+ pub mod reducer;
+ pub mod scratchpad;
+ pub mod transcript;
+ pub mod types;
+ pub mod worker;
  
- /// Returns true if the tool name indicates a file read operation.
- fn is_read_tool(name: &str) -> bool {
-     let n = name.to_ascii_lowercase();
-     matches!(n.as_str(), "read_file" | "view_file" | "cat")
-         || n.starts_with("read_")
-         || n.starts_with("view_")
- }
- 
-+/// Returns true if the tool name indicates a search or grep operation.
-+fn is_search_tool(name: &str) -> bool {
-+    let n = name.to_ascii_lowercase();
-+    matches!(
-+        n.as_str(),
-+        "grep_search" | "find_by_name" | "file_search" | "glob" | "grep" | "search"
-+    ) || n.contains("grep")
-+        || n.contains("search")
-+}
+ #[allow(unused_imports)]
+ pub use mailbox::AgentMailbox;
+ #[allow(unused_imports)]
+ pub use message::{AgentMessage, MessageIntent};
+ #[allow(unused_imports)]
++pub use orchestrator::SubagentOrchestrator;
++#[allow(unused_imports)]
+ pub use pool::SubagentPool;
+ #[allow(unused_imports)]
+ pub use reducer::{
+     AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
+     SubagentSynthesisReducer,
+ };
+ #[allow(unused_imports)]
+ pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
+ #[allow(unused_imports)]
+ pub use transcript::{
+diff --git a/src/agent/subagent/orchestrator.rs b/src/agent/subagent/orchestrator.rs
+new file mode 100644
+index 0000000..6825177
+--- /dev/null
++++ b/src/agent/subagent/orchestrator.rs
+@@ -0,0 +1,475 @@
++//! Subagent process orchestrator and agent-to-agent communication dispatcher.
++//!
++//! Manages the execution lifecycle of autonomous child `minicode` processes in isolated
++//! Git worktrees, wires reactive A2A mailbox channels, and synthesizes structured reports.
 +
- /// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
- /// stripping leading `./`, and trimming leading `/`.
- pub fn normalize_path_for_compare(path: &str) -> String {
-     let s = path.trim().replace('\\', "/");
-     let mut s = s.as_str();
-     loop {
-         if let Some(stripped) = s.strip_prefix("./") {
-             s = stripped;
-         } else if let Some(stripped) = s.strip_prefix('/') {
-             s = stripped;
-@@ -90,20 +100,83 @@ struct CompactToolMeta {
-     query: Option<String>,
- }
- 
- fn is_compacted_receipt(content: &str) -> bool {
-     content.starts_with('[')
-         && (content.contains("Use retrieve_observation(id=\"")
-             || content.contains("superseded by")
-             || content.contains("successfully applied,"))
- }
- 
-+fn is_already_receipt(content: &str, tool_name: &str) -> bool {
-+    content
-+        .strip_prefix('[')
-+        .and_then(|s| s.strip_prefix(tool_name))
-+        .map(|s| s.starts_with(':'))
-+        .unwrap_or(false)
-+}
++use std::path::{Path, PathBuf};
++use std::process::Stdio;
++use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
++use tokio::process::Command;
 +
-+fn resolve_tool_call_meta(
-+    messages: &[Message],
-+    idx: usize,
-+    tool_meta_by_id: &HashMap<String, CompactToolMeta>,
-+) -> Option<CompactToolMeta> {
-+    if idx >= messages.len() {
-+        return None;
-+    }
++use crate::agent::subagent::mailbox::AgentMailbox;
++use crate::agent::subagent::message::{AgentMessage, MessageIntent};
++use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
++use crate::agent::types::AgentEvent;
++use crate::error::ToolError;
++use crate::sandbox::worktree::GitWorktreeManager;
 +
-+    let msg = &messages[idx];
++/// Orchestrator for spawning autonomous subagent child processes and routing A2A messages.
++pub struct SubagentOrchestrator;
 +
-+    if let Some(meta) = msg
-+        .tool_call_id
-+        .as_deref()
-+        .and_then(|id| tool_meta_by_id.get(id))
-+    {
-+        return Some(meta.clone());
-+    }
++impl SubagentOrchestrator {
++    /// Spawns an autonomous background subagent with a specialized role in an isolated workspace or worktree.
++    pub async fn spawn_subagent(
++        workspace_root: &Path,
++        task: &str,
++        role: SubagentRole,
++        workspace_mode: WorkspaceMode,
++        max_iterations: Option<usize>,
++    ) -> Result<String, ToolError> {
++        // 1. Generate child agent id
++        let agent_id = AgentId::new_subagent(role.as_str());
 +
-+    let expected_name = msg.tool_name.as_deref();
++        // 2. Determine workspace isolation mode
++        let should_isolate = workspace_mode == WorkspaceMode::Worktree
++            || (workspace_mode == WorkspaceMode::Auto
++                && role.default_workspace_mode() == WorkspaceMode::Worktree);
 +
-+    for prev_idx in (0..idx).rev() {
-+        let prev = &messages[prev_idx];
-+        if prev.role == Role::Assistant {
-+            if let Some(ref calls) = prev.tool_calls {
-+                let matched_call = if let Some(tname) = expected_name {
-+                    calls.iter().find(|c| {
-+                        c.name == tname
-+                            || (is_read_tool(&c.name) && is_read_tool(tname))
-+                            || (is_mutation_tool(&c.name) && is_mutation_tool(tname))
-+                            || (is_search_tool(&c.name) && is_search_tool(tname))
-+                    })
-+                } else {
-+                    calls.first()
-+                };
-+
-+                if let Some(c) = matched_call {
-+                    return Some(CompactToolMeta {
-+                        name: expected_name.unwrap_or(&c.name).to_string(),
-+                        target_path: MicroCompactor::extract_target_path(c),
-+                        query: MicroCompactor::extract_search_query(c),
-+                    });
++        let (worktree_handle, target_dir) = if should_isolate {
++            match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
++                Ok(handle) => {
++                    let path = handle.worktree_path.clone();
++                    (Some(handle), path)
++                }
++                Err(e) => {
++                    tracing::warn!(
++                        agent_id = %agent_id,
++                        error = %e,
++                        "Worktree creation failed or repository is not Git; falling back to workspace root"
++                    );
++                    (None, workspace_root.to_path_buf())
 +                }
 +            }
-+            break;
++        } else {
++            (None, workspace_root.to_path_buf())
++        };
++
++        // 3. Initialize child agent mailbox directory
++        let child_agent_dir = workspace_root
++            .join(".minicode")
++            .join("agents")
++            .join(&agent_id.0);
++        let child_mailbox = AgentMailbox::new(agent_id.clone(), &child_agent_dir).map_err(|e| {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            ToolError::ExecutionFailed(format!(
++                "Failed to initialize mailbox for subagent `{}`: {}",
++                agent_id, e
++            ))
++        })?;
++
++        // 4. Post initial task initialization message to child mailbox
++        let init_msg = AgentMessage::new(
++            AgentId::parent(),
++            agent_id.clone(),
++            MessageIntent::TaskInit,
++            task,
++        );
++        if let Err(e) = child_mailbox.post(init_msg) {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            return Err(ToolError::ExecutionFailed(format!(
++                "Failed to post init message to subagent `{}` mailbox: {}",
++                agent_id, e
++            )));
++        }
++
++        // 5. Spawn headless child minicode process
++        let current_exe = std::env::current_exe().map_err(|e| {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            ToolError::ExecutionFailed(format!("Failed to determine current executable: {}", e))
++        })?;
++
++        let mut cmd = Command::new(current_exe);
++        cmd.arg("run");
++        cmd.arg("-d").arg(&target_dir);
++        cmd.arg("-y");
++        cmd.arg("--json-stream");
++        cmd.arg("--tools").arg(role.tool_filter_mode());
++
++        if let Some(max_iter) = max_iterations {
++            cmd.arg("--max-iterations").arg(max_iter.to_string());
++        }
++
++        cmd.arg(task);
++        cmd.stdin(Stdio::null());
++        cmd.stdout(Stdio::piped());
++        cmd.stderr(Stdio::piped());
++        cmd.kill_on_drop(true);
++
++        #[cfg(unix)]
++        {
++            cmd.process_group(0);
++        }
++
++        let mut child = cmd.spawn().map_err(|e| {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            ToolError::ExecutionFailed(format!("Failed to spawn subagent process: {}", e))
++        })?;
++
++        // 6. Asynchronously read lines from child stdout using BufReader
++        let stdout = child.stdout.take().ok_or_else(|| {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            ToolError::ExecutionFailed("Failed to capture child process stdout".to_string())
++        })?;
++
++        let stderr = child.stderr.take();
++
++        let mut final_response = String::new();
++        let mut files_modified: Vec<String> = Vec::new();
++        let mut tools_executed: Vec<String> = Vec::new();
++        let mut tokens_used = 0;
++        let mut child_success = true;
++        let mut error_msg: Option<String> = None;
++
++        let reader = BufReader::new(stdout);
++        let mut lines = reader.lines();
++
++        let read_stdout = async {
++            while let Ok(Some(line)) = lines.next_line().await {
++                let trimmed = line.trim();
++                if trimmed.is_empty() {
++                    continue;
++                }
++                if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
++                    match event {
++                        AgentEvent::StreamDelta { delta, .. } => {
++                            final_response.push_str(&delta);
++                        }
++                        AgentEvent::ToolCall { tool, .. } => {
++                            if !tools_executed.contains(&tool) {
++                                tools_executed.push(tool);
++                            }
++                        }
++                        AgentEvent::FileModified { path, .. } => {
++                            if !files_modified.contains(&path) {
++                                files_modified.push(path);
++                            }
++                        }
++                        AgentEvent::TurnEnd {
++                            total_tokens_used,
++                            files_modified: modified,
++                            status,
++                            ..
++                        } => {
++                            tokens_used = total_tokens_used;
++                            for f in modified {
++                                if !files_modified.contains(&f) {
++                                    files_modified.push(f);
++                                }
++                            }
++                            if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
++                                || status == crate::constants::TURN_STATUS_CANCELLED
++                            {
++                                child_success = false;
++                            }
++                        }
++                        AgentEvent::Error { message, .. } => {
++                            tracing::error!(message = %message, "Subagent encountered error");
++                            child_success = false;
++                            error_msg = Some(message);
++                        }
++                        _ => {}
++                    }
++                }
++            }
++        };
++
++        let mut captured_stderr = String::new();
++        let read_stderr = async {
++            if let Some(mut err_stream) = stderr {
++                let _ = err_stream.read_to_string(&mut captured_stderr).await;
++            }
++        };
++
++        // 7. Await child completion or timeout (120s)
++        let timeout_dur = std::time::Duration::from_secs(120);
++        let run_outcome = tokio::time::timeout(timeout_dur, async {
++            tokio::join!(read_stdout, read_stderr);
++            child.wait().await
++        })
++        .await;
++
++        let exit_status = match run_outcome {
++            Ok(Ok(status)) => status,
++            Ok(Err(e)) => {
++                if let Some(ref handle) = worktree_handle {
++                    let _ = GitWorktreeManager::remove_worktree(handle);
++                }
++                return Err(ToolError::ExecutionFailed(format!(
++                    "Subagent `{}` wait error: {}",
++                    agent_id, e
++                )));
++            }
++            Err(_) => {
++                let _ = child.kill().await;
++                if let Some(ref handle) = worktree_handle {
++                    let _ = GitWorktreeManager::remove_worktree(handle);
++                }
++                return Err(ToolError::ExecutionFailed(format!(
++                    "Subagent `{}` timed out after 120 seconds",
++                    agent_id
++                )));
++            }
++        };
++
++        if !exit_status.success() {
++            child_success = false;
++        }
++
++        if !child_success {
++            if let Some(ref handle) = worktree_handle {
++                let _ = GitWorktreeManager::remove_worktree(handle);
++            }
++            let reason = error_msg.unwrap_or_else(|| {
++                let trimmed_stderr = captured_stderr.trim();
++                if !trimmed_stderr.is_empty() {
++                    trimmed_stderr.to_string()
++                } else if !exit_status.success() {
++                    format!("Process exited with status {:?}", exit_status.code())
++                } else {
++                    "Subagent execution failed".to_string()
++                }
++            });
++            return Err(ToolError::ExecutionFailed(format!(
++                "Subagent `{}` failed: {}",
++                agent_id, reason
++            )));
++        }
++
++        // Child succeeded: capture diff if worktree was used, then remove worktree
++        let diff = if let Some(ref handle) = worktree_handle {
++            let captured = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
++            let _ = GitWorktreeManager::remove_worktree(handle);
++            captured
++        } else {
++            String::new()
++        };
++
++        let summary_text = if final_response.trim().is_empty() {
++            "Task executed successfully without stream output.".to_string()
++        } else {
++            final_response.trim().to_string()
++        };
++
++        let mut report = format!(
++            "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Tools Executed: {}\n• Files Modified: {}\n",
++            agent_id,
++            role.badge(),
++            tokens_used,
++            if tools_executed.is_empty() {
++                "None".to_string()
++            } else {
++                tools_executed.join(", ")
++            },
++            if files_modified.is_empty() {
++                "None (Read-Only)".to_string()
++            } else {
++                files_modified.join(", ")
++            },
++        );
++
++        if !diff.is_empty() {
++            report.push_str(&format!("\n### Worktree Diff\n```diff\n{}\n```\n", diff));
++        }
++
++        report.push_str(&format!("\n### Summary & Findings\n{}", summary_text));
++
++        Ok(report)
++    }
++
++    /// Sends a typed message to a target agent's durable mailbox.
++    pub fn send_message(
++        workspace_root: &Path,
++        sender: &AgentId,
++        recipient: &AgentId,
++        message: &str,
++        intent: Option<MessageIntent>,
++    ) -> Result<String, ToolError> {
++        // 1. Resolve recipient agent directory
++        let agent_dir: PathBuf = if recipient.is_parent() {
++            workspace_root
++                .join(".minicode")
++                .join("agents")
++                .join("parent")
++        } else {
++            workspace_root
++                .join(".minicode")
++                .join("agents")
++                .join(&recipient.0)
++        };
++
++        // 2. Create or load AgentMailbox
++        let mailbox = AgentMailbox::new(recipient.clone(), &agent_dir).map_err(|e| {
++            ToolError::ExecutionFailed(format!(
++                "Failed to open mailbox for agent `{}`: {}",
++                recipient, e
++            ))
++        })?;
++
++        // 3. Construct AgentMessage with unique UUID, sender, recipient, intent, and timestamp
++        let msg = AgentMessage::new(
++            sender.clone(),
++            recipient.clone(),
++            intent.unwrap_or(MessageIntent::StatusUpdate),
++            message,
++        );
++
++        // 4. Call mailbox.post(msg)
++        mailbox.post(msg).map_err(|e| {
++            ToolError::ExecutionFailed(format!(
++                "Failed to deliver message to agent `{}` mailbox: {}",
++                recipient, e
++            ))
++        })?;
++
++        // 5. Return confirmation string
++        Ok(format!(
++            "✔ Message delivered to agent `{}` mailbox.",
++            recipient
++        ))
++    }
++}
++
++#[cfg(test)]
++pub mod tests {
++    use super::*;
++
++    #[test]
++    fn test_spawn_subagent_schema_valid() {
++        let schemas = crate::tools::ToolRegistry::get_tool_schemas();
++        let spawn_schema = schemas.iter().find(|s| s.name == "spawn_subagent");
++        assert!(
++            spawn_schema.is_some(),
++            "spawn_subagent schema must be registered"
++        );
++        let schema = spawn_schema.unwrap();
++        assert!(
++            schema
++                .description
++                .contains("Spawn an autonomous background subagent"),
++            "Description must match specification"
++        );
++
++        let props = schema
++            .parameters
++            .get("properties")
++            .expect("properties object must exist");
++        assert!(props.get("task").is_some(), "task property required");
++        assert!(props.get("role").is_some(), "role property required");
++        assert!(
++            props.get("workspace_mode").is_some(),
++            "workspace_mode property required"
++        );
++        assert!(
++            props.get("max_iterations").is_some(),
++            "max_iterations property required"
++        );
++    }
++
++    #[test]
++    fn test_total_tool_count_matches() {
++        let schemas = crate::tools::ToolRegistry::get_tool_schemas();
++        assert_eq!(
++            schemas.len(),
++            crate::constants::TOTAL_TOOL_COUNT,
++            "Tool registry schemas length must equal TOTAL_TOOL_COUNT"
++        );
++    }
++
++    #[test]
++    fn test_send_message_routes_to_mailbox() {
++        let temp_dir = tempfile::tempdir().expect("tempdir creation");
++        let sender = AgentId::parent();
++        let recipient = AgentId::new_subagent("coder");
++        let msg_text = "Implement SubagentOrchestrator in orchestrator.rs";
++
++        let result = SubagentOrchestrator::send_message(
++            temp_dir.path(),
++            &sender,
++            &recipient,
++            msg_text,
++            Some(MessageIntent::TaskInit),
++        );
++
++        assert!(result.is_ok(), "send_message should succeed");
++        let confirm = result.unwrap();
++        assert_eq!(
++            confirm,
++            format!("✔ Message delivered to agent `{}` mailbox.", recipient)
++        );
++
++        let mailbox_file = temp_dir
++            .path()
++            .join(".minicode")
++            .join("agents")
++            .join(&recipient.0)
++            .join("mailbox.jsonl");
++        assert!(
++            mailbox_file.exists(),
++            "mailbox.jsonl must exist at {:?}",
++            mailbox_file
++        );
++
++        let mailbox =
++            AgentMailbox::new(recipient.clone(), &mailbox_file.parent().unwrap()).unwrap();
++        let unread = mailbox.drain_unread().expect("drain unread messages");
++        assert_eq!(unread.len(), 1);
++        assert_eq!(unread[0].sender, sender);
++        assert_eq!(unread[0].recipient, recipient);
++        assert_eq!(unread[0].intent, MessageIntent::TaskInit);
++        assert_eq!(unread[0].content, msg_text);
++    }
++
++    #[test]
++    fn test_send_message_parent_recipient() {
++        let temp_dir = tempfile::tempdir().expect("tempdir creation");
++        let sender = AgentId::new_subagent("tester");
++        let recipient = AgentId::parent();
++        let msg_text = "All 42 unit tests passed cleanly";
++
++        let result = SubagentOrchestrator::send_message(
++            temp_dir.path(),
++            &sender,
++            &recipient,
++            msg_text,
++            Some(MessageIntent::TaskComplete),
++        );
++
++        assert!(result.is_ok(), "send_message to parent should succeed");
++        let mailbox_file = temp_dir
++            .path()
++            .join(".minicode")
++            .join("agents")
++            .join("parent")
++            .join("mailbox.jsonl");
++        assert!(mailbox_file.exists(), "parent mailbox.jsonl must exist");
++
++        let mailbox =
++            AgentMailbox::new(recipient.clone(), &mailbox_file.parent().unwrap()).unwrap();
++        let unread = mailbox.drain_unread().expect("drain unread messages");
++        assert_eq!(unread.len(), 1);
++        assert_eq!(unread[0].sender, sender);
++        assert_eq!(unread[0].recipient, recipient);
++        assert_eq!(unread[0].intent, MessageIntent::TaskComplete);
++        assert_eq!(unread[0].content, msg_text);
++    }
++}
+diff --git a/src/agent/subagent/types.rs b/src/agent/subagent/types.rs
+index dee0107..9653ec7 100644
+--- a/src/agent/subagent/types.rs
++++ b/src/agent/subagent/types.rs
+@@ -86,20 +86,30 @@ impl WorkspaceMode {
+ #[serde(rename_all = "snake_case")]
+ pub enum SubagentRole {
+     Scout,
+     Coder,
+     Tester,
+     Reviewer,
+ }
+ 
+ #[allow(dead_code)]
+ impl SubagentRole {
++    /// Returns the string representation of this role
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            SubagentRole::Scout => "scout",
++            SubagentRole::Coder => "coder",
++            SubagentRole::Tester => "tester",
++            SubagentRole::Reviewer => "reviewer",
 +        }
 +    }
 +
-+    expected_name.map(|tname| CompactToolMeta {
-+        name: tname.to_string(),
-+        target_path: None,
-+        query: None,
-+    })
-+}
-+
- /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
- /// tool observations in conversation history, backed by lossless CCR recovery cache.
- pub struct MicroCompactor;
- 
- impl MicroCompactor {
-     /// Compacts messages by identifying superseded file reads, duplicate consecutive reads,
-     /// and large historical mutation echoes outside the preserved recent turn window.
-     ///
-     /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
-     /// all messages across the conversation are eligible for compaction.
-@@ -265,116 +338,63 @@ impl MicroCompactor {
-                 }
-             }
+     /// Returns the default workspace isolation mode for this role
+     pub fn default_workspace_mode(&self) -> WorkspaceMode {
+         match self {
+             SubagentRole::Scout | SubagentRole::Reviewer => WorkspaceMode::Shared,
+             SubagentRole::Coder | SubagentRole::Tester => WorkspaceMode::Worktree,
          }
+     }
  
-         // Pass 1b: Index tool result message operations (reads and mutations)
-         for (idx, msg) in messages.iter().enumerate() {
-             if msg.role != Role::Tool {
-                 continue;
-             }
+     /// Returns the tool filtering mode ("read_only" vs "standard")
+     pub fn tool_filter_mode(&self) -> &'static str {
+diff --git a/src/constants.rs b/src/constants.rs
+index 9028fe8..5d6801f 100644
+--- a/src/constants.rs
++++ b/src/constants.rs
+@@ -904,21 +904,21 @@ pub const FNV_PRIME: u64 = 0x100000001b3;
+ /// Maximum matched symbol entries returned in code explore search
+ pub const MAX_MATCHED_ENTRIES: usize = 5;
+ /// Maximum source lines rendered in code explore symbol definition
+ pub const MAX_SOURCE_LINES: usize = 60;
+ /// Maximum incoming callers listed in code explore symbol view
+ pub const MAX_CALLERS: usize = 8;
+ /// Maximum outgoing callees listed in code explore symbol view
+ pub const MAX_CALLEES: usize = 8;
  
--            let tool_meta = msg
--                .tool_call_id
--                .as_deref()
--                .and_then(|id| tool_calls_by_id.get(id));
--
--            let tool_name = msg
--                .tool_name
--                .as_deref()
--                .or_else(|| tool_meta.map(|m| m.name.as_str()));
--
--            let Some(tname) = tool_name else {
-+            let Some(meta) = resolve_tool_call_meta(messages, idx, &tool_calls_by_id) else {
-                 continue;
-             };
+ /// Total number of built-in and extended tool schemas in registry
+-pub const TOTAL_TOOL_COUNT: usize = 134;
++pub const TOTAL_TOOL_COUNT: usize = 135;
  
--            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
--                for prev_idx in (0..idx).rev() {
--                    let prev = &messages[prev_idx];
--                    if prev.role == Role::Assistant {
--                        if let Some(ref calls) = prev.tool_calls {
--                            if let Some(c) = calls.iter().find(|c| {
--                                c.name == tname
--                                    || is_read_tool(&c.name)
--                                    || is_mutation_tool(&c.name)
--                            }) {
--                                return Self::extract_target_path(c);
--                            }
--                        }
--                        break;
--                    }
--                }
--                None
--            });
-+            let tname = &meta.name;
+ // === Hierarchical Fault Localization (Phase 92) ===
+ /// Default candidate files to evaluate in hierarchical fault localization
+ pub const DEFAULT_FAULT_LOCALIZE_MAX_FILES: usize = 3;
+ /// Maximum candidate files to evaluate in hierarchical fault localization
+ pub const MAX_FAULT_LOCALIZE_FILES: usize = 5;
+ /// Maximum suspicious symbols localized per candidate file
+ pub const FAULT_LOCALIZE_MAX_SYMBOLS_PER_FILE: usize = 3;
+ /// Maximum lines to extract for code envelope slices
+ pub const FAULT_LOCALIZE_MAX_SLICE_LINES: usize = 30;
+diff --git a/src/error.rs b/src/error.rs
+index d3c8a43..8dbffe5 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -129,20 +129,23 @@ pub enum ToolError {
  
--            if let Some(path) = target_path {
-+            if let Some(path) = meta.target_path {
-                 let norm = normalize_path_for_compare(&path);
-                 if is_read_tool(tname) {
-                     reads.entry(norm.clone()).or_default().push(idx);
-                 }
-                 if is_mutation_tool(tname) {
-                     mutations.entry(norm).or_default().push(idx);
-                 }
-             }
-         }
+     #[error("Command execution failed: {0}")]
+     CommandExec(String),
  
-         // Pass 2: Condense observations outside the preserved recent window
-         for i in 0..cutoff {
-             if messages[i].role != Role::Tool {
-                 continue;
-             }
+     #[error("Command timed out after {timeout_secs} seconds")]
+     CommandTimeout { timeout_secs: u64 },
  
--            let tool_meta = messages[i]
--                .tool_call_id
--                .as_deref()
--                .and_then(|id| tool_calls_by_id.get(id));
--
--            let tool_name = messages[i]
--                .tool_name
--                .as_deref()
--                .or_else(|| tool_meta.map(|m| m.name.as_str()));
--
--            let Some(tname) = tool_name else {
-+            let Some(meta) = resolve_tool_call_meta(messages, i, &tool_calls_by_id) else {
-                 continue;
-             };
- 
--            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
--                for prev_idx in (0..i).rev() {
--                    let prev = &messages[prev_idx];
--                    if prev.role == Role::Assistant {
--                        if let Some(ref calls) = prev.tool_calls {
--                            if let Some(c) = calls.iter().find(|c| {
--                                c.name == tname
--                                    || is_read_tool(&c.name)
--                                    || is_mutation_tool(&c.name)
--                            }) {
--                                return Self::extract_target_path(c);
--                            }
--                        }
--                        break;
--                    }
--                }
--                None
--            });
-+            let tname = &meta.name;
- 
-             if is_read_tool(tname) {
-                 if is_compacted_receipt(&messages[i].content)
--                    || messages[i].content.starts_with("[read_file:")
-+                    || is_already_receipt(&messages[i].content, tname)
-+                    || is_already_receipt(&messages[i].content, "read_file")
-                 {
-                     continue;
-                 }
- 
-                 // Prevent negative compression: do not replace if raw output <= 128 bytes
-                 if messages[i].content.len() <= 128 {
-                     continue;
-                 }
- 
--                let Some(path) = target_path else {
-+                let Some(path) = meta.target_path else {
-                     continue;
-                 };
- 
-                 let norm = normalize_path_for_compare(&path);
- 
-                 // Check duplicate read: subsequent read of same path without any mutation between
-                 let next_read_idx = reads
-                     .get(&norm)
-                     .and_then(|indices| indices.iter().copied().find(|&read_idx| read_idx > i));
- 
-@@ -416,40 +436,64 @@ impl MicroCompactor {
-                         path, line_count, ccr_id
-                     );
-                     let chars_saved = raw_len.saturating_sub(receipt.len());
-                     metrics.tokens_saved_estimate += chars_saved / 4;
-                     messages[i].content = receipt;
-                     metrics.superseded_reads_compacted += 1;
-                     continue;
-                 }
-             } else if is_mutation_tool(tname) {
-                 if is_compacted_receipt(&messages[i].content)
--                    || messages[i].content.starts_with(&format!("[{tname}:"))
-+                    || is_already_receipt(&messages[i].content, tname)
-                 {
-                     continue;
-                 }
- 
-                 // Historical mutation echo: condense outputs larger than 256 bytes
-                 if messages[i].content.len() > 256 {
--                    let path = target_path.unwrap_or_else(|| "file".to_string());
-+                    let path = meta.target_path.unwrap_or_else(|| "file".to_string());
-                     let raw_len = messages[i].content.len();
-                     let ccr_id = CcrCache::store(&messages[i].content);
-                     let receipt = format!(
-                         "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
-                         tname, path, raw_len, ccr_id
-                     );
-                     let chars_saved = raw_len.saturating_sub(receipt.len());
-                     metrics.tokens_saved_estimate += chars_saved / 4;
-                     messages[i].content = receipt;
-                     metrics.mutation_echoes_compacted += 1;
-                     continue;
-                 }
-+            } else if is_search_tool(tname) {
-+                if is_compacted_receipt(&messages[i].content)
-+                    || is_already_receipt(&messages[i].content, tname)
-+                {
-+                    continue;
-+                }
+     #[allow(dead_code)]
+     #[error("Tool execution was rejected by user: {reason}")]
+     Rejected { reason: String },
 +
-+                let line_count = messages[i].content.lines().count();
-+                let raw_len = messages[i].content.len();
-+
-+                // Condense historical bulky search and grep observations (>25 lines or >300 bytes)
-+                if line_count > 25 || raw_len > 300 {
-+                    let query = meta.query.as_deref().unwrap_or("...");
-+                    let ccr_id = CcrCache::store(&messages[i].content);
-+                    let receipt = format!(
-+                        "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
-+                        tname, query, line_count, ccr_id
-+                    );
-+                    let chars_saved = raw_len.saturating_sub(receipt.len());
-+                    metrics.tokens_saved_estimate += chars_saved / 4;
-+                    messages[i].content = receipt;
-+                    metrics.search_results_compacted += 1;
-+                    continue;
-+                }
-             }
++    #[error("Subagent execution failed: {0}")]
++    ExecutionFailed(String),
+ }
+ 
+ impl ToolError {
+     /// Creates an `InvalidArguments` error with a formatted or literal reason
+     pub fn invalid_args(name: impl Into<String>, reason: impl Into<String>) -> Self {
+         Self::InvalidArguments {
+             name: name.into(),
+             reason: reason.into(),
          }
+     }
+diff --git a/src/tools/concurrency.rs b/src/tools/concurrency.rs
+index b9deda5..ecc6e76 100644
+--- a/src/tools/concurrency.rs
++++ b/src/tools/concurrency.rs
+@@ -122,21 +122,22 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
+         // Multi-Agent & Reasoning Inspection
+         "explore_hypotheses"
+         | "evaluate_branch"
+         | "select_best_branch"
+         | "prune_context"
+         | "critic_review"
+         | "sequential_thinking"
+         | "list_reproducers" => ToolSafetyLevel::ReadOnly,
+ 
+         // Multi-Agent Mutations
+-        "dispatch_subagent"
++        "spawn_subagent"
++        | "dispatch_subagent"
+         | "fanout_subagents"
+         | "merge_subagent_worktree"
+         | "synthesize_reproducer"
+         | "verify_reproducer"
+         | "execute_dag"
+         | "repair_diagnostics" => ToolSafetyLevel::Mutating,
+ 
+         // Memory & Context Inspection (Read-Only)
+         "read_plan"
+         | "view_memory"
+diff --git a/src/tools/mod.rs b/src/tools/mod.rs
+index b70c1c6..1864fa7 100644
+--- a/src/tools/mod.rs
++++ b/src/tools/mod.rs
+@@ -228,20 +228,26 @@ impl ToolRegistry {
+         }
+         .into())
      }
  }
  
  #[cfg(test)]
  mod tests {
      use super::*;
-     use crate::agent::types::ToolCall;
      use serde_json::json;
-@@ -1117,11 +1161,238 @@ mod tests {
-                     arguments: json!({"path": "src/main.rs"}),
-                 }],
-             ),
-             Message::tool_result("call_w1", "write_file", &echo_500),
-         ];
  
-         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-         assert_eq!(metrics.mutation_echoes_compacted, 0);
-         assert_eq!(messages[2].content, echo_500);
-     }
-+
 +    #[test]
-+    fn test_historical_search_result_condensation() {
-+        // Turn 1: grep_search(query="AuthService") returning 80 lines of matches (>1000 bytes)
-+        let search_output_80 = (1..=80)
-+            .map(|i| format!("src/auth/service.rs:{i}:    let user_{i} = AuthService::find({i});"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
-+        assert!(search_output_80.len() > 1000);
-+        assert_eq!(search_output_80.lines().count(), 80);
-+
-+        let mut messages = vec![
-+            // Turn 1: grep_search(query="AuthService")
-+            Message::user("Find references to AuthService"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_grep_1".into(),
-+                    name: "grep_search".into(),
-+                    arguments: json!({"query": "AuthService"}),
-+                }],
-+            ),
-+            Message::tool_result("call_grep_1", "grep_search", &search_output_80),
-+            // Turn 2: User prompt + assistant action
-+            Message::user("Now refactor AuthService"),
-+            Message::assistant("I will refactor it now."),
-+            // Turn 3: Recent turn
-+            Message::user("Recent check"),
-+            Message::assistant("All set."),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+
-+        assert_eq!(metrics.search_results_compacted, 1);
-+        assert!(metrics.tokens_saved_estimate > 0);
-+
-+        // Assert Turn 1 is condensed to [grep_search: query "AuthService" returned 80 lines. Use retrieve_observation(id="ccr_...")]
-+        let compacted = &messages[2].content;
-+        assert!(
-+            compacted.starts_with("[grep_search: query \"AuthService\" returned 80 lines. Use retrieve_observation(id=\"ccr_"),
-+            "Expected search receipt format, got: {compacted}"
-+        );
-+        assert!(
-+            compacted.ends_with("for full matches]"),
-+            "Expected receipt to end with 'for full matches]', got: {compacted}"
-+        );
-+
-+        // Extract ccr_id from receipt
-+        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
-+        let id_end = compacted[id_start..]
-+            .find('"')
-+            .expect("closing quote should be in receipt")
-+            + id_start;
-+        let ccr_id = &compacted[id_start..id_end];
-+
-+        // Assert raw 80 lines is losslessly retrievable via CcrCache::retrieve
-+        let retrieved = CcrCache::retrieve(ccr_id, None, None);
-+        assert_eq!(
-+            retrieved,
-+            Some(search_output_80),
-+            "Original 80 lines must be losslessly retrievable from CCR cache"
-+        );
++    fn test_total_tool_count() {
++        let schemas = ToolRegistry::get_tool_schemas();
++        assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);
 +    }
 +
-+    #[test]
-+    fn test_recent_search_result_uncompacted() {
-+        let search_output_80 = (1..=80)
-+            .map(|i| format!("src/search.rs:{i}: match_{i}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
+     #[test]
+     fn test_tool_schemas_count() {
+         let schemas = ToolRegistry::get_tool_schemas();
+         assert_eq!(schemas.len(), crate::constants::TOTAL_TOOL_COUNT);
+         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
+         assert!(names.contains(&"score_task_complexity"));
+         assert!(names.contains(&"check_architecture"));
+         assert!(names.contains(&"ast_diff"));
+         assert!(names.contains(&"explore_hypotheses"));
+         assert!(names.contains(&"evaluate_branch"));
+diff --git a/src/tools/registry/agent_tools/subagents.rs b/src/tools/registry/agent_tools/subagents.rs
+index e52ff4f..5fe3b87 100644
+--- a/src/tools/registry/agent_tools/subagents.rs
++++ b/src/tools/registry/agent_tools/subagents.rs
+@@ -99,48 +99,93 @@ pub fn get_schemas() -> Vec<ToolSchema> {
+                         "description": "Optional custom system prompt override"
+                     },
+                     "isolate_worktree": {
+                         "type": "boolean",
+                         "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for mutating roles (test_engineer, custom)."
+                     }
+                 },
+                 "required": ["role", "prompt"]
+             }),
+         },
++        ToolSchema {
++            name: "spawn_subagent".to_string(),
++            description: "Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree.".to_string(),
++            parameters: json!({
++                "type": "object",
++                "properties": {
++                    "task": {
++                        "type": "string",
++                        "description": "Clear and detailed task instructions for the subagent"
++                    },
++                    "role": {
++                        "type": "string",
++                        "enum": ["scout", "coder", "tester", "reviewer"],
++                        "description": "Specialized role preset defining subagent capabilities and workspace isolation"
++                    },
++                    "workspace_mode": {
++                        "type": "string",
++                        "enum": ["auto", "worktree", "shared"],
++                        "description": "Workspace isolation mode: 'auto' (default based on role), 'worktree' (isolated Git worktree branch), or 'shared' (in-place execution)"
++                    },
++                    "max_iterations": {
++                        "type": "integer",
++                        "description": "Maximum tool loop iterations for the subagent before terminating"
++                    }
++                },
++                "required": ["task", "role"]
++            }),
++        },
+         ToolSchema {
+             name: "send_message".to_string(),
+-            description: "Send a follow-up instruction or message to an active subagent in the swarm pool.".to_string(),
++            description: "Send a typed message or follow-up instruction to an agent or subagent via durable mailbox.".to_string(),
+             parameters: json!({
+                 "type": "object",
+                 "properties": {
++                    "recipient": {
++                        "type": "string",
++                        "description": "The unique identifier of the recipient agent (or 'parent' for coordinator)"
++                    },
+                     "subagent_id": {
+                         "type": "string",
+-                        "description": "The unique identifier of the target subagent"
++                        "description": "Alias for recipient: the unique identifier of the target subagent"
+                     },
+                     "message": {
+                         "type": "string",
+                         "description": "The instruction or message content to deliver"
++                    },
++                    "intent": {
++                        "type": "string",
++                        "enum": [
++                            "task_init",
++                            "status_update",
++                            "clarification_request",
++                            "clarification_response",
++                            "feedback",
++                            "handoff",
++                            "task_complete"
++                        ],
++                        "description": "Optional high-level intent of the message (default: 'status_update')"
+                     }
+                 },
+-                "required": ["subagent_id", "message"]
++                "required": ["message"]
+             }),
+         },
+         ToolSchema {
+             name: "manage_subagents".to_string(),
+             description: "Inspect, list, monitor, await completion, or terminate active subagent workers in the swarm pool.".to_string(),
+             parameters: json!({
+                 "type": "object",
+                 "properties": {
+                     "action": {
+                         "type": "string",
+-                        "enum": ["list", "status", "await", "transcript", "drilldown", "kill", "kill_all"],
+-                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
++                        "enum": ["list", "status", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
++                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' / 'wait' for completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
+                     },
+                     "subagent_id": {
+                         "type": "string",
+                         "description": "Identifier of the target subagent (required for 'status', 'kill', 'await', and 'transcript')"
+                     },
+                     "step_index": {
+                         "type": "integer",
+                         "description": "Optional step number (1-indexed) when action is 'transcript' or 'drilldown'"
+                     },
+                     "timeout_secs": {
+@@ -374,36 +419,91 @@ pub async fn dispatch(
+                  • **Await Completion**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")` when ready to inspect results, or `manage_subagents(action=\"status\", subagent_id=\"{}\")` for intermediate updates.",
+                 id,
+                 role.badge(),
+                 isolation_label,
+                 id,
+                 id
+             );
+ 
+             Ok(out)
+         }.await),
++        "spawn_subagent" => Some(async {
++            let task = param::require_str(args, "task", "spawn_subagent")?;
++            let role_str = param::require_str(args, "role", "spawn_subagent")?;
++            let role = match role_str.to_lowercase().as_str() {
++                "scout" | "researcher" | "research" => crate::agent::subagent::SubagentRole::Scout,
++                "coder" => crate::agent::subagent::SubagentRole::Coder,
++                "tester" | "test_engineer" | "test" => crate::agent::subagent::SubagentRole::Tester,
++                "reviewer" | "code_reviewer" | "security_auditor" | "security" => {
++                    crate::agent::subagent::SubagentRole::Reviewer
++                }
++                other => {
++                    return Err(ToolError::InvalidArguments {
++                        name: "spawn_subagent".to_string(),
++                        reason: format!(
++                            "Unknown role '{}'. Expected 'scout', 'coder', 'tester', or 'reviewer'",
++                            other
++                        ),
++                    }.into());
++                }
++            };
 +
-+        let mut messages = vec![
-+            // Turn 1
-+            Message::user("Hello"),
-+            Message::assistant("Hi there"),
-+            // Turn 2 (Recent turn)
-+            Message::user("Search for matches"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_grep_recent".into(),
-+                    name: "grep_search".into(),
-+                    arguments: json!({"query": "match"}),
-+                }],
-+            ),
-+            Message::tool_result("call_grep_recent", "grep_search", &search_output_80),
-+        ];
++            let mode_str = param::opt_str(args, "workspace_mode").unwrap_or("auto");
++            let workspace_mode = match mode_str.to_lowercase().as_str() {
++                "worktree" => crate::agent::subagent::WorkspaceMode::Worktree,
++                "shared" => crate::agent::subagent::WorkspaceMode::Shared,
++                _ => crate::agent::subagent::WorkspaceMode::Auto,
++            };
 +
-+        // preserve_recent_turns = 1 should preserve Turn 2 completely
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++            let max_iterations = param::opt_u64(args, "max_iterations").map(|n| n as usize);
 +
-+        assert_eq!(metrics.search_results_compacted, 0);
-+        assert_eq!(
-+            messages[4].content, search_output_80,
-+            "Search result in recent turn must remain 100% untouched"
-+        );
-+    }
++            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent(
++                workspace_root,
++                task,
++                role,
++                workspace_mode,
++                max_iterations,
++            )
++            .await?;
 +
-+    #[test]
-+    fn test_small_search_result_uncompacted() {
-+        // A search result with only 3 lines / 100 bytes is not condensed (negative compression prevention)
-+        let small_search = "file1.rs:1: match\nfile2.rs:2: match\nfile3.rs:3: match";
-+        assert_eq!(small_search.lines().count(), 3);
-+        assert!(small_search.len() < 300);
++            Ok(report)
++        }.await),
+         "send_message" => Some(async {
+-            let subagent_id = param::require_str(args, "subagent_id", "send_message")?;
++            let recipient_str = param::opt_str(args, "recipient")
++                .or_else(|| param::opt_str(args, "subagent_id"))
++                .ok_or_else(|| ToolError::InvalidArguments {
++                    name: "send_message".to_string(),
++                    reason: "Missing required argument 'recipient' or 'subagent_id'".to_string(),
++                })?;
+             let message = param::require_str(args, "message", "send_message")?;
++            let intent = param::opt_str(args, "intent").map(|s| match s {
++                "task_init" => crate::agent::subagent::MessageIntent::TaskInit,
++                "clarification_request" => crate::agent::subagent::MessageIntent::ClarificationRequest,
++                "clarification_response" => crate::agent::subagent::MessageIntent::ClarificationResponse,
++                "feedback" => crate::agent::subagent::MessageIntent::Feedback,
++                "handoff" => crate::agent::subagent::MessageIntent::Handoff,
++                "task_complete" => crate::agent::subagent::MessageIntent::TaskComplete,
++                _ => crate::agent::subagent::MessageIntent::StatusUpdate,
++            });
+ 
+-            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+-            if let Some(info) = pool.get_subagent(subagent_id).await {
+-                Ok(format!(
+-                    "✔ Message delivered to subagent `{}` (Role: {}, State: {:?})\nMessage content: '{}'",
+-                    subagent_id,
+-                    info.role.badge(),
+-                    info.state,
+-                    message
+-                ))
+-            } else {
+-                Ok(format!("ℹ Subagent `{}` received instruction: '{}'", subagent_id, message))
+-            }
++            let sender = crate::agent::subagent::AgentId::parent();
++            let recipient = crate::agent::subagent::AgentId::from(recipient_str);
 +
-+        let mut messages = vec![
-+            // Turn 1: Small search
-+            Message::user("Search for match"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_grep_small".into(),
-+                    name: "grep_search".into(),
-+                    arguments: json!({"query": "match"}),
-+                }],
-+            ),
-+            Message::tool_result("call_grep_small", "grep_search", small_search),
-+            // Turn 2: User prompt + assistant action
-+            Message::user("Continue"),
-+            Message::assistant("Okay"),
-+            // Turn 3: Recent turn
-+            Message::user("Recent"),
-+            Message::assistant("Done"),
-+        ];
++            let confirm = crate::agent::subagent::orchestrator::SubagentOrchestrator::send_message(
++                workspace_root,
++                &sender,
++                &recipient,
++                message,
++                intent,
++            )?;
 +
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+
-+        assert_eq!(metrics.search_results_compacted, 0);
-+        assert_eq!(
-+            messages[2].content, small_search,
-+            "Small search result (<=25 lines and <=300 bytes) must not be condensed"
-+        );
-+    }
-+
-+    #[test]
-+    fn test_find_by_name_pattern_search_result_condensation() {
-+        let file_list_40 = (1..=40)
-+            .map(|i| format!("src/models/model_{i}.rs"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
-+
-+        let mut messages = vec![
-+            // Turn 1: find_by_name(pattern="*.rs")
-+            Message::user("Find all rust files"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_find_1".into(),
-+                    name: "find_by_name".into(),
-+                    arguments: json!({"pattern": "*.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_find_1", "find_by_name", &file_list_40),
-+            // Turn 2
-+            Message::user("Next"),
-+            Message::assistant("Done"),
-+            // Turn 3: Recent turn
-+            Message::user("Recent"),
-+            Message::assistant("Finished"),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+
-+        assert_eq!(metrics.search_results_compacted, 1);
-+        let compacted = &messages[2].content;
-+        assert!(
-+            compacted.starts_with("[find_by_name: query \"*.rs\" returned 40 lines. Use retrieve_observation(id=\"ccr_"),
-+            "Expected find_by_name receipt format, got: {compacted}"
-+        );
-+    }
-+
-+    #[test]
-+    fn test_search_missing_query_fallback() {
-+        let raw_30_lines = (1..=30)
-+            .map(|i| format!("line {i}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
-+
-+        let mut messages = vec![
-+            Message::user("Search"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_search_no_query".into(),
-+                    name: "grep".into(),
-+                    arguments: json!({}),
-+                }],
-+            ),
-+            Message::tool_result("call_search_no_query", "grep", &raw_30_lines),
-+            Message::user("Next"),
-+            Message::assistant("Done"),
-+            Message::user("Recent"),
-+            Message::assistant("Finished"),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+        assert_eq!(metrics.search_results_compacted, 1);
-+        assert!(messages[2]
-+            .content
-+            .contains("query \"...\" returned 30 lines"));
-+    }
-+
-+    #[test]
-+    fn test_is_already_receipt() {
-+        assert!(is_already_receipt("[read_file: src/main.rs]", "read_file"));
-+        assert!(is_already_receipt(
-+            "[write_file: src/main.rs (successfully applied)]",
-+            "write_file"
-+        ));
-+        assert!(is_already_receipt(
-+            "[grep_search: query \"AuthService\" returned 80 lines]",
-+            "grep_search"
-+        ));
-+        assert!(!is_already_receipt(
-+            "[read_file: src/main.rs]",
-+            "write_file"
-+        ));
-+        assert!(!is_already_receipt(
-+            "read_file: not in brackets",
-+            "read_file"
-+        ));
-+        assert!(!is_already_receipt(
-+            "[read_file_extra: not colon]",
-+            "read_file"
-+        ));
-+        assert!(!is_already_receipt("", "read_file"));
-+    }
- }
++            Ok(confirm)
+         }.await),
+         "manage_subagents" => Some(async {
+             let action = param::opt_str(args, "action").unwrap_or("list");
+             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+ 
+             match action {
+                 "list" => {
+                     let summary = pool.format_swarm_summary().await;
+                     Ok(summary)
+                 }
+@@ -417,21 +517,21 @@ pub async fn dispatch(
+                             info.state,
+                             info.turns_executed,
+                             info.tokens_used,
+                             info.prompt,
+                             info.started_at_secs
+                         ))
+                     } else {
+                         Ok(format!("ℹ No subagent found with ID '{}'", id))
+                     }
+                 }
+-                "await" => {
++                "await" | "wait" => {
+                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
+                     let timeout_secs = param::opt_u64(args, "timeout_secs").unwrap_or(60);
+                     let start = std::time::Instant::now();
+                     let max_dur = std::time::Duration::from_secs(timeout_secs);
+ 
+                     let mut final_info = None;
+                     while start.elapsed() < max_dur {
+                         if let Some(info) = pool.get_subagent(id).await {
+                             if !matches!(
+                                 info.state,
+@@ -524,21 +624,21 @@ pub async fn dispatch(
+                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
+                     pool.kill_subagent(id).await?;
+                     Ok(format!("✔ Subagent `{}` successfully terminated", id))
+                 }
+                 "kill_all" => {
+                     pool.kill_all().await;
+                     Ok("✔ All active subagents in swarm pool have been terminated".to_string())
+                 }
+                 other => Err(ToolError::InvalidArguments {
+                     name: "manage_subagents".to_string(),
+-                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, transcript, drilldown, kill, kill_all", other),
++                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, wait, transcript, drilldown, kill, kill_all", other),
+                 }.into()),
+             }
+         }.await),
+         "scratchpad_write" => Some(async {
+             let key = param::require_str(args, "key", "scratchpad_write")?;
+             let title = param::require_str(args, "title", "scratchpad_write")?;
+             let content = param::require_str(args, "content", "scratchpad_write")?;
+             let author = param::opt_str(args, "author").unwrap_or("orchestrator");
+ 
+             let sp = crate::agent::subagent::get_global_scratchpad();

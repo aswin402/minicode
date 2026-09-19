@@ -1,717 +1,383 @@
-71c8667 feat(budget): add duplicate read and historical mutation echo compaction
-
---- STAT ---
-
- src/context/budget/micro_compact.rs | 583 ++++++++++++++++++++++++++++++++----
- 1 file changed, 528 insertions(+), 55 deletions(-)
-
---- DIFF ---
-
-diff --git a/src/context/budget/micro_compact.rs b/src/context/budget/micro_compact.rs
-index de9d3d2..2093f1a 100644
---- a/src/context/budget/micro_compact.rs
-+++ b/src/context/budget/micro_compact.rs
-@@ -59,46 +59,76 @@ fn is_mutation_tool(name: &str) -> bool {
- }
+b3efa48 feat(sandbox): implement ephemeral Git worktree manager for subagent isolation
+=== STAT ===
+ src/sandbox/mod.rs      |   3 +
+ src/sandbox/worktree.rs | 351 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 354 insertions(+)
+=== DIFF ===
+diff --git a/src/sandbox/mod.rs b/src/sandbox/mod.rs
+index d2b74d5..bd1f246 100644
+--- a/src/sandbox/mod.rs
++++ b/src/sandbox/mod.rs
+@@ -1,12 +1,15 @@
+ pub mod dynamic;
+ pub mod env;
+ #[cfg(target_os = "linux")]
+ pub mod landlock;
+ pub mod path;
+ pub mod redact;
++pub mod worktree;
  
- /// Returns true if the tool name indicates a file read operation.
- fn is_read_tool(name: &str) -> bool {
-     let n = name.to_ascii_lowercase();
-     matches!(n.as_str(), "read_file" | "view_file" | "cat")
-         || n.starts_with("read_")
-         || n.starts_with("view_")
- }
- 
--/// Normalizes a file path for comparison by trimming whitespace and removing leading `./`.
--fn normalize_path_for_compare(p: &str) -> &str {
--    let trimmed = p.trim();
--    trimmed.strip_prefix("./").unwrap_or(trimmed)
-+/// Normalizes a file path for cross-platform comparison by replacing `\\` with `/`,
-+/// stripping leading `./`, and trimming leading `/`.
-+pub fn normalize_path_for_compare(path: &str) -> String {
-+    let s = path.trim().replace('\\', "/");
-+    let mut s = s.as_str();
-+    loop {
-+        if let Some(stripped) = s.strip_prefix("./") {
-+            s = stripped;
-+        } else if let Some(stripped) = s.strip_prefix('/') {
-+            s = stripped;
+ #[allow(unused_imports)]
+ pub use dynamic::{
+     format_sandbox_result, is_bwrap_available, run_sandboxed, SandboxBackendPreference,
+     SandboxBackendType, SandboxExecutionResult, SandboxPolicy,
+ };
++#[allow(unused_imports)]
++pub use worktree::{GitWorktreeManager, WorktreeHandle};
+diff --git a/src/sandbox/worktree.rs b/src/sandbox/worktree.rs
+new file mode 100644
+index 0000000..2e73e2b
+--- /dev/null
++++ b/src/sandbox/worktree.rs
+@@ -0,0 +1,351 @@
++//! Ephemeral Git Worktree Sandboxing Engine for subagent isolation.
++//!
++//! Provisions, manages, inspects, and cleans up isolated Git worktrees
++//! for mutating subagents (e.g. `coder`, `tester`).
++
++use std::path::{Path, PathBuf};
++use std::process::Command;
++
++use crate::agent::subagent::types::AgentId;
++
++/// Represents an active Git worktree provisioned for an isolated subagent worker.
++#[allow(dead_code)]
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct WorktreeHandle {
++    pub worktree_path: PathBuf,
++    pub branch_name: String,
++    pub agent_id: AgentId,
++    pub repo_root: PathBuf,
++}
++
++/// Manager for provisioning, inspecting, and tearing down ephemeral Git worktrees.
++#[allow(dead_code)]
++pub struct GitWorktreeManager;
++
++#[allow(dead_code)]
++impl GitWorktreeManager {
++    /// Creates an isolated Git worktree and dedicated branch for a subagent.
++    ///
++    /// 1. Worktree path: `repo_root/.minicode/worktrees/<agent_id>`
++    /// 2. Branch name: `minicode-task-<agent_id>`
++    /// 3. Ensures `.minicode/worktrees/` directory exists.
++    /// 4. If `worktree_path` exists, cleans up stale worktree and branch first.
++    /// 5. Runs `git worktree add -b <branch_name> <worktree_path> HEAD`.
++    pub fn create_worktree(
++        repo_root: &Path,
++        agent_id: &AgentId,
++    ) -> std::io::Result<WorktreeHandle> {
++        let worktrees_dir = repo_root.join(".minicode").join("worktrees");
++        let worktree_path = worktrees_dir.join(&agent_id.0);
++        let branch_name = format!("minicode-task-{}", &agent_id.0);
++
++        std::fs::create_dir_all(&worktrees_dir)?;
++
++        let handle = WorktreeHandle {
++            worktree_path: worktree_path.clone(),
++            branch_name: branch_name.clone(),
++            agent_id: agent_id.clone(),
++            repo_root: repo_root.to_path_buf(),
++        };
++
++        if worktree_path.exists() {
++            let _ = Self::remove_worktree(&handle);
 +        } else {
-+            break;
++            let _ = Command::new("git")
++                .args(["branch", "-D", &branch_name])
++                .current_dir(repo_root)
++                .output();
 +        }
++
++        let output = Command::new("git")
++            .args(["worktree", "add", "-b", &branch_name])
++            .arg(&worktree_path)
++            .arg("HEAD")
++            .current_dir(repo_root)
++            .output()?;
++
++        if !output.status.success() {
++            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
++            return Err(std::io::Error::other(format!(
++                "git worktree add failed: {}",
++                stderr
++            )));
++        }
++
++        Ok(handle)
 +    }
-+    s.to_string()
-+}
 +
-+#[derive(Debug, Clone)]
-+struct CompactToolMeta {
-+    name: String,
-+    target_path: Option<String>,
-+    query: Option<String>,
-+}
++    /// Captures the working tree diff relative to HEAD in the worktree.
++    ///
++    /// Runs `git add -N .` so untracked files are visible to diff, then runs
++    /// `git diff HEAD`. If that fails, falls back to `git diff`. Returns the trimmed diff.
++    pub fn capture_diff(handle: &WorktreeHandle) -> std::io::Result<String> {
++        let _ = Command::new("git")
++            .args(["add", "-N", "."])
++            .current_dir(&handle.worktree_path)
++            .output();
 +
-+fn is_compacted_receipt(content: &str) -> bool {
-+    content.starts_with('[')
-+        && (content.contains("Use retrieve_observation(id=\"")
-+            || content.contains("superseded by")
-+            || content.contains("successfully applied,"))
- }
- 
- /// Semantic micro-compactor that performs granular, lossless condensation of stale or redundant
- /// tool observations in conversation history, backed by lossless CCR recovery cache.
- pub struct MicroCompactor;
- 
- impl MicroCompactor {
--    /// Compacts messages by identifying superseded file reads outside the preserved recent turn window.
-+    /// Compacts messages by identifying superseded file reads, duplicate consecutive reads,
-+    /// and large historical mutation echoes outside the preserved recent turn window.
-     ///
-     /// Preserves the last `preserve_recent_turns` turns untouched. If `preserve_recent_turns == 0`,
-     /// all messages across the conversation are eligible for compaction.
-     pub fn compact_messages(
-         messages: &mut [Message],
-         preserve_recent_turns: usize,
-     ) -> MicroCompactMetrics {
-         let mut metrics = MicroCompactMetrics::default();
-         if messages.is_empty() {
-             return metrics;
-         }
- 
-         let cutoff = Self::calculate_cutoff(messages, preserve_recent_turns);
--        Self::compact_superseded_reads(messages, cutoff, &mut metrics);
-+        if cutoff == 0 {
-+            return metrics;
-+        }
++        let output = Command::new("git")
++            .args(["diff", "HEAD"])
++            .current_dir(&handle.worktree_path)
++            .output();
 +
-+        Self::compact_stale_observations(messages, cutoff, &mut metrics);
- 
-         metrics
-     }
- 
-     /// Dynamically extracts target file path from a tool call's arguments.
-     #[must_use]
-     pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
-         let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
-             for key in PATH_KEYS {
-                 if let Some(val) = obj.get(*key) {
-@@ -194,116 +224,232 @@ impl MicroCompactor {
-                 })
-                 .collect();
-             if preserve_recent_turns >= assistant_indices.len() {
-                 0
-             } else {
-                 assistant_indices[assistant_indices.len() - preserve_recent_turns]
-             }
-         }
-     }
- 
--    /// Identifies superseded file reads outside the preserved window and replaces them with
--    /// concise 1-line CCR receipts.
--    fn compact_superseded_reads(
-+    /// Identifies and condenses stale tool observations outside the preserved window:
-+    /// 1. Duplicate consecutive reads (superseded by subsequent read without modifications in between).
-+    /// 2. Superseded reads (stale read observations superseded by subsequent file modifications).
-+    /// 3. Historical mutation echoes (verbose diffs or write echoes > 256 bytes).
-+    fn compact_stale_observations(
-         messages: &mut [Message],
-         cutoff: usize,
-         metrics: &mut MicroCompactMetrics,
-     ) {
--        if cutoff == 0 {
--            return;
--        }
--
--        // Pass 1: Build map of modified files across the entire conversation
--        // and map tool calls by ID for metadata extraction.
-+        // Pass 1a: Build map of lightweight tool metadata and indexed mutations across the conversation
-+        let mut tool_calls_by_id: HashMap<String, CompactToolMeta> = HashMap::new();
-         let mut mutations: HashMap<String, Vec<usize>> = HashMap::new();
--        let mut tool_calls_by_id: HashMap<String, ToolCall> = HashMap::new();
-+        let mut reads: HashMap<String, Vec<usize>> = HashMap::new();
- 
-         for (idx, msg) in messages.iter().enumerate() {
-             if let Some(ref calls) = msg.tool_calls {
-                 for call in calls {
--                    tool_calls_by_id.insert(call.id.clone(), call.clone());
--                    if is_mutation_tool(&call.name) {
--                        if let Some(target_path) = Self::extract_target_path(call) {
--                            let norm = normalize_path_for_compare(&target_path);
--                            mutations.entry(norm.to_string()).or_default().push(idx);
-+                    let target_path = Self::extract_target_path(call);
-+                    let query = Self::extract_search_query(call);
-+                    let meta = CompactToolMeta {
-+                        name: call.name.clone(),
-+                        target_path,
-+                        query,
-+                    };
-+                    if is_mutation_tool(&meta.name) {
-+                        if let Some(ref tp) = meta.target_path {
-+                            let norm = normalize_path_for_compare(tp);
-+                            mutations.entry(norm).or_default().push(idx);
-                         }
-                     }
-+                    tool_calls_by_id.insert(call.id.clone(), meta);
-                 }
-             }
-         }
- 
--        // Pass 2: Inspect tool result messages outside the preserved recent window
--        for i in 0..cutoff {
--            if messages[i].role != Role::Tool {
-+        // Pass 1b: Index tool result message operations (reads and mutations)
-+        for (idx, msg) in messages.iter().enumerate() {
-+            if msg.role != Role::Tool {
-                 continue;
-             }
- 
--            // If already a condensed receipt, skip
--            if messages[i].content.starts_with("[read_file:") {
-+            let tool_meta = msg
-+                .tool_call_id
-+                .as_deref()
-+                .and_then(|id| tool_calls_by_id.get(id));
-+
-+            let tool_name = msg
-+                .tool_name
-+                .as_deref()
-+                .or_else(|| tool_meta.map(|m| m.name.as_str()));
-+
-+            let Some(tname) = tool_name else {
-                 continue;
-+            };
-+
-+            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
-+                for prev_idx in (0..idx).rev() {
-+                    let prev = &messages[prev_idx];
-+                    if prev.role == Role::Assistant {
-+                        if let Some(ref calls) = prev.tool_calls {
-+                            if let Some(c) = calls.iter().find(|c| {
-+                                c.name == tname
-+                                    || is_read_tool(&c.name)
-+                                    || is_mutation_tool(&c.name)
-+                            }) {
-+                                return Self::extract_target_path(c);
-+                            }
-+                        }
-+                        break;
-+                    }
-+                }
-+                None
-+            });
-+
-+            if let Some(path) = target_path {
-+                let norm = normalize_path_for_compare(&path);
-+                if is_read_tool(tname) {
-+                    reads.entry(norm.clone()).or_default().push(idx);
-+                }
-+                if is_mutation_tool(tname) {
-+                    mutations.entry(norm).or_default().push(idx);
-+                }
-             }
-+        }
- 
--            let tool_call = messages[i]
-+        // Pass 2: Condense observations outside the preserved recent window
-+        for i in 0..cutoff {
-+            if messages[i].role != Role::Tool {
-+                continue;
++        let diff_str = match output {
++            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
++            _ => {
++                let fallback = Command::new("git")
++                    .arg("diff")
++                    .current_dir(&handle.worktree_path)
++                    .output()?;
++                String::from_utf8_lossy(&fallback.stdout).to_string()
 +            }
++        };
 +
-+            let tool_meta = messages[i]
-                 .tool_call_id
-                 .as_deref()
-                 .and_then(|id| tool_calls_by_id.get(id));
- 
-             let tool_name = messages[i]
-                 .tool_name
-                 .as_deref()
--                .or_else(|| tool_call.map(|tc| tc.name.as_str()));
-+                .or_else(|| tool_meta.map(|m| m.name.as_str()));
- 
-             let Some(tname) = tool_name else {
-                 continue;
-             };
- 
--            if !is_read_tool(tname) {
--                continue;
--            }
--
--            let target_path = tool_call.and_then(Self::extract_target_path).or_else(|| {
--                // Fallback: search backwards for preceding assistant message
-+            let target_path = tool_meta.and_then(|m| m.target_path.clone()).or_else(|| {
-                 for prev_idx in (0..i).rev() {
-                     let prev = &messages[prev_idx];
-                     if prev.role == Role::Assistant {
-                         if let Some(ref calls) = prev.tool_calls {
--                            if let Some(c) = calls.iter().find(|c| is_read_tool(&c.name)) {
-+                            if let Some(c) = calls.iter().find(|c| {
-+                                c.name == tname
-+                                    || is_read_tool(&c.name)
-+                                    || is_mutation_tool(&c.name)
-+                            }) {
-                                 return Self::extract_target_path(c);
-                             }
-                         }
-                         break;
-                     }
-                 }
-                 None
-             });
- 
--            let Some(path) = target_path else {
--                continue;
--            };
-+            if is_read_tool(tname) {
-+                if is_compacted_receipt(&messages[i].content)
-+                    || messages[i].content.starts_with("[read_file:")
-+                {
-+                    continue;
++        Ok(diff_str.trim().to_string())
++    }
++
++    /// Removes an isolated worktree and deletes its dedicated branch.
++    ///
++    /// 1. Runs `git worktree remove --force <worktree_path>`.
++    /// 2. Runs `git branch -D <branch_name>`.
++    /// 3. Removes `worktree_path` from filesystem if still present.
++    /// 4. Runs `git worktree prune`.
++    pub fn remove_worktree(handle: &WorktreeHandle) -> std::io::Result<()> {
++        let _ = Command::new("git")
++            .args(["worktree", "remove", "--force"])
++            .arg(&handle.worktree_path)
++            .current_dir(&handle.repo_root)
++            .output();
++
++        let _ = Command::new("git")
++            .args(["branch", "-D", &handle.branch_name])
++            .current_dir(&handle.repo_root)
++            .output();
++
++        if handle.worktree_path.exists() {
++            if let Err(e) = std::fs::remove_dir_all(&handle.worktree_path) {
++                if e.kind() != std::io::ErrorKind::NotFound {
++                    return Err(e);
 +                }
++            }
++        }
 +
-+                // Prevent negative compression: do not replace if raw output <= 128 bytes
-+                if messages[i].content.len() <= 128 {
-+                    continue;
-+                }
++        let _ = Command::new("git")
++            .args(["worktree", "prune"])
++            .current_dir(&handle.repo_root)
++            .output();
 +
-+                let Some(path) = target_path else {
-+                    continue;
-+                };
++        Ok(())
++    }
 +
-+                let norm = normalize_path_for_compare(&path);
++    /// Cleans up any stale worktrees under `.minicode/worktrees/`.
++    ///
++    /// 1. Checks `.minicode/worktrees/`. Returns `Ok(0)` if it does not exist.
++    /// 2. Runs `git worktree prune` in `repo_root`.
++    /// 3. Removes any remaining directories inside `.minicode/worktrees/`.
++    /// 4. Returns count of directories cleaned.
++    pub fn cleanup_stale_worktrees(repo_root: &Path) -> std::io::Result<usize> {
++        let worktrees_dir = repo_root.join(".minicode").join("worktrees");
++        if !worktrees_dir.exists() {
++            return Ok(0);
++        }
 +
-+                // Check duplicate read: subsequent read of same path without any mutation between
-+                let next_read_idx = reads
-+                    .get(&norm)
-+                    .and_then(|indices| indices.iter().copied().find(|&read_idx| read_idx > i));
++        let _ = Command::new("git")
++            .args(["worktree", "prune"])
++            .current_dir(repo_root)
++            .output();
 +
-+                let has_mutation_before_next_read = if let Some(next_r) = next_read_idx {
-+                    mutations
-+                        .get(&norm)
-+                        .map(|indices| indices.iter().any(|&m_idx| m_idx > i && m_idx < next_r))
-+                        .unwrap_or(false)
++        let mut count = 0;
++        let entries = std::fs::read_dir(&worktrees_dir)?;
++        for entry in entries {
++            let entry = entry?;
++            let path = entry.path();
++            if path.is_dir() {
++                if let Err(e) = std::fs::remove_dir_all(&path) {
++                    if e.kind() != std::io::ErrorKind::NotFound {
++                        return Err(e);
++                    }
 +                } else {
-+                    false
-+                };
-+
-+                if next_read_idx.is_some() && !has_mutation_before_next_read {
-+                    let raw_len = messages[i].content.len();
-+                    let ccr_id = CcrCache::store(&messages[i].content);
-+                    let receipt = format!(
-+                        "[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]",
-+                        path, ccr_id
-+                    );
-+                    let chars_saved = raw_len.saturating_sub(receipt.len());
-+                    metrics.tokens_saved_estimate += chars_saved / 4;
-+                    messages[i].content = receipt;
-+                    metrics.duplicate_reads_compacted += 1;
-+                    continue;
++                    count += 1;
 +                }
++            }
++        }
 +
-+                // Check superseded read: subsequent mutation to this file exists
-+                let is_superseded = mutations
-+                    .get(&norm)
-+                    .map(|indices| indices.iter().any(|&m_idx| m_idx > i))
-+                    .unwrap_or(false);
++        let _ = Command::new("git")
++            .args(["worktree", "prune"])
++            .current_dir(repo_root)
++            .output();
 +
-+                if is_superseded {
-+                    let raw_len = messages[i].content.len();
-+                    let line_count = messages[i].content.lines().count();
-+                    let ccr_id = CcrCache::store(&messages[i].content);
-+                    let receipt = format!(
-+                        "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
-+                        path, line_count, ccr_id
-+                    );
-+                    let chars_saved = raw_len.saturating_sub(receipt.len());
-+                    metrics.tokens_saved_estimate += chars_saved / 4;
-+                    messages[i].content = receipt;
-+                    metrics.superseded_reads_compacted += 1;
-+                    continue;
-+                }
-+            } else if is_mutation_tool(tname) {
-+                if is_compacted_receipt(&messages[i].content)
-+                    || messages[i].content.starts_with(&format!("[{tname}:"))
-+                {
-+                    continue;
-+                }
- 
--            let norm = normalize_path_for_compare(&path);
--            let is_superseded = mutations
--                .get(norm)
--                .map(|indices| indices.iter().any(|&mut_idx| mut_idx > i))
--                .unwrap_or(false);
--
--            if is_superseded {
--                let line_count = messages[i].content.lines().count();
--                let ccr_id = CcrCache::store(&messages[i].content);
--                let receipt = format!(
--                    "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
--                    path, line_count, ccr_id
--                );
--                let chars_saved = messages[i].content.len().saturating_sub(receipt.len());
--                metrics.tokens_saved_estimate += chars_saved / 4;
--                messages[i].content = receipt;
--                metrics.superseded_reads_compacted += 1;
-+                // Historical mutation echo: condense outputs larger than 256 bytes
-+                if messages[i].content.len() > 256 {
-+                    let path = target_path.unwrap_or_else(|| "file".to_string());
-+                    let raw_len = messages[i].content.len();
-+                    let ccr_id = CcrCache::store(&messages[i].content);
-+                    let receipt = format!(
-+                        "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
-+                        tname, path, raw_len, ccr_id
-+                    );
-+                    let chars_saved = raw_len.saturating_sub(receipt.len());
-+                    metrics.tokens_saved_estimate += chars_saved / 4;
-+                    messages[i].content = receipt;
-+                    metrics.mutation_echoes_compacted += 1;
-+                    continue;
-+                }
-             }
-         }
-     }
- }
- 
- #[cfg(test)]
- mod tests {
-     use super::*;
-     use crate::agent::types::ToolCall;
-     use serde_json::json;
-@@ -644,11 +790,338 @@ mod tests {
-             ),
-             Message::tool_result("call_w1", "write_file", "ok"),
-             Message::user("Next turn"),
-             Message::assistant("Done"),
-         ];
- 
-         let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-         assert_eq!(metrics.superseded_reads_compacted, 0);
-         assert_eq!(messages[2].content, receipt);
-     }
++        Ok(count)
++    }
++}
 +
-+    #[test]
-+    fn test_duplicate_consecutive_reads() {
-+        let lines_50 = (1..=50)
-+            .map(|i| format!("pub fn line_{i}() -> usize {{ {i} }}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::process::Command;
++    use tempfile::tempdir;
 +
-+        let mut messages = vec![
-+            // Turn 1: read_file("src/main.rs") (50 lines)
-+            Message::user("Read main.rs"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r1".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r1", "read_file", &lines_50),
-+            // Turn 2: User asks question, assistant answers
-+            Message::user("What does it do?"),
-+            Message::assistant("It defines 50 functions."),
-+            // Turn 3: read_file("src/main.rs") (50 lines)
-+            Message::user("Read main.rs again"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r2".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r2", "read_file", &lines_50),
-+            // Turn 4: Recent turn
-+            Message::user("Recent question"),
-+            Message::assistant("Recent answer"),
-+        ];
++    fn setup_git_repo() -> tempfile::TempDir {
++        let dir = tempdir().expect("failed to create temp dir");
++        let path = dir.path();
 +
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        let run = |args: &[&str]| {
++            let output = Command::new("git")
++                .args(args)
++                .current_dir(path)
++                .output()
++                .expect("failed to execute git command");
++            assert!(
++                output.status.success(),
++                "git {:?} failed: {}",
++                args,
++                String::from_utf8_lossy(&output.stderr)
++            );
++        };
 +
-+        assert_eq!(metrics.duplicate_reads_compacted, 1);
-+        assert_eq!(metrics.superseded_reads_compacted, 0);
-+        assert!(metrics.tokens_saved_estimate > 0);
++        run(&["init"]);
++        run(&["config", "user.name", "Test User"]);
++        run(&["config", "user.email", "test@example.com"]);
++        run(&["config", "commit.gpgsign", "false"]);
 +
-+        // Assert Turn 1 read is condensed with "superseded by subsequent read"
-+        assert!(
-+            messages[2]
-+                .content
-+                .contains("superseded by subsequent read"),
-+            "Turn 1 read should be condensed with 'superseded by subsequent read', got: {}",
-+            messages[2].content
-+        );
-+        assert!(
-+            messages[2].content.starts_with("[read_file: src/main.rs (superseded by subsequent read. Use retrieve_observation(id=\"ccr_"),
-+            "Unexpected receipt format: {}",
-+            messages[2].content
-+        );
++        std::fs::write(path.join("file.txt"), "hello world\n")
++            .expect("failed to write initial file");
++        run(&["add", "file.txt"]);
++        run(&["commit", "-m", "init"]);
 +
-+        // Assert Turn 3 read is preserved
-+        assert_eq!(
-+            messages[7].content, lines_50,
-+            "Turn 3 read must be preserved"
-+        );
++        dir
 +    }
 +
 +    #[test]
-+    fn test_historical_mutation_echo_condensation() {
-+        // Turn 1: write_file("src/main.rs") returning 500 bytes of unified diff / echo
-+        let echo_500 = "x".repeat(500);
++    fn test_worktree_lifecycle_in_git_repo() {
++        let temp_dir = setup_git_repo();
++        let repo_root = temp_dir.path();
 +
-+        let mut messages = vec![
-+            // Turn 1
-+            Message::user("Update main.rs"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_w1".into(),
-+                    name: "write_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_w1", "write_file", &echo_500),
-+            // Turn 2: User prompt + assistant action
-+            Message::user("Next step"),
-+            Message::assistant("Done"),
-+            // Turn 3: Recent turn
-+            Message::user("Recent check"),
-+            Message::assistant("All good"),
-+        ];
++        let agent_id = AgentId("coder-test".to_string());
++        let handle = GitWorktreeManager::create_worktree(repo_root, &agent_id)
++            .expect("create_worktree failed");
 +
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        assert!(handle.worktree_path.exists());
++        assert_eq!(handle.branch_name, "minicode-task-coder-test");
 +
-+        assert_eq!(metrics.mutation_echoes_compacted, 1);
-+        assert!(metrics.tokens_saved_estimate > 0);
++        // Verifies worktree directory exists and branch is created
++        let branch_out = Command::new("git")
++            .args(["branch", "--list", &handle.branch_name])
++            .current_dir(repo_root)
++            .output()
++            .expect("failed to list branches");
++        let stdout = String::from_utf8_lossy(&branch_out.stdout);
++        assert!(stdout.contains(&handle.branch_name));
 +
-+        // Assert Turn 1 mutation output is condensed to [write_file: src/main.rs (successfully applied, 500 bytes...)]
-+        let compacted = &messages[2].content;
-+        assert!(
-+            compacted.starts_with("[write_file: src/main.rs (successfully applied, 500 bytes. Use retrieve_observation(id=\"ccr_"),
-+            "Expected mutation echo receipt, got: {compacted}"
-+        );
++        // Modifies file in worktree
++        std::fs::write(handle.worktree_path.join("file.txt"), "hello worktree\n")
++            .expect("failed to modify file");
 +
-+        // Assert raw 500 bytes is retrievable via CcrCache::retrieve
-+        let id_start = compacted.find("id=\"").expect("id=\" should be in receipt") + 4;
-+        let id_end = compacted[id_start..]
-+            .find('"')
-+            .expect("closing quote should be in receipt")
-+            + id_start;
-+        let ccr_id = &compacted[id_start..id_end];
++        // Calls capture_diff and asserts diff contains modification
++        let diff = GitWorktreeManager::capture_diff(&handle).expect("diff capture failed");
++        assert!(diff.contains("-hello world"));
++        assert!(diff.contains("+hello worktree"));
 +
-+        let retrieved = CcrCache::retrieve(ccr_id, None, None);
-+        assert_eq!(
-+            retrieved,
-+            Some(echo_500),
-+            "Raw 500 bytes must be losslessly retrievable from CCR cache"
-+        );
++        // Calls remove_worktree
++        GitWorktreeManager::remove_worktree(&handle).expect("remove worktree failed");
++
++        // Asserts worktree directory no longer exists
++        assert!(!handle.worktree_path.exists());
++
++        // Branch should also be deleted
++        let branch_after = Command::new("git")
++            .args(["branch", "--list", &handle.branch_name])
++            .current_dir(repo_root)
++            .output()
++            .expect("failed to list branches");
++        let stdout_after = String::from_utf8_lossy(&branch_after.stdout);
++        assert!(!stdout_after.contains(&handle.branch_name));
 +    }
 +
 +    #[test]
-+    fn test_no_negative_compression_on_tiny_output() {
-+        let tiny_read = "let a = 1;"; // 10 bytes <= 128
-+        let tiny_write = "ok"; // 2 bytes <= 256
-+
-+        let mut messages = vec![
-+            Message::user("Read small"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r1".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "tiny.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r1", "read_file", tiny_read),
-+            Message::user("Write small"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_w1".into(),
-+                    name: "write_file".into(),
-+                    arguments: json!({"path": "tiny.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_w1", "write_file", tiny_write),
-+            Message::user("Recent"),
-+            Message::assistant("Done"),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+
-+        assert_eq!(metrics.total_compacted(), 0);
-+        assert_eq!(
-+            messages[2].content, tiny_read,
-+            "Tiny read must not be replaced"
-+        );
-+        assert_eq!(
-+            messages[5].content, tiny_write,
-+            "Tiny write must not be replaced"
-+        );
++    fn test_non_git_repo_worktree_error() {
++        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
++        let non_git = temp_dir.path();
++        let agent_id = AgentId("tester-non-git".to_string());
++        let res = GitWorktreeManager::create_worktree(non_git, &agent_id);
++        assert!(res.is_err());
++        let err_msg = res.unwrap_err().to_string();
++        assert!(err_msg.contains("git worktree add failed"));
 +    }
 +
 +    #[test]
-+    fn test_cross_platform_path_normalization() {
-+        let lines_50 = (1..=50)
-+            .map(|i| format!("fn f_{i}() {{}}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
++    fn test_cleanup_stale_worktrees() {
++        let temp_dir = setup_git_repo();
++        let repo_root = temp_dir.path();
 +
-+        let mut messages = vec![
-+            // Turn 1: Windows-style path with backslashes
-+            Message::user("Read file"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r1".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src\\main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r1", "read_file", &lines_50),
-+            // Turn 2: Unix-style path modifying same file
-+            Message::user("Modify file"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_w1".into(),
-+                    name: "write_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_w1", "write_file", "ok"),
-+            // Turn 3: Recent turn
-+            Message::user("Recent"),
-+            Message::assistant("Done"),
-+        ];
++        // With no .minicode/worktrees directory
++        let cleaned =
++            GitWorktreeManager::cleanup_stale_worktrees(repo_root).expect("cleanup failed");
++        assert_eq!(cleaned, 0);
 +
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
++        // Create orphaned worktree directories
++        let stale1 = repo_root
++            .join(".minicode")
++            .join("worktrees")
++            .join("stale-1");
++        let stale2 = repo_root
++            .join(".minicode")
++            .join("worktrees")
++            .join("stale-2");
++        std::fs::create_dir_all(&stale1).expect("failed to create stale1");
++        std::fs::create_dir_all(&stale2).expect("failed to create stale2");
++        assert!(stale1.exists());
++        assert!(stale2.exists());
 +
-+        assert_eq!(metrics.superseded_reads_compacted, 1);
-+        assert!(messages[2].content.contains("superseded by modification"));
++        let cleaned =
++            GitWorktreeManager::cleanup_stale_worktrees(repo_root).expect("cleanup failed");
++        assert_eq!(cleaned, 2);
++        assert!(!stale1.exists());
++        assert!(!stale2.exists());
 +    }
 +
 +    #[test]
-+    fn test_normalize_path_for_compare_variants() {
-+        assert_eq!(normalize_path_for_compare("src\\main.rs"), "src/main.rs");
-+        assert_eq!(normalize_path_for_compare("./src/main.rs"), "src/main.rs");
-+        assert_eq!(normalize_path_for_compare("/src/main.rs"), "src/main.rs");
-+        assert_eq!(normalize_path_for_compare(".\\src\\main.rs"), "src/main.rs");
-+        assert_eq!(normalize_path_for_compare("\\src\\main.rs"), "src/main.rs");
-+        assert_eq!(normalize_path_for_compare("src/main.rs"), "src/main.rs");
-+        assert_eq!(
-+            normalize_path_for_compare("  ./src\\main.rs  "),
-+            "src/main.rs"
-+        );
++    fn test_create_worktree_recreates_if_already_exists() {
++        let temp_dir = setup_git_repo();
++        let repo_root = temp_dir.path();
++
++        let agent_id = AgentId("coder-recreate".to_string());
++        let handle1 = GitWorktreeManager::create_worktree(repo_root, &agent_id)
++            .expect("first create_worktree failed");
++        assert!(handle1.worktree_path.exists());
++
++        // Calling create_worktree again with same agent_id recreates cleanly
++        let handle2 = GitWorktreeManager::create_worktree(repo_root, &agent_id)
++            .expect("second create_worktree failed");
++        assert!(handle2.worktree_path.exists());
++        assert_eq!(handle1.worktree_path, handle2.worktree_path);
++
++        GitWorktreeManager::remove_worktree(&handle2).expect("remove_worktree failed");
++        assert!(!handle2.worktree_path.exists());
 +    }
 +
 +    #[test]
-+    fn test_duplicate_read_with_normalized_paths() {
-+        let lines_50 = (1..=50)
-+            .map(|i| format!("fn norm_{i}() {{}}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
++    fn test_capture_diff_untracked_file() {
++        let temp_dir = setup_git_repo();
++        let repo_root = temp_dir.path();
 +
-+        let mut messages = vec![
-+            Message::user("Read 1"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r1".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": ".\\src\\main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r1", "read_file", &lines_50),
-+            Message::user("Question"),
-+            Message::assistant("Answer"),
-+            Message::user("Read 2"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r2".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "/src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r2", "read_file", &lines_50),
-+            Message::user("Recent"),
-+            Message::assistant("Done"),
-+        ];
++        let agent_id = AgentId("coder-untracked".to_string());
++        let handle = GitWorktreeManager::create_worktree(repo_root, &agent_id)
++            .expect("create_worktree failed");
 +
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+        assert_eq!(metrics.duplicate_reads_compacted, 1);
-+        assert!(messages[2]
-+            .content
-+            .contains("superseded by subsequent read"));
++        // Add an untracked file in the worktree
++        std::fs::write(
++            handle.worktree_path.join("untracked.txt"),
++            "untracked file content\n",
++        )
++        .expect("failed to write untracked file");
++
++        let diff = GitWorktreeManager::capture_diff(&handle).expect("capture_diff failed");
++        assert!(diff.contains("untracked.txt"));
++        assert!(diff.contains("+untracked file content"));
++
++        GitWorktreeManager::remove_worktree(&handle).expect("remove_worktree failed");
++        assert!(!handle.worktree_path.exists());
 +    }
-+
-+    #[test]
-+    fn test_duplicate_read_with_mutation_between_not_compacted_as_duplicate() {
-+        let lines_50 = (1..=50)
-+            .map(|i| format!("fn inter_{i}() {{}}"))
-+            .collect::<Vec<_>>()
-+            .join("\n");
-+
-+        let mut messages = vec![
-+            Message::user("Read 1"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r1".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r1", "read_file", &lines_50),
-+            Message::user("Write"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_w1".into(),
-+                    name: "write_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_w1", "write_file", "ok"),
-+            Message::user("Read 2"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_r2".into(),
-+                    name: "read_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_r2", "read_file", &lines_50),
-+            Message::user("Recent"),
-+            Message::assistant("Done"),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+        assert_eq!(metrics.duplicate_reads_compacted, 0);
-+        assert_eq!(metrics.superseded_reads_compacted, 1);
-+        assert!(messages[2].content.contains("superseded by modification"));
-+    }
-+
-+    #[test]
-+    fn test_mutation_echo_recent_turn_preserved() {
-+        let echo_500 = "y".repeat(500);
-+
-+        let mut messages = vec![
-+            Message::user("Recent write"),
-+            Message::assistant_with_tools(
-+                "",
-+                vec![ToolCall {
-+                    id: "call_w1".into(),
-+                    name: "write_file".into(),
-+                    arguments: json!({"path": "src/main.rs"}),
-+                }],
-+            ),
-+            Message::tool_result("call_w1", "write_file", &echo_500),
-+        ];
-+
-+        let metrics = MicroCompactor::compact_messages(&mut messages, 1);
-+        assert_eq!(metrics.mutation_echoes_compacted, 0);
-+        assert_eq!(messages[2].content, echo_500);
-+    }
- }
++}

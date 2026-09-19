@@ -1,84 +1,87 @@
-# Task 1 Execution Report: MicroCompactor Core & Superseded File Read Detection
+# Task 1 Execution Report: Subagent Core Types & A2A Messaging Infrastructure
 
 ## Status: DONE
 
-- **Commit Hash:** `cdb56c147bb22b9728ec7bf70b7652ac05cb4602`
+- **Commit Hash:** `19fd1fc32ebc49d33dd410c4f4bf817829e2c2a3`
 - **Brief Reference:** [task-1-brief.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/task-1-brief.md)
-- **Primary Source:** [`src/context/budget/micro_compact.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/context/budget/micro_compact.rs)
-- **Module Registration:** [`src/context/budget/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/context/budget/mod.rs)
+- **Implementation Plan:** [2026-09-19-multi-agent-subagent-runtime.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/2026-09-19-multi-agent-subagent-runtime.md)
+
+---
+
+## Files Created / Modified
+
+- [`src/agent/subagent/types.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/types.rs): Implemented `AgentId`, `SubagentRole`, `WorkspaceMode`, `SubagentState`, and legacy worker telemetry types.
+- [`src/agent/subagent/message.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/message.rs): Implemented `MessageIntent` and `AgentMessage` with prompt formatting.
+- [`src/agent/subagent/mailbox.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/mailbox.rs): Implemented `AgentMailbox` with durable atomic append and safe rename-based unread draining.
+- [`src/agent/subagent/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/mod.rs): Exposed `mailbox`, `message`, `types` and re-exported core types.
+- [`src/agent/subagent/tests.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/agent/subagent/tests.rs): Unit tests for ID/roles, prompt formatting, and mailbox FIFO ordering/durability.
+- [`Cargo.toml`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/Cargo.toml): Enabled `serde` feature on `chrono`.
+- Updated call sites in orchestrator, pool, worker, subagents tool, and subagent drawer to align with `Copy` `SubagentRole` and `SubagentState`.
 
 ---
 
 ## Implementation Summary
 
-1. **Data Structures & Interfaces**:
-   - Implemented `MicroCompactMetrics` with fields:
-     - `superseded_reads_compacted: usize`
-     - `duplicate_reads_compacted: usize`
-     - `mutation_echoes_compacted: usize`
-     - `search_results_compacted: usize`
-     - `tokens_saved_estimate: usize`
-     - Helper `total_compacted(&self) -> usize`
-   - Implemented `MicroCompactor` struct and public methods:
-     - `compact_messages(messages: &mut [Message], preserve_recent_turns: usize) -> MicroCompactMetrics`
-     - `extract_target_path(tool_call: &ToolCall) -> Option<String>`
-     - `extract_search_query(tool_call: &ToolCall) -> Option<String>`
+1. **`AgentId` & Core Enums**:
+   - `AgentId`: Unique identifier supporting `parent()` (`"parent"`), `new_subagent(prefix)` (`<prefix>-<uuid8>`), `is_parent()`, `Display`, and conversions.
+   - `SubagentRole`: Enum with `Scout`, `Coder`, `Tester`, `Reviewer`. Derives `Copy`.
+     - `default_workspace_mode()`: `Shared` for Scout and Reviewer; `Worktree` for Coder and Tester.
+     - `tool_filter_mode()`: `"read_only"` for Scout and Reviewer; `"standard"` for Coder and Tester.
+   - `WorkspaceMode`: `Auto`, `Worktree`, `Shared`.
+   - `SubagentState`: `Starting`, `Running`, `WaitingForInput`, `Completed`, `Failed(String)`, `Terminated`.
 
-2. **Schema-Agnostic Extraction**:
-   - `extract_target_path`: Checks dynamically for `["path", "target_file", "file_path", "file", "TargetFile", "AbsolutePath", "target"]` in both JSON objects and serialized JSON strings, returning cleaned, trimmed path strings.
-   - `extract_search_query`: Checks dynamically for `["query", "pattern", "term", "regex", "Query", "Pattern"]` in both JSON objects and serialized JSON strings, returning cleaned, trimmed query strings.
+2. **A2A Message Schema (`AgentMessage`)**:
+   - `MessageIntent`: `TaskInit`, `StatusUpdate`, `ClarificationRequest`, `ClarificationResponse`, `Feedback`, `Handoff`, `TaskComplete`.
+   - `AgentMessage`: Structured payload containing message `id`, `sender`, `recipient`, `intent`, `content`, `timestamp` (`chrono::DateTime<chrono::Utc>`), and optional `metadata`.
+   - `format_for_prompt()` formats into:
+     ```xml
+     <agent_message from="..." intent="..." timestamp="...">
+     ...
+     </agent_message>
+     ```
 
-3. **Turn Boundaries & Preservation**:
-   - `calculate_cutoff`: Demarcates turns based on `Role::User` message indices (falling back to `Role::Assistant` message boundaries if no user messages exist). If `preserve_recent_turns > 0`, tool results within the last `preserve_recent_turns` turns are 100% untouched.
-
-4. **Pass 1 & Pass 2 Compaction**:
-   - **Pass 1**: Scans all messages across the conversation to index tool calls by ID and record file mutation events for tools matching mutation patterns (`write_file`, `patch_file`, `replace_file_content`, `edit_file`, `repair_patch`, `write_to_file`, or prefixes `write_`, `patch_`, `edit_`).
-   - **Pass 2**: Inspects `Role::Tool` messages prior to the cutoff. If the tool is a read tool (`read_file`, `view_file`, `cat`, or prefixes `read_`, `view_`) and the target file was mutated in a later message index (`mut_idx > i`):
-     - Stores raw observation losslessly in `CcrCache::store(&msg.content)`.
-     - Replaces `msg.content` with receipt: `[read_file: <path> (<lines> lines read, superseded by modification. Use retrieve_observation(id="<ccr_id>") for raw content)]`.
-     - Computes line count and estimates tokens saved (~1 token per 4 chars).
-     - Increments `superseded_reads_compacted`.
-
-5. **Module Registration**:
-   - Registered `pub mod micro_compact;` in `src/context/budget/mod.rs`.
-   - Re-exported `MicroCompactMetrics` and `MicroCompactor`.
+3. **Disk-Backed Reactive Mailbox (`AgentMailbox`)**:
+   - Backed by `.minicode/agents/<id>/mailbox.jsonl`.
+   - `post()`: Appends serialized JSONL line with `sync_all()` for filesystem durability.
+   - `drain_unread()`: Atomically renames active `mailbox.jsonl` to an ephemeral processing file (`mailbox.processing.<nanos>.<uuid>.jsonl`) to prevent race conditions during concurrent appends, deserializes messages, and removes the processing file.
+   - `unread_count()`: Line count inspection without mutating mailbox.
 
 ---
 
 ## Verification Results
 
 ### 1. Targeted Unit Tests
-Command: `cargo test -j 1 --lib context::budget::micro_compact::tests`
-Output:
+Command: `cargo test -j 1 --lib agent::subagent::tests`
 ```text
-running 6 tests
-test context::budget::micro_compact::tests::test_extract_search_query ... ok
-test context::budget::micro_compact::tests::test_extract_target_path_various_schemas ... ok
-test context::budget::micro_compact::tests::test_non_superseded_read_uncompacted ... ok
-test context::budget::micro_compact::tests::test_already_compacted_read_skipped ... ok
-test context::budget::micro_compact::tests::test_recent_turn_preserved_uncompacted ... ok
-test context::budget::micro_compact::tests::test_superseded_file_read_compaction ... ok
+running 3 tests
+test agent::subagent::tests::test_agent_id_and_roles ... ok
+test agent::subagent::tests::test_agent_message_format_for_prompt ... ok
+test agent::subagent::tests::test_agent_mailbox_fifo_and_disk_persistence ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 447 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 467 filtered out; finished in 0.02s
 ```
 
-### 2. Code Formatting
-Command: `cargo fmt --check`
-Result: Clean (exit code 0, 0 diffs).
-
-### 3. Clippy Lint Check
+### 2. Clippy Verification
 Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
-Result: Clean (exit code 0, 0 warnings).
+```text
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.30s
+(Exit code 0, zero warnings)
+```
+
+### 3. Code Formatting
+Command: `cargo fmt --check`
+```text
+(Exit code 0, 100% formatted)
+```
 
 ---
 
 ## Non-Test Code Constraints Audit
-- `.unwrap()` count in non-test code: **0**
-- `.expect()` count in non-test code: **0**
-- Full test suite run: **Never executed** (only targeted test path was run).
-- CPU concurrency: **-j 1** strictly adhered to.
+- Non-test `.unwrap()` / `.expect()` count: **0**
+- Concurrency limit `-j 1`: Strictly observed across all check/test/clippy executions.
+- Test scope: ONLY targeted tests (`cargo test -j 1 --lib agent::subagent::tests`) were run; full suite was never executed.
 
 ---
 
 ## Concerns / Notes
-- None. The implementation passes all unit tests, preserves recent turns cleanly, losslessly stores raw observations in `CcrCache`, and complies with all compiler and linter constraints.
+- None. All requirements and constraints were fully met.
