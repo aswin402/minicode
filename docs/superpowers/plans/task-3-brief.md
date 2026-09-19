@@ -1,87 +1,75 @@
-# Task 3 Brief: Subagent Tool Primitives & Process Orchestrator
+# Task 3 Brief: `merge_subagent_worktree` Tool Primitive & Registry Integration
 
-## Scope & Objective
-Implement the `SubagentOrchestrator` in `src/agent/subagent/orchestrator.rs` and register the `spawn_subagent` tool primitive along with enhanced `send_message` and `manage_subagents` in `src/tools/registry/agent_tools/subagents.rs`. Connect them with `GitWorktreeManager` for worktree isolation and `AgentMailbox` for durable messaging. Update `TOTAL_TOOL_COUNT` to 135 in `src/constants.rs`.
+## Overview
+Implement the `merge_subagent_worktree` autonomous tool primitive, allowing parent agents to validate, conflict-check, and land subagent worktree changes into the primary workspace with automatic cleanup.
 
-## Files to Create/Modify
-- Create: `src/agent/subagent/orchestrator.rs`
-- Modify: `src/agent/subagent/mod.rs` (export `pub mod orchestrator;`)
-- Modify: `src/tools/registry/agent_tools/subagents.rs` (add `spawn_subagent` schema & dispatch wiring, enhance `send_message` with `AgentMailbox` posting)
-- Modify: `src/constants.rs` (update `TOTAL_TOOL_COUNT` to 135)
+## Files to Modify:
+- `src/tools/registry/agent_tools/subagents.rs`
+- `src/constants.rs` (ensure `TOTAL_TOOL_COUNT` matches live schema count: 135)
 
-## Specifications & Requirements
+## Interfaces & Requirements:
 
-### 1. `src/agent/subagent/orchestrator.rs`
-- Implement `SubagentOrchestrator`:
-  - `pub async fn spawn_subagent(workspace_root: &Path, task: &str, role: SubagentRole, workspace_mode: WorkspaceMode, max_iterations: Option<usize>) -> Result<String, crate::error::ToolError>`:
-    1. Generate child `AgentId::new_subagent(role.as_str())`.
-    2. Determine whether to isolate via Git worktree:
-       - If `workspace_mode == WorkspaceMode::Worktree` or (`workspace_mode == WorkspaceMode::Auto` && role.default_workspace_mode() == WorkspaceMode::Worktree), attempt `GitWorktreeManager::create_worktree(workspace_root, &agent_id)`.
-       - If worktree succeeds, target directory is `worktree_handle.worktree_path`.
-       - If worktree is not used or fails gracefully (e.g. non-git directory), target directory is `workspace_root.to_path_buf()`.
-    3. Initialize child agent mailbox directory `.minicode/agents/<agent_id>/`.
-    4. Post initial `AgentMessage` with `intent: MessageIntent::TaskInit` from `AgentId::parent()` to child mailbox.
-    5. Spawn headless child `minicode` process:
-       - Command: `std::env::current_exe()?`
-       - Arguments:
-         `["run", "-d", target_dir.to_str(), "-y", "--json-stream", "--tools", role.tool_filter_mode()]`
-         If `max_iterations` provided: `--max-iterations <N>`
-         Task arg: `task`
-       - Set `stdout(Stdio::piped())`, `stderr(Stdio::piped())`, `kill_on_drop(true)`.
-       - On Unix: configure `process_group(0)`.
-    6. Asynchronously read lines from child stdout using `tokio::io::BufReader`:
-       - Parse NDJSON lines into events (track tokens used, tools executed, stream deltas, turn ends).
-    7. Await child completion or timeout (e.g. 120s):
-       - If child succeeded:
-         - If worktree was used, capture diff with `GitWorktreeManager::capture_diff(&handle)` and remove worktree with `GitWorktreeManager::remove_worktree(&handle)`.
-         - Format a clean structured report containing subagent ID, role badge, tokens used, tools executed, files modified/diff, and summary.
-         - Return formatted report string.
-       - If child failed or timed out:
-         - Clean up worktree if one was created.
-         - Return informative `ToolError::ExecutionFailed`.
+### 1. `MergeSubagentWorktreeArgs` Struct
+Define in `src/tools/registry/agent_tools/subagents.rs`:
+```rust
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct MergeSubagentWorktreeArgs {
+    pub subagent_id: String,
+    pub commit: Option<bool>,
+    pub check_cmd: Option<String>,
+    pub commit_message: Option<String>,
+}
+```
 
-  - `pub fn send_message(workspace_root: &Path, sender: &AgentId, recipient: &AgentId, message: &str, intent: Option<MessageIntent>) -> Result<String, crate::error::ToolError>`:
-    1. Resolve recipient agent directory:
-       - If `recipient.is_parent()`: `workspace_root.join(".minicode").join("agents").join("parent")`.
-       - Else: `workspace_root.join(".minicode").join("agents").join(&recipient.0)`.
-    2. Create or load `AgentMailbox::new(recipient.clone(), &agent_dir)`.
-    3. Construct `AgentMessage` with unique UUID, `sender`, `recipient`, `intent.unwrap_or(MessageIntent::StatusUpdate)`, `message`, and current timestamp.
-    4. Call `mailbox.post(msg)`.
-    5. Return confirmation string: `"✔ Message delivered to agent `<recipient>` mailbox."`.
+### 2. Update Tool Schema in `ToolRegistry::get_tool_schemas()`:
+Update `merge_subagent_worktree` entry with full schema:
+- `name`: `"merge_subagent_worktree"`
+- `description`: `"Validates and merges code changes from a completed subagent's ephemeral git worktree into the main workspace. Automatically runs project build/test checks before landing changes."`
+- Properties:
+  - `subagent_id`: string (required)
+  - `commit`: boolean (optional, default true)
+  - `check_cmd`: string (optional, validation command or 'skip')
+  - `commit_message`: string (optional custom commit message)
 
-### 2. `src/tools/registry/agent_tools/subagents.rs`
-- Add `spawn_subagent` schema to `get_schemas()`:
-  - `name`: `"spawn_subagent"`
-  - `description`: `"Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree."`
-  - `parameters`:
-    - `task` (string, required): Task instructions.
-    - `role` (string, required): Enum `["scout", "coder", "tester", "reviewer"]`.
-    - `workspace_mode` (string, optional): Enum `["auto", "worktree", "shared"]`.
-    - `max_iterations` (integer, optional): Maximum tool loop iterations.
-- In `dispatch()`:
-  - Map `"spawn_subagent"` to invoke `SubagentOrchestrator::spawn_subagent(...)`.
-  - In `"send_message"`:
-    - Extract `recipient` (or `subagent_id`), `message`, and optional `intent`.
-    - Invoke `SubagentOrchestrator::send_message(...)`.
-  - In `"manage_subagents"`:
-    - Support `"list"`, `"status"`, `"await"`/`"wait"`, `"kill"`.
+### 3. Tool Implementation & Dispatch:
+In `src/tools/registry/agent_tools/subagents.rs`:
+Implement `pub async fn merge_subagent_worktree(workspace_root: &Path, subagent_id: &str, commit: bool, check_cmd: Option<&str>, commit_message: Option<&str>) -> Result<String, ToolError>`:
+1. Locate worktree path via `GitWorktreeManager::locate_worktree(workspace_root, &AgentId(subagent_id.to_string()))`.
+   If not found, return descriptive `ToolError::ExecutionFailed`.
+2. Resolve source branch via `GitWorktreeManager::resolve_branch_for(workspace_root, &AgentId(subagent_id.to_string()))`.
+3. Pre-merge verification via `MergeArbitrator::verify_worktree(&worktree_path, check_cmd)`.
+   If verification fails, do NOT touch parent workspace or delete worktree; return structured failure report with command, exit code, stdout, and stderr.
+4. Mergeability check via `MergeArbitrator::check_mergeability(workspace_root, &branch_name)`.
+   If conflicts detected (`!mergeability.can_merge_cleanly`), do NOT touch parent workspace or delete worktree; return structured conflict report with list of conflicted files.
+5. Apply merge via `MergeArbitrator::apply_merge(workspace_root, &branch_name, commit, commit_message)`.
+6. On successful merge, clean up worktree and temporary branch via `GitWorktreeManager::remove_worktree`.
+7. Return formatted markdown success summary detailing subagent ID, branch name, landing mode, files changed, commit hash (if committed), and pre-merge validation duration.
 
-### 3. `src/constants.rs`
-- Update `TOTAL_TOOL_COUNT` constant:
-  - Currently 134. With `spawn_subagent` added to `subagents.rs`, increment by 1 -> `pub const TOTAL_TOOL_COUNT: usize = 135;`.
+Wire into `dispatch_agent_tool` for `"merge_subagent_worktree"`.
 
-### 4. Unit Tests Required
-In `src/agent/subagent/orchestrator.rs` and `src/tools/registry/agent_tools/subagents.rs`:
-- `test_spawn_subagent_schema_valid`: verify `spawn_subagent` exists in `ToolRegistry::get_tool_schemas()`.
-- `test_total_tool_count_matches`: ensure `ToolRegistry::get_tool_schemas().len() == TOTAL_TOOL_COUNT` passes.
-- `test_send_message_routes_to_mailbox`: verify `send_message` creates and appends to target agent's `mailbox.jsonl`.
+### 4. Unit Tests in `src/tools/registry/agent_tools/subagents.rs`:
+- Add `test_merge_subagent_worktree_arg_parsing`:
+  ```rust
+  #[test]
+  fn test_merge_subagent_worktree_arg_parsing() {
+      let json = serde_json::json!({
+          "subagent_id": "coder-1",
+          "commit": true,
+          "check_cmd": "cargo check -j 1",
+          "commit_message": "merge: auth feature"
+      });
+      let args: MergeSubagentWorktreeArgs = serde_json::from_value(json).unwrap();
+      assert_eq!(args.subagent_id, "coder-1");
+      assert_eq!(args.commit, Some(true));
+      assert_eq!(args.check_cmd.as_deref(), Some("cargo check -j 1"));
+      assert_eq!(args.commit_message.as_deref(), Some("merge: auth feature"));
+  }
+  ```
+- Ensure `test_total_tool_count` passes (`cargo test -j 1 --lib tools::tests::test_total_tool_count`).
 
-## Critical Constraints
-1. ONLY run targeted tests:
-   - `cargo test -j 1 --lib agent::subagent::orchestrator::tests`
-   - `cargo test -j 1 --lib tools::tests::test_total_tool_count`
-   NEVER run the full test suite.
-2. Error handling: `ToolError` / `Result<T, ToolError>`. Zero `.unwrap()` or `.expect()` in non-test code.
-3. Concurrency: Use `-j 1` for `cargo check` and `cargo test`.
-4. Verification: `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
-5. Commit message: `feat(tools): add spawn_subagent primitive and wire orchestrator with worktree and mailbox (Phase 132)`.
+## Constraints:
+- ONLY run targeted tests: `cargo test -j 1 --lib tools::registry::agent_tools::subagents::tests` and `cargo test -j 1 --lib tools::tests::test_total_tool_count`.
+- Zero `.unwrap()` or `.expect()` in non-test code.
+- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
+- Commit with message: `feat(tools): wire merge_subagent_worktree tool primitive with arbitration engine (Phase 133)`
+- Write execution report to `docs/superpowers/plans/task-3-report.md`.
