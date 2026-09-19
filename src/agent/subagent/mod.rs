@@ -1,3 +1,4 @@
+pub mod fanout;
 pub mod mailbox;
 pub mod message;
 pub mod orchestrator;
@@ -8,6 +9,8 @@ pub mod transcript;
 pub mod types;
 pub mod worker;
 
+#[allow(unused_imports)]
+pub use fanout::{FanoutJoinMode, FanoutOrchestrator, FanoutTaskItem, MergeStatus, WorkerResult};
 #[allow(unused_imports)]
 pub use mailbox::AgentMailbox;
 #[allow(unused_imports)]

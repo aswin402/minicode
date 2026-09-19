@@ -1,119 +1,126 @@
-### Task 1: `MergeArbitrator` Core & Sandboxed Verification
+# Task 1 Brief: Core Types, Concurrency Engine & `FanoutOrchestrator` Foundation
 
-**Files:**
-- Create: `src/sandbox/arbitration.rs`
-- Modify: `src/sandbox/mod.rs`
+## Overview
+Implement the core data structures and concurrency runtime for parallel subagent swarm execution in `src/agent/subagent/fanout.rs`, providing bounded concurrency and race/all join policies.
 
-**Interfaces:**
-- Consumes: `std::path::Path`, `std::process::Command`, `thiserror::Error`.
-- Produces:
-  - `ValidationReport`: `success: bool`, `command: String`, `exit_code: i32`, `stdout: String`, `stderr: String`, `duration_ms: u64`.
-  - `MergeabilityReport`: `can_merge_cleanly: bool`, `conflicted_files: Vec<String>`, `merge_base: Option<String>`.
-  - `MergeSuccessReport`: `subagent_id: String`, `branch_name: String`, `files_changed: Vec<String>`, `committed: bool`, `commit_hash: Option<String>`, `commit_message: Option<String>`.
-  - `ArbitrationError`: Typed error variants for `WorktreeNotFound`, `VerificationFailed`, `MergeConflict`, `GitError`, `IoError`.
-  - `MergeArbitrator::detect_project_validation_cmd(path: &Path) -> Option<Vec<String>>`
-  - `MergeArbitrator::verify_worktree(worktree_path: &Path, check_cmd: Option<&str>) -> Result<ValidationReport, ArbitrationError>`
-  - `MergeArbitrator::check_mergeability(repo_root: &Path, branch_name: &str) -> Result<MergeabilityReport, ArbitrationError>`
-  - `MergeArbitrator::apply_merge(repo_root: &Path, branch_name: &str, commit: bool, commit_msg: Option<&str>) -> Result<MergeSuccessReport, ArbitrationError>`
+## Files to Create/Modify:
+- Create: `src/agent/subagent/fanout.rs`
+- Modify: `src/agent/subagent/mod.rs` (register and export `pub mod fanout;`)
 
-- [ ] **Step 1: Write failing unit tests for project validation detection, mergeability checking, and merge application**
+## Interfaces & Requirements:
 
-In `src/sandbox/arbitration.rs`:
+### 1. Data Structures (`src/agent/subagent/fanout.rs`):
 ```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
+use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
+use crate::error::ToolError;
 
-    #[test]
-    fn test_detect_project_validation_cmd_cargo() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
-        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
-        assert_eq!(cmd, vec!["cargo", "check", "-j", "1"]);
+/// Specification for an individual worker in a fanout swarm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FanoutTaskItem {
+    pub task: String,
+    pub role: SubagentRole,
+    #[serde(default)]
+    pub workspace_mode: Option<WorkspaceMode>,
+    #[serde(default)]
+    pub max_iterations: Option<usize>,
+    #[serde(default)]
+    pub check_cmd: Option<String>,
+}
+
+/// Completion mode for the swarm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FanoutJoinMode {
+    All,
+    Race,
+}
+
+impl Default for FanoutJoinMode {
+    fn default() -> Self {
+        Self::All
     }
+}
 
-    #[test]
-    fn test_detect_project_validation_cmd_package_json() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
-        let cmd = MergeArbitrator::detect_project_validation_cmd(temp.path()).unwrap();
-        assert_eq!(cmd, vec!["npm", "test"]);
-    }
+/// Status of worktree merge arbitration for a worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeStatus {
+    NotApplicable,
+    Merged { commit_hash: Option<String> },
+    VerificationFailed { command: String, exit_code: i32, stderr: String },
+    Conflict { conflicted_files: Vec<String> },
+    RetainedUnmerged,
+    SkippedCancelled,
+}
 
-    #[test]
-    fn test_verify_worktree_skip() {
-        let temp = tempfile::tempdir().unwrap();
-        let report = MergeArbitrator::verify_worktree(temp.path(), Some("skip")).unwrap();
-        assert!(report.success);
-        assert_eq!(report.command, "skip");
-    }
+/// Outcome of an individual worker within the swarm.
+#[derive(Debug, Clone)]
+pub struct WorkerResult {
+    pub agent_id: AgentId,
+    pub role: SubagentRole,
+    pub task: String,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub tokens_used: usize,
+    pub files_modified: Vec<String>,
+    pub worktree_path: Option<PathBuf>,
+    pub branch_name: Option<String>,
+    pub merge_status: MergeStatus,
+    pub summary: String,
+    pub error: Option<String>,
+}
+```
 
-    #[test]
-    fn test_mergeability_and_apply_clean() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
+### 2. `FanoutOrchestrator` Implementation:
+```rust
+pub struct FanoutOrchestrator;
 
-        // git init
-        std::process::Command::new("git").args(["init"]).current_dir(root).output().unwrap();
-        std::process::Command::new("git").args(["config", "user.name", "test"]).current_dir(root).output().unwrap();
-        std::process::Command::new("git").args(["config", "user.email", "test@example.com"]).current_dir(root).output().unwrap();
+impl FanoutOrchestrator {
+    /// Concurrently executes a batch of subagent tasks according to join mode and arbitration policy.
+    pub async fn execute_fanout(
+        workspace_root: &Path,
+        tasks: Vec<FanoutTaskItem>,
+        join_mode: FanoutJoinMode,
+        auto_merge: bool,
+        max_concurrency: usize,
+    ) -> Result<String, ToolError> {
+        if tasks.is_empty() {
+            return Ok("No subagent tasks specified for fan-out.".to_string());
+        }
 
-        std::fs::write(root.join("hello.txt"), "base\n").unwrap();
-        std::process::Command::new("git").args(["add", "."]).current_dir(root).output().unwrap();
-        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(root).output().unwrap();
+        let concurrency = max_concurrency.clamp(1, 16);
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let cancel_token = tokio_util::sync::CancellationToken::new();
 
-        // create branch
-        let branch = "minicode/subagent/coder-1";
-        std::process::Command::new("git").args(["branch", branch]).current_dir(root).output().unwrap();
-
-        // modify on branch
-        let worktree_dir = root.join("wt");
-        std::process::Command::new("git").args(["worktree", "add", worktree_dir.to_str().unwrap(), branch]).current_dir(root).output().unwrap();
-        std::fs::write(worktree_dir.join("hello.txt"), "base\nupdated\n").unwrap();
-        std::process::Command::new("git").args(["add", "."]).current_dir(&worktree_dir).output().unwrap();
-        std::process::Command::new("git").args(["commit", "-m", "branch commit"]).current_dir(&worktree_dir).output().unwrap();
-
-        // check mergeability
-        let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
-        assert!(mergeability.can_merge_cleanly);
-        assert!(mergeability.conflicted_files.is_empty());
-
-        // apply merge
-        let success = MergeArbitrator::apply_merge(root, branch, true, Some("merge subagent")).unwrap();
-        assert!(success.committed);
-        assert!(success.files_changed.contains(&"hello.txt".to_string()));
-
-        let content = std::fs::read_to_string(root.join("hello.txt")).unwrap();
-        assert!(content.contains("updated"));
+        // Spawn workers and join according to join_mode
+        // ...
     }
 }
 ```
 
-- [ ] **Step 2: Run targeted tests to verify failure**
-Run: `cargo test -j 1 --lib sandbox::arbitration::tests`
-Expected: FAIL with missing module `sandbox::arbitration`.
+- In `run_single_worker`:
+  - Acquires permit from `semaphore`.
+  - Checks if `cancel_token.is_cancelled()`. If cancelled, returns early with `MergeStatus::SkippedCancelled`.
+  - Determines workspace isolation: `workspace_mode` or role default (`WorkspaceMode::Worktree` for `coder`/`tester`).
+  - Spawns child process via `tokio::process::Command` (calling `std::env::current_exe()`) with `kill_on_drop(true)`, `process_group(0)`, and pipes for stdout/stderr.
+  - Monitors stdout for NDJSON stream events, accumulating tokens, modified files, and final summary.
+  - If `cancel_token` is cancelled during execution, kills the child process and cleans up any provisioned worktree.
+  - On child success, if worktree was used, captures diff and preserves worktree for arbitration.
+  - On child failure, cleans up worktree.
+- If `join_mode == FanoutJoinMode::Race`:
+  - When any worker completes with `success == true`, calls `cancel_token.cancel()`.
+- Generates a baseline report summarizing worker outcomes.
 
-- [ ] **Step 3: Implement `MergeArbitrator` and export in `src/sandbox/mod.rs`**
-Implement:
-- `ArbitrationError` with `thiserror::Error`.
-- Project detector inspecting `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`.
-- Sandboxed command executor with 60s timeout.
-- Git mergeability checker using `git merge-tree` or temporary dry-run merge.
-- Safe branch merger / patch applier.
+### 3. Unit Tests in `src/agent/subagent/fanout.rs`:
+- `test_fanout_join_mode_serialization`: tests JSON round-trip of `FanoutJoinMode::All` and `FanoutJoinMode::Race`.
+- `test_fanout_empty_tasks`: tests `execute_fanout` with empty tasks vector returns "No subagent tasks specified for fan-out.".
+- `test_fanout_task_item_deserialization`: tests deserialization of a full `FanoutTaskItem` from JSON.
+- `test_merge_status_variants`: tests `MergeStatus` variants equality and formatting.
 
-- [ ] **Step 4: Run targeted tests to verify they pass**
-Run: `cargo test -j 1 --lib sandbox::arbitration::tests`
-Expected: PASS (4 passed).
-
-- [ ] **Step 5: Verify formatting and clippy**
-Run: `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`
-Expected: Clean with 0 warnings.
-
-- [ ] **Step 6: Commit**
-```bash
-git add src/sandbox/arbitration.rs src/sandbox/mod.rs
-git commit -m "feat(sandbox): implement MergeArbitrator with sandboxed verification and mergeability checks (Phase 133)"
-```
-
----
-
+## Constraints:
+- ONLY run targeted test: `cargo test -j 1 --lib agent::subagent::fanout::tests`.
+- Zero `.unwrap()` or `.expect()` in non-test code.
+- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
+- Commit with message: `feat(subagent): implement FanoutOrchestrator engine with bounded concurrency and race join (Phase 134)`
+- Write execution report to `docs/superpowers/plans/task-1-report.md`.
