@@ -23,7 +23,6 @@ use error::Result;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::sync::mpsc;
-use ui::ConfigMenu;
 
 fn get_version_banner() -> &'static str {
     static BANNER: OnceLock<String> = OnceLock::new();
@@ -125,9 +124,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Interactive configuration wizard (select provider, model, API keys, approval policy)
-    #[command(alias = "config", alias = "setup")]
-    Configure,
+    /// Interactive configuration wizard (setup active provider, models, and API keys)
+    #[command(alias = "configure", alias = "config")]
+    Setup,
 
     /// Execute a one-shot autonomous task non-interactively
     Run {
@@ -294,9 +293,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let workspace_canonical = std::fs::canonicalize(&workspace_dir).unwrap_or(workspace_dir);
 
-    // 2. Dispatch early commands (configure, logs) immediately before file logger initialization
-    if let Some(Commands::Configure) = cli.command {
-        ConfigMenu::run_interactive(&workspace_canonical).await?;
+    // 2. Dispatch early commands (setup, logs) immediately before file logger initialization
+    if let Some(Commands::Setup) = cli.command {
+        ui::setup::SetupWizard::run(&workspace_canonical).await?;
         return Ok(());
     }
     if let Some(Commands::Logs {
@@ -384,7 +383,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 5. Dispatch execution mode
     match cli.command {
-        Some(Commands::Configure) => unreachable!(), // Handled earlier
+        Some(Commands::Setup) => unreachable!(), // Handled earlier
         Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
         Some(Commands::Run { task }) => {
             let resume_session_id = if cli.continue_session {
@@ -662,7 +661,7 @@ async fn run_headless_task(
         Err(e) => {
             eprintln!(
                 "\n\x1b[31m✗ Configuration error:\x1b[0m {}\n\
-                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
                 e
             );
             return Err(e);
@@ -820,7 +819,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
         Ok(key) => key,
         Err(e) => {
             emit_invalid_command(&format!(
-                "Startup failed: {}. Fix the configuration with 'minicode configure', then reconnect.",
+                "Startup failed: {}. Fix the configuration with 'minicode setup', then reconnect.",
                 e
             ));
             return Err(e);
@@ -1085,7 +1084,7 @@ async fn run_interactive_mode(
         if let Some(ref err_msg) = startup_err {
             println!(
                 "\x1b[33m⚠️ Provider warning:\x1b[0m {}\n\
-                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
                 err_msg
             );
         }

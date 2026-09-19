@@ -23,6 +23,7 @@ pub use animation::{render_live_activity_line, AgentActivity};
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
 #[allow(unused_imports)]
 pub use clipboard::copy_to_clipboard;
+#[allow(unused_imports)]
 pub use configure::ConfigMenu;
 #[allow(unused_imports)]
 pub use diff_viewer::DiffViewer;
@@ -35,7 +36,7 @@ pub use markdown::MarkdownRenderer;
 pub use modal::ModalState;
 pub use pty_drawer::PtyDrawer;
 #[allow(unused_imports)]
-pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
+pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
 pub use status::{StatusContext, StatusWidgets};
 #[allow(unused_imports)]
 pub use subagent_drawer::SubagentDrawer;
