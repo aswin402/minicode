@@ -143,7 +143,7 @@ impl FanoutOrchestrator {
 
         let mut join_set = tokio::task::JoinSet::new();
 
-        for (idx, task_item) in tasks.into_iter().enumerate() {
+        for (idx, task_item) in tasks.clone().into_iter().enumerate() {
             let root = workspace_root.to_path_buf();
             let sem = Arc::clone(&semaphore);
             let token = cancel_token.clone();
@@ -169,10 +169,11 @@ impl FanoutOrchestrator {
                 }
                 Ok((idx, Err(e))) => {
                     tracing::error!(task_index = idx, error = %e, "Worker failed with error");
+                    let task_item = &tasks[idx];
                     results[idx] = Some(WorkerResult {
-                        agent_id: AgentId::new_subagent("failed"),
-                        role: SubagentRole::Coder,
-                        task: String::new(),
+                        agent_id: AgentId::new_subagent(task_item.role.as_str()),
+                        role: task_item.role,
+                        task: task_item.task.clone(),
                         success: false,
                         duration_ms: 0,
                         tokens_used: 0,
@@ -358,6 +359,13 @@ impl FanoutOrchestrator {
             }
         };
         let stderr = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = String::new();
+            if let Some(mut err_stream) = stderr {
+                let _ = err_stream.read_to_string(&mut buf).await;
+            }
+            buf
+        });
 
         let start_time = std::time::Instant::now();
         let mut final_response = String::new();
@@ -365,7 +373,6 @@ impl FanoutOrchestrator {
         let mut tokens_used = 0;
         let mut child_success = true;
         let mut error_msg: Option<String> = None;
-        let mut captured_stderr = String::new();
 
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -414,21 +421,24 @@ impl FanoutOrchestrator {
                 }
             }
 
-            if let Some(mut err_stream) = stderr {
-                let _ = err_stream.read_to_string(&mut captured_stderr).await;
-            }
-
-            child.wait().await
+            let wait_res = child.wait().await;
+            let captured_err = stderr_task.await.unwrap_or_default();
+            (wait_res, captured_err)
         };
 
-        let exit_status = tokio::select! {
+        let (exit_status, captured_stderr) = tokio::select! {
             _ = cancel_token.cancelled() => {
                 let _ = child.kill().await;
                 #[cfg(unix)]
                 if let Some(pid) = child_id {
-                    unsafe {
-                        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                    if pid > 0 {
+                        // SAFETY: `pid` is verified positive and was spawned with `process_group(0)`.
+                        // Sending SIGKILL to -pid terminates the entire subagent process group,
+                        // and sending to pid guarantees the child leader is reaped even if pgid differs.
+                        unsafe {
+                            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
                     }
                 }
                 if let Some(ref handle) = worktree_handle {
@@ -450,8 +460,8 @@ impl FanoutOrchestrator {
                     error: Some("Worker cancelled".to_string()),
                 });
             }
-            wait_res = execution_future => {
-                match wait_res {
+            (wait_res, err_output) = execution_future => {
+                let status = match wait_res {
                     Ok(status) => status,
                     Err(e) => {
                         if let Some(ref handle) = worktree_handle {
@@ -473,7 +483,8 @@ impl FanoutOrchestrator {
                             error: Some(e.to_string()),
                         });
                     }
-                }
+                };
+                (status, err_output)
             }
         };
 
