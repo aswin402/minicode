@@ -535,7 +535,43 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
     let has_file_reference = trimmed.split_whitespace().any(|token| {
         let clean = token.trim_matches(|c: char| c.is_ascii_punctuation());
         if clean.contains('/') || clean.contains('\\') {
-            return true;
+            // Check if this is an all-uppercase technical acronym or dual concept like TCP/IP, CI/CD, I/O, A/B
+            let is_uppercase_acronym = clean.len() <= 7
+                && clean
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c == '/' || c == '-');
+            let is_common_dual_concept = matches!(
+                clean.to_lowercase().as_str(),
+                "client/server"
+                    | "master/slave"
+                    | "read/write"
+                    | "input/output"
+                    | "true/false"
+                    | "yes/no"
+                    | "on/off"
+                    | "get/set"
+                    | "up/down"
+                    | "in/out"
+                    | "tcp/ip"
+                    | "ci/cd"
+                    | "i/o"
+            );
+            if !is_uppercase_acronym && !is_common_dual_concept {
+                let has_path_prefix = clean.starts_with("./")
+                    || clean.starts_with("../")
+                    || clean.starts_with('/')
+                    || clean.starts_with("~/")
+                    || clean.starts_with("src/")
+                    || clean.starts_with("lib/")
+                    || clean.starts_with("tests/")
+                    || clean.starts_with("app/")
+                    || clean.starts_with("components/")
+                    || clean.starts_with("routes/");
+                let has_ext = clean.rsplit_once('.').is_some();
+                if has_path_prefix || has_ext || clean.contains('/') {
+                    return true;
+                }
+            }
         }
         if let Some((_, ext)) = clean.rsplit_once('.') {
             matches!(
@@ -566,10 +602,22 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
                     | "css"
                     | "vue"
                     | "svelte"
+                    | "proto"
+                    | "graphql"
+                    | "gql"
+                    | "zig"
+                    | "lua"
+                    | "dart"
+                    | "dockerfile"
+                    | "bash"
+                    | "zsh"
                     | "md"
             )
         } else {
-            false
+            matches!(
+                clean.to_lowercase().as_str(),
+                "dockerfile" | "makefile" | "cargo.toml" | "package.json" | "go.mod"
+            )
         }
     });
 
@@ -629,6 +677,13 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         "migrate",
         "scaffold",
         "clean",
+        "generate",
+        "make",
+        "setup",
+        "integrate",
+        "audit",
+        "inspect",
+        "check",
     ];
 
     let code_nouns = [
@@ -671,6 +726,19 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         "login",
         "backend",
         "frontend",
+        "model",
+        "models",
+        "controller",
+        "controllers",
+        "middleware",
+        "script",
+        "scripts",
+        "enum",
+        "type",
+        "types",
+        "dockerfile",
+        "pipeline",
+        "pipelines",
     ];
 
     let words: Vec<&str> = lower
@@ -720,6 +788,19 @@ mod tests {
         assert!(!is_repository_crud_intent("/model", None));
         assert!(!is_repository_crud_intent("/theme", None));
         assert!(!is_repository_crud_intent("/context", None));
+        assert!(!is_repository_crud_intent(
+            "what is the difference between TCP/IP and UDP?",
+            None
+        ));
+        assert!(!is_repository_crud_intent("explain CI/CD pipelines", None));
+        assert!(!is_repository_crud_intent(
+            "what is I/O multiplexing?",
+            None
+        ));
+        assert!(!is_repository_crud_intent(
+            "explain client/server architecture",
+            None
+        ));
     }
 
     #[test]

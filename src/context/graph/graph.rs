@@ -207,6 +207,12 @@ pub struct GraphDriftReport {
     pub cached_files_count: usize,
 }
 
+impl GraphDriftReport {
+    pub fn total_drift(&self) -> usize {
+        self.modified_count + self.added_count + self.removed_count
+    }
+}
+
 /// Architectural impact and risk analysis report for a symbol or file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusReport {
@@ -669,8 +675,11 @@ impl CodeGraph {
         }
 
         let total_drift = modified_count + added_count + removed_count;
-        let is_stale = total_drift >= 10
-            || (cached_files_count > 0 && (total_drift * 5 >= cached_files_count));
+        let is_stale = total_drift >= crate::constants::DEFAULT_DRIFT_STALE_COUNT
+            || (total_drift >= crate::constants::DEFAULT_DRIFT_MIN_STALE_FILES
+                && cached_files_count > 0
+                && ((total_drift as f64) / (cached_files_count as f64)
+                    >= crate::constants::DEFAULT_DRIFT_STALE_RATIO));
 
         Ok(GraphDriftReport {
             is_stale,

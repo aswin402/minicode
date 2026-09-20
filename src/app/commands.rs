@@ -1662,24 +1662,14 @@ impl<'a> App<'a> {
         // If the user hasn't configured a key or selected an active provider,
         // intercept the prompt, preserve it, and display the Setup modal.
         // ====================================================================
-        let is_provider_configured = match self.config.get_api_key(&self.config.provider.default) {
-            Ok(key) => {
-                let trimmed = key.trim();
-                let default_prov = self.config.provider.default.to_lowercase();
-                if default_prov == "ollama"
-                    || default_prov == "lmstudio"
-                    || default_prov == "localhost"
-                    || default_prov == "local"
-                    || default_prov == "vllm"
-                    || default_prov == "localai"
-                    || default_prov == "llama.cpp"
-                {
-                    true
-                } else {
-                    !trimmed.is_empty()
-                }
+        let is_provider_configured = if self.config.is_local_provider(&self.config.provider.default)
+        {
+            true
+        } else {
+            match self.config.get_api_key(&self.config.provider.default) {
+                Ok(key) => !key.trim().is_empty(),
+                Err(_) => false,
             }
-            Err(_) => false,
         };
 
         if !is_provider_configured {
@@ -1728,8 +1718,29 @@ impl<'a> App<'a> {
                             self.modal =
                                 ModalState::new_workspace_drift(&self.workspace_root, &drift);
                             return Ok(CommandAction::Continue);
+                        } else if drift.total_drift()
+                            >= crate::constants::DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD
+                        {
+                            tracing::info!(
+                                "Seamlessly updating minor code graph drift ({} files changed)",
+                                drift.total_drift()
+                            );
+                            if graph.incremental_update(&self.workspace_root).is_ok() {
+                                let _ = graph.save_to_disk(&self.workspace_root);
+                            }
                         }
                     }
+                } else {
+                    // Corrupted or unparseable graph.json: propose fresh workspace re-analysis
+                    tracing::warn!(
+                        "Existing .minicode/graph.json corrupted or unreadable; proposing workspace re-analysis"
+                    );
+                    self.pending_submission = Some(crate::app::PendingSubmission {
+                        prompt: prompt_to_run.clone(),
+                        display: message_to_display.to_string(),
+                    });
+                    self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
+                    return Ok(CommandAction::Continue);
                 }
             }
         }

@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 136 (v0.3.37) JIT Repository Onboarding, Drift Arbitration & Deferred Setup Engine | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 136 Review & Hardening (v0.3.38) Gate 1 Chaining, Drift Calibration & Provider Normalization | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1899,4 +1899,14 @@
 - [x] 136.4: Wire silent startup (`initial_modal = ModalState::None`), JIT provider verification gate (Gate 1), and JIT repository CRUD & drift arbitration gate (Gate 2) in `src/app/commands.rs` and `src/app/modals.rs` with `PendingSubmission` auto-dispatch upon resolution
 - [x] 136.5: Implement comprehensive integration test suite in `tests/integration_jit_onboarding.rs` covering unindexed silent boot, general query analysis bypass, CRUD prompt interception, unconfigured provider modal gate, and workspace drift detection
 - [x] 136.6: Pass all targeted unit and integration tests, zero clippy warnings (`cargo clippy -j 1 --bin minicode -- -D warnings`), clean formatting (`cargo fmt --check`), bump version to `v0.3.37`, compile release binary via `./localupdate.sh`, and validate real-world autonomous execution
+ 
++### Phase 136 Review & Hardening: Gate 1 Chaining, Drift Calibration & Provider Normalization (v0.3.38)
++- [x] 136.7: Audit Gate 1 $\to$ Gate 2 chaining bug and replace direct prompt dispatch with `handle_command_or_prompt` in `ApiKeyInput`, `ProviderSelect`, and `ModelSelect`
++- [x] 136.8: Eliminate hardcoded local provider lists in `src/app/commands.rs` by utilizing canonical `Config::is_local_provider`
++- [x] 136.9: Add corrupted `.minicode/graph.json` error recovery fallback to propose fresh workspace analysis instead of silent unindexed failure
++- [x] 136.10: Implement Spec Case C seamless background incremental sync for non-stale minor drift (`total_drift >= DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD`)
++- [x] 136.11: Calibrate drift ratio threshold with `DEFAULT_DRIFT_MIN_STALE_FILES = 3` to prevent false-positive stale dialogs on small repositories
++- [x] 136.12: Refine CRUD heuristic to exclude uppercase technical acronyms (`TCP/IP`, `CI/CD`, `I/O`) and dual concepts (`client/server`) while expanding keywords and extensions
++- [x] 136.13: Pass all 10 integration tests in `tests/integration_jit_onboarding.rs`, zero clippy warnings, clean formatting, recompile release binary via `./localupdate.sh`, and bump version to `v0.3.38`
+
 

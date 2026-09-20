@@ -30,9 +30,9 @@ async fn test_unindexed_repo_silent_startup() {
 async fn test_unconfigured_provider_triggers_setup_modal() {
     let dir = tempdir().expect("tempdir");
     let mut config = Config::default();
-    config.provider.default = "anthropic".to_string();
+    config.provider.default = "mistral".to_string();
     config.provider.api_keys.clear();
-    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("MISTRAL_API_KEY");
 
     let mut app = App::new(dir.path(), config);
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
@@ -52,7 +52,7 @@ async fn test_unconfigured_provider_triggers_setup_modal() {
             pending_prompt_preview,
             selected_index,
         } => {
-            assert_eq!(provider_name, "anthropic");
+            assert_eq!(provider_name, "mistral");
             assert!(pending_prompt_preview.contains("add login"));
             assert_eq!(*selected_index, 0);
         }
@@ -233,5 +233,214 @@ async fn test_explicit_analysis_keyword_triggers_analysis() {
         matches!(app.modal, ModalState::WorkspaceAnalysis { .. }),
         "Expected WorkspaceAnalysis modal, got {:?}",
         app.modal
+    );
+}
+
+#[tokio::test]
+async fn test_chained_provider_setup_then_crud_intercepts_analysis() {
+    let dir = tempdir().expect("tempdir");
+    let mut config = Config::default();
+    config.provider.default = "anthropic".to_string();
+    config.provider.api_keys.clear();
+    std::env::remove_var("ANTHROPIC_API_KEY");
+
+    let mut app = App::new(dir.path(), config);
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+    // Step 1: User enters CRUD prompt on unconfigured provider and unindexed repo
+    let prompt = "add login to auth.rs";
+    let action = app
+        .handle_command_or_prompt(prompt, None, &control_tx)
+        .await
+        .expect("handle_command_or_prompt");
+
+    assert_eq!(action, CommandAction::Continue);
+
+    // Gate 1 must intercept first
+    assert!(matches!(
+        app.modal,
+        ModalState::ProviderSetupRequired { .. }
+    ));
+    assert_eq!(
+        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
+        Some("add login to auth.rs")
+    );
+
+    // Step 2: User presses '1' (Configure provider key)
+    app.handle_modal_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('1'),
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &control_tx,
+    )
+    .await;
+
+    // Modal must now be ApiKeyInput
+    assert!(matches!(app.modal, ModalState::ApiKeyInput { .. }));
+
+    // User types key "sk-ant-test-key"
+    for c in "sk-ant-test-key".chars() {
+        app.handle_modal_key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &control_tx,
+        )
+        .await;
+    }
+
+    // Step 3: User presses Enter to submit key
+    app.handle_modal_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &control_tx,
+    )
+    .await;
+
+    // Step 4: ModelSelect is presented with curated models; user presses Enter to confirm model
+    assert!(matches!(app.modal, ModalState::ModelSelect { .. }));
+    app.handle_modal_key(
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        &control_tx,
+    )
+    .await;
+
+    // Gate 1 completed! Now Gate 2 MUST be evaluated automatically.
+    // Because repo is unindexed, app.modal MUST now be WorkspaceAnalysis!
+    match &app.modal {
+        ModalState::WorkspaceAnalysis { is_indexed, .. } => {
+            assert!(!*is_indexed, "Repo should be marked unindexed");
+        }
+        other => panic!("Expected chained WorkspaceAnalysis modal, got {:?}", other),
+    }
+
+    // Pending submission must still be preserved for Gate 2 arbitration
+    assert_eq!(
+        app.pending_submission.as_ref().map(|s| s.prompt.as_str()),
+        Some("add login to auth.rs")
+    );
+
+    // UpdateConfig command was sent when provider switch finished, but NOT a Prompt command
+    match control_rx.try_recv() {
+        Ok(AgentCommand::UpdateConfig { provider, .. }) => {
+            assert_eq!(provider.name(), "anthropic");
+        }
+        _ => panic!("Expected AgentCommand::UpdateConfig"),
+    }
+
+    // No Prompt command dispatched to LLM agent actor yet because Gate 2 intercepted with WorkspaceAnalysis!
+    assert!(control_rx.try_recv().is_err());
+
+    // Clean up environment variable
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}
+
+#[tokio::test]
+async fn test_acronym_slashes_bypass_analysis() {
+    let dir = tempdir().expect("tempdir");
+    let mut config = Config::default();
+    config.provider.default = "ollama".to_string();
+
+    let mut app = App::new(dir.path(), config);
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+    let prompt = "what is the difference between TCP/IP and UDP?";
+    let action = app
+        .handle_command_or_prompt(prompt, None, &control_tx)
+        .await
+        .expect("handle_command_or_prompt");
+
+    assert_eq!(action, CommandAction::Continue);
+
+    // Slashes in acronyms (TCP/IP) must not trigger CRUD file path gate
+    assert!(
+        matches!(app.modal, ModalState::None),
+        "Expected ModalState::None for TCP/IP question, got {:?}",
+        app.modal
+    );
+    assert!(control_rx.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn test_corrupted_graph_triggers_analysis() {
+    let dir = tempdir().expect("tempdir");
+    let minicode_dir = dir.path().join(".minicode");
+    fs::create_dir_all(&minicode_dir).expect("create .minicode dir");
+    fs::write(minicode_dir.join("graph.json"), "{ invalid json garbage }")
+        .expect("write corrupt graph.json");
+
+    let mut config = Config::default();
+    config.provider.default = "ollama".to_string();
+
+    let mut app = App::new(dir.path(), config);
+    let (control_tx, _) = mpsc::unbounded_channel::<AgentCommand>();
+
+    let prompt = "modify the router logic in src/router.rs";
+    let action = app
+        .handle_command_or_prompt(prompt, None, &control_tx)
+        .await
+        .expect("handle_command_or_prompt");
+
+    assert_eq!(action, CommandAction::Continue);
+
+    // Corrupted graph.json must safely fall back to WorkspaceAnalysis
+    assert!(
+        matches!(app.modal, ModalState::WorkspaceAnalysis { .. }),
+        "Expected WorkspaceAnalysis modal on corrupted graph.json, got {:?}",
+        app.modal
+    );
+}
+
+#[tokio::test]
+async fn test_minor_drift_seamless_sync() {
+    let dir = tempdir().expect("tempdir");
+    let src_dir = dir.path().join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+
+    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
+    fs::write(src_dir.join("lib.rs"), "pub fn add() {}\n").expect("write lib.rs");
+
+    let mut graph = CodeGraph::new();
+    graph.build_graph(dir.path()).expect("build graph");
+    graph.save_to_disk(dir.path()).expect("save to disk");
+
+    // Add only 1 file (minor drift: 1 file < 10)
+    fs::write(src_dir.join("helper.rs"), "pub fn helper() {}\n").expect("write helper.rs");
+
+    let mut config = Config::default();
+    config.provider.default = "ollama".to_string();
+
+    let mut app = App::new(dir.path(), config);
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
+
+    let prompt = "refactor src/main.rs";
+    let action = app
+        .handle_command_or_prompt(prompt, None, &control_tx)
+        .await
+        .expect("handle_command_or_prompt");
+
+    assert_eq!(action, CommandAction::Continue);
+
+    // Minor drift does NOT block user with modal
+    assert!(
+        matches!(app.modal, ModalState::None),
+        "Expected ModalState::None for minor drift, got {:?}",
+        app.modal
+    );
+    assert!(control_rx.try_recv().is_ok());
+
+    // Verify background incremental update synced helper.rs into graph.json
+    let mut updated_graph = CodeGraph::new();
+    assert!(updated_graph.load_cached(dir.path()));
+    assert!(
+        updated_graph.file_count() >= 3,
+        "Expected helper.rs to be indexed into cached graph"
     );
 }

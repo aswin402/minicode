@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 impl<'a> App<'a> {
     /// Handles keyboard interaction within in-TUI modal dialogs
-    pub(crate) async fn handle_modal_key(
+    pub async fn handle_modal_key(
         &mut self,
         key: crossterm::event::KeyEvent,
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
@@ -61,25 +61,38 @@ impl<'a> App<'a> {
                         *cursor -= 1;
                     }
                 }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.modal = ModalState::None;
+                    if let Some(sub) = self.pending_submission.take() {
+                        self.input_dock.textarea = tui_textarea::TextArea::default();
+                        self.input_dock.textarea.insert_str(&sub.display);
+                        self.timeline.add_status("ℹ Prompt cancelled.".to_string());
+                    }
+                }
                 KeyCode::Char(c) => {
                     input.insert(*cursor, c);
                     *cursor += 1;
                 }
                 KeyCode::Enter => {
                     let entered_key = input.trim().to_string();
+                    if entered_key.is_empty() {
+                        self.timeline.add_status(
+                            "⚠️ API key cannot be empty. Please enter a valid key or press Esc to cancel."
+                                .to_string(),
+                        );
+                        return;
+                    }
                     let prov_name = provider.clone();
                     let env_name = env_var.clone();
 
-                    if !entered_key.is_empty() {
-                        self.config
-                            .provider
-                            .api_keys
-                            .insert(prov_name.clone(), entered_key.clone());
-                        std::env::set_var(&env_name, &entered_key);
-                        let _ = self.config.save(Some(&self.workspace_root));
-                        self.timeline
-                            .add_status(format!("✔ Saved API key for '{}'", prov_name));
-                    }
+                    self.config
+                        .provider
+                        .api_keys
+                        .insert(prov_name.clone(), entered_key.clone());
+                    std::env::set_var(&env_name, &entered_key);
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    self.timeline
+                        .add_status(format!("✔ Saved API key for '{}'", prov_name));
 
                     let custom_url = self.config.get_provider_base_url(&prov_name);
                     let models_res = self
@@ -127,7 +140,13 @@ impl<'a> App<'a> {
                         }
                         self.modal = ModalState::None;
                         if let Some(sub) = self.pending_submission.take() {
-                            self.dispatch_pending_prompt(sub, control_tx);
+                            let _ = self
+                                .handle_command_or_prompt(
+                                    &sub.prompt,
+                                    Some(&sub.display),
+                                    control_tx,
+                                )
+                                .await;
                         }
                     } else {
                         self.modal = ModalState::new_model_select(prov_name, models);
@@ -233,6 +252,15 @@ impl<'a> App<'a> {
                             ));
                         }
                         self.modal = ModalState::None;
+                        if let Some(sub) = self.pending_submission.take() {
+                            let _ = self
+                                .handle_command_or_prompt(
+                                    &sub.prompt,
+                                    Some(&sub.display),
+                                    control_tx,
+                                )
+                                .await;
+                        }
                     } else {
                         self.modal = ModalState::new_model_select(provider, models);
                     }
@@ -304,7 +332,9 @@ impl<'a> App<'a> {
                     }
                     self.modal = ModalState::None;
                     if let Some(sub) = self.pending_submission.take() {
-                        self.dispatch_pending_prompt(sub, control_tx);
+                        let _ = self
+                            .handle_command_or_prompt(&sub.prompt, Some(&sub.display), control_tx)
+                            .await;
                     }
                 }
                 _ => {}

@@ -430,6 +430,14 @@ pub const SYMBOL_GRAPH_MAX_NODES: usize = 50_000;
 pub const SYMBOL_GRAPH_MAX_EDGES: usize = 200_000;
 /// Minimum identifier character length to consider for symbol cross-reference
 pub const SYMBOL_REFERENCE_MIN_LEN: usize = 3;
+/// Minimum file count drift to consider ratio-based stale classification
+pub const DEFAULT_DRIFT_MIN_STALE_FILES: usize = 3;
+/// Minimum file count drift to classify code graph as stale requiring user arbitration
+pub const DEFAULT_DRIFT_STALE_COUNT: usize = 10;
+/// Drift ratio threshold (total_drift / cached_files) triggering stale classification (20%)
+pub const DEFAULT_DRIFT_STALE_RATIO: f64 = 0.20;
+/// Minimum file count drift to trigger background seamless incremental sync
+pub const DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD: usize = 1;
 
 // === Symbol Index & BM25 Ranking ===
 /// Exact symbol name match score
