@@ -1194,7 +1194,7 @@ pub fn mask_api_key(key: &str) -> String {
     format!("{}...{}", prefix, suffix)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)]
 pub struct WorkspacePreference {
     pub provider: String,
@@ -1221,11 +1221,17 @@ pub fn load_workspace_preference_from_file(
     }
     let content = match std::fs::read_to_string(registry_path) {
         Ok(c) => c,
-        Err(_) => return None,
+        Err(e) => {
+            tracing::warn!(path = %registry_path.display(), error = %e, "Failed to read workspaces registry");
+            return None;
+        }
     };
     let registry: WorkspaceRegistry = match toml::from_str(&content) {
         Ok(r) => r,
-        Err(_) => return None,
+        Err(e) => {
+            tracing::warn!(path = %registry_path.display(), error = %e, "Failed to parse workspaces registry TOML");
+            return None;
+        }
     };
     let key = workspace_root.to_string_lossy().to_string();
     if let Some(pref) = registry.workspaces.get(&key) {
@@ -1249,10 +1255,14 @@ pub fn save_workspace_preference_to_file(
     registry_path: &Path,
 ) -> anyhow::Result<()> {
     let mut registry = if registry_path.exists() {
-        match std::fs::read_to_string(registry_path) {
-            Ok(content) => toml::from_str::<WorkspaceRegistry>(&content).unwrap_or_default(),
-            Err(_) => WorkspaceRegistry::default(),
-        }
+        let content = std::fs::read_to_string(registry_path)?;
+        toml::from_str::<WorkspaceRegistry>(&content).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse workspaces registry at {}: {}",
+                registry_path.display(),
+                e
+            )
+        })?
     } else {
         WorkspaceRegistry::default()
     };
@@ -1504,6 +1514,8 @@ mod tests {
         assert_eq!(mask_api_key("   "), "");
         assert_eq!(mask_api_key("short"), "••••••••");
         assert_eq!(mask_api_key("12345678"), "••••••••");
+        assert_eq!(mask_api_key("123456789"), "1234...6789");
+        assert_eq!(mask_api_key("🔑1234567890🦀"), "🔑123...890🦀");
         assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a...cdef");
         assert_eq!(mask_api_key("AIzaSyD-1234567890XYZ"), "AIza...0XYZ");
     }
