@@ -126,7 +126,10 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "prune_context"
         | "critic_review"
         | "sequential_thinking"
-        | "list_reproducers" => ToolSafetyLevel::ReadOnly,
+        | "list_reproducers"
+        | "get_agent_config"
+        | "test_provider_connection"
+        | "list_available_models" => ToolSafetyLevel::ReadOnly,
 
         // Multi-Agent Mutations
         "spawn_subagent"
@@ -136,7 +139,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "synthesize_reproducer"
         | "verify_reproducer"
         | "execute_dag"
-        | "repair_diagnostics" => ToolSafetyLevel::Mutating,
+        | "repair_diagnostics"
+        | "update_agent_config" => ToolSafetyLevel::Mutating,
 
         // Memory & Context Inspection (Read-Only)
         "read_plan"

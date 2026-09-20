@@ -1077,21 +1077,6 @@ pub const DEFAULT_INTENT_MAX_ITEMS: usize = 32;
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_total_tool_count() {
-        let actual = crate::tools::ToolRegistry::get_tool_schemas().len();
-        assert_eq!(
-            actual, TOTAL_TOOL_COUNT,
-            "TOTAL_TOOL_COUNT ({}) doesn't match actual tool schemas ({}). Update the constant in constants.rs.",
-            TOTAL_TOOL_COUNT, actual
-        );
-    }
-}
-
-#[cfg(test)]
 mod tool_count_validation {
     use super::*;
 
