@@ -671,12 +671,8 @@ impl Config {
         // 6. Dynamic 6-tier provider resolution
         let (resolved_provider, resolved_model) =
             config.resolve_active_provider_and_model(workspace_dir);
-        if config.provider.default.is_empty() {
-            config.provider.default = resolved_provider;
-        }
-        if config.provider.model.is_empty() {
-            config.provider.model = resolved_model;
-        }
+        config.provider.default = resolved_provider;
+        config.provider.model = resolved_model;
 
         Ok(config)
     }
@@ -1189,9 +1185,14 @@ impl Config {
         workspace_root: Option<&Path>,
         registry_path: Option<&Path>,
     ) -> (String, String) {
-        // 1. Explicit override (e.g. from CLI flag or env var override):
-        if !self.provider.default.is_empty() && !self.provider.model.is_empty() {
-            return (self.provider.default.clone(), self.provider.model.clone());
+        // 1. Explicit provider override (e.g. from CLI flag or env var override):
+        if !self.provider.default.is_empty() {
+            let model = if !self.provider.model.is_empty() {
+                self.provider.model.clone()
+            } else {
+                self.get_default_model_for_provider(&self.provider.default)
+            };
+            return (self.provider.default.clone(), model);
         }
 
         // 2. Check workspace preference in workspaces.toml
@@ -1204,15 +1205,14 @@ impl Config {
 
             if let Some(pref) = pref {
                 if !pref.provider.trim().is_empty() && !pref.model.trim().is_empty() {
-                    return (pref.provider, pref.model);
+                    let model = if !self.provider.model.is_empty() {
+                        self.provider.model.clone()
+                    } else {
+                        pref.model
+                    };
+                    return (pref.provider, model);
                 }
             }
-        }
-
-        // If provider was explicitly set but model was not, resolve default model for provider:
-        if !self.provider.default.is_empty() {
-            let model = self.get_default_model_for_provider(&self.provider.default);
-            return (self.provider.default.clone(), model);
         }
 
         // 3. Check find_first_configured_provider()
@@ -1748,7 +1748,27 @@ mod tests {
         config.provider.default = String::new();
         config.provider.model = String::new();
 
-        // 1. With workspace preference saved
+        // 0. Empty fallback when nothing is set and no workspace pref
+        let empty_reg_dir = tempfile::tempdir().unwrap();
+        let empty_ws = empty_reg_dir.path().join("empty_ws");
+        let empty_reg = empty_reg_dir.path().join("workspaces.toml");
+        let (empty_p, empty_m) = config
+            .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
+        assert_eq!(empty_p, "");
+        assert_eq!(empty_m, "");
+
+        // 1. Auto-discovery from configured API keys when no workspace pref exists
+        config
+            .provider
+            .api_keys
+            .insert("openai".to_string(), "sk-test-key".to_string());
+        let (disc_p, disc_m) = config
+            .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
+        assert_eq!(disc_p, "openai");
+        assert_eq!(disc_m, "gpt-4o");
+        config.provider.api_keys.clear();
+
+        // 2. With workspace preference saved
         save_workspace_preference_to_file(
             ws_path,
             "anthropic",
@@ -1762,7 +1782,15 @@ mod tests {
         assert_eq!(prov, "anthropic");
         assert_eq!(model, "claude-3-7-sonnet-20250219");
 
-        // 2. CLI / explicit override takes highest precedence over workspace preference
+        // 3. Explicit provider without model overrides workspace preference and gets default model
+        config.provider.default = "mistral".to_string();
+        config.provider.model = String::new();
+        let (prov, model) =
+            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+        assert_eq!(prov, "mistral");
+        assert_eq!(model, config.get_default_model_for_provider("mistral"));
+
+        // 4. CLI / explicit override with both takes highest precedence over workspace preference
         config.provider.default = "deepseek".to_string();
         config.provider.model = "deepseek-chat".to_string();
         let (prov, model) =
