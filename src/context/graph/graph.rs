@@ -196,6 +196,17 @@ pub struct IncrementalStats {
     pub edges_rebuilt: usize,
 }
 
+/// Evaluation report on workspace drift against the cached AST code graph
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphDriftReport {
+    pub is_stale: bool,
+    pub modified_count: usize,
+    pub added_count: usize,
+    pub removed_count: usize,
+    pub total_current_files: usize,
+    pub cached_files_count: usize,
+}
+
 /// Architectural impact and risk analysis report for a symbol or file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusReport {
@@ -599,6 +610,76 @@ impl CodeGraph {
         stats.files_removed = removed_count;
 
         Ok(stats)
+    }
+
+    /// Evaluates whether the workspace has significantly drifted from the cached graph.
+    /// Uses lightweight metadata screening (file existence and mtime/hash) to avoid heavy re-parsing.
+    pub fn check_drift(&self, workspace_root: &Path) -> Result<GraphDriftReport> {
+        let walker = WalkBuilder::new(workspace_root)
+            .hidden(true)
+            .parents(true)
+            .git_ignore(true)
+            .build();
+
+        let mut current_files = HashSet::new();
+        for result in walker.flatten() {
+            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                let path = result.path();
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
+                        current_files.insert(path.to_path_buf());
+                    }
+                }
+            }
+        }
+
+        let total_current_files = current_files.len();
+        let cached_files_count = self.file_tracker.hashes.len();
+
+        // 1. Files removed since last snapshot
+        let removed_count = self.file_tracker.removed_files(&current_files).len();
+
+        // 2. Added and modified files
+        let mut added_count = 0;
+        let mut modified_count = 0;
+
+        for file in &current_files {
+            match self.file_tracker.hashes.get(file) {
+                None => {
+                    added_count += 1;
+                }
+                Some(&(stored_hash, stored_mtime)) => {
+                    let current_mtime = std::fs::metadata(file)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+
+                    if current_mtime != stored_mtime {
+                        if let Ok(content) = std::fs::read_to_string(file) {
+                            let current_hash = FileHashTracker::compute_hash(&content);
+                            if current_hash != stored_hash {
+                                modified_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let total_drift = modified_count + added_count + removed_count;
+        let is_stale = total_drift >= 10
+            || (cached_files_count > 0 && (total_drift * 5 >= cached_files_count));
+
+        Ok(GraphDriftReport {
+            is_stale,
+            modified_count,
+            added_count,
+            removed_count,
+            total_current_files,
+            cached_files_count,
+        })
     }
 
     /// Computes symbol-level PageRank scores across all nodes.
@@ -1321,6 +1402,62 @@ mod tests {
 
         let sym_names: Vec<_> = restored.symbol_nodes().map(|s| s.name.clone()).collect();
         assert!(sym_names.contains(&"triple".to_string()));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_drift_detector_clean_repo() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_drift_clean_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let file_a = temp_dir.join("lib.rs");
+        std::fs::write(&file_a, "pub fn helper() -> bool { true }").unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        let drift = graph.check_drift(&temp_dir).unwrap();
+        assert!(!drift.is_stale);
+        assert_eq!(drift.modified_count, 0);
+        assert_eq!(drift.added_count, 0);
+        assert_eq!(drift.removed_count, 0);
+        assert_eq!(drift.total_current_files, 1);
+        assert_eq!(drift.cached_files_count, 1);
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_drift_detector_stale_threshold() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_drift_stale_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Create 15 initial files
+        for i in 0..15 {
+            let f = temp_dir.join(format!("mod_{}.rs", i));
+            std::fs::write(&f, format!("pub fn f_{}() {{}}", i)).unwrap();
+        }
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        let clean_drift = graph.check_drift(&temp_dir).unwrap();
+        assert!(!clean_drift.is_stale);
+
+        // Modify 11 files to cross the >= 10 drift threshold
+        for i in 0..11 {
+            let f = temp_dir.join(format!("mod_{}.rs", i));
+            std::fs::write(&f, format!("pub fn f_{}() {{ println!(\"drift\"); }}", i)).unwrap();
+        }
+
+        let stale_drift = graph.check_drift(&temp_dir).unwrap();
+        assert!(stale_drift.is_stale);
+        assert_eq!(stale_drift.modified_count, 11);
+        assert_eq!(stale_drift.added_count, 0);
+        assert_eq!(stale_drift.removed_count, 0);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
