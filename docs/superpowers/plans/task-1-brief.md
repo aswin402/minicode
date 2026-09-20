@@ -1,45 +1,39 @@
-# Task 1 Brief: Terminal Raw Mode Guard & Interactive List Selector Primitives
+# Task 1 Brief: Universal API Key Masking & Dual-Layer Workspace Registry (`workspaces.toml`)
 
-## Objective
-Implement `TerminalGuard` (RAII terminal raw mode, cursor visibility, bracketed paste) and `InteractiveSelector` (inline arrow-key navigation, `k`/`j` keys, `Enter` selection, `Esc` back/cancel) in `src/ui/setup/`.
+## Requirements
+1. Implement `mask_api_key(key: &str) -> String` in `src/config.rs`:
+   - Empty/whitespace -> `""`
+   - `<= 8` chars -> `"••••••••"`
+   - `> 8` chars -> first 4 chars + `"..."` + last 4 chars (e.g. `"sk-a...cdef"`)
+2. Add constant in `src/constants.rs`:
+   - `pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";`
+3. Implement `WorkspacePreference` and `WorkspaceRegistry` in `src/config.rs`:
+   ```rust
+   #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+   pub struct WorkspacePreference {
+       pub provider: String,
+       pub model: String,
+       #[serde(default)]
+       pub last_used: String,
+   }
 
-## Files to Create / Modify
-- Create: `src/ui/setup/guard.rs`
-- Create: `src/ui/setup/selector.rs`
-- Create: `src/ui/setup/mod.rs`
-- Modify: `src/ui/mod.rs` (expose `pub mod setup;`)
-- Tests: `src/ui/setup/selector.rs` (inline unit tests)
-
-## Constraints & Requirements
-1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
-2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::selector::tests`. NEVER run the full test suite.
-3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Propagate `io::Result<T>`.
-4. **Terminal Safety:** `TerminalGuard` MUST implement `Drop` to ensure `disable_raw_mode()` and `cursor::Show` are always called, preventing broken terminal states.
-5. **Interactive Selector UX:**
-   - Input keys:
-     - `KeyCode::Up` / `KeyCode::Char('k')` -> `prev_index(current, total)`
-     - `KeyCode::Down` / `KeyCode::Char('j')` -> `next_index(current, total)`
-     - `KeyCode::Enter` -> `Ok(Some(current_index))`
-     - `KeyCode::Esc` -> `Ok(None)`
-     - `KeyCode::Char('c')` with `KeyModifiers::CONTROL` -> `Ok(None)` or graceful exit
-   - Rendering:
-     - Draw header / prompt: `\x1b[1m<prompt>\x1b[0m`
-     - Highlight line: `\x1b[1;36m  ❯ \x1b[0m\x1b[1m{label}\x1b[0m {badge} \x1b[90m{hint}\x1b[0m`
-     - Normal line: `    {label} {badge} \x1b[90m{hint}\x1b[0m`
-     - Footer: `\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m\n  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m`
-     - Redraw loop: Move cursor up by line count (`\x1b[{}A`), clear line (`\x1b[2K\r`), and redraw.
-     - On completion: Clear drawn lines so the next screen draws cleanly.
-   - Index helpers:
-     ```rust
-     pub fn prev_index(current: usize, total: usize) -> usize {
-         if total == 0 { 0 } else if current == 0 { total - 1 } else { current - 1 }
-     }
-     pub fn next_index(current: usize, total: usize) -> usize {
-         if total == 0 { 0 } else if current + 1 >= total { 0 } else { current + 1 }
-     }
-     ```
-6. **Code Quality:**
-   - `cargo fmt`
-   - `cargo clippy -j 1 --bin minicode -- -D warnings`
-7. **Commit:**
-   - `feat(ui): implement TerminalGuard and InteractiveSelector primitives for setup wizard`
+   #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+   pub struct WorkspaceRegistry {
+       #[serde(default)]
+       pub workspaces: std::collections::HashMap<String, WorkspacePreference>,
+   }
+   ```
+4. Implement persistence helpers:
+   - `load_workspace_preference_from_file(workspace_root: &Path, registry_path: &Path) -> Option<WorkspacePreference>`
+   - `save_workspace_preference_to_file(workspace_root: &Path, provider: &str, model: &str, registry_path: &Path) -> anyhow::Result<()>`
+   - `Config::get_workspace_registry_path() -> Option<PathBuf>`
+   - `Config::load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference>`
+   - `Config::save_workspace_preference(workspace_root: &Path, provider: &str, model: &str) -> anyhow::Result<()>`
+5. Follow TDD:
+   - Add unit tests `test_mask_api_key_variations` and `test_workspace_preference_roundtrip` in `src/config.rs`.
+   - Run targeted tests:
+     `cargo test -j 1 --lib config::tests::test_mask_api_key_variations`
+     `cargo test -j 1 --lib config::tests::test_workspace_preference_roundtrip`
+   - Run formatting: `cargo fmt`
+   - Run clippy: `cargo clippy -j 1 --bin minicode -- -D warnings`
+6. Commit with message: `feat(config): implement universal API key masking and dual-layer workspace registry`

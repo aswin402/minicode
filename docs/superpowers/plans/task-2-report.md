@@ -1,108 +1,97 @@
-# Task 2 Execution Report: API Key Paste Box & Masked Input Primitive
+# Task 2 Execution Report: Dynamic 6-Tier Provider Resolution & Default Models Map
 
 ## Status: DONE
 
-- **Commit Hash:** `b11f3333d0867a04399f47a7644b725016d7ccbb`
-- **Brief Reference:** [task-2-brief.md](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/docs/superpowers/plans/task-2-brief.md)
-- **Phase:** 135 — Modern Interactive Setup Wizard
+- **Commit Hash:** `b7efc89e2f9eaa6182fb3ffb3f3f207f62ddc67a`
+- **Target Components:**
+  - `src/config.rs`
+  - `src/app/commands.rs`
+  - `src/app/modals.rs`
+- **Phase:** Autonomous Configuration & Workspace Memory (Task 2)
 
 ---
 
-## Files Created / Modified
+## 1. Summary of Changes
 
-- [`src/ui/setup/input.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/ui/setup/input.rs):
-  - Implemented `mask_api_key(key: &str) -> String`:
-    - Empty string returns `""`.
-    - Short keys (`len <= 10`) return bullets for each char (`•`.repeat(len)).
-    - Longer keys (`len > 10`) preserve first 6 chars, append `••••`, and preserve last 4 chars (e.g. `sk-min••••6789`).
-    - Uses UTF-8 character collection to avoid multi-byte slice panics.
-  - Implemented `prompt_api_key(provider_name: &str, current_key: Option<&str>) -> io::Result<Option<String>>`:
-    - Enters raw mode and bracketed paste via `TerminalGuard`.
-    - Renders styled box card with top/bottom borders, current masked key, and live masked bullets with key length counter.
-    - Handles bracketed paste events (with newline filtering), character typing, backspace, case-insensitive Ctrl+C, Esc, and Enter.
-    - Preserves existing key when Enter is pressed on empty buffer; trims whitespace on submitted key.
-    - Rewrites in place with `\x1b[{}A` and `\x1b[2K\r`, and cleanly erases the card on completion/cancellation.
-  - Implemented `prompt_text(prompt_label: &str, default_value: Option<&str>, allow_empty: bool) -> io::Result<Option<String>>`:
-    - Single-line prompt with default value hint, divider, and action footer.
-    - Handles typing, backspace, paste, Enter (falling back to default), Esc, and Ctrl+C.
-    - Rewrites in place and erases lines on exit.
-  - Implemented pure rendering functions `render_api_key_lines`, `render_api_key_lines_with_width`, `render_text_prompt_lines`, and pure event handlers `handle_api_key_event` and `handle_text_event` for decoupled testability.
-  - Comprehensive unit test suite covering:
-    - Empty, short, long, and unicode key masking (`test_mask_api_key`)
-    - Card structure and visual border rendering (`test_render_api_key_lines_structure`, `test_render_api_key_lines_not_set`)
-    - Text prompt line rendering with and without defaults (`test_render_text_prompt_lines`)
-    - Paste, typing, backspace, release event filtering (`test_handle_api_key_event_paste_and_typing`)
-    - Cancellation via Esc and case-insensitive Ctrl+C (`test_handle_api_key_event_cancellation`)
-    - Enter key behavior on empty, whitespace, and current key fallback (`test_handle_api_key_event_enter`)
-    - Generic text prompt event handling with defaults and empty validation (`test_handle_text_event`)
-- [`src/ui/setup/mod.rs`](file:///home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode/src/ui/setup/mod.rs):
-  - Exported `pub mod input;`
-  - Re-exported `mask_api_key`, `prompt_api_key`, and `prompt_text`.
+1. **Elimination of Hardcoded Provider Defaults (`src/config.rs`):**
+   - Added `pub default_models: std::collections::HashMap<String, String>` to `ProviderConfig` (with `#[serde(default)]`) and `RawProviderConfig`.
+   - Updated `ProviderConfig::default()` to not hardcode `"gemini"` or `"gemini-2.5-pro"`:
+     - `default: String::new()`
+     - `model: String::new()`
+     - `default_models: std::collections::HashMap::new()`
+   - Removed obsolete `default_provider_name()` and `default_model_name()` functions.
+
+2. **Raw Config Merging (`src/config.rs`):**
+   - Updated `RawConfig::merge_raw` to merge entries from `other.provider.default_models` into `self.provider.default_models`.
+
+3. **Configurable Default Models Lookup (`src/config.rs`):**
+   - Added `Config::get_default_model_for_provider(&self, provider_name: &str) -> String`:
+     - Inspects `self.provider.default_models` first (case-insensitive); returns override if present and non-empty.
+     - Otherwise falls back to static catalog default via `Config::static_default_model_for_provider`.
+   - Preserved `default_model_for_provider` and `static_default_model_for_provider` helper functions.
+
+4. **6-Tier Dynamic Resolution Hierarchy (`src/config.rs`):**
+   - Implemented `is_local_provider_configured(&self, provider_name: &str) -> bool`:
+     - Checks whether local provider (`ollama`, `lmstudio`) has been explicitly configured via `custom_endpoints`, `api_keys`, `default_models`, host override, or environment variables.
+   - Implemented `find_first_configured_provider(&self) -> Option<(&str, &str)>`:
+     - Scans cloud providers in deterministic order: `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`.
+     - Scans local providers: `ollama`, `lmstudio`.
+     - Returns `(provider_name, default_model)` if any has a valid key (or is local and configured).
+   - Implemented `resolve_active_provider_and_model_with_registry(&self, workspace_root: Option<&Path>, registry_path: Option<&Path>) -> (String, String)`:
+     1. Explicit CLI flag / env var override (`!self.provider.default.is_empty() && !self.provider.model.is_empty()`).
+     2. Workspace preference from `workspaces.toml` (or `.minicode/config.toml`).
+     3. Configured provider auto-discovery via `find_first_configured_provider()`.
+     4. Deferred empty fallback `("", "")` if no credentials or preferences are found.
+   - Implemented `resolve_active_provider_and_model(&self, workspace_root: Option<&Path>) -> (String, String)` delegating to the global registry path.
+
+5. **Startup & Gate 1 Integration (`src/config.rs`, `src/app/commands.rs`, `src/app/modals.rs`):**
+   - In `Config::load`: After applying raw configs and env overrides, calls `resolve_active_provider_and_model(workspace_dir)` to populate unconfigured provider and model.
+   - In `src/app/commands.rs`: In Gate 1 JIT provider check, if `self.config.provider.default.is_empty()`, immediately preserves the pending submission and presents `ModalState::new_provider_setup_required("", &prompt_to_run)`.
+   - In `src/app/modals.rs`: Updated modal default model resolution to call `self.config.get_default_model_for_provider(...)`.
+
+6. **Error Handling & Code Quality:**
+   - Zero `.unwrap()` or `.expect()` calls in non-test code.
+   - Passed `cargo fmt --check` with clean formatting.
+   - Passed `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
 
 ---
 
-## Verification Results
+## 2. Test Verification Output
 
-### 1. Targeted Unit Tests
-Command: `cargo test -j 1 --lib ui::setup::input::tests`
-Output:
+### Targeted Test Suite:
+```bash
+cargo test -j 1 --lib config::tests::test_dynamic_provider_resolution_hierarchy
+```
 ```text
-running 8 tests
-test ui::setup::input::tests::test_handle_api_key_event_cancellation ... ok
-test ui::setup::input::tests::test_handle_api_key_event_enter ... ok
-test ui::setup::input::tests::test_handle_api_key_event_paste_and_typing ... ok
-test ui::setup::input::tests::test_handle_text_event ... ok
-test ui::setup::input::tests::test_mask_api_key ... ok
-test ui::setup::input::tests::test_render_api_key_lines_not_set ... ok
-test ui::setup::input::tests::test_render_api_key_lines_structure ... ok
-test ui::setup::input::tests::test_render_text_prompt_lines ... ok
+   Compiling minicode v0.3.38 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.38s
+     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.00s
+running 1 test
+test config::tests::test_dynamic_provider_resolution_hierarchy ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.00s
 ```
 
-### 2. Clippy Verification
-Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
-Output:
+```bash
+cargo test -j 1 --lib config::tests::test_default_models_override
+```
 ```text
-    Checking minicode v0.3.35 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.00s
-(Exit code 0, zero warnings)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
+     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
+
+running 1 test
+test config::tests::test_default_models_override ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.00s
 ```
 
-### 3. Compilation Check
-Command: `cargo check -j 1`
-Output:
-```text
-    Checking minicode v0.3.35 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.10s
-(Exit code 0)
-```
-
-### 4. Code Formatting
-Command: `cargo fmt --check`
-Output:
-```text
-(Exit code 0, clean formatting)
-```
+### Quality Gates:
+- `cargo fmt --check`: Clean formatting applied.
+- `cargo clippy -j 1 --bin minicode -- -D warnings`: Clean build with zero warnings.
 
 ---
 
-## Non-Test Code Constraints Audit
-- Non-test `.unwrap()` / `.expect()` count: **0** (verified with grep).
-- Concurrency limit `-j 1`: Strictly respected across all compilation, clippy, and test invocations.
-- Test scope: ONLY targeted tests (`cargo test -j 1 --lib ui::setup::input::tests`) were run; full test suite was never run.
-
----
-
-## 4. Code Review Feedback Incorporation & Fixes
-- **Border Alignment Bug Fix:** Removed the extraneous literal space before `\x1b[90m{suffix}` on line 89 of `src/ui/setup/input.rs` when `count > 0`, restoring perfect column alignment with `card_width`.
-- **Harmonized Minimum Width:** Updated `prompt_api_key` to clamp `term_width` to `(50, 80)` matching `render_api_key_lines_with_width`.
-- **Visual Width Geometry Unit Test:** Added `test_render_card_lines_width_alignment` with an ANSI-stripping helper that asserts all 6 lines have the exact same character width matching `card_width` across multiple terminal widths (50, 60, 80) and buffer lengths (empty, short, typical, overflow).
-- Re-ran targeted tests: 9 passed, 0 failed.
-- Clippy and formatting: 100% clean.
-- Fix Commit: `2dc0826`
-
----
-
-## Concerns / Notes
-- None. Primitives are ready for integration in Task 3 (`SetupWizard`).
+## 3. Concerns & Follow-ups
+- **Concerns:** None. All requirements and constraints were strictly satisfied with zero warnings and 100% targeted test passage.
+- **Ready for Next Task:** Task 3: Dedicated `agent_config` Tool Category (Tools 136–139).

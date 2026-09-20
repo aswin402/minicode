@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 136 Review & Hardening (v0.3.38) Gate 1 Chaining, Drift Calibration & Provider Normalization | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 137 Autonomous Configuration, Workspace Memory & Zero-Leak Credential Engine (v0.3.39) | **Status:** ✅ Complete (139 Tools)
 
 ---
 
@@ -1900,13 +1900,18 @@
 - [x] 136.5: Implement comprehensive integration test suite in `tests/integration_jit_onboarding.rs` covering unindexed silent boot, general query analysis bypass, CRUD prompt interception, unconfigured provider modal gate, and workspace drift detection
 - [x] 136.6: Pass all targeted unit and integration tests, zero clippy warnings (`cargo clippy -j 1 --bin minicode -- -D warnings`), clean formatting (`cargo fmt --check`), bump version to `v0.3.37`, compile release binary via `./localupdate.sh`, and validate real-world autonomous execution
  
-+### Phase 136 Review & Hardening: Gate 1 Chaining, Drift Calibration & Provider Normalization (v0.3.38)
-+- [x] 136.7: Audit Gate 1 $\to$ Gate 2 chaining bug and replace direct prompt dispatch with `handle_command_or_prompt` in `ApiKeyInput`, `ProviderSelect`, and `ModelSelect`
-+- [x] 136.8: Eliminate hardcoded local provider lists in `src/app/commands.rs` by utilizing canonical `Config::is_local_provider`
-+- [x] 136.9: Add corrupted `.minicode/graph.json` error recovery fallback to propose fresh workspace analysis instead of silent unindexed failure
-+- [x] 136.10: Implement Spec Case C seamless background incremental sync for non-stale minor drift (`total_drift >= DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD`)
-+- [x] 136.11: Calibrate drift ratio threshold with `DEFAULT_DRIFT_MIN_STALE_FILES = 3` to prevent false-positive stale dialogs on small repositories
-+- [x] 136.12: Refine CRUD heuristic to exclude uppercase technical acronyms (`TCP/IP`, `CI/CD`, `I/O`) and dual concepts (`client/server`) while expanding keywords and extensions
-+- [x] 136.13: Pass all 10 integration tests in `tests/integration_jit_onboarding.rs`, zero clippy warnings, clean formatting, recompile release binary via `./localupdate.sh`, and bump version to `v0.3.38`
+### Phase 136 Review & Hardening: Gate 1 Chaining, Drift Calibration & Provider Normalization (v0.3.38)
+- [x] 136.7: Audit Gate 1 -> Gate 2 chaining bug and replace direct prompt dispatch with `handle_command_or_prompt` in `ApiKeyInput`, `ProviderSelect`, and `ModelSelect`
+- [x] 136.8: Eliminate hardcoded local provider lists in `src/app/commands.rs` by utilizing canonical `Config::is_local_provider`
+- [x] 136.9: Add corrupted `.minicode/graph.json` error recovery fallback to propose fresh workspace analysis instead of silent unindexed failure
+- [x] 136.10: Implement Spec Case C seamless background incremental sync for non-stale minor drift (`total_drift >= DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD`)
+- [x] 136.11: Calibrate drift ratio threshold with `DEFAULT_DRIFT_MIN_STALE_FILES = 3` to prevent false-positive stale dialogs on small repositories
+- [x] 136.12: Refine CRUD heuristic to exclude uppercase technical acronyms (`TCP/IP`, `CI/CD`, `I/O`) and dual concepts (`client/server`) while expanding keywords and extensions
+- [x] 136.13: Pass all 10 integration tests in `tests/integration_jit_onboarding.rs`, zero clippy warnings, clean formatting, recompile release binary via `./localupdate.sh`, and bump version to `v0.3.38`
 
-
+### Phase 137: Autonomous Configuration, Workspace Memory & Zero-Leak Credential Engine (v0.3.39)
+- [x] 137.1: Implement universal API key masking (`mask_api_key`) and dual-layer per-directory workspace registry (`WorkspaceRegistry`, `WorkspacePreference`, `workspaces.toml`) in `src/config.rs` and `src/constants.rs`
+- [x] 137.2: Eliminate hardcoded Gemini defaults with dynamic 6-tier provider resolution (`find_first_configured_provider`, `resolve_active_provider_and_model`, `default_models` map) in `src/config.rs` and update Gate 1 in `src/app/commands.rs`
+- [x] 137.3: Implement dedicated `agent_config` tool suite (Tools 136-139: `get_agent_config`, `update_agent_config`, `test_provider_connection`, `list_available_models`), `ConfigChangeProposal`, and bump `TOTAL_TOOL_COUNT` = 139 in `src/constants.rs` and `src/tools/registry/agent_tools/config_tools.rs`
+- [x] 137.4: Implement interactive in-TUI tabbed `/settings` modal (`SettingsTab`, `SettingsModalState`, `render_settings`, `render_config_approval` confirmation card, and `/settings` / `/config` slash commands) in `src/ui/modals/settings.rs`, `src/app/modals.rs`, and `src/app/commands.rs`
+- [x] 137.5: Implement comprehensive automated integration test suite in `tests/integration_agent_config.rs`, pass all 5 integration tests, unit tests, clippy and formatting checks, bump version to `v0.3.39`, and recompile release binary via `./localupdate.sh`

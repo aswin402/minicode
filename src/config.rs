@@ -523,6 +523,7 @@ pub struct RawProviderConfig {
     pub context_window: Option<usize>,
     pub prompt_cost_per_m: Option<f64>,
     pub completion_cost_per_m: Option<f64>,
+    pub thinking_budget: Option<usize>,
     pub default_models: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -612,10 +613,12 @@ impl Config {
                 }
             }
         }
-        if let Err(e) = dotenvy::dotenv() {
-            if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
-            {
-                tracing::warn!(error = %e, "Failed to parse default .env file");
+        if workspace_dir.is_none() {
+            if let Err(e) = dotenvy::dotenv() {
+                if !matches!(e, dotenvy::Error::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound)
+                {
+                    tracing::warn!(error = %e, "Failed to parse default .env file");
+                }
             }
         }
 
@@ -781,6 +784,9 @@ impl Config {
         }
         if let Some(comp_cost) = other.provider.completion_cost_per_m {
             self.provider.completion_cost_per_m = Some(comp_cost);
+        }
+        if let Some(thinking_budget) = other.provider.thinking_budget {
+            self.provider.thinking_budget = Some(thinking_budget);
         }
         if let Some(auto_approve) = other.agent.auto_approve {
             self.agent.auto_approve = auto_approve;

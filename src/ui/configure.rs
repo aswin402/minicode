@@ -653,18 +653,10 @@ impl ConfigMenu {
                 };
                 let _ = update_dotenv_file(&global_env_path, &env_name_str, k);
             }
-            let _ = update_dotenv_file(
-                &global_env_path,
-                "MINICODE_PROVIDER",
-                &config.provider.default,
-            );
-            let _ = update_dotenv_file(&global_env_path, "MINICODE_MODEL", &config.provider.model);
         }
 
         // 2. Also update workspace .env if workspace exists
         let env_path = workspace.join(crate::constants::ENV_FILE_NAME);
-        let _ = update_dotenv_file(&env_path, "MINICODE_PROVIDER", &config.provider.default);
-        let _ = update_dotenv_file(&env_path, "MINICODE_MODEL", &config.provider.model);
         let _ = update_dotenv_file(
             &env_path,
             "MINICODE_APPROVAL_POLICY",

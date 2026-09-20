@@ -1,92 +1,29 @@
-# Task 5 Execution Report: Interactive `/goal` and `/intent` Commands in TUI/CLI
+# Task 5 Execution Report: End-to-End Integration Test Suite & Release Verification
 
 - **Status:** DONE
-- **Commit Hash:** `3f93565db10192834ef02ba723c9e2b9f61bfdd9`
-- **Date/Time:** 2026-09-18T19:05:00+05:30
+- **Date/Time:** 2026-09-21T03:07:00+05:30
+- **Target Release:** v0.3.39 (Phase 137)
 
 ---
 
 ## 1. Summary of Work Delivered
 
-1. **Interactive `/goal` and `/intent` Command Handling (`src/app/commands.rs`):**
-   - Implemented `GoalSubcommand` enum with variants:
-     - `Show`: Inspect active goal and living execution ledger
-     - `Add(String)`: Add a new requirement to the ledger
-     - `Done(String)`: Mark a requirement completed by 1-based index or ID
-     - `Reset`: Clear/delete the persistence ledger file (`.minicode/intent_anchor.json`)
-     - `Run(String)`: Autonomous execution with prompt or todo.md tasks
-   - Implemented `parse_goal_command(prompt: &str) -> Option<GoalSubcommand>` supporting both `/goal` and `/intent` prefixes across all subcommands and freeform prompts.
-   - Implemented `format_ledger_timeline(ledger: &IntentLedger) -> String` producing formatted timeline cards matching the exact UX specification:
-     ```
-     🎯 Active Goal: <root_objective>
-     📋 Living Execution Ledger (<completed>/<total> completed):
-        [x] 1. Dashboard (metrics cards)
-        [-] 2. Customers Page (search, filter)
-        [ ] 3. Support Tickets
-     💡 Commands: /goal add <task> | /goal done <index> | /goal reset | /goal run <prompt>
-     ```
-   - Integrated into `App::handle_command_or_prompt`:
-     - `/goal` or `/intent` (no args): loads `.minicode/intent_anchor.json` and renders status; if none exists, advises user how to start.
-     - `/goal add <text>` or `/intent add <text>`: loads or initializes ledger, invokes `add_item`, saves to disk, and displays confirmation in timeline.
-     - `/goal done <index_or_id>` or `/intent done <index_or_id>`: resolves 1-based index or ID string, marks item `RequirementStatus::Completed`, saves to disk, and displays confirmation.
-     - `/goal reset` or `/intent reset`: removes `.minicode/intent_anchor.json` and confirms in timeline.
-     - `/goal run <prompt>` or `/goal <freeform prompt>`: parses prompt, initializes/updates ledger, saves to disk, and dispatches agent execution via `AgentCommand::Prompt`.
+1. **End-to-End Integration Test Suite (`tests/integration_agent_config.rs`):**
+   - Implemented 5 comprehensive async integration tests covering every requirement of Phase 137:
+     1. `test_per_directory_model_memory`: Validates dual-layer per-directory workspace memory. Writes different provider/model preferences for Workspace A (`anthropic` / `claude-3-7-sonnet-20250219`) and Workspace B (`ollama` / `qwen2.5-coder:latest`) into `workspaces.toml`, then verifies `Config::load` correctly resolves each workspace's active provider and model independently.
+     2. `test_settings_command_modal_and_subcommands`: Verifies the `/settings` slash command handler, subcommands (`/settings help`, `/config`, `/preferences`), and checks tab cycling (`Tab`, `BackTab`), provider navigation (`Down`, `Up`), default model selection (`Enter`), and exit (`Esc`).
+     3. `test_agent_config_tools_and_masking`: Exercises `get_agent_config` tool primitive. Verifies that all provider API keys (Anthropic, OpenAI, DeepSeek, Google, etc.) are masked (`sk-a...cdef`) and never emitted in plaintext into the tool result.
+     4. `test_update_agent_config_permission_gate_and_persistence`: Tests `update_agent_config` generating a structured `ConfigChangeProposal` requiring user approval, validates empty proposals are rejected, simulates user approval via `apply_proposal`, and verifies persistence to `.minicode/config.toml` (including `thinking_budget` and `auto_approve`).
+     5. `test_connection_probe_diagnostic_format_and_zero_leak`: Invokes `test_provider_connection` and `list_available_models` tool primitives, asserts structured JSON output (`status`, `latency_ms`, `diagnostic_details`), validates that zero plaintext keys leak, and executes `test_all_provider_connections` across all 12 providers.
 
-2. **Command Catalog & Help Modal Updates:**
-   - Updated `src/ui/modals/command_catalog.rs`:
-     - Added `/goal` entry under category `"Agent & Automation"` with description `"Inspect, manage, or execute the active Goal Anchor and Living Execution Ledger"`.
-     - Added `/intent` alias entry.
-   - Updated `src/ui/modals/help.rs`:
-     - Added `/goal, /intent` entry to interactive keyboard shortcuts & commands list.
+2. **Bug Fixes & Hardening:**
+   - Fixed `Config::load` fallback `dotenvy::dotenv()` running unconditionally and overriding workspace preferences from repo root `.env`; now restricted to `workspace_dir.is_none()`.
+   - Added `pub thinking_budget: Option<usize>` to `RawProviderConfig` and merged it in `RawConfig::merge_raw` in `src/config.rs`.
+   - Removed `.env` provider and model writes in `src/ui/configure.rs` to eliminate environment variable pollution over `workspaces.toml` and `.minicode/config.toml`.
 
-3. **Targeted Unit & End-to-End Tests (`src/app/commands.rs`):**
-   - `test_parse_goal_command_show`: tests `/goal`, `/intent`, with whitespace handling.
-   - `test_parse_goal_command_add`: tests `/goal add ...`, `/intent add ...`, empty text handling.
-   - `test_parse_goal_command_done`: tests `/goal done <idx>`, `/intent done <idx>`, string ID handling.
-   - `test_parse_goal_command_reset`: tests `/goal reset`, `/intent reset`.
-   - `test_parse_goal_command_run`: tests `/goal run ...`, `/intent run ...`, freeform prompts.
-   - `test_parse_goal_command_non_goal`: verifies non-goal commands return `None`.
-   - `test_format_ledger_timeline`: validates timeline status formatting against multi-item ledger with statuses and descriptions.
-   - `test_goal_commands_end_to_end`: exercises full `/goal` lifecycle via `App::handle_command_or_prompt` in temporary directory, verifying timeline entries, file persistence, and agent command dispatch.
-
-4. **Code Quality & Verification Constraints:**
-   - Strict adherence to zero `.unwrap()` or `.expect()` in non-test production code.
-   - Pure safe Rust with clean formatting verified via `cargo fmt`.
-   - Zero clippy warnings verified via `cargo clippy -j 1 --bin minicode -- -D warnings`.
-   - Targeted unit testing with `-j 1`.
-
----
-
-## 2. Targeted Test Output
-
-### Targeted Unit Tests
-Command: `cargo test -j 1 --lib app::commands::tests`
-```
-   Compiling minicode v0.3.28 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.61s
-     Running unittests src/lib.rs (target/debug/deps/minicode-8475bc48a7870df4)
-
-running 8 tests
-test app::commands::tests::test_parse_goal_command_add ... ok
-test app::commands::tests::test_parse_goal_command_done ... ok
-test app::commands::tests::test_parse_goal_command_non_goal ... ok
-test app::commands::tests::test_parse_goal_command_reset ... ok
-test app::commands::tests::test_format_ledger_timeline ... ok
-test app::commands::tests::test_parse_goal_command_run ... ok
-test app::commands::tests::test_parse_goal_command_show ... ok
-test app::commands::tests::test_goal_commands_end_to_end ... ok
-
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 439 filtered out; finished in 0.01s
-```
-
-### Linter Check
-Command: `cargo clippy -j 1 --bin minicode -- -D warnings`
-```
-    Checking minicode v0.3.28 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.83s
-```
-
----
-
-## 3. Concerns or Notes
-- None. All subcommands (`/goal`, `/intent`, `add`, `done`, `reset`, `run`) operate symmetrically and integrate directly with the persistent `.minicode/intent_anchor.json` storage and background agent execution.
+3. **Quality Gates & Invariants:**
+   - 5/5 integration tests pass in `tests/integration_agent_config.rs`.
+   - All unit tests pass across `config::tests`, `tools::registry::agent_tools::config_tools::tests`, `tools::tests::test_total_tool_count`, `agent::subagent::orchestrator::tests::test_total_tool_count_matches`, and `ui::modals::settings::tests`.
+   - Zero clippy warnings with `cargo clippy -j 1 --bin minicode -- -D warnings` and `cargo clippy -j 1 --test integration_agent_config -- -D warnings`.
+   - Code formatting verified with `cargo fmt --check`.
+   - Total tool count strictly maintained at `TOTAL_TOOL_COUNT = 139`.

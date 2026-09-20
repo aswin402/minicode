@@ -1,38 +1,47 @@
-# Task 1 Execution Report: Terminal Raw Mode Guard & Interactive List Selector Primitives
+# Task 1 Execution Report: Universal API Key Masking & Dual-Layer Workspace Registry (`workspaces.toml`)
 
 ## Status: DONE
 
-- **Commit Hash:** `f29da221fec5cb714f6413a003c1a91df0dae190`
+- **Commit Hash:** `06c4a1b6e0b24e06423578a15e7d83fcb30ea431`
 - **Target Components:**
-  - `src/ui/setup/guard.rs`
-  - `src/ui/setup/selector.rs`
-  - `src/ui/setup/mod.rs`
-  - `src/ui/mod.rs`
-- **Phase:** Modern Interactive Setup Wizard (`minicode setup` / Phase 135)
+  - `src/constants.rs`
+  - `src/config.rs`
+- **Phase:** Autonomous Configuration & Workspace Memory (Task 1)
 
 ---
 
 ## 1. Summary of Changes
 
-1. **Created `src/ui/setup/guard.rs` (`TerminalGuard`):**
-   - Implemented RAII terminal safety guard.
-   - `TerminalGuard::new()` enables raw mode via `crossterm::terminal::enable_raw_mode()`, hides the cursor via `crossterm::cursor::Hide`, and enables bracketed paste via `EnableBracketedPaste`. If setup fails at any stage, raw mode is safely disabled before propagating `io::Error`.
-   - `impl Drop for TerminalGuard` restores cursor (`Show`), disables bracketed paste (`DisableBracketedPaste`), restores terminal mode (`disable_raw_mode()`), and flushes `stdout`, guaranteeing safe recovery even during abnormal control flows or panics.
+1. **Universal API Key Masking (`src/config.rs`):**
+   - Implemented `pub fn mask_api_key(key: &str) -> String`:
+     - Empty / whitespace-only string -> `""`
+     - Keys with `<= 8` characters -> 8 bullet characters (`"••••••••"`)
+     - Keys with `> 8` characters -> First 4 characters + `"..."` + Last 4 characters (e.g. `"sk-a...cdef"` / `"AIza...0XYZ"`)
+     - UTF-8 safe iteration via `.chars()` avoiding slicing panics across multi-byte characters.
+
+2. **Registry Constant (`src/constants.rs`):**
+   - Defined `pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";` in `src/constants.rs`.
+
+3. **Workspace Memory Types (`src/config.rs`):**
+   - Implemented `WorkspacePreference` (`provider: String`, `model: String`, `last_used: String`).
+   - Implemented `WorkspaceRegistry` (`workspaces: HashMap<String, WorkspacePreference>`).
+
+4. **Persistence Helpers & Config Integration (`src/config.rs`):**
+   - `pub fn load_workspace_preference_from_file(workspace_root: &Path, registry_path: &Path) -> Option<WorkspacePreference>`:
+     Reads TOML registry file and matches by workspace root string or canonicalized path.
+   - `pub fn save_workspace_preference_to_file(workspace_root: &Path, provider: &str, model: &str, registry_path: &Path) -> anyhow::Result<()>`:
+     Upserts the workspace preference with timestamp, creates parent directories if needed, and writes formatted TOML.
+   - `Config::get_workspace_registry_path() -> Option<PathBuf>`:
+     Resolves global registry path (`~/.config/minicode/workspaces.toml`).
+   - `Config::load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference>`:
+     Canonicalizes path and loads from global registry.
+   - `Config::save_workspace_preference(workspace_root: &Path, provider: &str, model: &str) -> anyhow::Result<()>`:
+     Canonicalizes path and upserts to global registry.
+
+5. **Error Handling & Quality:**
    - Zero `.unwrap()` or `.expect()` calls in non-test code.
-
-2. **Created `src/ui/setup/selector.rs` (`InteractiveSelector`, `SelectorItem`):**
-   - `SelectorItem`: Models selectable menu entries with `id`, `label`, `badge: Option<String>`, and `hint: Option<String>`. Provides fluent builder API (`new`, `with_badge`, `with_hint`).
-   - `InteractiveSelector`: Inline ANSI terminal selector primitive:
-     - Navigation helpers `prev_index(current, total)` and `next_index(current, total)` with boundary safety and seamless wrap-around.
-     - `format_item`: Formats highlighted rows with cyan bold indicator `\x1b[1;36m  ❯ \x1b[0m\x1b[1m{label}\x1b[0m {badge} \x1b[90m{hint}\x1b[0m` and unselected rows with four-space indentation matching cursor columns.
-     - `render_lines`: Constructs header prompt, items, and standardized footer separator (`\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m`) and navigation instructions (`  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m`).
-     - Event loop: Handles `KeyCode::Up` / `KeyCode::Char('k')`, `KeyCode::Down` / `KeyCode::Char('j')`, `KeyCode::Enter` (`Ok(Some(index))`), `KeyCode::Esc` (`Ok(None)`), and `Ctrl+C` (`Ok(None)`). Filters out `KeyEventKind::Release`.
-     - In-place redraw loop: Accurately moves cursor up by `total_lines` (`\x1b[{}A`), clears line (`\x1b[2K\r`), and redraws without line drift.
-     - Clean exit: Erases drawn lines on selection/exit (`\x1b[2K\r\n`), leaving cursor cleanly positioned for subsequent prompts.
-
-3. **Created `src/ui/setup/mod.rs` & Modified `src/ui/mod.rs`:**
-   - Modularized `src/ui/setup/` subcrate, exposing `TerminalGuard`, `InteractiveSelector`, and `SelectorItem`.
-   - Re-exported `pub mod setup;` in `src/ui/mod.rs`.
+   - Clippy-clean (`cargo clippy -j 1 --bin minicode -- -D warnings` passed with 0 warnings).
+   - Formatted via `cargo fmt`.
 
 ---
 
@@ -40,32 +49,38 @@
 
 ### Targeted Test Suite:
 ```bash
-cargo test -j 1 --lib ui::setup::selector::tests
+cargo test -j 1 --lib config::tests::test_mask_api_key_variations
+```
+```text
+   Compiling minicode v0.3.38 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.63s
+     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
+
+running 1 test
+test config::tests::test_mask_api_key_variations ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 534 filtered out; finished in 0.00s
 ```
 
+```bash
+cargo test -j 1 --lib config::tests::test_workspace_preference_roundtrip
+```
 ```text
-   Compiling minicode v0.3.35 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.07s
-     Running unittests src/lib.rs (target/debug/deps/minicode-4efcd93e47b73671)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
 
-running 6 tests
-test ui::setup::selector::tests::test_empty_items_select ... ok
-test ui::setup::selector::tests::test_navigation_edge_cases ... ok
-test ui::setup::selector::tests::test_navigation_wrap_and_bounds ... ok
-test ui::setup::selector::tests::test_format_item_highlighted_and_normal ... ok
-test ui::setup::selector::tests::test_selector_item_builder ... ok
-test ui::setup::selector::tests::test_render_lines_structure ... ok
+running 1 test
+test config::tests::test_workspace_preference_roundtrip ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 506 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 534 filtered out; finished in 0.00s
 ```
 
 ### Quality Gates:
-- `cargo fmt --check`: Clean formatting passed with zero diffs.
-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings.
-- `cargo check -j 1`: Passed cleanly with code 0.
+- `cargo fmt`: Clean formatting applied.
+- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings (`Finished dev profile in 41.94s`).
 
 ---
 
 ## 3. Concerns & Follow-ups
-- **Concerns:** None. Primitives are robust, unit-tested, and comply with all terminal safety requirements.
-- **Ready for Task 2:** API Key Paste Box & Masked Input Primitive (`prompt_api_key`, `mask_api_key`, `prompt_text` in `src/ui/setup/input.rs`).
+- **Concerns:** None. All functions and types meet specifications and pass targeted tests.
+- **Ready for Next Task:** Dynamic 6-tier Provider & Model Resolution Hierarchy.

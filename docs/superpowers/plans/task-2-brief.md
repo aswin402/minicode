@@ -1,60 +1,38 @@
-# Task 2 Brief: API Key Paste Box & Masked Input Primitive
+# Task 2 Brief: Dynamic 6-Tier Provider Resolution & Default Models Map
 
-## Objective
-Implement API key masking, bracketed paste input handling, and text prompt primitives in `src/ui/setup/input.rs`.
-
-## Files to Create / Modify
-- Create: `src/ui/setup/input.rs`
-- Modify: `src/ui/setup/mod.rs` (export `pub mod input;` and re-export `mask_api_key`, `prompt_api_key`, `prompt_text`)
-- Test: `src/ui/setup/input.rs` (inline unit tests)
-
-## Constraints & Requirements
-1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
-2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::input::tests`. NEVER run the full test suite.
-3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Return `std::io::Result`.
-4. **API Key Masking:**
-   ```rust
-   pub fn mask_api_key(key: &str) -> String
-   ```
-   - If empty: return `""`.
-   - If length <= 10: return bullets for each char (e.g. `•`.repeat(len)).
-   - If length > 10: take first 6 chars (e.g. `sk-min`), append `••••`, and take last 4 chars (e.g. `sk-min••••6789`).
-5. **Interactive API Key Prompt:**
-   ```rust
-   pub fn prompt_api_key(provider_name: &str, current_key: Option<&str>) -> io::Result<Option<String>>
-   ```
-   - Uses `TerminalGuard` to ensure raw mode.
-   - Renders a styled input card:
-     ```text
-     ┌─ Configure {provider_name} API Key ───────────────────────────────────────────┐
-     │ Current: {masked_current}                                                     │
-     │ Paste key: {bullets} ({len} chars)                                            │
-     │                                                                               │
-     │ [Enter] Save & Set as Active    [Esc] Cancel                                  │
-     └───────────────────────────────────────────────────────────────────────────────┘
+## Requirements
+1. In `src/config.rs`:
+   - Add `default_models: std::collections::HashMap<String, String>` to `ProviderConfig` (with `#[serde(default)]`) and `RawProviderConfig`.
+   - Update `ProviderConfig::default()` so it does NOT hardcode "gemini" or "gemini-2.5-pro":
+     ```rust
+     default: String::new(),
+     model: String::new(),
+     default_models: std::collections::HashMap::new(),
      ```
-   - Event Handling:
-     - `Event::Paste(pasted)`: Appends pasted string to buffer.
-     - `Event::Key`:
-       - Skip `KeyEventKind::Release`.
-       - `Ctrl+C` (case-insensitive): clear prompt block and return `Ok(None)`.
-       - `Esc`: clear prompt block and return `Ok(None)`.
-       - `Backspace`: pop last char.
-       - `Char(c)`: append char.
-       - `Enter`:
-         - If buffer is not empty: trim whitespace, clear prompt block, return `Ok(Some(trimmed))`.
-         - If buffer is empty and `current_key` is present: clear prompt block, return `Ok(Some(current_key.to_string()))`.
-         - If buffer is empty and no current key: clear prompt block, return `Ok(None)`.
-   - Redraw loop: rewrite in place with `\x1b[{}A` and `\x1b[2K\r`.
-   - Teardown: erase prompt lines so the screen stays clean.
-6. **Generic Text Prompt:**
-   ```rust
-   pub fn prompt_text(prompt_label: &str, default_value: Option<&str>, allow_empty: bool) -> io::Result<Option<String>>
-   ```
-   - For custom provider identifier name and base URL.
-   - Handles typing, backspace, paste, Enter, Esc, Ctrl+C.
-7. **Code Quality:**
-   - `cargo fmt`
-   - `cargo clippy -j 1 --bin minicode -- -D warnings`
-8. **Commit:**
-   - `feat(ui): implement masked API key input and text prompt primitives`
+   - Update `RawConfig::merge_raw` to merge `default_models`.
+2. Implement 6-Tier Resolution on `Config`:
+   - `pub fn find_first_configured_provider(&self) -> Option<(&str, &str)>`
+     Checks known providers in order: `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`, and local providers (`ollama`, `lmstudio`). If any has a valid key (or is local), returns `(provider_name, default_model)`.
+   - `pub fn resolve_active_provider_and_model(&self, workspace_root: Option<&Path>) -> (String, String)`:
+     1. If `!self.provider.default.is_empty() && !self.provider.model.is_empty()` (e.g. from CLI flag or env var override): return `(self.provider.default.clone(), self.provider.model.clone())`.
+     2. Check workspace preference: if `workspace_root` has a saved preference in `load_workspace_preference(ws)`: return that provider and model!
+     3. Check `find_first_configured_provider()`: if found, return it!
+     4. If none found, return `(String::new(), String::new())` (empty fallback, triggering Gate 1 deferred setup when prompt arrives).
+   - Implement `resolve_active_provider_and_model_with_registry(workspace_root: Option<&Path>, registry_path: Option<&Path>) -> (String, String)` for deterministic testing.
+   - Update `get_default_model_for_provider(&self, provider_name: &str) -> String`:
+     First checks `self.provider.default_models.get(provider_name)`; if present and not empty, returns it! Otherwise calls `Config::get_default_model_for_provider(provider_name)`.
+3. In `src/app/commands.rs`:
+   - In Gate 1 check:
+     If `self.config.provider.default.is_empty()`: automatically trigger Gate 1 `ModalState::new_provider_setup_required("", &prompt_to_run)`.
+4. In `Config::load`:
+   - After merging raw configs, call `resolve_active_provider_and_model(workspace_dir)`:
+     If `config.provider.default.is_empty()` or `config.provider.model.is_empty()`:
+     fill them in with the resolved provider and model!
+5. Follow TDD:
+   - Add unit test `test_dynamic_provider_resolution_hierarchy` and `test_default_models_override` in `src/config.rs`.
+   - Targeted tests:
+     `cargo test -j 1 --lib config::tests::test_dynamic_provider_resolution_hierarchy`
+     `cargo test -j 1 --lib config::tests::test_default_models_override`
+   - Run formatting: `cargo fmt`
+   - Run clippy: `cargo clippy -j 1 --bin minicode -- -D warnings`
+6. Commit with message: `feat(config): eliminate hardcoded defaults with 6-tier dynamic provider resolution`

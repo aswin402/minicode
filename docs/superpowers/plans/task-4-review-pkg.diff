@@ -1,260 +1,1407 @@
-diff --git a/src/main.rs b/src/main.rs
-index b8c6f17..f6d8784 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -23,7 +23,6 @@ use error::Result;
- use std::path::{Path, PathBuf};
- use std::sync::OnceLock;
- use tokio::sync::mpsc;
--use ui::ConfigMenu;
- 
- fn get_version_banner() -> &'static str {
-     static BANNER: OnceLock<String> = OnceLock::new();
-@@ -125,9 +124,9 @@ struct Cli {
- 
- #[derive(Subcommand, Debug)]
- enum Commands {
--    /// Interactive configuration wizard (select provider, model, API keys, approval policy)
--    #[command(alias = "config", alias = "setup")]
--    Configure,
-+    /// Interactive configuration wizard (setup active provider, models, and API keys)
-+    #[command(alias = "configure", alias = "config")]
-+    Setup,
- 
-     /// Execute a one-shot autonomous task non-interactively
-     Run {
-@@ -294,9 +293,9 @@ async fn main() -> anyhow::Result<()> {
-     }
-     let workspace_canonical = std::fs::canonicalize(&workspace_dir).unwrap_or(workspace_dir);
- 
--    // 2. Dispatch early commands (configure, logs) immediately before file logger initialization
--    if let Some(Commands::Configure) = cli.command {
--        ConfigMenu::run_interactive(&workspace_canonical).await?;
-+    // 2. Dispatch early commands (setup, logs) immediately before file logger initialization
-+    if let Some(Commands::Setup) = cli.command {
-+        ui::setup::SetupWizard::run(&workspace_canonical).await?;
-         return Ok(());
-     }
-     if let Some(Commands::Logs {
-@@ -384,7 +383,7 @@ async fn main() -> anyhow::Result<()> {
- 
-     // 5. Dispatch execution mode
-     match cli.command {
--        Some(Commands::Configure) => unreachable!(), // Handled earlier
-+        Some(Commands::Setup) => unreachable!(), // Handled earlier
-         Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
-         Some(Commands::Run { task }) => {
-             let resume_session_id = if cli.continue_session {
-@@ -662,7 +661,7 @@ async fn run_headless_task(
-         Err(e) => {
-             eprintln!(
-                 "\n\x1b[31m✗ Configuration error:\x1b[0m {}\n\
--                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
-+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up your providers and API keys.\x1b[0m\n",
-                 e
-             );
-             return Err(e);
-@@ -820,7 +819,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
-         Ok(key) => key,
-         Err(e) => {
-             emit_invalid_command(&format!(
--                "Startup failed: {}. Fix the configuration with 'minicode configure', then reconnect.",
-+                "Startup failed: {}. Fix the configuration with 'minicode setup', then reconnect.",
-                 e
-             ));
-             return Err(e);
-@@ -1085,7 +1084,7 @@ async fn run_interactive_mode(
-         if let Some(ref err_msg) = startup_err {
-             println!(
-                 "\x1b[33m⚠️ Provider warning:\x1b[0m {}\n\
--                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode configure\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
-+                 \x1b[90m💡 Tip: Run \x1b[1;36mminicode setup\x1b[0m\x1b[90m to set up providers or API keys.\x1b[0m\n",
-                 err_msg
-             );
+commit 63975302fd48193bb9a50647e05f1ee8bad1512c
+Author: aswin402 <aswinvishal402@gmail.com>
+Date:   Mon Sep 21 02:16:34 2026 +0530
+
+    feat(ui): implement interactive in-TUI /settings modal and config permission card
+
+diff --git a/src/app/commands.rs b/src/app/commands.rs
+index 66abc7a..fc842e8 100644
+--- a/src/app/commands.rs
++++ b/src/app/commands.rs
+@@ -175,8 +175,70 @@ impl<'a> App<'a> {
+             return Ok(CommandAction::Continue);
          }
-diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index 535d15b..00feb8e 100644
---- a/src/ui/mod.rs
-+++ b/src/ui/mod.rs
-@@ -23,6 +23,7 @@ pub use animation::{render_live_activity_line, AgentActivity};
- pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
- #[allow(unused_imports)]
- pub use clipboard::copy_to_clipboard;
-+#[allow(unused_imports)]
- pub use configure::ConfigMenu;
- #[allow(unused_imports)]
- pub use diff_viewer::DiffViewer;
-@@ -35,7 +36,7 @@ pub use markdown::MarkdownRenderer;
- pub use modal::ModalState;
- pub use pty_drawer::PtyDrawer;
- #[allow(unused_imports)]
--pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
-+pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
- pub use status::{StatusContext, StatusWidgets};
- #[allow(unused_imports)]
- pub use subagent_drawer::SubagentDrawer;
-diff --git a/tests/integration_setup_wizard.rs b/tests/integration_setup_wizard.rs
+ 
+-        if prompt == "/configure"
++        if prompt == "/settings"
++            || prompt.starts_with("/settings ")
+             || prompt == "/config"
++            || prompt.starts_with("/config ")
++            || prompt == "/preferences"
++            || prompt.starts_with("/preferences ")
++        {
++            let remainder = if let Some(r) = prompt.strip_prefix("/settings") {
++                r.trim()
++            } else if let Some(r) = prompt.strip_prefix("/config") {
++                r.trim()
++            } else {
++                prompt.strip_prefix("/preferences").unwrap_or("").trim()
++            };
++
++            if remainder.is_empty() {
++                self.modal = ModalState::new_settings(&self.config, &self.workspace_root);
++            } else {
++                let parts: Vec<&str> = remainder.split_whitespace().collect();
++                match parts.as_slice() {
++                    ["model", prov, model] => {
++                        self.config
++                            .provider
++                            .default_models
++                            .insert((*prov).to_string(), (*model).to_string());
++                        let _ = self.config.save(Some(&self.workspace_root));
++                        self.timeline.add_status(format!(
++                            "✔ Default model for provider '{}' set to '{}'",
++                            prov, model
++                        ));
++                    }
++                    ["auto_approve", val] => {
++                        let enabled = matches!(val.to_lowercase().as_str(), "on" | "true" | "1");
++                        self.config.agent.auto_approve = enabled;
++                        let _ = self.config.save(Some(&self.workspace_root));
++                        self.timeline.add_status(format!(
++                            "✔ Auto-approve {}",
++                            if enabled { "enabled" } else { "disabled" }
++                        ));
++                    }
++                    ["thinking", tokens_str] => {
++                        let budget = match tokens_str.to_lowercase().as_str() {
++                            "off" | "none" | "0" => 0,
++                            "4k" => 4096,
++                            "8k" => 8192,
++                            "16k" => 16384,
++                            "32k" => 32768,
++                            other => other.parse::<usize>().unwrap_or(0),
++                        };
++                        self.config.provider.thinking_budget =
++                            if budget == 0 { None } else { Some(budget) };
++                        let _ = self.config.save(Some(&self.workspace_root));
++                        self.timeline
++                            .add_status(format!("✔ Thinking budget set to {} tokens", budget));
++                    }
++                    _ => {
++                        self.modal = ModalState::new_settings(&self.config, &self.workspace_root);
++                    }
++                }
++            }
++            return Ok(CommandAction::Continue);
++        }
++
++        if prompt == "/configure"
+             || prompt == "/setup"
+             || prompt == "/keys"
+             || prompt == "/key"
+diff --git a/src/app/modals.rs b/src/app/modals.rs
+index 90140a7..39ceacc 100644
+--- a/src/app/modals.rs
++++ b/src/app/modals.rs
+@@ -1581,6 +1581,235 @@ impl<'a> App<'a> {
+                 }
+                 _ => {}
+             },
++            ModalState::Settings(state) => match key.code {
++                KeyCode::Tab => {
++                    state.next_tab();
++                }
++                KeyCode::BackTab => {
++                    state.prev_tab();
++                }
++                KeyCode::Up | KeyCode::Char('k') => {
++                    state.prev_item();
++                }
++                KeyCode::Down | KeyCode::Char('j') => {
++                    state.next_item();
++                }
++                KeyCode::Enter | KeyCode::Char(' ') => match state.active_tab {
++                    crate::ui::modals::settings::SettingsTab::Providers => {
++                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
++                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
++                            state.active_provider = prov.to_string();
++                            state.active_model = self.config.get_default_model_for_provider(prov);
++                        }
++                    }
++                    crate::ui::modals::settings::SettingsTab::Workspace => {
++                        state.save_to_workspace = !state.save_to_workspace;
++                    }
++                    crate::ui::modals::settings::SettingsTab::Autonomy => {
++                        match state.selected_index {
++                            0 => {
++                                state.auto_approve = !state.auto_approve;
++                            }
++                            1 => {
++                                state.thinking_budget = match state.thinking_budget {
++                                    0 => 4096,
++                                    4096 => 8192,
++                                    8192 => 16384,
++                                    16384 => 32768,
++                                    _ => 0,
++                                };
++                            }
++                            2 => {
++                                state.approval_policy =
++                                    match state.approval_policy.to_lowercase().as_str() {
++                                        "strict" => "prompt".to_string(),
++                                        "prompt" => "permissive".to_string(),
++                                        _ => "strict".to_string(),
++                                    };
++                            }
++                            _ => {}
++                        }
++                    }
++                    crate::ui::modals::settings::SettingsTab::Probes => {
++                        state.probing = true;
++                        let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
++                        state.probe_results = Some(results);
++                        state.probing = false;
++                    }
++                },
++                KeyCode::Esc | KeyCode::Char('q') => {
++                    let old_provider = self.config.provider.default.clone();
++                    let old_model = self.config.provider.model.clone();
++
++                    self.config.provider.default = state.active_provider.clone();
++                    self.config.provider.model = state.active_model.clone();
++                    self.config.agent.auto_approve = state.auto_approve;
++                    self.config.provider.thinking_budget = if state.thinking_budget == 0 {
++                        None
++                    } else {
++                        Some(state.thinking_budget)
++                    };
++                    self.config.agent.approval_policy = state.approval_policy.clone();
++
++                    if state.save_to_workspace {
++                        let _ = self.config.save(Some(&self.workspace_root));
++                        let _ = crate::config::Config::save_workspace_preference(
++                            &self.workspace_root,
++                            &self.config.provider.default,
++                            &self.config.provider.model,
++                        );
++                    } else {
++                        let _ = self.config.save(None);
++                    }
++
++                    if old_provider != self.config.provider.default
++                        || old_model != self.config.provider.model
++                    {
++                        let custom_url = self
++                            .config
++                            .get_provider_base_url(&self.config.provider.default);
++                        let key_res = self.config.get_api_key(&self.config.provider.default);
++                        let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
++                            &self.config.provider.default,
++                            key_res,
++                            custom_url.as_deref(),
++                        );
++                        let _ = control_tx.send(AgentCommand::UpdateConfig {
++                            config: Box::new(self.config.clone()),
++                            provider: new_prov,
++                        });
++                    }
++
++                    self.timeline
++                        .add_status("✔ Settings saved successfully".to_string());
++                    self.modal = ModalState::None;
++                }
++                _ => {}
++            },
++            ModalState::ConfigApproval {
++                ref proposal,
++                ref mut selected_index,
++            } => match key.code {
++                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
++                    *selected_index = if *selected_index == 0 { 1 } else { 0 };
++                }
++                KeyCode::Char('1') => {
++                    let prop = proposal.clone();
++                    match crate::tools::registry::agent_tools::config_tools::apply_proposal(
++                        &prop,
++                        &self.workspace_root,
++                    ) {
++                        Ok(_) => {
++                            if let Some(ref p) = prop.provider {
++                                self.config.provider.default = p.clone();
++                            }
++                            if let Some(ref m) = prop.model {
++                                self.config.provider.model = m.clone();
++                            }
++                            if let Some(aa) = prop.auto_approve {
++                                self.config.agent.auto_approve = aa;
++                            }
++                            if let Some(tb) = prop.thinking_budget {
++                                self.config.provider.thinking_budget =
++                                    if tb == 0 { None } else { Some(tb) };
++                            }
++                            if let Some(ref th) = prop.theme {
++                                self.config.ui.theme = th.clone();
++                                self.theme = Theme::detect(th);
++                            }
++
++                            let custom_url = self
++                                .config
++                                .get_provider_base_url(&self.config.provider.default);
++                            let key_res = self.config.get_api_key(&self.config.provider.default);
++                            let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
++                                &self.config.provider.default,
++                                key_res,
++                                custom_url.as_deref(),
++                            );
++                            let _ = control_tx.send(AgentCommand::UpdateConfig {
++                                config: Box::new(self.config.clone()),
++                                provider: new_prov,
++                            });
++
++                            self.timeline.add_status(
++                                "✔ Configuration change proposal applied successfully.".to_string(),
++                            );
++                        }
++                        Err(e) => {
++                            self.timeline
++                                .add_status(format!("✗ Failed to apply config proposal: {}", e));
++                        }
++                    }
++                    self.modal = ModalState::None;
++                }
++                KeyCode::Char('2') | KeyCode::Esc => {
++                    self.timeline
++                        .add_status("Config change proposal declined.".to_string());
++                    self.modal = ModalState::None;
++                }
++                KeyCode::Enter => {
++                    if *selected_index == 0 {
++                        let prop = proposal.clone();
++                        match crate::tools::registry::agent_tools::config_tools::apply_proposal(
++                            &prop,
++                            &self.workspace_root,
++                        ) {
++                            Ok(_) => {
++                                if let Some(ref p) = prop.provider {
++                                    self.config.provider.default = p.clone();
++                                }
++                                if let Some(ref m) = prop.model {
++                                    self.config.provider.model = m.clone();
++                                }
++                                if let Some(aa) = prop.auto_approve {
++                                    self.config.agent.auto_approve = aa;
++                                }
++                                if let Some(tb) = prop.thinking_budget {
++                                    self.config.provider.thinking_budget =
++                                        if tb == 0 { None } else { Some(tb) };
++                                }
++                                if let Some(ref th) = prop.theme {
++                                    self.config.ui.theme = th.clone();
++                                    self.theme = Theme::detect(th);
++                                }
++
++                                let custom_url = self
++                                    .config
++                                    .get_provider_base_url(&self.config.provider.default);
++                                let key_res =
++                                    self.config.get_api_key(&self.config.provider.default);
++                                let (new_prov, _) =
++                                    crate::agent::provider::create_provider_or_fallback(
++                                        &self.config.provider.default,
++                                        key_res,
++                                        custom_url.as_deref(),
++                                    );
++                                let _ = control_tx.send(AgentCommand::UpdateConfig {
++                                    config: Box::new(self.config.clone()),
++                                    provider: new_prov,
++                                });
++
++                                self.timeline.add_status(
++                                    "✔ Configuration change proposal applied successfully."
++                                        .to_string(),
++                                );
++                            }
++                            Err(e) => {
++                                self.timeline.add_status(format!(
++                                    "✗ Failed to apply config proposal: {}",
++                                    e
++                                ));
++                            }
++                        }
++                    } else {
++                        self.timeline
++                            .add_status("Config change proposal declined.".to_string());
++                    }
++                    self.modal = ModalState::None;
++                }
++                _ => {}
++            },
+         }
+     }
+ 
+diff --git a/src/tools/registry/agent_tools/config_tools.rs b/src/tools/registry/agent_tools/config_tools.rs
+index 51e962f..9098165 100644
+--- a/src/tools/registry/agent_tools/config_tools.rs
++++ b/src/tools/registry/agent_tools/config_tools.rs
+@@ -108,6 +108,9 @@ pub struct ProviderConnectionReport {
+     pub error: Option<String>,
+ }
+ 
++/// Convenience alias for connection test reports used by modals and diagnostic tools.
++pub type ConnectionTestResult = ProviderConnectionReport;
++
+ /// Information about an available model from a provider.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+ pub struct AvailableModelItem {
+@@ -505,7 +508,7 @@ fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
+ }
+ 
+ /// Tests connectivity for an individual provider endpoint while enforcing zero plaintext key leakage.
+-async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnectionReport {
++pub async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnectionReport {
+     let norm = provider.to_lowercase();
+     let key_res = config.get_api_key(&norm);
+     let is_local = config.is_local_provider(&norm);
+@@ -583,6 +586,25 @@ async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnec
+     }
+ }
+ 
++/// Tests connectivity for an individual provider endpoint (convenience wrapper).
++#[allow(dead_code)]
++pub async fn test_provider_connection(provider: &str, config: &Config) -> ConnectionTestResult {
++    test_single_provider(provider, config).await
++}
++
++/// Tests connectivity for all supported cloud and local provider endpoints.
++pub async fn test_all_provider_connections(config: &Config) -> Vec<ConnectionTestResult> {
++    let mut all_providers = Vec::new();
++    all_providers.extend_from_slice(&CLOUD_PROVIDERS);
++    all_providers.extend_from_slice(&LOCAL_PROVIDERS);
++
++    let mut reports = Vec::with_capacity(all_providers.len());
++    for p in all_providers {
++        reports.push(test_single_provider(p, config).await);
++    }
++    reports
++}
++
+ /// Unified dispatcher routing calls for the 4 agent configuration management tools.
+ pub async fn dispatch(
+     tool_name: &str,
+diff --git a/src/ui/modals/mod.rs b/src/ui/modals/mod.rs
+index 954457f..7d7f130 100644
+--- a/src/ui/modals/mod.rs
++++ b/src/ui/modals/mod.rs
+@@ -12,6 +12,7 @@ pub mod help;
+ pub mod model_select;
+ pub mod provider_select;
+ pub mod session_browser;
++pub mod settings;
+ pub mod stack_select;
+ pub mod streaming_select;
+ pub mod theme_select;
+@@ -137,6 +138,12 @@ pub enum ModalState {
+         active_tab: usize,
+         scroll_offset: usize,
+     },
++    Settings(settings::SettingsModalState),
++    #[allow(dead_code)]
++    ConfigApproval {
++        proposal: crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
++        selected_index: usize,
++    },
+ }
+ 
+ impl ModalState {
+@@ -144,6 +151,23 @@ impl ModalState {
+         !matches!(self, ModalState::None)
+     }
+ 
++    pub fn new_settings(config: &crate::config::Config, workspace_root: &std::path::Path) -> Self {
++        Self::Settings(settings::SettingsModalState::from_config(
++            config,
++            workspace_root,
++        ))
++    }
++
++    #[allow(dead_code)]
++    pub fn new_config_approval(
++        proposal: crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
++    ) -> Self {
++        Self::ConfigApproval {
++            proposal,
++            selected_index: 0,
++        }
++    }
++
+     pub fn new_context_diagnostics(data: context_diagnostics::ContextDiagnosticsData) -> Self {
+         Self::ContextDiagnostics {
+             data: Box::new(data),
+@@ -812,6 +836,15 @@ impl ModalState {
+                     *scroll_offset,
+                 );
+             }
++            ModalState::Settings(state) => {
++                settings::render_settings(frame, area, theme, state);
++            }
++            ModalState::ConfigApproval {
++                proposal,
++                selected_index,
++            } => {
++                settings::render_config_approval(frame, area, theme, proposal, *selected_index);
++            }
+         }
+     }
+ }
+@@ -1103,4 +1136,61 @@ mod tests {
+             })
+             .unwrap();
+     }
++
++    #[test]
++    fn test_new_settings_initial_state_and_render() {
++        let temp_dir = TempDir::new().unwrap();
++        let config = crate::config::Config::default();
++        let modal = ModalState::new_settings(&config, temp_dir.path());
++        match modal {
++            ModalState::Settings(ref s) => {
++                assert_eq!(s.active_tab, settings::SettingsTab::Providers);
++                assert_eq!(s.selected_index, 0);
++            }
++            _ => panic!("Expected Settings variant"),
++        }
++
++        let theme = Theme::default();
++        let backend = TestBackend::new(100, 30);
++        let mut terminal = Terminal::new(backend).unwrap();
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                modal.render(f, area, &theme);
++            })
++            .unwrap();
++    }
++
++    #[test]
++    fn test_new_config_approval_initial_state_and_render() {
++        let proposal = crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal {
++            scope: "workspace".to_string(),
++            provider: Some("anthropic".to_string()),
++            model: Some("claude-3-7-sonnet".to_string()),
++            auto_approve: Some(true),
++            thinking_budget: Some(4096),
++            theme: None,
++        };
++        let modal = ModalState::new_config_approval(proposal);
++        match modal {
++            ModalState::ConfigApproval {
++                ref proposal,
++                selected_index,
++            } => {
++                assert_eq!(selected_index, 0);
++                assert_eq!(proposal.provider.as_deref(), Some("anthropic"));
++            }
++            _ => panic!("Expected ConfigApproval variant"),
++        }
++
++        let theme = Theme::default();
++        let backend = TestBackend::new(100, 30);
++        let mut terminal = Terminal::new(backend).unwrap();
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                modal.render(f, area, &theme);
++            })
++            .unwrap();
++    }
+ }
+diff --git a/src/ui/modals/settings.rs b/src/ui/modals/settings.rs
 new file mode 100644
-index 0000000..4d08a47
+index 0000000..9d2caa8
 --- /dev/null
-+++ b/tests/integration_setup_wizard.rs
-@@ -0,0 +1,158 @@
-+use minicode::ui::setup::SetupWizard;
-+use std::process::{Command, Stdio};
++++ b/src/ui/modals/settings.rs
+@@ -0,0 +1,903 @@
++//! In-TUI settings management modal and autonomous configuration permission cards.
 +
-+#[test]
-+fn test_setup_help_command() {
-+    let bin = env!("CARGO_BIN_EXE_minicode");
-+    let output = Command::new(bin)
-+        .args(["setup", "--help"])
-+        .output()
-+        .expect("Failed to execute minicode setup --help");
++use crate::config::Config;
++use crate::constants::SUPPORTED_PROVIDERS;
++use crate::tools::registry::agent_tools::config_tools::{
++    ConfigChangeProposal, ConnectionTestResult,
++};
++use crate::ui::layout_utils::{centered_rect_exact, compute_scroll_offset};
++use crate::ui::theme::Theme;
++use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
++use ratatui::style::{Modifier, Style};
++use ratatui::text::{Line, Span};
++use ratatui::widgets::{Block, Borders, Clear, Paragraph};
++use ratatui::Frame;
++use std::path::Path;
 +
-+    assert!(
-+        output.status.success(),
-+        "minicode setup --help failed with status: {:?}",
-+        output.status
-+    );
-+    let stdout = String::from_utf8_lossy(&output.stdout);
-+    assert!(
-+        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
-+        "Help output should describe setup command: {}",
-+        stdout
-+    );
++/// Active tab within the `/settings` modal.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum SettingsTab {
++    Providers,
++    Workspace,
++    Autonomy,
++    Probes,
 +}
 +
-+#[test]
-+fn test_configure_alias_help() {
-+    let bin = env!("CARGO_BIN_EXE_minicode");
-+    let output = Command::new(bin)
-+        .args(["configure", "--help"])
-+        .output()
-+        .expect("Failed to execute minicode configure --help");
++impl SettingsTab {
++    /// Returns all tabs in order.
++    pub fn all() -> &'static [SettingsTab] {
++        &[
++            SettingsTab::Providers,
++            SettingsTab::Workspace,
++            SettingsTab::Autonomy,
++            SettingsTab::Probes,
++        ]
++    }
 +
-+    assert!(
-+        output.status.success(),
-+        "minicode configure --help failed with status: {:?}",
-+        output.status
-+    );
-+    let stdout = String::from_utf8_lossy(&output.stdout);
-+    assert!(
-+        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
-+        "Help output should describe setup/configure command: {}",
-+        stdout
-+    );
-+}
++    /// Tab display title.
++    pub fn title(&self) -> &'static str {
++        match self {
++            SettingsTab::Providers => "1. Providers",
++            SettingsTab::Workspace => "2. Workspace",
++            SettingsTab::Autonomy => "3. Autonomy",
++            SettingsTab::Probes => "4. Probes",
++        }
++    }
 +
-+#[test]
-+fn test_config_alias_help() {
-+    let bin = env!("CARGO_BIN_EXE_minicode");
-+    let output = Command::new(bin)
-+        .args(["config", "--help"])
-+        .output()
-+        .expect("Failed to execute minicode config --help");
++    /// Cycles to the next tab.
++    pub fn next(&self) -> Self {
++        match self {
++            SettingsTab::Providers => SettingsTab::Workspace,
++            SettingsTab::Workspace => SettingsTab::Autonomy,
++            SettingsTab::Autonomy => SettingsTab::Probes,
++            SettingsTab::Probes => SettingsTab::Providers,
++        }
++    }
 +
-+    assert!(
-+        output.status.success(),
-+        "minicode config --help failed with status: {:?}",
-+        output.status
-+    );
-+    let stdout = String::from_utf8_lossy(&output.stdout);
-+    assert!(
-+        stdout.contains("setup") || stdout.contains("Interactive configuration wizard"),
-+        "Help output should describe setup/config command: {}",
-+        stdout
-+    );
-+}
-+
-+#[test]
-+fn test_setup_non_interactive_fails_gracefully() {
-+    let bin = env!("CARGO_BIN_EXE_minicode");
-+    let output = Command::new(bin)
-+        .arg("setup")
-+        .stdin(Stdio::null())
-+        .output()
-+        .expect("Failed to execute minicode setup with Stdio::null");
-+
-+    assert!(
-+        !output.status.success(),
-+        "minicode setup must fail when executed non-interactively"
-+    );
-+
-+    let stderr = String::from_utf8_lossy(&output.stderr);
-+    let stdout = String::from_utf8_lossy(&output.stdout);
-+    let combined = format!("{stdout}\n{stderr}");
-+
-+    assert!(
-+        !stderr.contains("panicked at"),
-+        "minicode setup should not panic in non-interactive environment: {}",
-+        stderr
-+    );
-+    assert!(
-+        combined.contains("interactive terminal"),
-+        "Expected error message mentioning interactive terminal, got: {}",
-+        combined
-+    );
-+}
-+
-+#[test]
-+fn test_setup_wizard_provider_catalog_completeness() {
-+    let catalog = SetupWizard::provider_catalog();
-+    assert_eq!(
-+        catalog.len(),
-+        10,
-+        "Expected exactly 10 canonical providers in catalog"
-+    );
-+
-+    let expected_providers = [
-+        ("openrouter", "OPENROUTER_API_KEY"),
-+        ("gemini", "GEMINI_API_KEY"),
-+        ("openai", "OPENAI_API_KEY"),
-+        ("deepseek", "DEEPSEEK_API_KEY"),
-+        ("groq", "GROQ_API_KEY"),
-+        ("minimax", "MINIMAX_API_KEY"),
-+        ("z.ai", "ZHIPU_API_KEY"),
-+        ("together", "TOGETHER_API_KEY"),
-+        ("mistral", "MISTRAL_API_KEY"),
-+        ("ollama", "OLLAMA_API_KEY"),
-+    ];
-+
-+    for (id, expected_env) in expected_providers {
-+        let entry = catalog.iter().find(|(cat_id, _, _)| *cat_id == id);
-+        assert!(
-+            entry.is_some(),
-+            "Provider '{}' must be present in provider_catalog",
-+            id
-+        );
-+
-+        let env_var = SetupWizard::env_var_for_provider(id);
-+        assert_eq!(
-+            env_var, expected_env,
-+            "Environment variable for '{}' must match {}",
-+            id, expected_env
-+        );
-+
-+        let custom_env = SetupWizard::custom_env_var(id);
-+        assert_eq!(
-+            custom_env, expected_env,
-+            "custom_env_var for '{}' must match {}",
-+            id, expected_env
-+        );
++    /// Cycles to the previous tab.
++    pub fn prev(&self) -> Self {
++        match self {
++            SettingsTab::Providers => SettingsTab::Probes,
++            SettingsTab::Workspace => SettingsTab::Providers,
++            SettingsTab::Autonomy => SettingsTab::Workspace,
++            SettingsTab::Probes => SettingsTab::Autonomy,
++        }
 +    }
 +}
 +
-+#[test]
-+fn test_main_help_lists_setup_subcommand() {
-+    let bin = env!("CARGO_BIN_EXE_minicode");
-+    let output = Command::new(bin)
-+        .arg("--help")
-+        .output()
-+        .expect("Failed to execute minicode --help");
-+
-+    assert!(output.status.success());
-+    let stdout = String::from_utf8_lossy(&output.stdout);
-+    assert!(
-+        stdout.contains("setup") && stdout.contains("Interactive configuration wizard"),
-+        "minicode --help should list 'setup' subcommand: {}",
-+        stdout
-+    );
++/// State tracking an interactive in-TUI `/settings` modal dialog.
++#[derive(Debug, Clone)]
++pub struct SettingsModalState {
++    pub active_tab: SettingsTab,
++    pub selected_index: usize,
++    pub active_provider: String,
++    pub active_model: String,
++    pub workspace_path: String,
++    pub save_to_workspace: bool,
++    pub auto_approve: bool,
++    pub thinking_budget: usize,
++    pub approval_policy: String,
++    pub probe_results: Option<Vec<ConnectionTestResult>>,
++    pub probing: bool,
 +}
-3994102 feat(cli): promote minicode setup as primary configuration command with configure alias
++
++impl SettingsModalState {
++    /// Constructs a new `SettingsModalState` from current runtime configuration and workspace root.
++    pub fn from_config(config: &Config, workspace_root: &Path) -> Self {
++        let workspace_path = if let Ok(home) = std::env::var("HOME") {
++            let p_str = workspace_root.display().to_string();
++            if let Some(rest) = p_str.strip_prefix(&home) {
++                format!("~{}", rest)
++            } else {
++                p_str
++            }
++        } else {
++            workspace_root.display().to_string()
++        };
++
++        let has_local_config = workspace_root
++            .join(crate::constants::WORKSPACE_DIR_NAME)
++            .join(crate::constants::CONFIG_FILE_NAME)
++            .exists();
++        let has_global_config = dirs::config_dir()
++            .map(|d| {
++                d.join(crate::constants::CONFIG_DIR_NAME)
++                    .join(crate::constants::CONFIG_FILE_NAME)
++                    .exists()
++            })
++            .unwrap_or(false);
++        let save_to_workspace = has_local_config || !has_global_config;
++
++        Self {
++            active_tab: SettingsTab::Providers,
++            selected_index: 0,
++            active_provider: config.provider.default.clone(),
++            active_model: config.provider.model.clone(),
++            workspace_path,
++            save_to_workspace,
++            auto_approve: config.agent.auto_approve,
++            thinking_budget: config.provider.thinking_budget.unwrap_or(0),
++            approval_policy: config.agent.approval_policy.clone(),
++            probe_results: None,
++            probing: false,
++        }
++    }
++
++    /// Switches to next tab and resets selection index.
++    pub fn next_tab(&mut self) {
++        self.active_tab = self.active_tab.next();
++        self.selected_index = 0;
++    }
++
++    /// Switches to previous tab and resets selection index.
++    pub fn prev_tab(&mut self) {
++        self.active_tab = self.active_tab.prev();
++        self.selected_index = 0;
++    }
++
++    /// Returns the maximum selectable items for the active tab.
++    pub fn max_items(&self) -> usize {
++        match self.active_tab {
++            SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
++            SettingsTab::Workspace => 3,
++            SettingsTab::Autonomy => 3,
++            SettingsTab::Probes => 1,
++        }
++    }
++
++    /// Moves cursor down within the active tab.
++    pub fn next_item(&mut self) {
++        let max = self.max_items();
++        if max > 0 && self.selected_index + 1 < max {
++            self.selected_index += 1;
++        }
++    }
++
++    /// Moves cursor up within the active tab.
++    pub fn prev_item(&mut self) {
++        self.selected_index = self.selected_index.saturating_sub(1);
++    }
++}
++
++/// Renders the `/settings` configuration modal dialog into the provided frame.
++pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
++    let popup_area = centered_rect_exact(78, 22, area);
++    frame.render_widget(Clear, popup_area);
++
++    let block = Block::default()
++        .title(Line::from(vec![Span::styled(
++            " ⚙️ minicode settings ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        )]))
++        .title_alignment(Alignment::Center)
++        .borders(Borders::ALL)
++        .border_type(ratatui::widgets::BorderType::Rounded)
++        .border_style(
++            Style::default()
++                .fg(theme.brand_accent)
++                .bg(theme.bg_elevated),
++        )
++        .style(Style::default().bg(theme.bg_elevated));
++
++    let inner_area = block.inner(popup_area);
++    frame.render_widget(block, popup_area);
++
++    let chunks = Layout::default()
++        .direction(Direction::Vertical)
++        .constraints([
++            Constraint::Length(1), // Tab header bar
++            Constraint::Length(1), // Divider
++            Constraint::Min(6),    // Active tab content
++            Constraint::Length(1), // Footer key hints
++        ])
++        .split(inner_area);
++
++    // 1. Tab header bar
++    let mut tab_spans = vec![Span::raw("  ")];
++    for tab in SettingsTab::all() {
++        let is_active = *tab == state.active_tab;
++        let style = if is_active {
++            Style::default()
++                .fg(theme.bg_primary)
++                .bg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD)
++        } else {
++            Style::default().fg(theme.text_primary)
++        };
++
++        tab_spans.push(Span::styled(format!(" [ {} ] ", tab.title()), style));
++        tab_spans.push(Span::raw("   "));
++    }
++    frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
++
++    // Top Divider
++    let divider = Paragraph::new(Line::from(vec![Span::styled(
++        "─".repeat(inner_area.width as usize),
++        Style::default().fg(theme.border),
++    )]));
++    frame.render_widget(divider, chunks[1]);
++
++    // 2. Active Tab Content Area
++    let mut content_lines = Vec::new();
++    content_lines.push(Line::from(""));
++
++    match state.active_tab {
++        SettingsTab::Providers => {
++            let max_visible = 6;
++            let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
++            let visible_providers = SUPPORTED_PROVIDERS
++                .iter()
++                .enumerate()
++                .skip(scroll_offset)
++                .take(max_visible);
++
++            for (idx, provider) in visible_providers {
++                let is_selected = idx == state.selected_index;
++                let is_active = *provider == state.active_provider;
++                let default_model = Config::static_default_model_for_provider(provider);
++
++                let cursor = if is_selected { "  ❯ " } else { "    " };
++                let prov_style = if is_selected {
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD)
++                } else {
++                    Style::default().fg(theme.text_primary)
++                };
++
++                let mut spans = vec![
++                    Span::styled(
++                        cursor,
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD),
++                    ),
++                    Span::styled(format!("{:<14}", provider), prov_style),
++                    Span::styled(" default: ", Style::default().fg(theme.muted)),
++                    Span::styled(
++                        format!("{:<26}", default_model),
++                        Style::default().fg(theme.text_primary),
++                    ),
++                ];
++
++                if is_active {
++                    spans.push(Span::styled(
++                        " [Active ✔]",
++                        Style::default()
++                            .fg(theme.success)
++                            .add_modifier(Modifier::BOLD),
++                    ));
++                }
++
++                content_lines.push(Line::from(spans));
++            }
++            content_lines.push(Line::from(""));
++            content_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled(
++                    "Press [Enter] or [Space] to select active provider",
++                    Style::default().fg(theme.muted),
++                ),
++            ]));
++        }
++        SettingsTab::Workspace => {
++            // Item 0: Root path
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 0 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "📂 Workspace Root: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    &state.workspace_path,
++                    Style::default().fg(theme.text_primary),
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++
++            // Item 1: Active provider and model
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 1 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "🤖 Assigned Provider & Model: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    format!("{} → {}", state.active_provider, state.active_model),
++                    Style::default().fg(theme.text_primary),
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++
++            // Item 2: Scope toggle
++            let scope_label = if state.save_to_workspace {
++                "[●] Workspace only (.minicode/config.toml)    [○] Globally"
++            } else {
++                "[○] Workspace only    [●] Globally (~/.config/minicode/config.toml)"
++            };
++
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 2 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "🎯 Scope Preference: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    scope_label,
++                    if state.selected_index == 2 {
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD)
++                    } else {
++                        Style::default().fg(theme.text_primary)
++                    },
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++            content_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled(
++                    "Press [Enter] or [Space] to toggle scope preference",
++                    Style::default().fg(theme.muted),
++                ),
++            ]));
++        }
++        SettingsTab::Autonomy => {
++            // Item 0: Auto-Approve
++            let auto_appr_text = if state.auto_approve {
++                "[x] Enabled (Auto-execute tools without manual prompts)"
++            } else {
++                "[ ] Disabled (Prompt user before executing mutating actions)"
++            };
++
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 0 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "⚡ Auto-Approve: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    auto_appr_text,
++                    if state.selected_index == 0 {
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD)
++                    } else {
++                        Style::default().fg(theme.text_primary)
++                    },
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++
++            // Item 1: Thinking Budget
++            let budget_label = if state.thinking_budget == 0 {
++                "0 tokens (Disabled)".to_string()
++            } else {
++                format!("{} tokens", state.thinking_budget)
++            };
++
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 1 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "🧠 Extended Thinking Budget: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    budget_label,
++                    if state.selected_index == 1 {
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD)
++                    } else {
++                        Style::default().fg(theme.text_primary)
++                    },
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++
++            // Item 2: Approval Policy
++            content_lines.push(Line::from(vec![
++                Span::styled(
++                    if state.selected_index == 2 {
++                        "  ❯ "
++                    } else {
++                        "    "
++                    },
++                    Style::default().fg(theme.brand_accent),
++                ),
++                Span::styled(
++                    "🛡️ Approval Policy: ",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++                Span::styled(
++                    format!("{} (strict | prompt | permissive)", state.approval_policy),
++                    if state.selected_index == 2 {
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD)
++                    } else {
++                        Style::default().fg(theme.text_primary)
++                    },
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++            content_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled(
++                    "Press [Enter] or [Space] to toggle auto-approve or cycle budget/policy",
++                    Style::default().fg(theme.muted),
++                ),
++            ]));
++        }
++        SettingsTab::Probes => {
++            content_lines.push(Line::from(vec![
++                Span::styled("  ❯ ", Style::default().fg(theme.brand_accent)),
++                Span::styled(
++                    "[ ▶ Probe All Configured Provider Endpoints ]",
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ),
++            ]));
++            content_lines.push(Line::from(""));
++
++            if state.probing {
++                content_lines.push(Line::from(vec![
++                    Span::raw("    "),
++                    Span::styled(
++                        "⏳ Testing connectivity, latency, and credentials...",
++                        Style::default().fg(theme.warning),
++                    ),
++                ]));
++            } else if let Some(ref results) = state.probe_results {
++                for r in results.iter().take(6) {
++                    let status_badge = match r.status.as_str() {
++                        "connected" => {
++                            Span::styled("✔ Connected", Style::default().fg(theme.success))
++                        }
++                        "disconnected" => {
++                            Span::styled("✗ Disconnected", Style::default().fg(theme.destructive))
++                        }
++                        _ => Span::styled("⚠️ Unconfigured", Style::default().fg(theme.warning)),
++                    };
++
++                    let mut line_spans = vec![
++                        Span::raw("    • "),
++                        Span::styled(
++                            format!("{:<12}", r.provider),
++                            Style::default().fg(theme.text_primary),
++                        ),
++                        Span::raw(" : "),
++                        status_badge,
++                        Span::styled(
++                            format!(" ({}ms)", r.latency_ms),
++                            Style::default().fg(theme.muted),
++                        ),
++                    ];
++
++                    if let Some(ref err) = r.error {
++                        let err_preview = if err.chars().count() > 28 {
++                            format!(" — {}...", err.chars().take(25).collect::<String>())
++                        } else {
++                            format!(" — {}", err)
++                        };
++                        line_spans
++                            .push(Span::styled(err_preview, Style::default().fg(theme.muted)));
++                    }
++
++                    content_lines.push(Line::from(line_spans));
++                }
++            } else {
++                content_lines.push(Line::from(vec![
++                    Span::raw("    "),
++                    Span::styled(
++                        "Press [Enter] or [Space] to test connections & latency.",
++                        Style::default().fg(theme.muted),
++                    ),
++                ]));
++            }
++        }
++    }
++
++    let content_p = Paragraph::new(content_lines);
++    frame.render_widget(content_p, chunks[2]);
++
++    // 3. Footer Key Hints
++    let footer_line = Line::from(vec![
++        Span::styled(
++            "  [Tab] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Next Tab  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            "[↑/↓] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Navigate  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            "[Enter] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Select/Toggle  ", Style::default().fg(theme.text_primary)),
++        Span::styled("[Esc] ", Style::default().fg(theme.muted)),
++        Span::styled("Save & Close", Style::default().fg(theme.muted)),
++    ]);
++    frame.render_widget(Paragraph::new(footer_line), chunks[3]);
++}
++
++/// Renders the configuration modification confirmation card modal.
++pub fn render_config_approval(
++    frame: &mut Frame,
++    area: Rect,
++    theme: &Theme,
++    proposal: &ConfigChangeProposal,
++    selected_index: usize,
++) {
++    let popup_area = centered_rect_exact(68, 12, area);
++    frame.render_widget(Clear, popup_area);
++
++    let block = Block::default()
++        .title(" ⚙️ Permission Required ")
++        .title_alignment(Alignment::Left)
++        .borders(Borders::ALL)
++        .border_type(ratatui::widgets::BorderType::Rounded)
++        .border_style(Style::default().fg(theme.brand_accent))
++        .style(Style::default().bg(theme.bg_elevated));
++
++    let inner_area = block.inner(popup_area);
++    frame.render_widget(block, popup_area);
++
++    let chunks = Layout::default()
++        .direction(Direction::Vertical)
++        .constraints([
++            Constraint::Length(1), // Header title
++            Constraint::Length(1), // Divider
++            Constraint::Min(4),    // Details
++            Constraint::Length(2), // Action buttons
++        ])
++        .split(inner_area);
++
++    // Header title
++    let header_p = Paragraph::new(Line::from(vec![Span::styled(
++        "  ⚙️ minicode requests permission to modify configuration:",
++        Style::default()
++            .fg(theme.brand_accent)
++            .add_modifier(Modifier::BOLD),
++    )]));
++    frame.render_widget(header_p, chunks[0]);
++
++    // Divider
++    let divider = Paragraph::new(Line::from(vec![Span::styled(
++        "─".repeat(inner_area.width as usize),
++        Style::default().fg(theme.border),
++    )]));
++    frame.render_widget(divider, chunks[1]);
++
++    // Details
++    let mut detail_lines = Vec::new();
++
++    if let Some(ref p) = proposal.provider {
++        detail_lines.push(Line::from(vec![
++            Span::styled(
++                "     • Active Provider : ",
++                Style::default().fg(theme.text_primary),
++            ),
++            Span::styled(
++                p,
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD),
++            ),
++        ]));
++    }
++    if let Some(ref m) = proposal.model {
++        detail_lines.push(Line::from(vec![
++            Span::styled(
++                "     • Active Model    : ",
++                Style::default().fg(theme.text_primary),
++            ),
++            Span::styled(
++                m,
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD),
++            ),
++        ]));
++    }
++    if let Some(aa) = proposal.auto_approve {
++        detail_lines.push(Line::from(vec![
++            Span::styled(
++                "     • Auto Approve    : ",
++                Style::default().fg(theme.text_primary),
++            ),
++            Span::styled(
++                if aa { "true" } else { "false" },
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD),
++            ),
++        ]));
++    }
++    if let Some(tb) = proposal.thinking_budget {
++        detail_lines.push(Line::from(vec![
++            Span::styled(
++                "     • Thinking Budget : ",
++                Style::default().fg(theme.text_primary),
++            ),
++            Span::styled(
++                format!("{} tokens", tb),
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD),
++            ),
++        ]));
++    }
++    if let Some(ref th) = proposal.theme {
++        detail_lines.push(Line::from(vec![
++            Span::styled(
++                "     • Theme           : ",
++                Style::default().fg(theme.text_primary),
++            ),
++            Span::styled(
++                th,
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD),
++            ),
++        ]));
++    }
++
++    let scope_desc = if proposal.scope.eq_ignore_ascii_case("global") {
++        "Global (~/.config/minicode/config.toml)"
++    } else {
++        "Workspace (.minicode/config.toml)"
++    };
++    detail_lines.push(Line::from(vec![
++        Span::styled(
++            "     • Scope           : ",
++            Style::default().fg(theme.text_primary),
++        ),
++        Span::styled(scope_desc, Style::default().fg(theme.warning)),
++    ]));
++
++    let details_p = Paragraph::new(detail_lines);
++    frame.render_widget(details_p, chunks[2]);
++
++    // Action buttons
++    let is_allow_selected = selected_index == 0;
++    let is_deny_selected = selected_index == 1;
++
++    let allow_style = if is_allow_selected {
++        Style::default()
++            .fg(theme.bg_primary)
++            .bg(theme.brand_accent)
++            .add_modifier(Modifier::BOLD)
++    } else {
++        Style::default().fg(theme.text_primary)
++    };
++
++    let deny_style = if is_deny_selected {
++        Style::default()
++            .fg(theme.bg_primary)
++            .bg(theme.destructive)
++            .add_modifier(Modifier::BOLD)
++    } else {
++        Style::default().fg(theme.muted)
++    };
++
++    let buttons_line = Line::from(vec![
++        Span::raw("  "),
++        Span::styled(" [1] Allow Change ", allow_style),
++        Span::raw("    "),
++        Span::styled(" [2] Deny Change ", deny_style),
++    ]);
++    frame.render_widget(Paragraph::new(buttons_line), chunks[3]);
++}
++
++#[cfg(test)]
++pub mod tests {
++    use super::*;
++    use ratatui::backend::TestBackend;
++    use ratatui::Terminal;
++    use tempfile::TempDir;
++
++    #[test]
++    fn test_settings_modal_state_initialization_and_tab_switching() {
++        let temp_dir = TempDir::new().unwrap();
++        let config = Config::default();
++        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
++
++        assert_eq!(state.active_tab, SettingsTab::Providers);
++        assert_eq!(state.selected_index, 0);
++
++        // Next tab
++        state.next_tab();
++        assert_eq!(state.active_tab, SettingsTab::Workspace);
++        assert_eq!(state.selected_index, 0);
++
++        state.next_tab();
++        assert_eq!(state.active_tab, SettingsTab::Autonomy);
++        assert_eq!(state.selected_index, 0);
++
++        state.next_tab();
++        assert_eq!(state.active_tab, SettingsTab::Probes);
++        assert_eq!(state.selected_index, 0);
++
++        // Wrap around
++        state.next_tab();
++        assert_eq!(state.active_tab, SettingsTab::Providers);
++
++        // Prev tab
++        state.prev_tab();
++        assert_eq!(state.active_tab, SettingsTab::Probes);
++
++        state.prev_tab();
++        assert_eq!(state.active_tab, SettingsTab::Autonomy);
++    }
++
++    #[test]
++    fn test_settings_modal_navigation_bounds() {
++        let temp_dir = TempDir::new().unwrap();
++        let config = Config::default();
++        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
++
++        assert_eq!(state.selected_index, 0);
++        state.prev_item();
++        assert_eq!(state.selected_index, 0);
++
++        let max = state.max_items();
++        for _ in 0..max + 5 {
++            state.next_item();
++        }
++        assert_eq!(state.selected_index, max.saturating_sub(1));
++    }
++
++    #[test]
++    fn test_render_settings_all_tabs() {
++        let temp_dir = TempDir::new().unwrap();
++        let config = Config::default();
++        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
++        let theme = Theme::default();
++        let backend = TestBackend::new(90, 30);
++        let mut terminal = Terminal::new(backend).unwrap();
++
++        for tab in SettingsTab::all() {
++            state.active_tab = *tab;
++            state.selected_index = 0;
++            terminal
++                .draw(|f| {
++                    let area = f.area();
++                    render_settings(f, area, &theme, &state);
++                })
++                .unwrap();
++        }
++    }
++
++    #[test]
++    fn test_render_settings_probes_with_results() {
++        let temp_dir = TempDir::new().unwrap();
++        let config = Config::default();
++        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
++        state.active_tab = SettingsTab::Probes;
++        state.probe_results = Some(vec![
++            ConnectionTestResult {
++                provider: "anthropic".to_string(),
++                status: "connected".to_string(),
++                latency_ms: 120,
++                http_status: Some(200),
++                key_source: "environment (ANTHROPIC_API_KEY)".to_string(),
++                key_masked: "sk-ant...xyz".to_string(),
++                model_count: 5,
++                error: None,
++            },
++            ConnectionTestResult {
++                provider: "ollama".to_string(),
++                status: "disconnected".to_string(),
++                latency_ms: 45,
++                http_status: None,
++                key_source: "none (local endpoint)".to_string(),
++                key_masked: String::new(),
++                model_count: 0,
++                error: Some("Connection refused (os error 111)".to_string()),
++            },
++        ]);
++
++        let theme = Theme::default();
++        let backend = TestBackend::new(90, 30);
++        let mut terminal = Terminal::new(backend).unwrap();
++
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                render_settings(f, area, &theme, &state);
++            })
++            .unwrap();
++    }
++
++    #[test]
++    fn test_render_config_approval_dialog() {
++        let proposal = ConfigChangeProposal {
++            scope: "workspace".to_string(),
++            provider: Some("anthropic".to_string()),
++            model: Some("claude-3-7-sonnet-20250219".to_string()),
++            auto_approve: Some(true),
++            thinking_budget: Some(8192),
++            theme: Some("catppuccin".to_string()),
++        };
++
++        let theme = Theme::default();
++        let backend = TestBackend::new(90, 30);
++        let mut terminal = Terminal::new(backend).unwrap();
++
++        // Test with Allow selected (index 0)
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                render_config_approval(f, area, &theme, &proposal, 0);
++            })
++            .unwrap();
++
++        // Test with Deny selected (index 1)
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                render_config_approval(f, area, &theme, &proposal, 1);
++            })
++            .unwrap();
++    }
++}

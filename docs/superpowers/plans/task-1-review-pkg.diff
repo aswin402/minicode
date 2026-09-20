@@ -1,573 +1,260 @@
-diff --git a/docs/superpowers/plans/task-1-brief.md b/docs/superpowers/plans/task-1-brief.md
-index 064e7ce..2d5cbb2 100644
---- a/docs/superpowers/plans/task-1-brief.md
-+++ b/docs/superpowers/plans/task-1-brief.md
-@@ -1,126 +1,45 @@
--# Task 1 Brief: Core Types, Concurrency Engine & `FanoutOrchestrator` Foundation
--
--## Overview
--Implement the core data structures and concurrency runtime for parallel subagent swarm execution in `src/agent/subagent/fanout.rs`, providing bounded concurrency and race/all join policies.
--
--## Files to Create/Modify:
--- Create: `src/agent/subagent/fanout.rs`
--- Modify: `src/agent/subagent/mod.rs` (register and export `pub mod fanout;`)
--
--## Interfaces & Requirements:
--
--### 1. Data Structures (`src/agent/subagent/fanout.rs`):
--```rust
--use std::path::{Path, PathBuf};
--use serde::{Deserialize, Serialize};
--use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
--use crate::error::ToolError;
--
--/// Specification for an individual worker in a fanout swarm.
--#[derive(Debug, Clone, Serialize, Deserialize)]
--pub struct FanoutTaskItem {
--    pub task: String,
--    pub role: SubagentRole,
--    #[serde(default)]
--    pub workspace_mode: Option<WorkspaceMode>,
--    #[serde(default)]
--    pub max_iterations: Option<usize>,
--    #[serde(default)]
--    pub check_cmd: Option<String>,
--}
--
--/// Completion mode for the swarm.
--#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
--#[serde(rename_all = "snake_case")]
--pub enum FanoutJoinMode {
--    All,
--    Race,
--}
--
--impl Default for FanoutJoinMode {
--    fn default() -> Self {
--        Self::All
--    }
--}
--
--/// Status of worktree merge arbitration for a worker.
--#[derive(Debug, Clone, PartialEq, Eq)]
--pub enum MergeStatus {
--    NotApplicable,
--    Merged { commit_hash: Option<String> },
--    VerificationFailed { command: String, exit_code: i32, stderr: String },
--    Conflict { conflicted_files: Vec<String> },
--    RetainedUnmerged,
--    SkippedCancelled,
--}
--
--/// Outcome of an individual worker within the swarm.
--#[derive(Debug, Clone)]
--pub struct WorkerResult {
--    pub agent_id: AgentId,
--    pub role: SubagentRole,
--    pub task: String,
--    pub success: bool,
--    pub duration_ms: u64,
--    pub tokens_used: usize,
--    pub files_modified: Vec<String>,
--    pub worktree_path: Option<PathBuf>,
--    pub branch_name: Option<String>,
--    pub merge_status: MergeStatus,
--    pub summary: String,
--    pub error: Option<String>,
--}
--```
--
--### 2. `FanoutOrchestrator` Implementation:
--```rust
--pub struct FanoutOrchestrator;
--
--impl FanoutOrchestrator {
--    /// Concurrently executes a batch of subagent tasks according to join mode and arbitration policy.
--    pub async fn execute_fanout(
--        workspace_root: &Path,
--        tasks: Vec<FanoutTaskItem>,
--        join_mode: FanoutJoinMode,
--        auto_merge: bool,
--        max_concurrency: usize,
--    ) -> Result<String, ToolError> {
--        if tasks.is_empty() {
--            return Ok("No subagent tasks specified for fan-out.".to_string());
--        }
--
--        let concurrency = max_concurrency.clamp(1, 16);
--        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
--        let cancel_token = tokio_util::sync::CancellationToken::new();
--
--        // Spawn workers and join according to join_mode
--        // ...
--    }
--}
--```
--
--- In `run_single_worker`:
--  - Acquires permit from `semaphore`.
--  - Checks if `cancel_token.is_cancelled()`. If cancelled, returns early with `MergeStatus::SkippedCancelled`.
--  - Determines workspace isolation: `workspace_mode` or role default (`WorkspaceMode::Worktree` for `coder`/`tester`).
--  - Spawns child process via `tokio::process::Command` (calling `std::env::current_exe()`) with `kill_on_drop(true)`, `process_group(0)`, and pipes for stdout/stderr.
--  - Monitors stdout for NDJSON stream events, accumulating tokens, modified files, and final summary.
--  - If `cancel_token` is cancelled during execution, kills the child process and cleans up any provisioned worktree.
--  - On child success, if worktree was used, captures diff and preserves worktree for arbitration.
--  - On child failure, cleans up worktree.
--- If `join_mode == FanoutJoinMode::Race`:
--  - When any worker completes with `success == true`, calls `cancel_token.cancel()`.
--- Generates a baseline report summarizing worker outcomes.
--
--### 3. Unit Tests in `src/agent/subagent/fanout.rs`:
--- `test_fanout_join_mode_serialization`: tests JSON round-trip of `FanoutJoinMode::All` and `FanoutJoinMode::Race`.
--- `test_fanout_empty_tasks`: tests `execute_fanout` with empty tasks vector returns "No subagent tasks specified for fan-out.".
--- `test_fanout_task_item_deserialization`: tests deserialization of a full `FanoutTaskItem` from JSON.
--- `test_merge_status_variants`: tests `MergeStatus` variants equality and formatting.
--
--## Constraints:
--- ONLY run targeted test: `cargo test -j 1 --lib agent::subagent::fanout::tests`.
--- Zero `.unwrap()` or `.expect()` in non-test code.
--- Run `cargo fmt && cargo clippy -j 1 --bin minicode -- -D warnings`.
--- Commit with message: `feat(subagent): implement FanoutOrchestrator engine with bounded concurrency and race join (Phase 134)`
--- Write execution report to `docs/superpowers/plans/task-1-report.md`.
-+# Task 1 Brief: Terminal Raw Mode Guard & Interactive List Selector Primitives
+06c4a1b feat(config): implement universal API key masking and dual-layer workspace registry
+--- STATS ---
+ src/config.rs    | 176 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ src/constants.rs |   2 +
+ 2 files changed, 177 insertions(+), 1 deletion(-)
+--- DIFF ---
+diff --git a/src/config.rs b/src/config.rs
+index 0e57f4d..7f91454 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -1,14 +1,14 @@
+ use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
+ use crate::error::{ConfigError, Result};
+ use serde::{Deserialize, Serialize};
+-use std::path::Path;
++use std::path::{Path, PathBuf};
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+ pub struct Config {
+     #[serde(default)]
+     pub provider: ProviderConfig,
+ 
+     #[serde(default)]
+     pub agent: AgentConfig,
+ 
+     #[serde(default)]
+     pub ui: UiConfig,
+@@ -1127,20 +1127,160 @@ impl Config {
+         } else {
+             env_var.to_string()
+         };
+ 
+         Err(ConfigError::MissingApiKey {
+             provider: provider_name.to_string(),
+             env_var: env_var_string,
+         }
+         .into())
+     }
 +
-+## Objective
-+Implement `TerminalGuard` (RAII terminal raw mode, cursor visibility, bracketed paste) and `InteractiveSelector` (inline arrow-key navigation, `k`/`j` keys, `Enter` selection, `Esc` back/cancel) in `src/ui/setup/`.
++    /// Returns the path to the global workspaces registry file (~/.config/minicode/workspaces.toml)
++    #[allow(dead_code)]
++    pub fn get_workspace_registry_path() -> Option<PathBuf> {
++        dirs::config_dir().map(|d| {
++            d.join(crate::constants::CONFIG_DIR_NAME)
++                .join(crate::constants::WORKSPACES_FILE_NAME)
++        })
++    }
 +
-+## Files to Create / Modify
-+- Create: `src/ui/setup/guard.rs`
-+- Create: `src/ui/setup/selector.rs`
-+- Create: `src/ui/setup/mod.rs`
-+- Modify: `src/ui/mod.rs` (expose `pub mod setup;`)
-+- Tests: `src/ui/setup/selector.rs` (inline unit tests)
++    /// Loads the stored preference for the given workspace root from the global registry.
++    #[allow(dead_code)]
++    pub fn load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference> {
++        let registry_path = Self::get_workspace_registry_path()?;
++        let canonical = match workspace_root.canonicalize() {
++            Ok(c) => c,
++            Err(_) => workspace_root.to_path_buf(),
++        };
++        load_workspace_preference_from_file(&canonical, &registry_path)
++            .or_else(|| load_workspace_preference_from_file(workspace_root, &registry_path))
++    }
 +
-+## Constraints & Requirements
-+1. **Compilation Concurrency:** ONLY run `cargo check -j 1` and `cargo test -j 1`.
-+2. **Targeted Test Execution:** ONLY run `cargo test -j 1 --lib ui::setup::selector::tests`. NEVER run the full test suite.
-+3. **Zero Unwraps:** No `.unwrap()` or `.expect()` in non-test code. Propagate `io::Result<T>`.
-+4. **Terminal Safety:** `TerminalGuard` MUST implement `Drop` to ensure `disable_raw_mode()` and `cursor::Show` are always called, preventing broken terminal states.
-+5. **Interactive Selector UX:**
-+   - Input keys:
-+     - `KeyCode::Up` / `KeyCode::Char('k')` -> `prev_index(current, total)`
-+     - `KeyCode::Down` / `KeyCode::Char('j')` -> `next_index(current, total)`
-+     - `KeyCode::Enter` -> `Ok(Some(current_index))`
-+     - `KeyCode::Esc` -> `Ok(None)`
-+     - `KeyCode::Char('c')` with `KeyModifiers::CONTROL` -> `Ok(None)` or graceful exit
-+   - Rendering:
-+     - Draw header / prompt: `\x1b[1m<prompt>\x1b[0m`
-+     - Highlight line: `\x1b[1;36m  ❯ \x1b[0m\x1b[1m{label}\x1b[0m {badge} \x1b[90m{hint}\x1b[0m`
-+     - Normal line: `    {label} {badge} \x1b[90m{hint}\x1b[0m`
-+     - Footer: `\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m\n  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m`
-+     - Redraw loop: Move cursor up by line count (`\x1b[{}A`), clear line (`\x1b[2K\r`), and redraw.
-+     - On completion: Clear drawn lines so the next screen draws cleanly.
-+   - Index helpers:
-+     ```rust
-+     pub fn prev_index(current: usize, total: usize) -> usize {
-+         if total == 0 { 0 } else if current == 0 { total - 1 } else { current - 1 }
-+     }
-+     pub fn next_index(current: usize, total: usize) -> usize {
-+         if total == 0 { 0 } else if current + 1 >= total { 0 } else { current + 1 }
-+     }
-+     ```
-+6. **Code Quality:**
-+   - `cargo fmt`
-+   - `cargo clippy -j 1 --bin minicode -- -D warnings`
-+7. **Commit:**
-+   - `feat(ui): implement TerminalGuard and InteractiveSelector primitives for setup wizard`
-diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index a1f5ae7..535d15b 100644
---- a/src/ui/mod.rs
-+++ b/src/ui/mod.rs
-@@ -10,6 +10,7 @@ pub mod modal;
- pub mod modals;
- pub mod pty_drawer;
- pub mod selection;
-+pub mod setup;
- pub mod status;
- pub mod subagent_drawer;
- pub mod theme;
-@@ -33,6 +34,8 @@ pub use layout_utils::{centered_rect, centered_rect_exact};
- pub use markdown::MarkdownRenderer;
- pub use modal::ModalState;
- pub use pty_drawer::PtyDrawer;
-+#[allow(unused_imports)]
-+pub use setup::{InteractiveSelector, SelectorItem, TerminalGuard};
- pub use status::{StatusContext, StatusWidgets};
- #[allow(unused_imports)]
- pub use subagent_drawer::SubagentDrawer;
-diff --git a/src/ui/setup/guard.rs b/src/ui/setup/guard.rs
-new file mode 100644
-index 0000000..cc34bc2
---- /dev/null
-+++ b/src/ui/setup/guard.rs
-@@ -0,0 +1,35 @@
-+use crossterm::{
-+    cursor::{Hide, Show},
-+    event::{DisableBracketedPaste, EnableBracketedPaste},
-+    execute,
-+    terminal::{disable_raw_mode, enable_raw_mode},
-+};
-+use std::io::{self, stdout, Write};
-+
-+/// RAII guard that enables raw terminal mode, hides the cursor, and enables bracketed paste.
-+/// When dropped, it automatically restores normal terminal mode, shows the cursor,
-+/// and disables bracketed paste.
-+pub struct TerminalGuard;
-+
-+impl TerminalGuard {
-+    /// Enables raw terminal mode, hides the cursor, and enables bracketed paste.
-+    pub fn new() -> io::Result<Self> {
-+        enable_raw_mode()?;
-+        let mut out = stdout();
-+        if let Err(e) = execute!(out, Hide, EnableBracketedPaste) {
-+            let _ = disable_raw_mode();
-+            return Err(e);
-+        }
-+        let _ = out.flush();
-+        Ok(Self)
++    /// Saves the preferred provider and model for the given workspace root into the global registry.
++    #[allow(dead_code)]
++    pub fn save_workspace_preference(
++        workspace_root: &Path,
++        provider: &str,
++        model: &str,
++    ) -> anyhow::Result<()> {
++        let registry_path = match Self::get_workspace_registry_path() {
++            Some(p) => p,
++            None => anyhow::bail!("Unable to determine config directory"),
++        };
++        let canonical = match workspace_root.canonicalize() {
++            Ok(c) => c,
++            Err(_) => workspace_root.to_path_buf(),
++        };
++        save_workspace_preference_to_file(&canonical, provider, model, &registry_path)
 +    }
 +}
 +
-+impl Drop for TerminalGuard {
-+    fn drop(&mut self) {
-+        let mut out = stdout();
-+        let _ = execute!(out, Show, DisableBracketedPaste);
-+        let _ = disable_raw_mode();
-+        let _ = out.flush();
-+    }
-+}
-diff --git a/src/ui/setup/mod.rs b/src/ui/setup/mod.rs
-new file mode 100644
-index 0000000..514423e
---- /dev/null
-+++ b/src/ui/setup/mod.rs
-@@ -0,0 +1,9 @@
++/// Universally masks sensitive credentials for safe display and tool returns.
++/// Empty or whitespace-only keys return empty string.
++/// Keys <= 8 chars return 8 bullet points "••••••••".
++/// Keys > 8 chars return first 4 chars + "..." + last 4 chars (e.g. "sk-a...cdef").
 +#[allow(dead_code)]
-+pub mod guard;
++pub fn mask_api_key(key: &str) -> String {
++    let trimmed = key.trim();
++    if trimmed.is_empty() {
++        return String::new();
++    }
++    let char_count = trimmed.chars().count();
++    if char_count <= 8 {
++        return "••••••••".to_string();
++    }
++    let prefix: String = trimmed.chars().take(4).collect();
++    let suffix: String = trimmed.chars().skip(char_count.saturating_sub(4)).collect();
++    format!("{}...{}", prefix, suffix)
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 +#[allow(dead_code)]
-+pub mod selector;
-+
-+#[allow(unused_imports)]
-+pub use guard::TerminalGuard;
-+#[allow(unused_imports)]
-+pub use selector::{next_index, prev_index, InteractiveSelector, SelectorItem};
-diff --git a/src/ui/setup/selector.rs b/src/ui/setup/selector.rs
-new file mode 100644
-index 0000000..85662df
---- /dev/null
-+++ b/src/ui/setup/selector.rs
-@@ -0,0 +1,313 @@
-+use std::io::{self, Write};
-+
-+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
-+
-+use super::guard::TerminalGuard;
-+
-+/// Represents an item in an interactive selection list.
-+#[derive(Debug, Clone, PartialEq, Eq)]
-+pub struct SelectorItem {
-+    pub id: String,
-+    pub label: String,
-+    pub badge: Option<String>,
-+    pub hint: Option<String>,
++pub struct WorkspacePreference {
++    pub provider: String,
++    pub model: String,
++    #[serde(default)]
++    pub last_used: String,
 +}
 +
-+impl SelectorItem {
-+    /// Creates a new selector item with an ID and display label.
-+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-+        Self {
-+            id: id.into(),
-+            label: label.into(),
-+            badge: None,
-+            hint: None,
-+        }
-+    }
-+
-+    /// Adds a status badge to the item (e.g. `Active`, `Configured`).
-+    pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
-+        self.badge = Some(badge.into());
-+        self
-+    }
-+
-+    /// Adds a descriptive hint to the item (e.g. `Configure LLM providers`).
-+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
-+        self.hint = Some(hint.into());
-+        self
-+    }
++#[derive(Debug, Clone, Serialize, Deserialize, Default)]
++#[allow(dead_code)]
++pub struct WorkspaceRegistry {
++    #[serde(default)]
++    pub workspaces: std::collections::HashMap<String, WorkspacePreference>,
 +}
 +
-+/// Helper to navigate to the previous item index with wrap-around.
-+pub fn prev_index(current: usize, total: usize) -> usize {
-+    InteractiveSelector::prev_index(current, total)
++/// Loads a workspace preference from a specific registry file path.
++#[allow(dead_code)]
++pub fn load_workspace_preference_from_file(
++    workspace_root: &Path,
++    registry_path: &Path,
++) -> Option<WorkspacePreference> {
++    if !registry_path.exists() {
++        return None;
++    }
++    let content = match std::fs::read_to_string(registry_path) {
++        Ok(c) => c,
++        Err(_) => return None,
++    };
++    let registry: WorkspaceRegistry = match toml::from_str(&content) {
++        Ok(r) => r,
++        Err(_) => return None,
++    };
++    let key = workspace_root.to_string_lossy().to_string();
++    if let Some(pref) = registry.workspaces.get(&key) {
++        return Some(pref.clone());
++    }
++    if let Ok(canon) = workspace_root.canonicalize() {
++        let canon_key = canon.to_string_lossy().to_string();
++        if let Some(pref) = registry.workspaces.get(&canon_key) {
++            return Some(pref.clone());
++        }
++    }
++    None
 +}
 +
-+/// Helper to navigate to the next item index with wrap-around.
-+pub fn next_index(current: usize, total: usize) -> usize {
-+    InteractiveSelector::next_index(current, total)
-+}
++/// Saves or updates a workspace preference into a specific registry file path.
++#[allow(dead_code)]
++pub fn save_workspace_preference_to_file(
++    workspace_root: &Path,
++    provider: &str,
++    model: &str,
++    registry_path: &Path,
++) -> anyhow::Result<()> {
++    let mut registry = if registry_path.exists() {
++        match std::fs::read_to_string(registry_path) {
++            Ok(content) => toml::from_str::<WorkspaceRegistry>(&content).unwrap_or_default(),
++            Err(_) => WorkspaceRegistry::default(),
++        }
++    } else {
++        WorkspaceRegistry::default()
++    };
 +
-+/// Interactive terminal selector supporting arrow keys, vim keys (j/k), Enter, and Esc.
-+#[derive(Debug, Default, Clone)]
-+pub struct InteractiveSelector;
-+
-+impl InteractiveSelector {
-+    /// Creates a new interactive selector.
-+    pub fn new() -> Self {
-+        Self
++    if let Some(parent) = registry_path.parent() {
++        std::fs::create_dir_all(parent)?;
 +    }
 +
-+    /// Calculates previous index with bounds check and wrap-around.
-+    pub fn prev_index(current: usize, total: usize) -> usize {
-+        if total == 0 {
-+            0
-+        } else if current == 0 || current >= total {
-+            total - 1
-+        } else {
-+            current - 1
-+        }
-+    }
++    let key = workspace_root.to_string_lossy().to_string();
++    registry.workspaces.insert(
++        key,
++        WorkspacePreference {
++            provider: provider.to_string(),
++            model: model.to_string(),
++            last_used: chrono::Utc::now().to_rfc3339(),
++        },
++    );
 +
-+    /// Calculates next index with bounds check and wrap-around.
-+    pub fn next_index(current: usize, total: usize) -> usize {
-+        if total == 0 || current + 1 >= total {
-+            0
-+        } else {
-+            current + 1
-+        }
-+    }
-+
-+    /// Formats an individual selector item into an ANSI styled string line.
-+    pub fn format_item(item: &SelectorItem, is_selected: bool) -> String {
-+        let mut s = String::new();
-+        if is_selected {
-+            s.push_str("\x1b[1;36m  ❯ \x1b[0m\x1b[1m");
-+            s.push_str(&item.label);
-+            s.push_str("\x1b[0m");
-+        } else {
-+            s.push_str("    ");
-+            s.push_str(&item.label);
-+        }
-+
-+        if let Some(badge) = &item.badge {
-+            if !badge.is_empty() {
-+                s.push(' ');
-+                s.push_str(badge);
-+            }
-+        }
-+
-+        if let Some(hint) = &item.hint {
-+            if !hint.is_empty() {
-+                s.push_str(" \x1b[90m");
-+                s.push_str(hint);
-+                s.push_str("\x1b[0m");
-+            }
-+        }
-+
-+        s
-+    }
-+
-+    /// Generates all rendered lines for the current prompt, items, and navigation footer.
-+    pub fn render_lines(prompt: &str, items: &[SelectorItem], current_index: usize) -> Vec<String> {
-+        let mut lines = Vec::new();
-+        if !prompt.is_empty() {
-+            for line in prompt.lines() {
-+                lines.push(format!("\x1b[1m{}\x1b[0m", line));
-+            }
-+        }
-+        for (i, item) in items.iter().enumerate() {
-+            lines.push(Self::format_item(item, i == current_index));
-+        }
-+        lines.push(
-+            "\x1b[90m  ──────────────────────────────────────────────────────────\x1b[0m"
-+                .to_string(),
-+        );
-+        lines.push("  \x1b[90m↑/↓ Navigate • ↵ Select • Esc Back\x1b[0m".to_string());
-+        lines
-+    }
-+
-+    fn redraw<W: Write>(
-+        out: &mut W,
-+        prompt: &str,
-+        items: &[SelectorItem],
-+        current_index: usize,
-+        total_lines: usize,
-+    ) -> io::Result<()> {
-+        if total_lines > 0 {
-+            write!(out, "\x1b[{}A", total_lines)?;
-+        }
-+        let lines = Self::render_lines(prompt, items, current_index);
-+        for line in &lines {
-+            write!(out, "\x1b[2K\r{}\r\n", line)?;
-+        }
-+        out.flush()
-+    }
-+
-+    fn clear_lines<W: Write>(out: &mut W, total_lines: usize) -> io::Result<()> {
-+        if total_lines > 0 {
-+            write!(out, "\x1b[{}A", total_lines)?;
-+            for _ in 0..total_lines {
-+                write!(out, "\x1b[2K\r\n")?;
-+            }
-+            write!(out, "\x1b[{}A\r", total_lines)?;
-+            out.flush()?;
-+        }
-+        Ok(())
-+    }
-+
-+    /// Prompts the user with an interactive terminal selector.
-+    /// Returns `Ok(Some(index))` if confirmed with Enter, or `Ok(None)` if cancelled with Esc / Ctrl+C.
-+    pub fn select(
-+        &self,
-+        prompt: &str,
-+        items: &[SelectorItem],
-+        initial_index: usize,
-+    ) -> io::Result<Option<usize>> {
-+        if items.is_empty() {
-+            return Ok(None);
-+        }
-+
-+        let _guard = TerminalGuard::new()?;
-+        let mut out = io::stdout();
-+
-+        let mut current_index = initial_index.min(items.len() - 1);
-+        let lines = Self::render_lines(prompt, items, current_index);
-+        let total_lines = lines.len();
-+
-+        for line in &lines {
-+            write!(out, "{}\r\n", line)?;
-+        }
-+        out.flush()?;
-+
-+        loop {
-+            let ev = crossterm::event::read()?;
-+            if let Event::Key(key_event) = ev {
-+                if key_event.kind == KeyEventKind::Release {
-+                    continue;
-+                }
-+
-+                if key_event.modifiers.contains(KeyModifiers::CONTROL)
-+                    && key_event.code == KeyCode::Char('c')
-+                {
-+                    Self::clear_lines(&mut out, total_lines)?;
-+                    return Ok(None);
-+                }
-+
-+                match key_event.code {
-+                    KeyCode::Up | KeyCode::Char('k') => {
-+                        let new_index = Self::prev_index(current_index, items.len());
-+                        if new_index != current_index {
-+                            current_index = new_index;
-+                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
-+                        }
-+                    }
-+                    KeyCode::Down | KeyCode::Char('j') => {
-+                        let new_index = Self::next_index(current_index, items.len());
-+                        if new_index != current_index {
-+                            current_index = new_index;
-+                            Self::redraw(&mut out, prompt, items, current_index, total_lines)?;
-+                        }
-+                    }
-+                    KeyCode::Enter => {
-+                        Self::clear_lines(&mut out, total_lines)?;
-+                        return Ok(Some(current_index));
-+                    }
-+                    KeyCode::Esc => {
-+                        Self::clear_lines(&mut out, total_lines)?;
-+                        return Ok(None);
-+                    }
-+                    _ => {}
-+                }
-+            }
-+        }
-+    }
-+}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
++    let content = toml::to_string_pretty(&registry)?;
++    std::fs::write(registry_path, content)?;
++    Ok(())
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn test_default_config() {
+         let config = Config::default();
+         assert_eq!(config.provider.default, "gemini");
+@@ -1350,11 +1490,45 @@ mod tests {
+         // Default models
+         assert_eq!(
+             Config::get_default_model_for_provider("ollama"),
+             "qwen2.5-coder"
+         );
+         assert_eq!(
+             Config::get_default_model_for_provider("lmstudio"),
+             "local-model"
+         );
+     }
 +
 +    #[test]
-+    fn test_selector_item_builder() {
-+        let item = SelectorItem::new("provider", "⚡ Provider")
-+            .with_badge("Active")
-+            .with_hint("Configure LLM providers");
-+        assert_eq!(item.id, "provider");
-+        assert_eq!(item.label, "⚡ Provider");
-+        assert_eq!(item.badge.as_deref(), Some("Active"));
-+        assert_eq!(item.hint.as_deref(), Some("Configure LLM providers"));
++    fn test_mask_api_key_variations() {
++        assert_eq!(mask_api_key(""), "");
++        assert_eq!(mask_api_key("   "), "");
++        assert_eq!(mask_api_key("short"), "••••••••");
++        assert_eq!(mask_api_key("12345678"), "••••••••");
++        assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a...cdef");
++        assert_eq!(mask_api_key("AIzaSyD-1234567890XYZ"), "AIza...0XYZ");
 +    }
 +
 +    #[test]
-+    fn test_navigation_wrap_and_bounds() {
-+        assert_eq!(InteractiveSelector::prev_index(0, 3), 2);
-+        assert_eq!(InteractiveSelector::prev_index(1, 3), 0);
-+        assert_eq!(InteractiveSelector::next_index(2, 3), 0);
-+        assert_eq!(InteractiveSelector::next_index(1, 3), 2);
++    fn test_workspace_preference_roundtrip() {
++        let temp_dir = tempfile::tempdir().unwrap();
++        let ws_path = temp_dir.path();
++
++        // Initially none
++        let pref = load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml"));
++        assert!(pref.is_none());
++
++        // Save preference
++        save_workspace_preference_to_file(
++            ws_path,
++            "anthropic",
++            "claude-3-7-sonnet-20250219",
++            &ws_path.join("workspaces.toml"),
++        )
++        .unwrap();
++
++        let pref =
++            load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml")).unwrap();
++        assert_eq!(pref.provider, "anthropic");
++        assert_eq!(pref.model, "claude-3-7-sonnet-20250219");
 +    }
-+
-+    #[test]
-+    fn test_navigation_edge_cases() {
-+        // Zero items
-+        assert_eq!(InteractiveSelector::prev_index(0, 0), 0);
-+        assert_eq!(InteractiveSelector::next_index(0, 0), 0);
-+
-+        // Single item
-+        assert_eq!(InteractiveSelector::prev_index(0, 1), 0);
-+        assert_eq!(InteractiveSelector::next_index(0, 1), 0);
-+
-+        // Standalone functions
-+        assert_eq!(prev_index(0, 3), 2);
-+        assert_eq!(next_index(2, 3), 0);
-+
-+        // Out of bounds current
-+        assert_eq!(InteractiveSelector::prev_index(5, 3), 2);
-+        assert_eq!(InteractiveSelector::next_index(5, 3), 0);
-+    }
-+
-+    #[test]
-+    fn test_format_item_highlighted_and_normal() {
-+        let item = SelectorItem::new("test", "Test Item")
-+            .with_badge("[Active]")
-+            .with_hint("Hint text");
-+
-+        let highlighted = InteractiveSelector::format_item(&item, true);
-+        assert!(highlighted.contains("  ❯ "));
-+        assert!(highlighted.contains("Test Item"));
-+        assert!(highlighted.contains("[Active]"));
-+        assert!(highlighted.contains("Hint text"));
-+
-+        let normal = InteractiveSelector::format_item(&item, false);
-+        assert!(normal.starts_with("    "));
-+        assert!(!normal.contains("❯"));
-+        assert!(normal.contains("Test Item"));
-+        assert!(normal.contains("[Active]"));
-+        assert!(normal.contains("Hint text"));
-+    }
-+
-+    #[test]
-+    fn test_render_lines_structure() {
-+        let items = vec![
-+            SelectorItem::new("1", "First"),
-+            SelectorItem::new("2", "Second"),
-+        ];
-+
-+        let lines = InteractiveSelector::render_lines("Choose:", &items, 0);
-+        assert_eq!(lines.len(), 5); // 1 header + 2 items + 1 separator + 1 footer
-+        assert!(lines[0].contains("Choose:"));
-+        assert!(lines[1].contains("First"));
-+        assert!(lines[1].contains("❯")); // Selected
-+        assert!(lines[2].contains("Second"));
-+        assert!(!lines[2].contains("❯")); // Not selected
-+        assert!(lines[3].contains("───"));
-+        assert!(lines[4].contains("↑/↓ Navigate"));
-+    }
-+
-+    #[test]
-+    fn test_empty_items_select() {
-+        let selector = InteractiveSelector::new();
-+        let result = selector.select("Empty", &[], 0);
-+        assert!(result.is_ok());
-+        assert_eq!(result.unwrap(), None);
-+    }
-+}
-f29da22 feat(ui): implement TerminalGuard and InteractiveSelector primitives for setup wizard
+ }
+diff --git a/src/constants.rs b/src/constants.rs
+index dd478a9..ba68ce4 100644
+--- a/src/constants.rs
++++ b/src/constants.rs
+@@ -3,20 +3,22 @@
+ 
+ // === Directory & File Names ===
+ /// Name of global configuration directory (~/.config/minicode)
+ pub const CONFIG_DIR_NAME: &str = "minicode";
+ /// Application binary and package name
+ pub const APP_NAME: &str = "minicode";
+ /// Name of workspace-local hidden configuration directory (.minicode)
+ pub const WORKSPACE_DIR_NAME: &str = ".minicode";
+ /// Standard configuration file name (config.toml)
+ pub const CONFIG_FILE_NAME: &str = "config.toml";
++/// Global workspaces registry file name (workspaces.toml)
++pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
+ /// Default environment variable file (.env)
+ pub const ENV_FILE_NAME: &str = ".env";
+ /// Memory storage JSON file name
+ pub const MEMORY_FILE: &str = "memory.json";
+ /// Progressive memory local JSON file name (.minicode/progressive_memory.json)
+ pub const PROGRESSIVE_MEMORY_FILE: &str = "progressive_memory.json";
+ /// Global progressive memory JSON file name (~/.config/minicode/global_memory.json)
+ pub const GLOBAL_PROGRESSIVE_MEMORY_FILE: &str = "global_memory.json";
+ /// Maximum progressive memory entries to retain per tier
+ pub const MAX_PROGRESSIVE_TIER_ENTRIES: usize = 100;
