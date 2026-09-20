@@ -1640,6 +1640,9 @@ impl<'a> App<'a> {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     let old_provider = self.config.provider.default.clone();
                     let old_model = self.config.provider.model.clone();
+                    let old_auto_approve = self.config.agent.auto_approve;
+                    let old_thinking = self.config.provider.thinking_budget;
+                    let old_policy = self.config.agent.approval_policy.clone();
 
                     self.config.provider.default = state.active_provider.clone();
                     self.config.provider.model = state.active_model.clone();
@@ -1652,6 +1655,10 @@ impl<'a> App<'a> {
                     self.config.agent.approval_policy = state.approval_policy.clone();
 
                     if state.save_to_workspace {
+                        let ws_minicode_dir = self
+                            .workspace_root
+                            .join(crate::constants::WORKSPACE_DIR_NAME);
+                        let _ = std::fs::create_dir_all(&ws_minicode_dir);
                         let _ = self.config.save(Some(&self.workspace_root));
                         let _ = crate::config::Config::save_workspace_preference(
                             &self.workspace_root,
@@ -1662,9 +1669,13 @@ impl<'a> App<'a> {
                         let _ = self.config.save(None);
                     }
 
-                    if old_provider != self.config.provider.default
+                    let config_changed = old_provider != self.config.provider.default
                         || old_model != self.config.provider.model
-                    {
+                        || old_auto_approve != self.config.agent.auto_approve
+                        || old_thinking != self.config.provider.thinking_budget
+                        || old_policy != self.config.agent.approval_policy;
+
+                    if config_changed {
                         let custom_url = self
                             .config
                             .get_provider_base_url(&self.config.provider.default);
@@ -1687,129 +1698,42 @@ impl<'a> App<'a> {
                 _ => {}
             },
             ModalState::ConfigApproval {
-                ref proposal,
-                ref mut selected_index,
-            } => match key.code {
-                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
-                    *selected_index = if *selected_index == 0 { 1 } else { 0 };
-                }
-                KeyCode::Char('1') => {
-                    let prop = proposal.clone();
-                    match crate::tools::registry::agent_tools::config_tools::apply_proposal(
-                        &prop,
-                        &self.workspace_root,
-                    ) {
-                        Ok(_) => {
-                            if let Some(ref p) = prop.provider {
-                                self.config.provider.default = p.clone();
-                            }
-                            if let Some(ref m) = prop.model {
-                                self.config.provider.model = m.clone();
-                            }
-                            if let Some(aa) = prop.auto_approve {
-                                self.config.agent.auto_approve = aa;
-                            }
-                            if let Some(tb) = prop.thinking_budget {
-                                self.config.provider.thinking_budget =
-                                    if tb == 0 { None } else { Some(tb) };
-                            }
-                            if let Some(ref th) = prop.theme {
-                                self.config.ui.theme = th.clone();
-                                self.theme = Theme::detect(th);
-                            }
+                proposal,
+                selected_index,
+            } => {
+                let prop = proposal.clone();
+                let mut apply = false;
+                let mut decline = false;
 
-                            let custom_url = self
-                                .config
-                                .get_provider_base_url(&self.config.provider.default);
-                            let key_res = self.config.get_api_key(&self.config.provider.default);
-                            let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
-                                &self.config.provider.default,
-                                key_res,
-                                custom_url.as_deref(),
-                            );
-                            let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                config: Box::new(self.config.clone()),
-                                provider: new_prov,
-                            });
-
-                            self.timeline.add_status(
-                                "✔ Configuration change proposal applied successfully.".to_string(),
-                            );
-                        }
-                        Err(e) => {
-                            self.timeline
-                                .add_status(format!("✗ Failed to apply config proposal: {}", e));
+                match key.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                        *selected_index = if *selected_index == 0 { 1 } else { 0 };
+                    }
+                    KeyCode::Char('1') => {
+                        apply = true;
+                    }
+                    KeyCode::Char('2') | KeyCode::Esc => {
+                        decline = true;
+                    }
+                    KeyCode::Enter => {
+                        if *selected_index == 0 {
+                            apply = true;
+                        } else {
+                            decline = true;
                         }
                     }
-                    self.modal = ModalState::None;
+                    _ => {}
                 }
-                KeyCode::Char('2') | KeyCode::Esc => {
+
+                if apply {
+                    self.modal = ModalState::None;
+                    self.apply_config_proposal_and_notify(&prop, control_tx);
+                } else if decline {
                     self.timeline
                         .add_status("Config change proposal declined.".to_string());
                     self.modal = ModalState::None;
                 }
-                KeyCode::Enter => {
-                    if *selected_index == 0 {
-                        let prop = proposal.clone();
-                        match crate::tools::registry::agent_tools::config_tools::apply_proposal(
-                            &prop,
-                            &self.workspace_root,
-                        ) {
-                            Ok(_) => {
-                                if let Some(ref p) = prop.provider {
-                                    self.config.provider.default = p.clone();
-                                }
-                                if let Some(ref m) = prop.model {
-                                    self.config.provider.model = m.clone();
-                                }
-                                if let Some(aa) = prop.auto_approve {
-                                    self.config.agent.auto_approve = aa;
-                                }
-                                if let Some(tb) = prop.thinking_budget {
-                                    self.config.provider.thinking_budget =
-                                        if tb == 0 { None } else { Some(tb) };
-                                }
-                                if let Some(ref th) = prop.theme {
-                                    self.config.ui.theme = th.clone();
-                                    self.theme = Theme::detect(th);
-                                }
-
-                                let custom_url = self
-                                    .config
-                                    .get_provider_base_url(&self.config.provider.default);
-                                let key_res =
-                                    self.config.get_api_key(&self.config.provider.default);
-                                let (new_prov, _) =
-                                    crate::agent::provider::create_provider_or_fallback(
-                                        &self.config.provider.default,
-                                        key_res,
-                                        custom_url.as_deref(),
-                                    );
-                                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                    config: Box::new(self.config.clone()),
-                                    provider: new_prov,
-                                });
-
-                                self.timeline.add_status(
-                                    "✔ Configuration change proposal applied successfully."
-                                        .to_string(),
-                                );
-                            }
-                            Err(e) => {
-                                self.timeline.add_status(format!(
-                                    "✗ Failed to apply config proposal: {}",
-                                    e
-                                ));
-                            }
-                        }
-                    } else {
-                        self.timeline
-                            .add_status("Config change proposal declined.".to_string());
-                    }
-                    self.modal = ModalState::None;
-                }
-                _ => {}
-            },
+            }
         }
     }
 
@@ -2064,6 +1988,59 @@ impl<'a> App<'a> {
 
         if let Err(e) = control_tx.send(AgentCommand::Prompt(sub.prompt, Some(cancel))) {
             tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
+        }
+    }
+
+    /// Applies a configuration change proposal approved by the user and updates the running actor.
+    fn apply_config_proposal_and_notify(
+        &mut self,
+        proposal: &crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        match crate::tools::registry::agent_tools::config_tools::apply_proposal(
+            proposal,
+            &self.workspace_root,
+        ) {
+            Ok(_) => {
+                if let Some(ref p) = proposal.provider {
+                    self.config.provider.default = p.clone();
+                }
+                if let Some(ref m) = proposal.model {
+                    self.config.provider.model = m.clone();
+                }
+                if let Some(aa) = proposal.auto_approve {
+                    self.config.agent.auto_approve = aa;
+                }
+                if let Some(tb) = proposal.thinking_budget {
+                    self.config.provider.thinking_budget = if tb == 0 { None } else { Some(tb) };
+                }
+                if let Some(ref th) = proposal.theme {
+                    self.config.ui.theme = th.clone();
+                    self.theme = Theme::detect(th);
+                }
+
+                let custom_url = self
+                    .config
+                    .get_provider_base_url(&self.config.provider.default);
+                let key_res = self.config.get_api_key(&self.config.provider.default);
+                let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
+                    &self.config.provider.default,
+                    key_res,
+                    custom_url.as_deref(),
+                );
+                let _ = control_tx.send(AgentCommand::UpdateConfig {
+                    config: Box::new(self.config.clone()),
+                    provider: new_prov,
+                });
+
+                self.timeline.add_status(
+                    "✔ Configuration change proposal applied successfully.".to_string(),
+                );
+            }
+            Err(e) => {
+                self.timeline
+                    .add_status(format!("✗ Failed to apply config proposal: {}", e));
+            }
         }
     }
 }

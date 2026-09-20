@@ -499,41 +499,30 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     ),
                 ]));
             } else if let Some(ref results) = state.probe_results {
-                for r in results.iter().take(6) {
-                    let status_badge = match r.status.as_str() {
-                        "connected" => {
-                            Span::styled("✔ Connected", Style::default().fg(theme.success))
+                for chunk in results.chunks(2) {
+                    let mut line_spans = vec![Span::raw("    ")];
+                    for (i, r) in chunk.iter().enumerate() {
+                        if i > 0 {
+                            line_spans.push(Span::raw("   "));
                         }
-                        "disconnected" => {
-                            Span::styled("✗ Disconnected", Style::default().fg(theme.destructive))
-                        }
-                        _ => Span::styled("⚠️ Unconfigured", Style::default().fg(theme.warning)),
-                    };
-
-                    let mut line_spans = vec![
-                        Span::raw("    • "),
-                        Span::styled(
-                            format!("{:<12}", r.provider),
-                            Style::default().fg(theme.text_primary),
-                        ),
-                        Span::raw(" : "),
-                        status_badge,
-                        Span::styled(
-                            format!(" ({}ms)", r.latency_ms),
-                            Style::default().fg(theme.muted),
-                        ),
-                    ];
-
-                    if let Some(ref err) = r.error {
-                        let err_preview = if err.chars().count() > 28 {
-                            format!(" — {}...", err.chars().take(25).collect::<String>())
-                        } else {
-                            format!(" — {}", err)
+                        let status_badge = match r.status.as_str() {
+                            "connected" => Span::styled("✔", Style::default().fg(theme.success)),
+                            "disconnected" => {
+                                Span::styled("✗", Style::default().fg(theme.destructive))
+                            }
+                            _ => Span::styled("○", Style::default().fg(theme.warning)),
                         };
-                        line_spans
-                            .push(Span::styled(err_preview, Style::default().fg(theme.muted)));
+                        line_spans.push(status_badge);
+                        line_spans.push(Span::raw(" "));
+                        line_spans.push(Span::styled(
+                            format!("{:<11}", r.provider),
+                            Style::default().fg(theme.text_primary),
+                        ));
+                        line_spans.push(Span::styled(
+                            format!("{:>4}ms", r.latency_ms),
+                            Style::default().fg(theme.muted),
+                        ));
                     }
-
                     content_lines.push(Line::from(line_spans));
                 }
             } else {
