@@ -466,9 +466,262 @@ fn extract_planning_query(input: &str) -> String {
     input.trim().to_string()
 }
 
+/// Determines if a user prompt or matched intent represents a CRUD, code-editing,
+/// mutation, or codebase-inspection activity that warrants code-graph indexing or drift checks.
+///
+/// General queries (e.g. "what is a mutex?", "explain python decorators") and non-mutating
+/// UI commands (e.g. `/help`, `/model`, `/theme`) return `false`, bypassing index prompts.
+#[allow(dead_code)]
+pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMatch>) -> bool {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+
+    // 1. Slash commands: filter out non-codebase utility commands
+    if trimmed.starts_with('/') {
+        let first_word = trimmed
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        match first_word.as_str() {
+            "/help" | "/commands" | "/model" | "/models" | "/theme" | "/themes" | "/context"
+            | "/tokens" | "/cost" | "/costs" | "/status" | "/exit" | "/quit" | "/clear"
+            | "/setup" | "/configure" | "/config" | "/compact" => {
+                return false;
+            }
+            "/init" | "/index" | "/analyze" | "/map" | "/explore" | "/diff" | "/undo"
+            | "/review" | "/plan" | "/goal" | "/stack" | "/stacks" => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 2. Recognized autonomous agent intents
+    if let Some(m) = matched_intent {
+        match m.intent {
+            AgentIntent::StackScaffold
+            | AgentIntent::MilestonePlan
+            | AgentIntent::AutonomousGoal
+            | AgentIntent::CodeReview
+            | AgentIntent::GitDiff
+            | AgentIntent::UndoRollback
+            | AgentIntent::RepoMap
+            | AgentIntent::CodeExplore => return true,
+            AgentIntent::CommandCatalog
+            | AgentIntent::ContextCompact
+            | AgentIntent::SessionHistory
+            | AgentIntent::GeneralQuery => {}
+        }
+    }
+
+    // 3. Explicit full project analysis requests
+    if lower.contains("analyze the full project")
+        || lower.contains("analyze full project")
+        || lower.contains("analyze the project")
+        || lower.contains("analyze the repo")
+        || lower.contains("analyze codebase")
+        || lower.contains("index the repository")
+        || lower.contains("rebuild the graph")
+        || lower == "analyze"
+    {
+        return true;
+    }
+
+    // 4. Check for file path mentions or known file extensions
+    let has_file_reference = trimmed.split_whitespace().any(|token| {
+        let clean = token.trim_matches(|c: char| c.is_ascii_punctuation());
+        if clean.contains('/') || clean.contains('\\') {
+            return true;
+        }
+        if let Some((_, ext)) = clean.rsplit_once('.') {
+            matches!(
+                ext,
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "c"
+                    | "cpp"
+                    | "h"
+                    | "hpp"
+                    | "cs"
+                    | "rb"
+                    | "php"
+                    | "swift"
+                    | "kt"
+                    | "toml"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "sql"
+                    | "sh"
+                    | "html"
+                    | "css"
+                    | "vue"
+                    | "svelte"
+                    | "md"
+            )
+        } else {
+            false
+        }
+    });
+
+    // 5. Check if it is a general knowledge/conceptual question
+    let general_question_prefixes = [
+        "what is",
+        "what are",
+        "what's",
+        "how does",
+        "how do i",
+        "how can i",
+        "how to",
+        "why does",
+        "why is",
+        "explain",
+        "tell me about",
+        "can you explain",
+        "difference between",
+    ];
+
+    let is_general_question = general_question_prefixes
+        .iter()
+        .any(|p| lower.starts_with(p));
+
+    if is_general_question && !has_file_reference {
+        let local_repo_reference = lower.contains("in this project")
+            || lower.contains("in this repo")
+            || lower.contains("in our codebase");
+        if !local_repo_reference {
+            return false;
+        }
+    }
+
+    if has_file_reference {
+        return true;
+    }
+
+    // 6. Action verb and code entity heuristic
+    let action_verbs = [
+        "add",
+        "create",
+        "implement",
+        "fix",
+        "refactor",
+        "delete",
+        "remove",
+        "update",
+        "modify",
+        "edit",
+        "build",
+        "test",
+        "write",
+        "patch",
+        "rename",
+        "optimize",
+        "wire",
+        "migrate",
+        "scaffold",
+        "clean",
+    ];
+
+    let code_nouns = [
+        "file",
+        "files",
+        "repo",
+        "repository",
+        "code",
+        "codebase",
+        "project",
+        "function",
+        "fn",
+        "struct",
+        "class",
+        "trait",
+        "interface",
+        "component",
+        "endpoint",
+        "api",
+        "service",
+        "module",
+        "package",
+        "crate",
+        "test",
+        "tests",
+        "bug",
+        "issue",
+        "error",
+        "feature",
+        "schema",
+        "database",
+        "table",
+        "migration",
+        "router",
+        "route",
+        "handler",
+        "query",
+        "queries",
+        "auth",
+        "login",
+        "backend",
+        "frontend",
+    ];
+
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    let has_action_verb = words.iter().any(|w| action_verbs.contains(w));
+    let has_code_noun = words.iter().any(|w| code_nouns.contains(w));
+
+    has_action_verb && has_code_noun
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_crud_intent_classification() {
+        // Positive cases: file references and mutations
+        assert!(is_repository_crud_intent("add login in auth.rs", None));
+        assert!(is_repository_crud_intent(
+            "fix the typo in src/main.rs",
+            None
+        ));
+        assert!(is_repository_crud_intent("refactor the sql queries", None));
+        assert!(is_repository_crud_intent("create a user service", None));
+        assert!(is_repository_crud_intent("delete deprecated route", None));
+        assert!(is_repository_crud_intent("analyze the full project", None));
+        assert!(is_repository_crud_intent("/explore", None));
+        assert!(is_repository_crud_intent("/diff", None));
+        assert!(is_repository_crud_intent("/undo", None));
+        assert!(is_repository_crud_intent("/init", None));
+
+        // Negative cases: general queries and utilities
+        assert!(!is_repository_crud_intent("what is a mutex", None));
+        assert!(!is_repository_crud_intent(
+            "explain python decorators",
+            None
+        ));
+        assert!(!is_repository_crud_intent(
+            "how does rust ownership work",
+            None
+        ));
+        assert!(!is_repository_crud_intent("hello there", None));
+        assert!(!is_repository_crud_intent("/help", None));
+        assert!(!is_repository_crud_intent("/model", None));
+        assert!(!is_repository_crud_intent("/theme", None));
+        assert!(!is_repository_crud_intent("/context", None));
+    }
 
     #[test]
     fn test_slash_command_direct_matches() {
