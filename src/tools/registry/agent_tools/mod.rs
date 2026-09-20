@@ -1,4 +1,5 @@
 pub mod cognitive;
+pub mod config_tools;
 pub mod dag;
 pub mod reproducer;
 pub mod subagents;
@@ -10,12 +11,13 @@ use std::path::Path;
 
 /// Aggregate schemas for all agent, reasoning, dag, and orchestration tools.
 pub fn get_schemas() -> Vec<ToolSchema> {
-    let mut schemas = Vec::with_capacity(34);
+    let mut schemas = Vec::with_capacity(38);
     schemas.extend(subagents::get_schemas());
     schemas.extend(dag::get_schemas());
     schemas.extend(cognitive::get_schemas());
     schemas.extend(reproducer::get_schemas());
     schemas.extend(swarms::get_schemas());
+    schemas.extend(config_tools::get_schemas());
     schemas
 }
 
@@ -38,6 +40,9 @@ pub async fn dispatch(
         return Some(res);
     }
     if let Some(res) = reproducer::dispatch(tool_name, args, workspace_root).await {
+        return Some(res);
+    }
+    if let Some(res) = config_tools::dispatch(tool_name, args, workspace_root).await {
         return Some(res);
     }
     None

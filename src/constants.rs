@@ -921,7 +921,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 135;
+pub const TOTAL_TOOL_COUNT: usize = 139;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1076,6 +1076,21 @@ pub const DEFAULT_INTENT_MAX_ITEMS: usize = 32;
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_total_tool_count() {
+        let actual = crate::tools::ToolRegistry::get_tool_schemas().len();
+        assert_eq!(
+            actual, TOTAL_TOOL_COUNT,
+            "TOTAL_TOOL_COUNT ({}) doesn't match actual tool schemas ({}). Update the constant in constants.rs.",
+            TOTAL_TOOL_COUNT, actual
+        );
+    }
+}
+
 #[cfg(test)]
 mod tool_count_validation {
     use super::*;
