@@ -1154,4 +1154,34 @@ mod tests {
         app.hydrate_session(&events);
         assert_eq!(app.last_turn_tokens, 1580);
     }
+
+    #[test]
+    fn test_silent_startup_unindexed_repo() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let app = App::new(temp_dir.path(), config);
+        // Silent startup: unindexed repo does NOT show WorkspaceAnalysis modal
+        assert!(matches!(app.modal, ModalState::None));
+        assert!(app.pending_submission.is_none());
+        assert!(!app.session_skipped_indexing);
+        assert!(!app.session_skipped_drift);
+    }
+
+    #[test]
+    fn test_pending_submission_lifecycle() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = Config::default();
+        let mut app = App::new(temp_dir.path(), config);
+
+        let sub = PendingSubmission {
+            prompt: "add login to auth.rs".to_string(),
+            display: "add login to auth.rs".to_string(),
+        };
+        app.pending_submission = Some(sub);
+        assert!(app.pending_submission.is_some());
+
+        let popped = app.pending_submission.take().unwrap();
+        assert_eq!(popped.prompt, "add login to auth.rs");
+        assert!(app.pending_submission.is_none());
+    }
 }

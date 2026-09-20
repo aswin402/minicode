@@ -471,7 +471,6 @@ fn extract_planning_query(input: &str) -> String {
 ///
 /// General queries (e.g. "what is a mutex?", "explain python decorators") and non-mutating
 /// UI commands (e.g. `/help`, `/model`, `/theme`) return `false`, bypassing index prompts.
-#[allow(dead_code)]
 pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMatch>) -> bool {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {

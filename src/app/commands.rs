@@ -1348,12 +1348,20 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        let is_analysis_keyword = prompt.eq_ignore_ascii_case("analyze the project")
+        let is_analysis_keyword = prompt.eq_ignore_ascii_case("analyze the full project")
+            || prompt.eq_ignore_ascii_case("analyze full project")
+            || prompt.eq_ignore_ascii_case("analyze the project")
             || prompt.eq_ignore_ascii_case("analyze project")
+            || prompt.eq_ignore_ascii_case("analyze the repo")
+            || prompt.eq_ignore_ascii_case("analyze repo")
+            || prompt.eq_ignore_ascii_case("analyze codebase")
+            || prompt.eq_ignore_ascii_case("index the repository")
+            || prompt.eq_ignore_ascii_case("index repository")
             || prompt.eq_ignore_ascii_case("index codebase")
             || prompt.eq_ignore_ascii_case("generate code graph")
             || prompt.eq_ignore_ascii_case("reindex")
-            || prompt.eq_ignore_ascii_case("re-index");
+            || prompt.eq_ignore_ascii_case("re-index")
+            || prompt.eq_ignore_ascii_case("rebuild the graph");
 
         if prompt == "/init" || prompt == "/index" || prompt == "/analyze" || is_analysis_keyword {
             self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
@@ -1648,11 +1656,89 @@ impl<'a> App<'a> {
         };
 
         let message_to_display = display_prompt.unwrap_or(&prompt_to_run);
+
+        // ====================================================================
+        // GATE 1: JIT Provider & Model Authentication Gate
+        // If the user hasn't configured a key or selected an active provider,
+        // intercept the prompt, preserve it, and display the Setup modal.
+        // ====================================================================
+        let is_provider_configured = match self.config.get_api_key(&self.config.provider.default) {
+            Ok(key) => {
+                let trimmed = key.trim();
+                let default_prov = self.config.provider.default.to_lowercase();
+                if default_prov == "ollama"
+                    || default_prov == "lmstudio"
+                    || default_prov == "localhost"
+                    || default_prov == "local"
+                    || default_prov == "vllm"
+                    || default_prov == "localai"
+                    || default_prov == "llama.cpp"
+                {
+                    true
+                } else {
+                    !trimmed.is_empty()
+                }
+            }
+            Err(_) => false,
+        };
+
+        if !is_provider_configured {
+            self.pending_submission = Some(crate::app::PendingSubmission {
+                prompt: prompt_to_run.clone(),
+                display: message_to_display.to_string(),
+            });
+            self.modal = ModalState::new_provider_setup_required(
+                &self.config.provider.default,
+                &prompt_to_run,
+            );
+            return Ok(CommandAction::Continue);
+        }
+
+        // ====================================================================
+        // GATE 2: JIT Repository CRUD & Codebase Modification Gate
+        // On new repos, only prompt for full indexing when the user requests
+        // code modifications, file edits, or repository mutations. General
+        // questions (e.g. "what is a mutex?", "/help") execute immediately.
+        // On existing repos with drift, ask permission before sync/rebuild.
+        // ====================================================================
+        let matched_intent = crate::agent::intent::match_intent(&prompt_to_run);
+        let is_crud = crate::agent::intent::is_repository_crud_intent(
+            &prompt_to_run,
+            matched_intent.as_ref(),
+        );
+
+        if is_crud {
+            let graph_file = self.workspace_root.join(".minicode").join("graph.json");
+            if !graph_file.exists() && !self.session_skipped_indexing {
+                self.pending_submission = Some(crate::app::PendingSubmission {
+                    prompt: prompt_to_run.clone(),
+                    display: message_to_display.to_string(),
+                });
+                self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
+                return Ok(CommandAction::Continue);
+            } else if graph_file.exists() && !self.session_skipped_drift {
+                let mut graph = crate::context::graph::CodeGraph::new();
+                if graph.load_cached(&self.workspace_root) {
+                    if let Ok(drift) = graph.check_drift(&self.workspace_root) {
+                        if drift.is_stale {
+                            self.pending_submission = Some(crate::app::PendingSubmission {
+                                prompt: prompt_to_run.clone(),
+                                display: message_to_display.to_string(),
+                            });
+                            self.modal =
+                                ModalState::new_workspace_drift(&self.workspace_root, &drift);
+                            return Ok(CommandAction::Continue);
+                        }
+                    }
+                }
+            }
+        }
+
         self.timeline
             .add_user_message(message_to_display.to_string());
 
         // Check for recognized autonomous intent to notify the user
-        if let Some(m) = crate::agent::intent::match_intent(&prompt_to_run) {
+        if let Some(m) = matched_intent {
             if m.confidence >= 0.85 && m.intent != crate::agent::intent::AgentIntent::GeneralQuery {
                 let (icon, label) = m.intent.badge();
                 self.timeline

@@ -126,6 +126,9 @@ impl<'a> App<'a> {
                             ));
                         }
                         self.modal = ModalState::None;
+                        if let Some(sub) = self.pending_submission.take() {
+                            self.dispatch_pending_prompt(sub, control_tx);
+                        }
                     } else {
                         self.modal = ModalState::new_model_select(prov_name, models);
                     }
@@ -138,6 +141,11 @@ impl<'a> App<'a> {
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
+                    if let Some(sub) = self.pending_submission.take() {
+                        self.input_dock.textarea = tui_textarea::TextArea::default();
+                        self.input_dock.textarea.insert_str(&sub.display);
+                        self.timeline.add_status("ℹ Prompt cancelled.".to_string());
+                    }
                 }
                 KeyCode::Up => {
                     *selected_index = selected_index.saturating_sub(1);
@@ -295,6 +303,9 @@ impl<'a> App<'a> {
                         }
                     }
                     self.modal = ModalState::None;
+                    if let Some(sub) = self.pending_submission.take() {
+                        self.dispatch_pending_prompt(sub, control_tx);
+                    }
                 }
                 _ => {}
             },

@@ -110,7 +110,6 @@ pub enum ModalState {
         cached_files_count: usize,
         selected_index: usize,
     },
-    #[allow(dead_code)]
     WorkspaceDrift {
         workspace_path: String,
         modified_count: usize,
@@ -118,7 +117,6 @@ pub enum ModalState {
         removed_count: usize,
         selected_index: usize,
     },
-    #[allow(dead_code)]
     ProviderSetupRequired {
         provider_name: String,
         pending_prompt_preview: String,
@@ -486,7 +484,6 @@ impl ModalState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn new_workspace_drift(
         workspace_root: &std::path::Path,
         report: &crate::context::graph::GraphDriftReport,
@@ -511,7 +508,6 @@ impl ModalState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn new_provider_setup_required(provider_name: &str, prompt: &str) -> Self {
         let preview = if prompt.lines().count() > 1 {
             let first_line = prompt.lines().next().unwrap_or("");
