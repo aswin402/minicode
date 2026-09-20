@@ -10,6 +10,8 @@ pub const APP_NAME: &str = "minicode";
 pub const WORKSPACE_DIR_NAME: &str = ".minicode";
 /// Standard configuration file name (config.toml)
 pub const CONFIG_FILE_NAME: &str = "config.toml";
+/// Global workspaces registry file name (workspaces.toml)
+pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
 /// Default environment variable file (.env)
 pub const ENV_FILE_NAME: &str = ".env";
 /// Memory storage JSON file name

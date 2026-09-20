@@ -1,7 +1,7 @@
 use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
 use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Config {
     #[serde(default)]
@@ -1134,6 +1134,146 @@ impl Config {
         }
         .into())
     }
+
+    /// Returns the path to the global workspaces registry file (~/.config/minicode/workspaces.toml)
+    #[allow(dead_code)]
+    pub fn get_workspace_registry_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| {
+            d.join(crate::constants::CONFIG_DIR_NAME)
+                .join(crate::constants::WORKSPACES_FILE_NAME)
+        })
+    }
+
+    /// Loads the stored preference for the given workspace root from the global registry.
+    #[allow(dead_code)]
+    pub fn load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference> {
+        let registry_path = Self::get_workspace_registry_path()?;
+        let canonical = match workspace_root.canonicalize() {
+            Ok(c) => c,
+            Err(_) => workspace_root.to_path_buf(),
+        };
+        load_workspace_preference_from_file(&canonical, &registry_path)
+            .or_else(|| load_workspace_preference_from_file(workspace_root, &registry_path))
+    }
+
+    /// Saves the preferred provider and model for the given workspace root into the global registry.
+    #[allow(dead_code)]
+    pub fn save_workspace_preference(
+        workspace_root: &Path,
+        provider: &str,
+        model: &str,
+    ) -> anyhow::Result<()> {
+        let registry_path = match Self::get_workspace_registry_path() {
+            Some(p) => p,
+            None => anyhow::bail!("Unable to determine config directory"),
+        };
+        let canonical = match workspace_root.canonicalize() {
+            Ok(c) => c,
+            Err(_) => workspace_root.to_path_buf(),
+        };
+        save_workspace_preference_to_file(&canonical, provider, model, &registry_path)
+    }
+}
+
+/// Universally masks sensitive credentials for safe display and tool returns.
+/// Empty or whitespace-only keys return empty string.
+/// Keys <= 8 chars return 8 bullet points "••••••••".
+/// Keys > 8 chars return first 4 chars + "..." + last 4 chars (e.g. "sk-a...cdef").
+#[allow(dead_code)]
+pub fn mask_api_key(key: &str) -> String {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let char_count = trimmed.chars().count();
+    if char_count <= 8 {
+        return "••••••••".to_string();
+    }
+    let prefix: String = trimmed.chars().take(4).collect();
+    let suffix: String = trimmed.chars().skip(char_count.saturating_sub(4)).collect();
+    format!("{}...{}", prefix, suffix)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(dead_code)]
+pub struct WorkspacePreference {
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub last_used: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(dead_code)]
+pub struct WorkspaceRegistry {
+    #[serde(default)]
+    pub workspaces: std::collections::HashMap<String, WorkspacePreference>,
+}
+
+/// Loads a workspace preference from a specific registry file path.
+#[allow(dead_code)]
+pub fn load_workspace_preference_from_file(
+    workspace_root: &Path,
+    registry_path: &Path,
+) -> Option<WorkspacePreference> {
+    if !registry_path.exists() {
+        return None;
+    }
+    let content = match std::fs::read_to_string(registry_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let registry: WorkspaceRegistry = match toml::from_str(&content) {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+    let key = workspace_root.to_string_lossy().to_string();
+    if let Some(pref) = registry.workspaces.get(&key) {
+        return Some(pref.clone());
+    }
+    if let Ok(canon) = workspace_root.canonicalize() {
+        let canon_key = canon.to_string_lossy().to_string();
+        if let Some(pref) = registry.workspaces.get(&canon_key) {
+            return Some(pref.clone());
+        }
+    }
+    None
+}
+
+/// Saves or updates a workspace preference into a specific registry file path.
+#[allow(dead_code)]
+pub fn save_workspace_preference_to_file(
+    workspace_root: &Path,
+    provider: &str,
+    model: &str,
+    registry_path: &Path,
+) -> anyhow::Result<()> {
+    let mut registry = if registry_path.exists() {
+        match std::fs::read_to_string(registry_path) {
+            Ok(content) => toml::from_str::<WorkspaceRegistry>(&content).unwrap_or_default(),
+            Err(_) => WorkspaceRegistry::default(),
+        }
+    } else {
+        WorkspaceRegistry::default()
+    };
+
+    if let Some(parent) = registry_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let key = workspace_root.to_string_lossy().to_string();
+    registry.workspaces.insert(
+        key,
+        WorkspacePreference {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            last_used: chrono::Utc::now().to_rfc3339(),
+        },
+    );
+
+    let content = toml::to_string_pretty(&registry)?;
+    std::fs::write(registry_path, content)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1356,5 +1496,39 @@ mod tests {
             Config::get_default_model_for_provider("lmstudio"),
             "local-model"
         );
+    }
+
+    #[test]
+    fn test_mask_api_key_variations() {
+        assert_eq!(mask_api_key(""), "");
+        assert_eq!(mask_api_key("   "), "");
+        assert_eq!(mask_api_key("short"), "••••••••");
+        assert_eq!(mask_api_key("12345678"), "••••••••");
+        assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a...cdef");
+        assert_eq!(mask_api_key("AIzaSyD-1234567890XYZ"), "AIza...0XYZ");
+    }
+
+    #[test]
+    fn test_workspace_preference_roundtrip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ws_path = temp_dir.path();
+
+        // Initially none
+        let pref = load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml"));
+        assert!(pref.is_none());
+
+        // Save preference
+        save_workspace_preference_to_file(
+            ws_path,
+            "anthropic",
+            "claude-3-7-sonnet-20250219",
+            &ws_path.join("workspaces.toml"),
+        )
+        .unwrap();
+
+        let pref =
+            load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml")).unwrap();
+        assert_eq!(pref.provider, "anthropic");
+        assert_eq!(pref.model, "claude-3-7-sonnet-20250219");
     }
 }
