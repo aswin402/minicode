@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 135 (v0.3.36) Modern Interactive Setup Wizard (minicode setup) | **Status:** ✅ Complete (135 Tools)
+> **Current Phase:** Phase 136 (v0.3.37) JIT Repository Onboarding, Drift Arbitration & Deferred Setup Engine | **Status:** ✅ Complete (135 Tools)
 
 ---
 
@@ -1891,3 +1891,12 @@
 - [x] 135.4: Implement `SetupWizard` in `src/ui/setup/wizard.rs` with 3-tier menu hierarchy (Main Menu, Provider Menu, 10-Provider Catalog with live status badges `● Active`, `✔ Configured`, `○ Localhost`, `○ Not Set`, unconfigured inline key entry, configured 2-choice prompt, and custom provider onboarding)
 - [x] 135.5: Promote `minicode setup` as the primary configuration CLI command with `configure` and `config` backward-compatible aliases, updated tips across `src/main.rs`, and comprehensive integration test suite in `tests/integration_setup_wizard.rs`
 - [x] 135.6: Pass all targeted unit and integration tests (6 selector tests, 9 input tests, 5 wizard tests, 6 integration tests), zero clippy warnings, clean formatting, bump version to `v0.3.36`, compile release binary via `./localupdate.sh`, and validate real-world CLI execution
+
+### Phase 136: JIT Repository Onboarding, Drift Arbitration & Deferred Setup Engine (v0.3.37)
+- [x] 136.1: Implement zero-AST fast filesystem metadata drift detector (`GraphDriftReport`, `CodeGraph::check_drift`) in `src/context/graph/graph.rs` comparing file modification times and byte sizes against `.minicode/graph.json` cache in $<5$ms
+- [x] 136.2: Implement `ModalState::WorkspaceDrift` and `ModalState::ProviderSetupRequired` dialog primitives and rendering functions in `src/ui/modals/` with incremental sync, full rebuild, skip, and inline setup actions
+- [x] 136.3: Implement `is_repository_crud_intent` heuristic classifier in `src/agent/intent.rs` distinguishing repository file edits, mutations, and codebase analysis from general conceptual inquiries and non-mutating slash commands
+- [x] 136.4: Wire silent startup (`initial_modal = ModalState::None`), JIT provider verification gate (Gate 1), and JIT repository CRUD & drift arbitration gate (Gate 2) in `src/app/commands.rs` and `src/app/modals.rs` with `PendingSubmission` auto-dispatch upon resolution
+- [x] 136.5: Implement comprehensive integration test suite in `tests/integration_jit_onboarding.rs` covering unindexed silent boot, general query analysis bypass, CRUD prompt interception, unconfigured provider modal gate, and workspace drift detection
+- [x] 136.6: Pass all targeted unit and integration tests, zero clippy warnings (`cargo clippy -j 1 --bin minicode -- -D warnings`), clean formatting (`cargo fmt --check`), bump version to `v0.3.37`, compile release binary via `./localupdate.sh`, and validate real-world autonomous execution
+
