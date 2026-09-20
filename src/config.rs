@@ -1,4 +1,4 @@
-use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
+use crate::constants::env_vars;
 use crate::error::{ConfigError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -25,10 +25,10 @@ pub struct Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderConfig {
-    #[serde(default = "default_provider_name")]
+    #[serde(default)]
     pub default: String,
 
-    #[serde(default = "default_model_name")]
+    #[serde(default)]
     pub model: String,
 
     #[serde(default)]
@@ -63,13 +63,17 @@ pub struct ProviderConfig {
     /// Custom completion rate per 1,000,000 tokens in USD
     #[serde(default)]
     pub completion_cost_per_m: Option<f64>,
+
+    #[serde(default)]
+    pub default_models: std::collections::HashMap<String, String>,
 }
 
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            default: default_provider_name(),
-            model: default_model_name(),
+            default: String::new(),
+            model: String::new(),
+            default_models: std::collections::HashMap::new(),
             ollama: OllamaConfig::default(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
@@ -98,14 +102,6 @@ impl ProviderConfig {
         self.thinking_budget
             .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS)
     }
-}
-
-fn default_provider_name() -> String {
-    DEFAULT_PROVIDER.to_string()
-}
-
-fn default_model_name() -> String {
-    DEFAULT_MODEL_GEMINI.to_string()
 }
 
 fn default_temperature() -> f32 {
@@ -527,6 +523,7 @@ pub struct RawProviderConfig {
     pub context_window: Option<usize>,
     pub prompt_cost_per_m: Option<f64>,
     pub completion_cost_per_m: Option<f64>,
+    pub default_models: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -670,6 +667,16 @@ impl Config {
 
         // 5. Apply environment variable overrides
         config.apply_env_overrides();
+
+        // 6. Dynamic 6-tier provider resolution
+        let (resolved_provider, resolved_model) =
+            config.resolve_active_provider_and_model(workspace_dir);
+        if config.provider.default.is_empty() {
+            config.provider.default = resolved_provider;
+        }
+        if config.provider.model.is_empty() {
+            config.provider.model = resolved_model;
+        }
 
         Ok(config)
     }
@@ -880,6 +887,13 @@ impl Config {
                 }
             }
         }
+        if let Some(models) = other.provider.default_models {
+            for (k, v) in models {
+                if !v.trim().is_empty() {
+                    self.provider.default_models.insert(k.to_lowercase(), v);
+                }
+            }
+        }
         if let Some(policy) = other.mcp.approval_policy {
             self.mcp.approval_policy = Some(policy);
         }
@@ -1016,8 +1030,9 @@ impl Config {
         }
     }
 
-    /// Returns default fallback model for a provider
-    pub fn get_default_model_for_provider(provider_name: &str) -> &'static str {
+    /// Returns default fallback model for a provider from the static catalog
+    #[allow(dead_code)]
+    pub fn static_default_model_for_provider(provider_name: &str) -> &'static str {
         match provider_name.to_lowercase().as_str() {
             "gemini" | "google" => "gemini-2.5-pro",
             "anthropic" | "claude" => "claude-3-7-sonnet-20250219",
@@ -1033,6 +1048,185 @@ impl Config {
             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
             _ => "default-model",
         }
+    }
+
+    /// Associated function returning default fallback model from the static catalog
+    #[allow(dead_code)]
+    pub fn default_model_for_provider(provider_name: &str) -> &'static str {
+        Self::static_default_model_for_provider(provider_name)
+    }
+
+    /// Returns the effective default model for a provider:
+    /// First checks `self.provider.default_models.get(provider_name)`;
+    /// if present and non-empty, returns it. Otherwise returns static catalog default.
+    pub fn get_default_model_for_provider(&self, provider_name: &str) -> String {
+        let norm = provider_name.to_lowercase();
+        if let Some(model) = self
+            .provider
+            .default_models
+            .get(&norm)
+            .or_else(|| self.provider.default_models.get(provider_name))
+        {
+            let trimmed = model.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        Self::static_default_model_for_provider(provider_name).to_string()
+    }
+
+    /// Returns true if a local provider has been explicitly configured by the user
+    /// (via custom_endpoints, api_keys, default_models, host override, or env vars).
+    pub fn is_local_provider_configured(&self, provider_name: &str) -> bool {
+        let norm = provider_name.to_lowercase();
+        if self.provider.custom_endpoints.contains_key(&norm)
+            || self.provider.api_keys.contains_key(&norm)
+            || self.provider.default_models.contains_key(&norm)
+        {
+            return true;
+        }
+
+        match norm.as_str() {
+            "ollama" => {
+                std::env::var("OLLAMA_HOST").is_ok()
+                    || std::env::var("OLLAMA_API_KEY").is_ok()
+                    || self.provider.ollama.host != crate::constants::DEFAULT_OLLAMA_HOST
+            }
+            "lmstudio" | "lm-studio" => {
+                std::env::var("LMSTUDIO_BASE_URL").is_ok()
+                    || std::env::var("LMSTUDIO_API_KEY").is_ok()
+            }
+            _ => false,
+        }
+    }
+
+    /// Scans known providers in deterministic priority order:
+    /// `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`,
+    /// followed by local providers (`ollama`, `lmstudio`).
+    /// If any has a valid key (or is local and configured), returns `(provider_name, default_model)`.
+    pub fn find_first_configured_provider(&self) -> Option<(&str, &str)> {
+        const CLOUD_PROVIDERS: [&str; 10] = [
+            "anthropic",
+            "gemini",
+            "openai",
+            "openrouter",
+            "deepseek",
+            "groq",
+            "mistral",
+            "together",
+            "minimax",
+            "z.ai",
+        ];
+
+        for &provider in &CLOUD_PROVIDERS {
+            if let Ok(key) = self.get_api_key(provider) {
+                if !key.trim().is_empty() {
+                    let norm = provider.to_lowercase();
+                    let model = if let Some(custom) = self
+                        .provider
+                        .default_models
+                        .get(&norm)
+                        .or_else(|| self.provider.default_models.get(provider))
+                    {
+                        let trimmed = custom.trim();
+                        if !trimmed.is_empty() {
+                            trimmed
+                        } else {
+                            Self::static_default_model_for_provider(provider)
+                        }
+                    } else {
+                        Self::static_default_model_for_provider(provider)
+                    };
+                    return Some((provider, model));
+                }
+            }
+        }
+
+        const LOCAL_PROVIDERS: [&str; 2] = ["ollama", "lmstudio"];
+        for &provider in &LOCAL_PROVIDERS {
+            if self.is_local_provider_configured(provider) {
+                let norm = provider.to_lowercase();
+                let model = if let Some(custom) = self
+                    .provider
+                    .default_models
+                    .get(&norm)
+                    .or_else(|| self.provider.default_models.get(provider))
+                {
+                    let trimmed = custom.trim();
+                    if !trimmed.is_empty() {
+                        trimmed
+                    } else {
+                        Self::static_default_model_for_provider(provider)
+                    }
+                } else {
+                    Self::static_default_model_for_provider(provider)
+                };
+                return Some((provider, model));
+            }
+        }
+
+        None
+    }
+
+    /// Resolves active provider and model using the 6-tier resolution hierarchy:
+    /// 1. CLI flag / env var override (`provider.default` and `provider.model` already set)
+    /// 2. Workspace preference from `workspaces.toml` (or `.minicode/config.toml` merged earlier)
+    /// 3. Auto-discovery of first configured provider
+    /// 4. Empty fallback `("", "")` for deferred onboarding Gate 1 setup
+    pub fn resolve_active_provider_and_model(
+        &self,
+        workspace_root: Option<&Path>,
+    ) -> (String, String) {
+        self.resolve_active_provider_and_model_with_registry(
+            workspace_root,
+            Self::get_workspace_registry_path().as_deref(),
+        )
+    }
+
+    /// Version of `resolve_active_provider_and_model` with customizable registry file path for deterministic testing.
+    pub fn resolve_active_provider_and_model_with_registry(
+        &self,
+        workspace_root: Option<&Path>,
+        registry_path: Option<&Path>,
+    ) -> (String, String) {
+        // 1. Explicit override (e.g. from CLI flag or env var override):
+        if !self.provider.default.is_empty() && !self.provider.model.is_empty() {
+            return (self.provider.default.clone(), self.provider.model.clone());
+        }
+
+        // 2. Check workspace preference in workspaces.toml
+        if let Some(ws) = workspace_root {
+            let pref = if let Some(reg) = registry_path {
+                load_workspace_preference_from_file(ws, reg)
+            } else {
+                Self::load_workspace_preference(ws)
+            };
+
+            if let Some(pref) = pref {
+                if !pref.provider.trim().is_empty() && !pref.model.trim().is_empty() {
+                    return (pref.provider, pref.model);
+                }
+            }
+        }
+
+        // If provider was explicitly set but model was not, resolve default model for provider:
+        if !self.provider.default.is_empty() {
+            let model = self.get_default_model_for_provider(&self.provider.default);
+            return (self.provider.default.clone(), model);
+        }
+
+        // 3. Check find_first_configured_provider()
+        if let Some((prov, default_m)) = self.find_first_configured_provider() {
+            let model = if !self.provider.model.is_empty() {
+                self.provider.model.clone()
+            } else {
+                default_m.to_string()
+            };
+            return (prov.to_string(), model);
+        }
+
+        // 4. Empty fallback (triggering Gate 1 deferred setup when prompt arrives)
+        (String::new(), String::new())
     }
 
     /// Resolves the API key for a specific provider.
@@ -1293,8 +1487,8 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.provider.default, "gemini");
-        assert_eq!(config.provider.model, "gemini-2.5-pro");
+        assert_eq!(config.provider.default, "");
+        assert_eq!(config.provider.model, "");
         assert_eq!(config.agent.timeout, 30);
         assert_eq!(config.agent.map_tokens, 1024);
         assert_eq!(config.agent.max_tool_iterations, 0);
@@ -1499,11 +1693,11 @@ mod tests {
 
         // Default models
         assert_eq!(
-            Config::get_default_model_for_provider("ollama"),
+            config.get_default_model_for_provider("ollama"),
             "qwen2.5-coder"
         );
         assert_eq!(
-            Config::get_default_model_for_provider("lmstudio"),
+            config.get_default_model_for_provider("lmstudio"),
             "local-model"
         );
     }
@@ -1542,5 +1736,67 @@ mod tests {
             load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml")).unwrap();
         assert_eq!(pref.provider, "anthropic");
         assert_eq!(pref.model, "claude-3-7-sonnet-20250219");
+    }
+
+    #[test]
+    fn test_dynamic_provider_resolution_hierarchy() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ws_path = temp_dir.path();
+        let reg_path = ws_path.join("workspaces.toml");
+
+        let mut config = Config::default();
+        config.provider.default = String::new();
+        config.provider.model = String::new();
+
+        // 1. With workspace preference saved
+        save_workspace_preference_to_file(
+            ws_path,
+            "anthropic",
+            "claude-3-7-sonnet-20250219",
+            &reg_path,
+        )
+        .unwrap();
+
+        let (prov, model) =
+            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+        assert_eq!(prov, "anthropic");
+        assert_eq!(model, "claude-3-7-sonnet-20250219");
+
+        // 2. CLI / explicit override takes highest precedence over workspace preference
+        config.provider.default = "deepseek".to_string();
+        config.provider.model = "deepseek-chat".to_string();
+        let (prov, model) =
+            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+        assert_eq!(prov, "deepseek");
+        assert_eq!(model, "deepseek-chat");
+    }
+
+    #[test]
+    fn test_default_models_override() {
+        let mut config = Config::default();
+        assert_eq!(
+            config.get_default_model_for_provider("anthropic"),
+            "claude-3-7-sonnet-20250219"
+        );
+        assert_eq!(config.get_default_model_for_provider("openai"), "gpt-4o");
+
+        config.provider.default_models.insert(
+            "anthropic".to_string(),
+            "claude-3-5-haiku-20241022".to_string(),
+        );
+        config
+            .provider
+            .default_models
+            .insert("openai".to_string(), "o3-mini".to_string());
+
+        assert_eq!(
+            config.get_default_model_for_provider("anthropic"),
+            "claude-3-5-haiku-20241022"
+        );
+        assert_eq!(config.get_default_model_for_provider("openai"), "o3-mini");
+        assert_eq!(
+            config.get_default_model_for_provider("gemini"),
+            "gemini-2.5-pro"
+        );
     }
 }

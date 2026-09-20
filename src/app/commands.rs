@@ -1662,6 +1662,15 @@ impl<'a> App<'a> {
         // If the user hasn't configured a key or selected an active provider,
         // intercept the prompt, preserve it, and display the Setup modal.
         // ====================================================================
+        if self.config.provider.default.is_empty() {
+            self.pending_submission = Some(crate::app::PendingSubmission {
+                prompt: prompt_to_run.clone(),
+                display: message_to_display.to_string(),
+            });
+            self.modal = ModalState::new_provider_setup_required("", &prompt_to_run);
+            return Ok(CommandAction::Continue);
+        }
+
         let is_provider_configured = if self.config.is_local_provider(&self.config.provider.default)
         {
             true

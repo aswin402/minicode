@@ -108,9 +108,7 @@ impl<'a> App<'a> {
                     };
 
                     if models.is_empty() {
-                        let default_model =
-                            crate::config::Config::get_default_model_for_provider(&prov_name)
-                                .to_string();
+                        let default_model = self.config.get_default_model_for_provider(&prov_name);
                         self.config.provider.default = prov_name.clone();
                         self.config.provider.model = default_model.clone();
 
@@ -221,9 +219,7 @@ impl<'a> App<'a> {
                     };
 
                     if models.is_empty() {
-                        let default_model =
-                            crate::config::Config::get_default_model_for_provider(&provider)
-                                .to_string();
+                        let default_model = self.config.get_default_model_for_provider(&provider);
                         self.config.provider.default = provider.clone();
                         self.config.provider.model = default_model.clone();
 
