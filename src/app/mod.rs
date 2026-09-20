@@ -45,14 +45,14 @@ pub enum AgentCommand {
 }
 
 pub struct App<'a> {
-    workspace_root: std::path::PathBuf,
-    config: Config,
-    theme: Theme,
-    timeline: TimelineView,
-    input_dock: InputDock<'a>,
-    pty_drawer: crate::ui::PtyDrawer,
-    subagent_drawer: crate::ui::SubagentDrawer,
-    modal: ModalState,
+    pub workspace_root: std::path::PathBuf,
+    pub config: Config,
+    pub theme: Theme,
+    pub timeline: TimelineView,
+    pub input_dock: InputDock<'a>,
+    pub pty_drawer: crate::ui::PtyDrawer,
+    pub subagent_drawer: crate::ui::SubagentDrawer,
+    pub modal: ModalState,
     model_fetcher: ModelFetcher,
     is_working: bool,
     current_activity: Option<crate::ui::AgentActivity>,
