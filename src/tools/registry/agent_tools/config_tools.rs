@@ -108,6 +108,9 @@ pub struct ProviderConnectionReport {
     pub error: Option<String>,
 }
 
+/// Convenience alias for connection test reports used by modals and diagnostic tools.
+pub type ConnectionTestResult = ProviderConnectionReport;
+
 /// Information about an available model from a provider.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AvailableModelItem {
@@ -505,7 +508,7 @@ fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
 }
 
 /// Tests connectivity for an individual provider endpoint while enforcing zero plaintext key leakage.
-async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnectionReport {
+pub async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnectionReport {
     let norm = provider.to_lowercase();
     let key_res = config.get_api_key(&norm);
     let is_local = config.is_local_provider(&norm);
@@ -581,6 +584,25 @@ async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnec
             }
         }
     }
+}
+
+/// Tests connectivity for an individual provider endpoint (convenience wrapper).
+#[allow(dead_code)]
+pub async fn test_provider_connection(provider: &str, config: &Config) -> ConnectionTestResult {
+    test_single_provider(provider, config).await
+}
+
+/// Tests connectivity for all supported cloud and local provider endpoints.
+pub async fn test_all_provider_connections(config: &Config) -> Vec<ConnectionTestResult> {
+    let mut all_providers = Vec::new();
+    all_providers.extend_from_slice(&CLOUD_PROVIDERS);
+    all_providers.extend_from_slice(&LOCAL_PROVIDERS);
+
+    let mut reports = Vec::with_capacity(all_providers.len());
+    for p in all_providers {
+        reports.push(test_single_provider(p, config).await);
+    }
+    reports
 }
 
 /// Unified dispatcher routing calls for the 4 agent configuration management tools.

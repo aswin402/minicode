@@ -12,6 +12,7 @@ pub mod help;
 pub mod model_select;
 pub mod provider_select;
 pub mod session_browser;
+pub mod settings;
 pub mod stack_select;
 pub mod streaming_select;
 pub mod theme_select;
@@ -137,11 +138,34 @@ pub enum ModalState {
         active_tab: usize,
         scroll_offset: usize,
     },
+    Settings(settings::SettingsModalState),
+    #[allow(dead_code)]
+    ConfigApproval {
+        proposal: crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
+        selected_index: usize,
+    },
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_settings(config: &crate::config::Config, workspace_root: &std::path::Path) -> Self {
+        Self::Settings(settings::SettingsModalState::from_config(
+            config,
+            workspace_root,
+        ))
+    }
+
+    #[allow(dead_code)]
+    pub fn new_config_approval(
+        proposal: crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
+    ) -> Self {
+        Self::ConfigApproval {
+            proposal,
+            selected_index: 0,
+        }
     }
 
     pub fn new_context_diagnostics(data: context_diagnostics::ContextDiagnosticsData) -> Self {
@@ -812,6 +836,15 @@ impl ModalState {
                     *scroll_offset,
                 );
             }
+            ModalState::Settings(state) => {
+                settings::render_settings(frame, area, theme, state);
+            }
+            ModalState::ConfigApproval {
+                proposal,
+                selected_index,
+            } => {
+                settings::render_config_approval(frame, area, theme, proposal, *selected_index);
+            }
         }
     }
 }
@@ -1091,6 +1124,63 @@ mod tests {
                 assert_eq!(selected_index, 0);
             }
             _ => panic!("Expected ProviderSetupRequired variant"),
+        }
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_new_settings_initial_state_and_render() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = crate::config::Config::default();
+        let modal = ModalState::new_settings(&config, temp_dir.path());
+        match modal {
+            ModalState::Settings(ref s) => {
+                assert_eq!(s.active_tab, settings::SettingsTab::Providers);
+                assert_eq!(s.selected_index, 0);
+            }
+            _ => panic!("Expected Settings variant"),
+        }
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_new_config_approval_initial_state_and_render() {
+        let proposal = crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal {
+            scope: "workspace".to_string(),
+            provider: Some("anthropic".to_string()),
+            model: Some("claude-3-7-sonnet".to_string()),
+            auto_approve: Some(true),
+            thinking_budget: Some(4096),
+            theme: None,
+        };
+        let modal = ModalState::new_config_approval(proposal);
+        match modal {
+            ModalState::ConfigApproval {
+                ref proposal,
+                selected_index,
+            } => {
+                assert_eq!(selected_index, 0);
+                assert_eq!(proposal.provider.as_deref(), Some("anthropic"));
+            }
+            _ => panic!("Expected ConfigApproval variant"),
         }
 
         let theme = Theme::default();
