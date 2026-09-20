@@ -67,6 +67,15 @@ pub struct App<'a> {
     approvals: crate::agent::types::ApprovalRegistry,
     pub should_exit: bool,
     pub last_ctrl_c: Option<Instant>,
+    pub pending_submission: Option<PendingSubmission>,
+    pub session_skipped_indexing: bool,
+    pub session_skipped_drift: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSubmission {
+    pub prompt: String,
+    pub display: String,
 }
 
 impl<'a> App<'a> {
@@ -77,12 +86,8 @@ impl<'a> App<'a> {
         });
         crate::context::budget::donut::set_active_context_limit(active_limit);
 
-        let graph_file = crate::context::graph_store::GraphStore::graph_file_path(workspace_root);
-        let initial_modal = if !graph_file.exists() && !config.ui.plain {
-            ModalState::new_workspace_analysis(workspace_root)
-        } else {
-            ModalState::None
-        };
+        // Always start with zero upfront modals for a clean welcome screen
+        let initial_modal = ModalState::None;
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -106,6 +111,9 @@ impl<'a> App<'a> {
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             should_exit: false,
             last_ctrl_c: None,
+            pending_submission: None,
+            session_skipped_indexing: false,
+            session_skipped_drift: false,
         }
     }
 

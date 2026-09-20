@@ -1,6 +1,6 @@
 //! Modal key navigation and modal action handling for minicode TUI
 
-use super::{AgentCommand, App};
+use super::{AgentCommand, App, PendingSubmission};
 use crate::ui::modal::ModalState;
 use crate::ui::Theme;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -1331,7 +1331,84 @@ impl<'a> App<'a> {
 
                 if let Some(act) = triggered_action {
                     self.modal = ModalState::None;
-                    self.execute_workspace_analysis_action(act, is_indexed_flag);
+                    self.execute_workspace_analysis_action(act, is_indexed_flag, control_tx);
+                }
+            }
+            ModalState::WorkspaceDrift {
+                workspace_path: _,
+                modified_count: _,
+                added_count: _,
+                removed_count: _,
+                selected_index,
+            } => {
+                let mut triggered_action: Option<usize> = None;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        triggered_action = Some(2); // Skip
+                    }
+                    KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                        *selected_index = selected_index.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                        if *selected_index < 2 {
+                            *selected_index += 1;
+                        }
+                    }
+                    KeyCode::Char('1') => {
+                        triggered_action = Some(0);
+                    }
+                    KeyCode::Char('2') => {
+                        triggered_action = Some(1);
+                    }
+                    KeyCode::Char('3') => {
+                        triggered_action = Some(2);
+                    }
+                    KeyCode::Enter => {
+                        triggered_action = Some(*selected_index);
+                    }
+                    _ => {}
+                }
+
+                if let Some(act) = triggered_action {
+                    self.modal = ModalState::None;
+                    self.execute_workspace_drift_action(act, control_tx);
+                }
+            }
+            ModalState::ProviderSetupRequired {
+                provider_name,
+                pending_prompt_preview: _,
+                selected_index,
+            } => {
+                let prov = provider_name.clone();
+                let mut triggered_action: Option<usize> = None;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        triggered_action = Some(1); // Cancel
+                    }
+                    KeyCode::Up
+                    | KeyCode::Char('k')
+                    | KeyCode::Char('K')
+                    | KeyCode::Down
+                    | KeyCode::Char('j')
+                    | KeyCode::Char('J')
+                    | KeyCode::Tab => {
+                        *selected_index = (*selected_index + 1) % 2;
+                    }
+                    KeyCode::Char('1') => {
+                        triggered_action = Some(0);
+                    }
+                    KeyCode::Char('2') => {
+                        triggered_action = Some(1);
+                    }
+                    KeyCode::Enter => {
+                        triggered_action = Some(*selected_index);
+                    }
+                    _ => {}
+                }
+
+                if let Some(act) = triggered_action {
+                    self.modal = ModalState::None;
+                    self.execute_provider_setup_action(act, &prov);
                 }
             }
             ModalState::ArchitectureAudit {
@@ -1471,7 +1548,12 @@ impl<'a> App<'a> {
     }
 
     /// Executes the selected workspace analysis action from the interactive modal
-    fn execute_workspace_analysis_action(&mut self, action_index: usize, is_indexed: bool) {
+    fn execute_workspace_analysis_action(
+        &mut self,
+        action_index: usize,
+        is_indexed: bool,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
         self.modal = ModalState::None;
         if !is_indexed {
             match action_index {
@@ -1521,6 +1603,7 @@ impl<'a> App<'a> {
                 }
                 _ => {
                     // Skip
+                    self.session_skipped_indexing = true;
                     self.timeline.add_status(
                         "⏩ Workspace analysis skipped. Running in lightweight instant mode. Type /init anytime to analyze.".to_string(),
                     );
@@ -1604,6 +1687,117 @@ impl<'a> App<'a> {
                         .add_status("ℹ Analysis menu closed.".to_string());
                 }
             }
+        }
+
+        // Resume any pending submission
+        if let Some(sub) = self.pending_submission.take() {
+            self.dispatch_pending_prompt(sub, control_tx);
+        }
+    }
+
+    /// Executes the selected workspace drift action and resumes any pending submission
+    fn execute_workspace_drift_action(
+        &mut self,
+        action_index: usize,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        self.modal = ModalState::None;
+        match action_index {
+            0 => {
+                // Incremental Sync
+                let mut graph = crate::context::graph::CodeGraph::new();
+                if graph.load_cached(&self.workspace_root) {
+                    match graph.incremental_update(&self.workspace_root) {
+                        Ok(stats) => {
+                            let _ = graph.save_to_disk(&self.workspace_root);
+                            let sym_count = graph.symbol_nodes().count();
+                            self.timeline.add_status(format!(
+                                "✔ Incremental graph sync complete ({} files scanned, {} reparsed, {} removed) — {} active symbols",
+                                stats.files_scanned, stats.files_reparsed, stats.files_removed, sym_count
+                            ));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Incremental update failed: {}", e));
+                        }
+                    }
+                }
+            }
+            1 => {
+                // Full Rebuild
+                let mut graph = crate::context::graph::CodeGraph::new();
+                match graph.full_rebuild(&self.workspace_root) {
+                    Ok(_) => {
+                        let _ = graph.save_to_disk(&self.workspace_root);
+                        let sym_count = graph.symbol_nodes().count();
+                        let file_count = graph.file_count();
+                        self.timeline.add_status(format!(
+                            "🔄 Full cold re-index complete: {} symbols across {} files (saved to .minicode/graph.json)",
+                            sym_count, file_count
+                        ));
+                    }
+                    Err(e) => {
+                        self.timeline
+                            .add_status(format!("✗ Full rebuild failed: {}", e));
+                    }
+                }
+            }
+            _ => {
+                // Skip for this session
+                self.session_skipped_drift = true;
+                self.timeline.add_status(
+                    "⏩ Workspace drift sync skipped. Continuing with existing cached graph."
+                        .to_string(),
+                );
+            }
+        }
+
+        // Resume any pending submission
+        if let Some(sub) = self.pending_submission.take() {
+            self.dispatch_pending_prompt(sub, control_tx);
+        }
+    }
+
+    /// Executes the selected action when provider setup is required
+    fn execute_provider_setup_action(&mut self, action_index: usize, provider_name: &str) {
+        self.modal = ModalState::None;
+        match action_index {
+            0 => {
+                // Launch setup / API key prompt
+                let env_var = crate::ui::setup::SetupWizard::custom_env_var(provider_name);
+                self.modal =
+                    ModalState::new_api_key_input(provider_name.to_string(), env_var, None);
+            }
+            _ => {
+                // Cancel: restore pending submission into input dock textarea
+                if let Some(sub) = self.pending_submission.take() {
+                    self.input_dock.textarea = tui_textarea::TextArea::default();
+                    self.input_dock.textarea.insert_str(&sub.display);
+                    self.timeline.add_status("ℹ Prompt cancelled.".to_string());
+                }
+            }
+        }
+    }
+
+    /// Dispatches a pending submission to the agent actor
+    fn dispatch_pending_prompt(
+        &mut self,
+        sub: PendingSubmission,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        self.timeline.add_user_message(sub.display);
+        self.is_working = true;
+        self.current_activity = Some(crate::ui::AgentActivity::Thinking);
+        self.work_start = Some(Instant::now());
+        if self.last_turn_tokens == 0 {
+            self.last_turn_tokens = sub.prompt.len().max(4) / 4;
+        }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.cancel_token = Some(cancel.clone());
+
+        if let Err(e) = control_tx.send(AgentCommand::Prompt(sub.prompt, Some(cancel))) {
+            tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
         }
     }
 }
