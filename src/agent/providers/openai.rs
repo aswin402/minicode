@@ -312,8 +312,8 @@ impl Provider for OpenAiCompatibleProvider {
                                 }));
                             }
 
-                            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags if no structured tool calls were emitted
-                            if accumulated_content.contains("<tool_call>") {
+                            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags, markdown code blocks, or raw JSON
+                            if tool_calls_accumulator.is_empty() {
                                 let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
                                 for tc in inline_calls {
                                     yield Ok(StreamChunk::ToolCallChunk(tc));
@@ -487,32 +487,70 @@ impl Provider for OpenAiCompatibleProvider {
     }
 }
 
-/// Extracts inline `<tool_call>{"name": ..., "arguments": ...}</tool_call>` tags from model output.
+fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {
+    let name = val
+        .get("name")
+        .or_else(|| val.get("tool"))
+        .or_else(|| val.get("function"))
+        .and_then(|n| n.as_str())?;
+
+    let arguments = if let Some(args) = val
+        .get("arguments")
+        .or_else(|| val.get("parameters"))
+        .or_else(|| val.get("args"))
+    {
+        if let Some(s) = args.as_str() {
+            serde_json::from_str::<serde_json::Value>(s).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            args.clone()
+        }
+    } else {
+        let mut map = serde_json::Map::new();
+        if let Some(obj) = val.as_object() {
+            for (k, v) in obj {
+                if k != "name" && k != "tool" && k != "function" {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        serde_json::Value::Object(map)
+    };
+
+    if !name.trim().is_empty() {
+        Some(ToolCall {
+            id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+            name: name.trim().to_string(),
+            arguments,
+        })
+    } else {
+        None
+    }
+}
+
+/// Extracts inline tool calls from model output:
+/// 1. `<tool_call>{"name": ..., "arguments": ...}</tool_call>` tags
+/// 2. Markdown codeblocks ```json ... ``` or ```tool_call ... ``` containing tool objects
+/// 3. Raw JSON tool objects or arrays emitted directly by local models (e.g. Qwen / Ollama)
+///
 /// Used for local Hermes, Qwen, and Ollama models that omit SSE delta.tool_calls.
 pub fn extract_inline_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
     let mut cleaned = text.to_string();
     let mut tool_calls = Vec::new();
 
+    // 1. Check for <tool_call>...</tool_call> tags
     while let Some(start) = cleaned.find("<tool_call>") {
         let tag_len = "<tool_call>".len();
         if let Some(end) = cleaned[start + tag_len..].find("</tool_call>") {
             let json_str = cleaned[start + tag_len..start + tag_len + end].trim();
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let name = val
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let arguments = val
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({}));
-                if !name.is_empty() {
-                    tool_calls.push(ToolCall {
-                        id: format!("call_{}", uuid::Uuid::new_v4().simple()),
-                        name,
-                        arguments,
-                    });
+                if let Some(arr) = val.as_array() {
+                    for item in arr {
+                        if let Some(tc) = parse_single_tool_call_value(item) {
+                            tool_calls.push(tc);
+                        }
+                    }
+                } else if let Some(tc) = parse_single_tool_call_value(&val) {
+                    tool_calls.push(tc);
                 }
             }
             cleaned.replace_range(start..start + tag_len + end + "</tool_call>".len(), "");
@@ -521,5 +559,163 @@ pub fn extract_inline_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
         }
     }
 
+    // 2. Check for markdown codeblocks: ```json ... ``` or ```tool_call ... ```
+    let mut search_pos = 0;
+    while let Some(open_idx) = cleaned[search_pos..].find("```") {
+        let abs_open = search_pos + open_idx;
+        let after_open = abs_open + 3;
+        if let Some(newline_idx) = cleaned[after_open..].find('\n') {
+            let content_start = after_open + newline_idx + 1;
+            if let Some(close_idx) = cleaned[content_start..].find("```") {
+                let abs_close = content_start + close_idx;
+                let block_content = cleaned[content_start..abs_close].trim();
+
+                let mut found_call = false;
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(block_content) {
+                    if let Some(arr) = val.as_array() {
+                        for item in arr {
+                            if let Some(tc) = parse_single_tool_call_value(item) {
+                                tool_calls.push(tc);
+                                found_call = true;
+                            }
+                        }
+                    } else if let Some(tc) = parse_single_tool_call_value(&val) {
+                        tool_calls.push(tc);
+                        found_call = true;
+                    }
+                }
+
+                if found_call {
+                    cleaned.replace_range(abs_open..abs_close + 3, "");
+                    search_pos = abs_open;
+                } else {
+                    search_pos = abs_close + 3;
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // 3. Check for raw JSON object or array when text starts with { or [
+    if tool_calls.is_empty() {
+        let trimmed = cleaned.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(arr) = val.as_array() {
+                    for item in arr {
+                        if let Some(tc) = parse_single_tool_call_value(item) {
+                            tool_calls.push(tc);
+                        }
+                    }
+                    if !tool_calls.is_empty() {
+                        cleaned.clear();
+                    }
+                } else if let Some(tc) = parse_single_tool_call_value(&val) {
+                    tool_calls.push(tc);
+                    cleaned.clear();
+                }
+            }
+        }
+    }
+
+    // 4. Substring raw JSON search if model included text preamble around JSON
+    if tool_calls.is_empty() {
+        let mut search_pos = 0;
+        while let Some(start_offset) = cleaned[search_pos..]
+            .find("{\"name\"")
+            .or_else(|| cleaned[search_pos..].find("{\"tool\""))
+            .or_else(|| cleaned[search_pos..].find("{\"function\""))
+        {
+            let abs_start = search_pos + start_offset;
+            let mut depth = 0;
+            let mut in_str = false;
+            let mut escape = false;
+            let mut end_pos = None;
+            for (i, ch) in cleaned[abs_start..].char_indices() {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                match ch {
+                    '\\' if in_str => escape = true,
+                    '"' => in_str = !in_str,
+                    '{' if !in_str => depth += 1,
+                    '}' if !in_str => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_pos = Some(abs_start + i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(abs_end) = end_pos {
+                let candidate = &cleaned[abs_start..abs_end];
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                    if let Some(tc) = parse_single_tool_call_value(&val) {
+                        tool_calls.push(tc);
+                        cleaned.replace_range(abs_start..abs_end, "");
+                        search_pos = abs_start;
+                        continue;
+                    }
+                }
+                search_pos = abs_end;
+            } else {
+                break;
+            }
+        }
+    }
+
     (cleaned, tool_calls)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_inline_tool_calls_tag() {
+        let input = "Here is the call: <tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"foo.txt\"}}</tool_call> Done.";
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].arguments["path"], "foo.txt");
+        assert_eq!(cleaned.trim(), "Here is the call:  Done.");
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_markdown() {
+        let input = "I will write the file:\n```json\n{\n  \"name\": \"write_file\",\n  \"arguments\": {\"path\": \"src/server.ts\", \"content\": \"hello\"}\n}\n```\nFinished.";
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].arguments["path"], "src/server.ts");
+        assert_eq!(calls[0].arguments["content"], "hello");
+        assert!(!cleaned.contains("write_file"));
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_raw_json() {
+        let input = "{\"name\": \"write_file\", \"arguments\": {\"path\": \"src/routes/health.ts\", \"content\": \"healthy\"}}";
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].arguments["path"], "src/routes/health.ts");
+        assert_eq!(cleaned.trim(), "");
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_raw_json_with_preamble() {
+        let input = "Sure! Here is the tool call:\n{\"name\": \"patch_file\", \"arguments\": {\"path\": \"src/index.ts\"}}\nHope that helps!";
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "patch_file");
+        assert_eq!(calls[0].arguments["path"], "src/index.ts");
+        assert!(!cleaned.contains("patch_file"));
+    }
 }
