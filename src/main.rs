@@ -142,7 +142,7 @@ enum Commands {
         dir: Option<PathBuf>,
     },
 
-    /// Manage, list, and scaffold native onpkg architecture stacks
+    /// Manage, list, and scaffold native MiniKit architecture stacks
     Stack {
         #[command(subcommand)]
         action: Option<StackCommands>,
@@ -177,7 +177,7 @@ enum Commands {
     /// Run multi-runtime environment health checks and diagnostics
     Doctor,
 
-    /// Initialize a new onpkg project or scaffold a stack
+    /// Initialize a new MiniKit project or scaffold a stack
     Init {
         /// Project name (defaults to current directory name)
         name: Option<String>,
@@ -187,19 +187,48 @@ enum Commands {
         stack: Option<String>,
     },
 
+    /// Multi-ecosystem package search and dependency management with MiniKit (npm, PyPI, crates.io, pub.dev)
+    #[command(alias = "pkg", alias = "minikit")]
+    Kit {
+        #[command(subcommand)]
+        action: KitCommands,
+    },
+
+    /// Add a verified package to project dependencies (shortcut for `minicode kit add`)
+    Add {
+        /// Name of package
+        name: String,
+
+        /// Version specifier (defaults to latest upstream)
+        #[arg(short, long)]
+        version: Option<String>,
+
+        /// Runtime ecosystem (npm, pypi, cargo, pub)
+        #[arg(short, long)]
+        runtime: Option<String>,
+
+        /// Add as development dependency
+        #[arg(short, long)]
+        dev: bool,
+    },
+
+    /// Show real-time package metadata from upstream registries (shortcut for `minicode kit info`)
+    Info {
+        /// Name of package
+        name: String,
+
+        /// Runtime ecosystem (npm, pypi, cargo, pub)
+        #[arg(short, long)]
+        runtime: Option<String>,
+    },
+
     /// Manage, inspect, and install battle-tested domain skills
     Skill {
         #[command(subcommand)]
         action: Option<SkillCommands>,
     },
 
-    /// Multi-ecosystem package search and dependency management (npm, PyPI, crates.io, pub.dev)
-    Pkg {
-        #[command(subcommand)]
-        action: PkgCommands,
-    },
-
-    /// Synchronize onpkg.json and AGENTS.md with current workspace
+    /// Synchronize project manifest and AGENTS.md with current workspace
     Sync {
         /// Live watch directory and automatically sync on file changes
         #[arg(long, short)]
@@ -299,7 +328,7 @@ enum StackCommands {
 
     /// Inspect architectural drift between workspace and canonical stack template
     Diff {
-        /// Name of the stack template (defaults to current stack in onpkg.json)
+        /// Name of the stack template (defaults to current stack in minikit.json / onpkg.json)
         name: Option<String>,
 
         /// Automatically restore and re-scaffold missing architecture template files
@@ -327,7 +356,7 @@ enum SkillCommands {
 }
 
 #[derive(Subcommand, Debug)]
-enum PkgCommands {
+enum KitCommands {
     /// Show real-time package metadata and latest version from upstream registries
     Info {
         /// Name of package
@@ -338,7 +367,7 @@ enum PkgCommands {
         runtime: Option<String>,
     },
 
-    /// Add a verified package to project dependencies and onpkg.json
+    /// Add a verified package to project dependencies and minikit manifest
     Add {
         /// Name of package
         name: String,
@@ -355,7 +384,28 @@ enum PkgCommands {
         #[arg(short, long)]
         dev: bool,
     },
+
+    /// Manage architectural stack templates
+    Stack {
+        #[command(subcommand)]
+        action: StackCommands,
+    },
+
+    /// Manage, inspect, and install domain skills
+    Skill {
+        #[command(subcommand)]
+        action: Option<SkillCommands>,
+    },
+
+    /// Synchronize project manifest and agent guidelines
+    Sync,
+
+    /// Check multi-runtime environment health and template diagnostics
+    Doctor,
 }
+
+#[allow(dead_code)]
+type PkgCommands = KitCommands;
 
 /// Installs a panic hook to restore the terminal if the application crashes in TUI mode
 fn install_panic_hook() {
@@ -518,8 +568,28 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Skill { action }) => {
             handle_skill_cli(&workspace_canonical, action).await?;
         }
-        Some(Commands::Pkg { action }) => {
-            handle_pkg_cli(&workspace_canonical, action).await?;
+        Some(Commands::Kit { action }) => {
+            handle_kit_cli(&workspace_canonical, action).await?;
+        }
+        Some(Commands::Add {
+            name,
+            version,
+            runtime,
+            dev,
+        }) => {
+            handle_kit_cli(
+                &workspace_canonical,
+                KitCommands::Add {
+                    name,
+                    version,
+                    runtime,
+                    dev,
+                },
+            )
+            .await?;
+        }
+        Some(Commands::Info { name, runtime }) => {
+            handle_kit_cli(&workspace_canonical, KitCommands::Info { name, runtime }).await?;
         }
         Some(Commands::Sync {
             watch,
@@ -543,7 +613,7 @@ async fn main() -> anyhow::Result<()> {
             }
             if watch {
                 println!(
-                    "👀 Watching `{}` for changes to auto-sync onpkg...",
+                    "👀 Watching `{}` for changes to auto-sync MiniKit...",
                     workspace_canonical.display()
                 );
                 let mut last_status = String::new();
@@ -769,10 +839,10 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
     Ok(())
 }
 
-async fn handle_pkg_cli(workspace: &Path, action: PkgCommands) -> anyhow::Result<()> {
+async fn handle_kit_cli(workspace: &Path, action: KitCommands) -> anyhow::Result<()> {
     let registry = tools::onpkg::pkg::PkgRegistry::new();
     match action {
-        PkgCommands::Info { name, runtime } => {
+        KitCommands::Info { name, runtime } => {
             let info = registry
                 .fetch_info(&name, runtime.as_deref(), workspace)
                 .await?;
@@ -793,7 +863,7 @@ async fn handle_pkg_cli(workspace: &Path, action: PkgCommands) -> anyhow::Result
             }
             println!();
         }
-        PkgCommands::Add {
+        KitCommands::Add {
             name,
             version,
             runtime,
@@ -809,6 +879,20 @@ async fn handle_pkg_cli(workspace: &Path, action: PkgCommands) -> anyhow::Result
                 )
                 .await?;
             println!("{}", res);
+        }
+        KitCommands::Stack { action } => {
+            handle_stack_cli(workspace, Some(action), false).await?;
+        }
+        KitCommands::Skill { action } => {
+            handle_skill_cli(workspace, action).await?;
+        }
+        KitCommands::Sync => {
+            let res = tools::onpkg::sync::OnpkgSyncEngine::sync(workspace)?;
+            println!("{}", res);
+        }
+        KitCommands::Doctor => {
+            let report = tools::onpkg::doctor::OnpkgDoctor::diagnose();
+            println!("{}", report);
         }
     }
     Ok(())

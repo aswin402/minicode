@@ -20,13 +20,51 @@ pub use scaffolder::OnpkgScaffolder;
 pub use skills::OnpkgSkillsManager;
 #[allow(unused_imports)]
 pub use stacks::{Stack, StackFile, StackHook};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 pub use sync::OnpkgSyncEngine;
 #[allow(unused_imports)]
 pub use types::{OnpkgSkillInfo, OnpkgStackInfo};
 
-/// Full-featured native operations for onpkg stack scaffolding, skill management, and project sync.
+/// Resolves the active project manifest path, checking minikit.json, minicode.json, and onpkg.json in order.
+pub fn resolve_manifest_path(workspace: &Path) -> Option<PathBuf> {
+    for name in &[
+        crate::constants::MINIKIT_MANIFEST_FILE,
+        crate::constants::MINICODE_MANIFEST_FILE,
+        crate::constants::ONPKG_MANIFEST_FILE,
+    ] {
+        let p = workspace.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Returns the primary manifest path to use (existing manifest or defaults to minikit.json).
+pub fn default_manifest_path(workspace: &Path) -> PathBuf {
+    resolve_manifest_path(workspace)
+        .unwrap_or_else(|| workspace.join(crate::constants::MINIKIT_MANIFEST_FILE))
+}
+
+/// Resolves the active documentation directory, checking minikit_docs/ and onpkg_docs/ in order.
+pub fn resolve_docs_dir(workspace: &Path) -> PathBuf {
+    let minikit_docs = workspace.join(crate::constants::MINIKIT_DOCS_DIR);
+    if minikit_docs.exists() {
+        return minikit_docs;
+    }
+    let onpkg_docs = workspace.join(crate::constants::ONPKG_DOCS_DIR);
+    if onpkg_docs.exists() {
+        return onpkg_docs;
+    }
+    minikit_docs
+}
+
+/// Full-featured native operations for MiniKit stack scaffolding, skill management, and project sync.
+#[allow(dead_code)]
+pub type MiniKitService = OnpkgService;
+
+/// Full-featured native operations for onpkg / MiniKit stack scaffolding, skill management, and project sync.
 pub struct OnpkgService;
 
 impl OnpkgService {

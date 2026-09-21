@@ -103,7 +103,7 @@ impl OnpkgScaffolder {
             "active_skills": [stack.runtime, stack.name]
         });
 
-        let manifest_path = dest_dir.join("onpkg.json");
+        let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         fs::write(
             &manifest_path,
             serde_json::to_string_pretty(&manifest).unwrap_or_default(),
@@ -113,14 +113,14 @@ impl OnpkgScaffolder {
         // 3. Generate AGENTS.md instructions
         let agents_md = format!(
             "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
-            > Scaffolded with `minicode` + `onpkg` native stack engine.\n\n\
+            > Scaffolded with `minicode` + `MiniKit` native stack engine.\n\n\
             ## Project Summary\n\
             - **Name:** `{}`\n\
             - **Stack:** `{}`\n\
             - **Runtime / Package Manager:** `{}`\n\
             - **Description:** {}\n\n\
             ## Architecture & Conventions\n\
-            1. All project specifications and task tracking live under `onpkg_docs/`.\n\
+            1. All project specifications and task tracking live under `minikit_docs/`.\n\
             2. Use `{}` as the package manager.\n\
             3. Follow standard {} best practices.\n",
             project_name,
@@ -133,36 +133,12 @@ impl OnpkgScaffolder {
         );
         fs::write(dest_dir.join("AGENTS.md"), agents_md).ok();
 
-        // 4. Generate onpkg_docs/ spec documents
-        let docs_dir = dest_dir.join("onpkg_docs");
+        // 4. Generate initial task tracker under minikit_docs/todo.md
+        let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         fs::create_dir_all(&docs_dir).ok();
-
-        fs::write(
-            docs_dir.join("prd.md"),
-            format!(
-                "# Product Requirements Document — {}\n\n## Overview\n{}\n",
-                project_name, stack.description
-            ),
-        )
-        .ok();
-
-        fs::write(
-            docs_dir.join("design.md"),
-            format!(
-                "# Design Specification — {}\n\n## Architecture\nStack: `{}` with runtime `{}`.\n",
-                project_name, stack.name, stack.runtime
-            ),
-        )
-        .ok();
-
-        fs::write(
-            docs_dir.join("implementation.md"),
-            format!("# Implementation Plan — {}\n\n## Milestones\n1. Initial scaffold and dependency check.\n", project_name),
-        ).ok();
-
         fs::write(
             docs_dir.join("todo.md"),
-            "# Project Tasks\n\n- [x] Initial stack scaffolding with onpkg engine\n- [ ] Configure core application features\n",
+            "# Project Tasks\n\n- [x] Initial stack scaffolding with MiniKit engine\n- [ ] Configure core application features\n",
         ).ok();
 
         // 5. Post-scaffold install hooks
@@ -174,7 +150,7 @@ impl OnpkgScaffolder {
         Ok(format!(
             "✔ Successfully scaffolded stack `{}` in `{}`\n\
             • Files created: {} files\n\
-            • Manifest: onpkg.json, AGENTS.md, onpkg_docs/\n\
+            • Manifest: minikit.json, AGENTS.md, minikit_docs/\n\
             • Runtime: {}\n{}",
             stack.name,
             dest_dir.display(),

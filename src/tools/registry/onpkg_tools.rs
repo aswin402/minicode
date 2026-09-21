@@ -7,8 +7,8 @@ use std::path::Path;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
-            name: "onpkg_stack_list".to_string(),
-            description: "List all available onpkg project templates (React Vite, Next.js 16, FastAPI, Flutter, Hono, PERN, MERN, etc.) with file counts and technology tags.".to_string(),
+            name: "kit_stack_list".to_string(),
+            description: "List all available MiniKit project templates (React Vite, Next.js 16, FastAPI, Flutter, Hono, PERN, MERN, etc.) with file counts and technology tags.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -20,8 +20,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_stack_show".to_string(),
-            description: "Inspect the exact structure, package dependencies, and files of a specific onpkg stack template.".to_string(),
+            name: "kit_stack_show".to_string(),
+            description: "Inspect the exact structure, package dependencies, and files of a specific MiniKit stack template.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -34,8 +34,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_stack_add".to_string(),
-            description: "Scaffold a complete, production-grade application stack into the target folder with automatic online dependency installation and AGENTS.md / onpkg_docs generation.".to_string(),
+            name: "kit_stack_add".to_string(),
+            description: "Scaffold a complete, production-grade application stack into the target folder with automatic dependency installation and AGENTS.md / minikit_docs generation.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -49,21 +49,21 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "no_install": {
                         "type": "boolean",
-                        "description": "If true, skips running automatic online package installation (bun install, uv sync, cargo check, etc.)"
+                        "description": "If true, skips running automatic package installation (bun install, uv sync, cargo check, etc.)"
                     }
                 },
                 "required": ["stack_name"]
             }),
         },
         ToolSchema {
-            name: "onpkg_stack_diff".to_string(),
+            name: "kit_stack_diff".to_string(),
             description: "Inspect architectural drift between workspace files and the canonical stack template. Identifies missing or modified files, with optional self-healing via apply: true.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "stack_name": {
                         "type": "string",
-                        "description": "Optional stack template name (defaults to stack configured in onpkg.json)"
+                        "description": "Optional stack template name (defaults to stack configured in minikit.json / onpkg.json)"
                     },
                     "apply": {
                         "type": "boolean",
@@ -73,7 +73,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_skill_list".to_string(),
+            name: "kit_skill_list".to_string(),
             description: "List all active workspace skills and the 14 built-in domain skills available for installation (React, Next.js, FastAPI, Flutter, Hono, Rust, Tailwind, MongoDB, Postgres, Prisma, Vite, Express, Frontend Design, UI/UX Pro Max).".to_string(),
             parameters: json!({
                 "type": "object",
@@ -81,7 +81,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_skill_show".to_string(),
+            name: "kit_skill_show".to_string(),
             description: "Read the complete guidelines, instructions, and coding standards of a specific domain skill.".to_string(),
             parameters: json!({
                 "type": "object",
@@ -95,7 +95,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_skill_install".to_string(),
+            name: "kit_skill_install".to_string(),
             description: "Install a battle-tested technology skill package from the built-in catalog into the project (.minicode/skills/<name>/SKILL.md) and update manifest.".to_string(),
             parameters: json!({
                 "type": "object",
@@ -109,7 +109,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_pkg_info".to_string(),
+            name: "kit_info".to_string(),
             description: "Query upstream registries (npm, PyPI, crates.io, pub.dev) for real-time package metadata, latest version, description, and repository URL.".to_string(),
             parameters: json!({
                 "type": "object",
@@ -127,8 +127,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_pkg_add".to_string(),
-            description: "Add a verified package to the workspace dependencies manifest (package.json, Cargo.toml, requirements.txt, pubspec.yaml) and sync onpkg.json.".to_string(),
+            name: "kit_add".to_string(),
+            description: "Add a verified package to the workspace dependencies manifest (package.json, Cargo.toml, requirements.txt, pubspec.yaml) and sync minikit.json.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -153,15 +153,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
-            name: "onpkg_sync".to_string(),
-            description: "Scan project files and packages to update onpkg.json, synchronize AGENTS.md, and update spec-driven workflow docs (prd.md, design.md, todo.md) in onpkg_docs/.".to_string(),
+            name: "kit_sync".to_string(),
+            description: "Scan project files and packages to update minikit.json, synchronize AGENTS.md, and update spec-driven workflow docs in minikit_docs/.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {}
             }),
         },
         ToolSchema {
-            name: "onpkg_doctor".to_string(),
+            name: "kit_doctor".to_string(),
             description: "Run environment diagnostics to verify installed runtimes (Bun, Node.js, UV/Python, Cargo, Flutter) and template database health.".to_string(),
             parameters: json!({
                 "type": "object",
@@ -177,30 +177,30 @@ pub async fn dispatch(
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
-        "onpkg_stack_list" => Some(
+        "kit_stack_list" | "onpkg_stack_list" => Some(
             async {
                 let category = opt_str(args, "category");
                 crate::tools::onpkg::OnpkgService::list_stacks(workspace_root, category).await
             }
             .await,
         ),
-        "onpkg_stack_show" => Some(
+        "kit_stack_show" | "onpkg_stack_show" => Some(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
                         .ok_or_else(|| {
-                            require_str(args, "stack_name", "onpkg_stack_show").unwrap_err()
+                            require_str(args, "stack_name", "kit_stack_show").unwrap_err()
                         })?;
                 crate::tools::onpkg::OnpkgService::show_stack(workspace_root, stack_name).await
             }
             .await,
         ),
-        "onpkg_stack_add" => Some(
+        "kit_stack_add" | "onpkg_stack_add" => Some(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
                         .ok_or_else(|| {
-                            require_str(args, "stack_name", "onpkg_stack_add").unwrap_err()
+                            require_str(args, "stack_name", "kit_stack_add").unwrap_err()
                         })?;
                 let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
@@ -214,7 +214,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "onpkg_stack_diff" => Some(
+        "kit_stack_diff" | "onpkg_stack_diff" => Some(
             async {
                 let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
                 let apply = opt_bool(args, "apply", false);
@@ -223,33 +223,33 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "onpkg_skill_list" => Some(
+        "kit_skill_list" | "onpkg_skill_list" => Some(
             async { crate::tools::onpkg::OnpkgService::list_skills(workspace_root).await }.await,
         ),
-        "onpkg_skill_show" => Some(
+        "kit_skill_show" | "onpkg_skill_show" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
                     .ok_or_else(|| {
-                        require_str(args, "skill_name", "onpkg_skill_show").unwrap_err()
+                        require_str(args, "skill_name", "kit_skill_show").unwrap_err()
                     })?;
                 crate::tools::onpkg::OnpkgService::show_skill(workspace_root, skill_name).await
             }
             .await,
         ),
-        "onpkg_skill_install" => Some(
+        "kit_skill_install" | "onpkg_skill_install" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
                     .ok_or_else(|| {
-                        require_str(args, "skill_name", "onpkg_skill_install").unwrap_err()
+                        require_str(args, "skill_name", "kit_skill_install").unwrap_err()
                     })?;
                 crate::tools::onpkg::OnpkgService::install_skill(workspace_root, skill_name).await
             }
             .await,
         ),
-        "onpkg_pkg_info" => Some(
+        "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "pkg", "package"])
-                    .ok_or_else(|| require_str(args, "name", "onpkg_pkg_info").unwrap_err())?;
+                    .ok_or_else(|| require_str(args, "name", "kit_info").unwrap_err())?;
                 let runtime = opt_str(args, "runtime");
                 let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
                 let info = registry.fetch_info(name, runtime, workspace_root).await?;
@@ -263,10 +263,10 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "onpkg_pkg_add" => Some(
+        "kit_add" | "kit_pkg_add" | "onpkg_pkg_add" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "pkg", "package"])
-                    .ok_or_else(|| require_str(args, "name", "onpkg_pkg_add").unwrap_err())?;
+                    .ok_or_else(|| require_str(args, "name", "kit_add").unwrap_err())?;
                 let version = opt_str(args, "version");
                 let runtime = opt_str(args, "runtime");
                 let is_dev = opt_bool(args, "is_dev", false);
@@ -277,10 +277,10 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "onpkg_sync" => Some(
+        "kit_sync" | "onpkg_sync" => Some(
             async { crate::tools::onpkg::OnpkgService::sync_project(workspace_root).await }.await,
         ),
-        "onpkg_doctor" => Some(
+        "kit_doctor" | "onpkg_doctor" => Some(
             async { crate::tools::onpkg::OnpkgService::run_doctor(workspace_root).await }.await,
         ),
         _ => None,

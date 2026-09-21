@@ -88,9 +88,15 @@ pub const EMBEDDINGS_CACHE_FILE: &str = "embeddings.bin";
 pub const EPISODIC_MEMORY_FILE: &str = "episodic_memory.json";
 /// Cached code graph JSON filename (.minicode/graph.json)
 pub const GRAPH_FILE_NAME: &str = "graph.json";
-/// Package manifest filename for onpkg integration
+/// Primary manifest filename for MiniKit integration
+pub const MINIKIT_MANIFEST_FILE: &str = "minikit.json";
+/// Alternative manifest filename for minicode integration
+pub const MINICODE_MANIFEST_FILE: &str = "minicode.json";
+/// Backward-compatible package manifest filename
 pub const ONPKG_MANIFEST_FILE: &str = "onpkg.json";
-/// Documentation directory for onpkg skills
+/// Documentation directory for MiniKit skills & architecture
+pub const MINIKIT_DOCS_DIR: &str = "minikit_docs";
+/// Backward-compatible documentation directory for skills
 pub const ONPKG_DOCS_DIR: &str = "onpkg_docs";
 /// Standard git repository hidden directory name (.git)
 pub const GIT_DIR_NAME: &str = ".git";

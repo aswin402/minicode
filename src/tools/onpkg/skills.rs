@@ -12,11 +12,13 @@ impl OnpkgSkillsManager {
     pub fn get_skill_paths(workspace_root: &Path) -> Vec<PathBuf> {
         let mut paths = vec![
             workspace_root.join(".minicode").join("skills"),
-            workspace_root.join("onpkg_docs"),
+            workspace_root.join(crate::constants::MINIKIT_DOCS_DIR),
+            workspace_root.join(crate::constants::ONPKG_DOCS_DIR),
         ];
 
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join(".config").join("minicode").join("skills"));
+            paths.push(home.join(".minikit").join("skills"));
             paths.push(home.join(".onpkg").join("skills"));
         }
 
@@ -101,7 +103,7 @@ impl OnpkgSkillsManager {
         for s in builtins {
             res.push_str(&format!("  • **`{:<16}`** — {}\n", s.name, s.description));
         }
-        res.push_str("\n💡 Run `minicode skill install <name>` or use `onpkg_skill_install` to install into workspace.\n");
+        res.push_str("\n💡 Run `minicode kit skill install <name>` or use `kit_skill_install` to install into workspace.\n");
 
         res
     }
@@ -265,10 +267,10 @@ impl OnpkgSkillsManager {
     }
 
     fn add_to_manifest_active_skills(workspace_root: &Path, skill_name: &str) -> Result<()> {
-        let manifest_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        if !manifest_path.exists() {
-            return Ok(());
-        }
+        let manifest_path = match super::resolve_manifest_path(workspace_root) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
 
         let content = fs::read_to_string(&manifest_path).map_err(|e| ToolError::FileOp {
             path: manifest_path.display().to_string(),

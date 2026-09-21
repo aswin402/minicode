@@ -39,9 +39,14 @@ impl OnpkgSyncEngine {
             .and_then(|n| n.to_str())
             .unwrap_or("project");
 
-        let onpkg_json_path = workspace_root.join("onpkg.json");
-        let mut manifest: serde_json::Value = if onpkg_json_path.exists() {
-            let content = fs::read_to_string(&onpkg_json_path).unwrap_or_default();
+        let manifest_path = super::default_manifest_path(workspace_root);
+        let manifest_filename = manifest_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("minikit.json");
+
+        let mut manifest: serde_json::Value = if manifest_path.exists() {
+            let content = fs::read_to_string(&manifest_path).unwrap_or_default();
             serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
         } else {
             serde_json::json!({})
@@ -58,30 +63,35 @@ impl OnpkgSyncEngine {
         }
 
         fs::write(
-            &onpkg_json_path,
+            &manifest_path,
             serde_json::to_string_pretty(&manifest).unwrap_or_default(),
         )
         .ok();
 
         // 2. Refresh AGENTS.md if missing
+        let docs_dir = super::resolve_docs_dir(workspace_root);
+        let docs_dir_name = docs_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("minikit_docs");
+
         let agents_md_path = workspace_root.join("AGENTS.md");
         if !agents_md_path.exists() {
             let agents_md = format!(
                 "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
-                > Synchronized with `minicode` + `onpkg`.\n\n\
+                > Synchronized with `minicode` + `MiniKit`.\n\n\
                 ## Project Summary\n\
                 - **Name:** `{}`\n\
                 - **Runtime:** `{}`\n\
                 - **Package Manager:** `{}`\n\n\
                 ## Documentation & Guidelines\n\
-                - Follow active rules under `onpkg_docs/`.\n",
-                project_name, project_name, runtime, package_manager
+                - Follow active rules under `{}/`.\n",
+                project_name, project_name, runtime, package_manager, docs_dir_name
             );
             fs::write(&agents_md_path, agents_md).ok();
         }
 
-        // 3. Ensure onpkg_docs/ directory exists and synchronize OKF v0.2 index and log
-        let docs_dir = workspace_root.join("onpkg_docs");
+        // 3. Ensure docs directory exists and synchronize OKF v0.2 index and log
         fs::create_dir_all(&docs_dir).ok();
 
         crate::context::okf::OkfManager::generate_index_md(&docs_dir).ok();
@@ -89,16 +99,16 @@ impl OnpkgSyncEngine {
             &docs_dir,
             &format!("minicode/v{}", env!("CARGO_PKG_VERSION")),
             "SYNC",
-            "onpkg.json",
+            manifest_filename,
             &format!("Synchronized project manifest and OKF knowledge catalog (Runtime: {}, Package Manager: {})", runtime, package_manager),
         ).ok();
 
         Ok(format!(
             "✔ Synchronized `{}` project manifest:\n\
-            • Manifest: onpkg.json (Runtime: `{}`, Package Manager: `{}`)\n\
+            • Manifest: {} (Runtime: `{}`, Package Manager: `{}`)\n\
             • Instructions: AGENTS.md\n\
-            • Documentation & OKF Catalog: onpkg_docs/ (index.md & log.md updated)",
-            project_name, runtime, package_manager
+            • Documentation & OKF Catalog: {}/ (index.md & log.md updated)",
+            project_name, manifest_filename, runtime, package_manager, docs_dir_name
         ))
     }
 }

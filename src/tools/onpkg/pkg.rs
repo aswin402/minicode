@@ -40,16 +40,17 @@ impl PkgRegistry {
 
     /// Auto-detects the project's primary package ecosystem from workspace files.
     pub fn detect_runtime(workspace_root: &Path) -> String {
-        let onpkg_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        if let Ok(content) = fs::read_to_string(&onpkg_path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(r) = val.get("runtime").and_then(|v| v.as_str()) {
-                    match r {
-                        "bun" | "node" | "npm" | "pnpm" | "yarn" => return "npm".to_string(),
-                        "uv" | "python" | "pip" => return "pypi".to_string(),
-                        "cargo" | "rust" => return "cargo".to_string(),
-                        "flutter" | "dart" => return "pub".to_string(),
-                        _ => {}
+        if let Some(manifest_path) = super::resolve_manifest_path(workspace_root) {
+            if let Ok(content) = fs::read_to_string(&manifest_path) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(r) = val.get("runtime").and_then(|v| v.as_str()) {
+                        match r {
+                            "bun" | "node" | "npm" | "pnpm" | "yarn" => return "npm".to_string(),
+                            "uv" | "python" | "pip" => return "pypi".to_string(),
+                            "cargo" | "rust" => return "cargo".to_string(),
+                            "flutter" | "dart" => return "pub".to_string(),
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -148,10 +149,10 @@ impl PkgRegistry {
             _ => {}
         }
 
-        // 2. Update onpkg.json manifest
-        Self::add_to_onpkg_manifest(workspace_root, clean_name, is_dev)?;
+        // 2. Update minikit/minicode/onpkg manifest
+        Self::add_to_kit_manifest(workspace_root, clean_name, is_dev)?;
 
-        // 3. Trigger onpkg sync engine
+        // 3. Trigger MiniKit sync engine
         crate::tools::onpkg::sync::OnpkgSyncEngine::sync(workspace_root).ok();
 
         let desc = pkg_info
@@ -479,13 +480,13 @@ impl PkgRegistry {
         Ok(())
     }
 
-    fn add_to_onpkg_manifest(workspace_root: &Path, name: &str, is_dev: bool) -> Result<()> {
-        let onpkg_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        if !onpkg_path.exists() {
-            return Ok(());
-        }
+    fn add_to_kit_manifest(workspace_root: &Path, name: &str, is_dev: bool) -> Result<()> {
+        let manifest_path = match super::resolve_manifest_path(workspace_root) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
 
-        let content = fs::read_to_string(&onpkg_path).unwrap_or_default();
+        let content = fs::read_to_string(&manifest_path).unwrap_or_default();
         if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
             let key = if is_dev { "dev_packages" } else { "packages" };
             if val.get(key).is_none() {
@@ -497,7 +498,7 @@ impl PkgRegistry {
                 if !arr.contains(&name_val) {
                     arr.push(name_val);
                     if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                        fs::write(&onpkg_path, pretty).ok();
+                        fs::write(&manifest_path, pretty).ok();
                     }
                 }
             }

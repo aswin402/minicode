@@ -10,6 +10,8 @@ pub mod fs;
 pub mod github;
 pub mod middleware;
 pub mod onpkg;
+#[allow(unused_imports)]
+pub use onpkg as minikit;
 pub mod param;
 pub mod registry;
 pub mod repair;

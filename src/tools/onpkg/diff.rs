@@ -73,15 +73,17 @@ pub fn diff_stack(
     let stack_name = match stack_name_opt {
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => {
-            let manifest_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-            if !manifest_path.exists() {
-                return Err(ToolError::InvalidArguments {
-                    name: "onpkg_stack_diff".to_string(),
-                    reason: "No stack name provided and onpkg.json not found in workspace."
-                        .to_string(),
+            let manifest_path = match super::resolve_manifest_path(workspace_root) {
+                Some(p) => p,
+                None => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "kit_stack_diff".to_string(),
+                        reason: "No stack name provided and minikit.json / minicode.json / onpkg.json not found in workspace."
+                            .to_string(),
+                    }
+                    .into());
                 }
-                .into());
-            }
+            };
 
             let content = fs::read_to_string(&manifest_path).map_err(|e| ToolError::FileOp {
                 path: manifest_path.display().to_string(),
@@ -89,15 +91,22 @@ pub fn diff_stack(
             })?;
             let val: serde_json::Value =
                 serde_json::from_str(&content).map_err(|e| ToolError::InvalidArguments {
-                    name: "onpkg_stack_diff".to_string(),
-                    reason: format!("Failed to parse onpkg.json: {}", e),
+                    name: "kit_stack_diff".to_string(),
+                    reason: format!(
+                        "Failed to parse manifest ({}): {}",
+                        manifest_path.display(),
+                        e
+                    ),
                 })?;
 
             val.get("stack")
                 .and_then(|s| s.as_str())
                 .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "onpkg_stack_diff".to_string(),
-                    reason: "Field 'stack' missing from onpkg.json".to_string(),
+                    name: "kit_stack_diff".to_string(),
+                    reason: format!(
+                        "Field 'stack' missing from manifest ({})",
+                        manifest_path.display()
+                    ),
                 })?
                 .to_string()
         }
@@ -109,7 +118,7 @@ pub fn diff_stack(
             .map(|s| s.name)
             .collect();
         ToolError::InvalidArguments {
-            name: "onpkg_stack_diff".to_string(),
+            name: "kit_stack_diff".to_string(),
             reason: format!(
                 "Stack `{}` not found in catalog. Available stacks: {}",
                 stack_name,
