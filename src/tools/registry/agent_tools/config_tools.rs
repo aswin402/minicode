@@ -308,7 +308,7 @@ fn determine_key_source(provider: &str, config: &Config) -> String {
 }
 
 /// Evaluates whether a given model identifier or display name supports extended thinking / reasoning.
-fn model_supports_reasoning(id: &str, name: &str) -> bool {
+pub fn model_supports_reasoning(id: &str, name: &str) -> bool {
     let id_lower = id.to_lowercase();
     let name_lower = name.to_lowercase();
     id_lower.contains("reasoning")
@@ -325,7 +325,7 @@ fn model_supports_reasoning(id: &str, name: &str) -> bool {
 }
 
 /// Fallback static model catalog for when remote provider model endpoints are unreachable or unconfigured.
-fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
+pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
     let norm = provider.to_lowercase();
     match norm.as_str() {
         "anthropic" | "claude" => vec![

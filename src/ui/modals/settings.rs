@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::constants::SUPPORTED_PROVIDERS;
 use crate::tools::registry::agent_tools::config_tools::{
-    ConfigChangeProposal, ConnectionTestResult,
+    model_supports_reasoning, ConfigChangeProposal, ConnectionTestResult,
 };
 use crate::ui::layout_utils::{centered_rect_exact, compute_scroll_offset};
 use crate::ui::theme::Theme;
@@ -13,6 +13,27 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::path::Path;
+
+/// Truncates a string in the middle with an ellipsis if it exceeds `max_len`.
+pub fn truncate_middle(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len || max_len < 8 {
+        return s.to_string();
+    }
+    let keep = max_len.saturating_sub(3);
+    let prefix_len = keep / 2;
+    let suffix_len = keep - prefix_len;
+    format!("{}...{}", &s[..prefix_len], &s[s.len() - suffix_len..])
+}
+
+/// Formats token counts into a compact human-readable string (e.g. 128k, 2M).
+pub fn format_context_tokens(tokens: Option<usize>) -> String {
+    match tokens {
+        Some(t) if t >= 1_000_000 => format!("{}M", t / 1_000_000),
+        Some(t) if t >= 1_000 => format!("{}k", t / 1_000),
+        Some(t) => format!("{}", t),
+        None => "-".to_string(),
+    }
+}
 
 /// Active tab within the `/settings` modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +100,11 @@ pub struct SettingsModalState {
     pub approval_policy: String,
     pub probe_results: Option<Vec<ConnectionTestResult>>,
     pub probing: bool,
+
+    // Model selection drill-down sub-state for Providers tab:
+    pub selecting_model_for_provider: Option<String>,
+    pub provider_models: Vec<crate::agent::models::ModelInfo>,
+    pub model_selected_index: usize,
 }
 
 impl SettingsModalState {
@@ -120,23 +146,35 @@ impl SettingsModalState {
             approval_policy: config.agent.approval_policy.clone(),
             probe_results: None,
             probing: false,
+            selecting_model_for_provider: None,
+            provider_models: Vec::new(),
+            model_selected_index: 0,
         }
     }
 
-    /// Switches to next tab and resets selection index.
+    /// Switches to next tab and resets selection index and model drilldown.
     pub fn next_tab(&mut self) {
+        self.selecting_model_for_provider = None;
+        self.provider_models.clear();
+        self.model_selected_index = 0;
         self.active_tab = self.active_tab.next();
         self.selected_index = 0;
     }
 
-    /// Switches to previous tab and resets selection index.
+    /// Switches to previous tab and resets selection index and model drilldown.
     pub fn prev_tab(&mut self) {
+        self.selecting_model_for_provider = None;
+        self.provider_models.clear();
+        self.model_selected_index = 0;
         self.active_tab = self.active_tab.prev();
         self.selected_index = 0;
     }
 
-    /// Returns the maximum selectable items for the active tab.
+    /// Returns the maximum selectable items for the active tab (or model list).
     pub fn max_items(&self) -> usize {
+        if self.selecting_model_for_provider.is_some() {
+            return self.provider_models.len();
+        }
         match self.active_tab {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
             SettingsTab::Workspace => 3,
@@ -145,23 +183,38 @@ impl SettingsModalState {
         }
     }
 
-    /// Moves cursor down within the active tab.
+    /// Moves cursor down within the active tab or model drilldown.
     pub fn next_item(&mut self) {
+        if self.selecting_model_for_provider.is_some() {
+            if !self.provider_models.is_empty()
+                && self.model_selected_index + 1 < self.provider_models.len()
+            {
+                self.model_selected_index += 1;
+            }
+            return;
+        }
         let max = self.max_items();
         if max > 0 && self.selected_index + 1 < max {
             self.selected_index += 1;
         }
     }
 
-    /// Moves cursor up within the active tab.
+    /// Moves cursor up within the active tab or model drilldown.
     pub fn prev_item(&mut self) {
+        if self.selecting_model_for_provider.is_some() {
+            self.model_selected_index = self.model_selected_index.saturating_sub(1);
+            return;
+        }
         self.selected_index = self.selected_index.saturating_sub(1);
     }
 }
 
 /// Renders the `/settings` configuration modal dialog into the provided frame.
 pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
-    let popup_area = centered_rect_exact(78, 22, area);
+    // Dynamic responsive modal width (clamped 86..=110 cols) and height (clamped 24..=32 lines)
+    let modal_width = (area.width * 88 / 100).clamp(86, 110).min(area.width);
+    let modal_height = (area.height * 82 / 100).clamp(24, 32).min(area.height);
+    let popup_area = centered_rect_exact(modal_width, modal_height, area);
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
@@ -189,28 +242,126 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
         .constraints([
             Constraint::Length(1), // Tab header bar
             Constraint::Length(1), // Divider
-            Constraint::Min(6),    // Active tab content
+            Constraint::Min(8),    // Active tab content
             Constraint::Length(1), // Footer key hints
         ])
         .split(inner_area);
 
-    // 1. Tab header bar
-    let mut tab_spans = vec![Span::raw("  ")];
-    for tab in SettingsTab::all() {
-        let is_active = *tab == state.active_tab;
-        let style = if is_active {
-            Style::default()
-                .fg(theme.bg_primary)
-                .bg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.text_primary)
-        };
+    // 1. Responsive Horizontal Scrollable Tab Header Bar
+    let all_tabs = SettingsTab::all();
+    let active_tab_idx = all_tabs
+        .iter()
+        .position(|t| *t == state.active_tab)
+        .unwrap_or(0);
+    let avail_width = inner_area.width as usize;
 
-        tab_spans.push(Span::styled(format!(" [ {} ] ", tab.title()), style));
-        tab_spans.push(Span::raw("   "));
+    let formatted_tabs: Vec<String> = all_tabs
+        .iter()
+        .map(|t| format!(" [ {} ] ", t.title()))
+        .collect();
+    let tab_widths: Vec<usize> = formatted_tabs.iter().map(|s| s.len()).collect();
+    let total_tab_w: usize =
+        tab_widths.iter().sum::<usize>() + (all_tabs.len().saturating_sub(1) * 2) + 2;
+
+    if total_tab_w <= avail_width {
+        // All tabs fit comfortably on screen
+        let mut tab_spans = vec![Span::raw(" ")];
+        for (idx, tab) in all_tabs.iter().enumerate() {
+            let is_active = *tab == state.active_tab;
+            let style = if is_active {
+                Style::default()
+                    .fg(theme.bg_primary)
+                    .bg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            tab_spans.push(Span::styled(&formatted_tabs[idx], style));
+            if idx + 1 < all_tabs.len() {
+                tab_spans.push(Span::raw("  "));
+            }
+        }
+        frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
+    } else {
+        // Horizontal scroll mode: sliding window containing active_tab_idx with ◀ / ▶ indicators
+        let ind_w = 3; // "◀  " or "  ▶"
+        let mut start_idx = active_tab_idx;
+        let mut end_idx = active_tab_idx;
+
+        loop {
+            let mut expanded = false;
+            if end_idx + 1 < all_tabs.len() {
+                let has_left = start_idx > 0;
+                let has_right = end_idx + 2 < all_tabs.len();
+                let next_w = tab_widths[start_idx..=end_idx + 1].iter().sum::<usize>()
+                    + (end_idx + 1 - start_idx) * 2
+                    + (if has_left { ind_w } else { 0 })
+                    + (if has_right { ind_w } else { 0 });
+                if next_w <= avail_width {
+                    end_idx += 1;
+                    expanded = true;
+                }
+            }
+            if start_idx > 0 {
+                let has_left = start_idx - 1 > 0;
+                let has_right = end_idx + 1 < all_tabs.len();
+                let next_w = tab_widths[start_idx - 1..=end_idx].iter().sum::<usize>()
+                    + (end_idx - (start_idx - 1)) * 2
+                    + (if has_left { ind_w } else { 0 })
+                    + (if has_right { ind_w } else { 0 });
+                if next_w <= avail_width {
+                    start_idx -= 1;
+                    expanded = true;
+                }
+            }
+            if !expanded {
+                break;
+            }
+        }
+
+        let has_left = start_idx > 0;
+        let has_right = end_idx + 1 < all_tabs.len();
+
+        let mut tab_spans = Vec::new();
+        if has_left {
+            tab_spans.push(Span::styled(
+                "◀ ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            tab_spans.push(Span::raw(" "));
+        }
+
+        for idx in start_idx..=end_idx {
+            let tab = all_tabs[idx];
+            let is_active = tab == state.active_tab;
+            let style = if is_active {
+                Style::default()
+                    .fg(theme.bg_primary)
+                    .bg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+            tab_spans.push(Span::styled(&formatted_tabs[idx], style));
+            if idx < end_idx {
+                tab_spans.push(Span::raw("  "));
+            }
+        }
+
+        if has_right {
+            tab_spans.push(Span::styled(
+                " ▶",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
     }
-    frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
     // Top Divider
     let divider = Paragraph::new(Line::from(vec![Span::styled(
@@ -225,64 +376,197 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
 
     match state.active_tab {
         SettingsTab::Providers => {
-            let max_visible = 6;
-            let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
-            let visible_providers = SUPPORTED_PROVIDERS
-                .iter()
-                .enumerate()
-                .skip(scroll_offset)
-                .take(max_visible);
-
-            for (idx, provider) in visible_providers {
-                let is_selected = idx == state.selected_index;
-                let is_active = *provider == state.active_provider;
-                let default_model = Config::static_default_model_for_provider(provider);
-
-                let cursor = if is_selected { "  ❯ " } else { "    " };
-                let prov_style = if is_selected {
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text_primary)
-                };
-
-                let mut spans = vec![
+            if let Some(ref prov) = state.selecting_model_for_provider {
+                // MODEL DRILL-DOWN SUBVIEW
+                content_lines.push(Line::from(vec![
                     Span::styled(
-                        cursor,
+                        "  📋 Select Default Model for: ",
                         Style::default()
                             .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!("{:<14}", provider), prov_style),
-                    Span::styled(" default: ", Style::default().fg(theme.muted)),
                     Span::styled(
-                        format!("{:<26}", default_model),
-                        Style::default().fg(theme.text_primary),
-                    ),
-                ];
-
-                if is_active {
-                    spans.push(Span::styled(
-                        " [Active ✔]",
+                        prov,
                         Style::default()
-                            .fg(theme.success)
+                            .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD),
-                    ));
+                    ),
+                    Span::styled(
+                        format!("  ({} models available)", state.provider_models.len()),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+                content_lines.push(Line::from(vec![
+                    Span::raw("     "),
+                    Span::styled(
+                        "Choose a model to assign as default for this provider & switch active model.",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+                content_lines.push(Line::from(""));
+
+                if state.provider_models.is_empty() {
+                    content_lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            "⚠️ No models found or provider unconfigured. Press [Esc] to return to providers.",
+                            Style::default().fg(theme.warning),
+                        ),
+                    ]));
+                } else {
+                    let max_visible = 8;
+                    let scroll_offset =
+                        compute_scroll_offset(state.model_selected_index, max_visible);
+                    let visible_models = state
+                        .provider_models
+                        .iter()
+                        .enumerate()
+                        .skip(scroll_offset)
+                        .take(max_visible);
+
+                    let current_default = Config::static_default_model_for_provider(prov);
+
+                    for (idx, model) in visible_models {
+                        let is_selected = idx == state.model_selected_index;
+                        let is_active_model =
+                            model.id == state.active_model && *prov == state.active_provider;
+                        let is_default = is_active_model || model.id == current_default;
+
+                        let cursor = if is_selected { "  ❯ " } else { "    " };
+                        let model_style = if is_selected {
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.text_primary)
+                        };
+
+                        let ctx_str = format_context_tokens(model.context_length);
+                        let reasoning = model_supports_reasoning(&model.id, &model.name);
+
+                        let mut spans = vec![
+                            Span::styled(
+                                cursor,
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                format!("{:<34}", truncate_middle(&model.id, 34)),
+                                model_style,
+                            ),
+                            Span::styled(" ", Style::default()),
+                            Span::styled(
+                                format!("{:>6} ctx", ctx_str),
+                                Style::default().fg(theme.muted),
+                            ),
+                        ];
+
+                        if reasoning {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[🧠 Reasoning]",
+                                Style::default().fg(theme.warning),
+                            ));
+                        }
+
+                        if is_active_model {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[Active ✔]",
+                                Style::default()
+                                    .fg(theme.success)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        } else if is_default {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[Default]",
+                                Style::default().fg(theme.brand_accent),
+                            ));
+                        }
+
+                        content_lines.push(Line::from(spans));
+                    }
                 }
 
-                content_lines.push(Line::from(spans));
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Press [Enter] to set as default  •  [Esc] or [Backspace] to return to providers",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            } else {
+                // TOP LEVEL PROVIDERS LIST
+                let max_visible = 7;
+                let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
+                let visible_providers = SUPPORTED_PROVIDERS
+                    .iter()
+                    .enumerate()
+                    .skip(scroll_offset)
+                    .take(max_visible);
+
+                for (idx, provider) in visible_providers {
+                    let is_selected = idx == state.selected_index;
+                    let is_active = *provider == state.active_provider;
+                    let default_model = if is_active && !state.active_model.is_empty() {
+                        state.active_model.as_str()
+                    } else {
+                        Config::static_default_model_for_provider(provider)
+                    };
+
+                    let cursor = if is_selected { "  ❯ " } else { "    " };
+                    let prov_style = if is_selected {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    };
+
+                    let mut spans = vec![
+                        Span::styled(
+                            cursor,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("{:<14}", provider), prov_style),
+                        Span::styled(" default: ", Style::default().fg(theme.muted)),
+                        Span::styled(
+                            format!("{:<30}", default_model),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                    ];
+
+                    if is_active {
+                        spans.push(Span::styled(
+                            " [Active ✔]",
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+
+                    content_lines.push(Line::from(spans));
+                }
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Press [Enter] to browse & choose models  •  [Space] to activate provider immediately",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
             }
-            content_lines.push(Line::from(""));
-            content_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    "Press [Enter] or [Space] to select active provider",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
         }
         SettingsTab::Workspace => {
+            // Path middle-truncation based on available width
+            let path_avail_w = (inner_area.width as usize).saturating_sub(26).max(20);
+            let display_path = truncate_middle(&state.workspace_path, path_avail_w);
+
             // Item 0: Root path
             content_lines.push(Line::from(vec![
                 Span::styled(
@@ -291,7 +575,9 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         "    "
                     },
-                    Style::default().fg(theme.brand_accent),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "📂 Workspace Root: ",
@@ -299,10 +585,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    &state.workspace_path,
-                    Style::default().fg(theme.text_primary),
-                ),
+                Span::styled(display_path, Style::default().fg(theme.text_primary)),
             ]));
             content_lines.push(Line::from(""));
 
@@ -314,7 +597,9 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         "    "
                     },
-                    Style::default().fg(theme.brand_accent),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "🤖 Assigned Provider & Model: ",
@@ -329,31 +614,55 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             ]));
             content_lines.push(Line::from(""));
 
-            // Item 2: Scope toggle
-            let scope_label = if state.save_to_workspace {
-                "[●] Workspace only (.minicode/config.toml)    [○] Globally"
-            } else {
-                "[○] Workspace only    [●] Globally (~/.config/minicode/config.toml)"
-            };
-
+            // Item 2: Scope preference (Vertical non-clipping layout)
+            let is_scope_selected = state.selected_index == 2;
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    if state.selected_index == 2 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default().fg(theme.brand_accent),
-                ),
-                Span::styled(
-                    "🎯 Scope Preference: ",
+                    if is_scope_selected { "  ❯ " } else { "    " },
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    scope_label,
-                    if state.selected_index == 2 {
+                    "🎯 Configuration Scope Preference:",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            let is_ws = state.save_to_workspace;
+            content_lines.push(Line::from(""));
+            content_lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(
+                    if is_ws {
+                        "[●] Workspace only (.minicode/config.toml)"
+                    } else {
+                        "[○] Workspace only (.minicode/config.toml)"
+                    },
+                    if is_ws {
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — Project isolated; checked into git",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(
+                    if !is_ws {
+                        "[●] Global default (~/.config/minicode/config.toml)"
+                    } else {
+                        "[○] Global default (~/.config/minicode/config.toml)"
+                    },
+                    if !is_ws {
                         Style::default()
                             .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD)
@@ -361,7 +670,12 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         Style::default().fg(theme.text_primary)
                     },
                 ),
+                Span::styled(
+                    "  — Global user default across all repos",
+                    Style::default().fg(theme.muted),
+                ),
             ]));
+
             content_lines.push(Line::from(""));
             content_lines.push(Line::from(vec![
                 Span::raw("    "),
@@ -373,10 +687,10 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
         }
         SettingsTab::Autonomy => {
             // Item 0: Auto-Approve
-            let auto_appr_text = if state.auto_approve {
-                "[x] Enabled (Auto-execute tools without manual prompts)"
+            let auto_appr_badge = if state.auto_approve {
+                "[●] Enabled (Auto-execute)"
             } else {
-                "[ ] Disabled (Prompt user before executing mutating actions)"
+                "[○] Disabled (Prompt confirmation)"
             };
 
             content_lines.push(Line::from(vec![
@@ -386,7 +700,9 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         "    "
                     },
-                    Style::default().fg(theme.brand_accent),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "⚡ Auto-Approve: ",
@@ -395,14 +711,22 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    auto_appr_text,
-                    if state.selected_index == 0 {
+                    auto_appr_badge,
+                    if state.auto_approve {
                         Style::default()
-                            .fg(theme.brand_accent)
+                            .fg(theme.success)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.text_primary)
                     },
+                ),
+                Span::styled(
+                    if state.auto_approve {
+                        "  — Auto-executes tool actions"
+                    } else {
+                        "  — Prompts before mutating actions"
+                    },
+                    Style::default().fg(theme.muted),
                 ),
             ]));
             content_lines.push(Line::from(""));
@@ -421,7 +745,9 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         "    "
                     },
-                    Style::default().fg(theme.brand_accent),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "🧠 Extended Thinking Budget: ",
@@ -439,6 +765,10 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         Style::default().fg(theme.text_primary)
                     },
                 ),
+                Span::styled(
+                    "  — Allocated reasoning tokens (Claude 3.7 / Gemini 2.5)",
+                    Style::default().fg(theme.muted),
+                ),
             ]));
             content_lines.push(Line::from(""));
 
@@ -450,7 +780,9 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         "    "
                     },
-                    Style::default().fg(theme.brand_accent),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "🛡️ Approval Policy: ",
@@ -459,7 +791,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{} (strict | prompt | permissive)", state.approval_policy),
+                    format!("[ {} ]", state.approval_policy),
                     if state.selected_index == 2 {
                         Style::default()
                             .fg(theme.brand_accent)
@@ -467,6 +799,10 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     } else {
                         Style::default().fg(theme.text_primary)
                     },
+                ),
+                Span::styled(
+                    "  — (strict: confirm all | prompt: mutate only | permissive: full autonomy)",
+                    Style::default().fg(theme.muted),
                 ),
             ]));
             content_lines.push(Line::from(""));
@@ -480,12 +816,21 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
         }
         SettingsTab::Probes => {
             content_lines.push(Line::from(vec![
-                Span::styled("  ❯ ", Style::default().fg(theme.brand_accent)),
+                Span::styled(
+                    "  ❯ ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     "[ ▶ Probe All Configured Provider Endpoints ]",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  — Verifies connectivity, latency & credentials",
+                    Style::default().fg(theme.muted),
                 ),
             ]));
             content_lines.push(Line::from(""));
@@ -494,7 +839,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "⏳ Testing connectivity, latency, and credentials...",
+                        "⏳ Testing connectivity, latency, and credentials across all providers...",
                         Style::default().fg(theme.warning),
                     ),
                 ]));
@@ -503,20 +848,30 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     let mut line_spans = vec![Span::raw("    ")];
                     for (i, r) in chunk.iter().enumerate() {
                         if i > 0 {
-                            line_spans.push(Span::raw("   "));
+                            line_spans.push(Span::raw("     "));
                         }
                         let status_badge = match r.status.as_str() {
-                            "connected" => Span::styled("✔", Style::default().fg(theme.success)),
-                            "disconnected" => {
-                                Span::styled("✗", Style::default().fg(theme.destructive))
-                            }
+                            "connected" => Span::styled(
+                                "✔",
+                                Style::default()
+                                    .fg(theme.success)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            "disconnected" => Span::styled(
+                                "✗",
+                                Style::default()
+                                    .fg(theme.destructive)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
                             _ => Span::styled("○", Style::default().fg(theme.warning)),
                         };
                         line_spans.push(status_badge);
                         line_spans.push(Span::raw(" "));
                         line_spans.push(Span::styled(
-                            format!("{:<11}", r.provider),
-                            Style::default().fg(theme.text_primary),
+                            format!("{:<12}", r.provider),
+                            Style::default()
+                                .fg(theme.text_primary)
+                                .add_modifier(Modifier::BOLD),
                         ));
                         line_spans.push(Span::styled(
                             format!("{:>4}ms", r.latency_ms),
@@ -529,7 +884,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "Press [Enter] or [Space] to test connections & latency.",
+                        "Press [Enter] or [Space] to test live connections, ping latencies, and credentials.",
                         Style::default().fg(theme.muted),
                     ),
                 ]));
@@ -540,32 +895,70 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     let content_p = Paragraph::new(content_lines);
     frame.render_widget(content_p, chunks[2]);
 
-    // 3. Footer Key Hints
-    let footer_line = Line::from(vec![
-        Span::styled(
-            "  [Tab] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Next Tab  ", Style::default().fg(theme.text_primary)),
-        Span::styled(
-            "[↑/↓] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Navigate  ", Style::default().fg(theme.text_primary)),
-        Span::styled(
-            "[Enter] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Select/Toggle  ", Style::default().fg(theme.text_primary)),
-        Span::styled("[Esc] ", Style::default().fg(theme.muted)),
-        Span::styled("Save & Close", Style::default().fg(theme.muted)),
-    ]);
+    // 3. Footer Key Hints (Context sensitive)
+    let footer_line = if state.selecting_model_for_provider.is_some() {
+        Line::from(vec![
+            Span::styled(
+                "  [↑/↓] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Navigate Models  ", Style::default().fg(theme.text_primary)),
+            Span::styled(
+                "[Enter] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Set Default Model  ",
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(
+                "[Esc/Backspace] ",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Back to Providers  ", Style::default().fg(theme.muted)),
+            Span::styled("[Tab] ", Style::default().fg(theme.muted)),
+            Span::styled("Next Tab", Style::default().fg(theme.muted)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                "  [Tab/◄►] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Switch Tab  ", Style::default().fg(theme.text_primary)),
+            Span::styled(
+                "[↑/↓] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Navigate  ", Style::default().fg(theme.text_primary)),
+            Span::styled(
+                "[Enter] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Choose/Toggle  ", Style::default().fg(theme.text_primary)),
+            Span::styled(
+                "[Space] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Activate/Toggle  ", Style::default().fg(theme.text_primary)),
+            Span::styled("[Esc] ", Style::default().fg(theme.muted)),
+            Span::styled("Save & Close", Style::default().fg(theme.muted)),
+        ])
+    };
     frame.render_widget(Paragraph::new(footer_line), chunks[3]);
 }
 
@@ -888,5 +1281,108 @@ pub mod tests {
                 render_config_approval(f, area, &theme, &proposal, 1);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn test_settings_modal_model_drilldown_navigation() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
+
+        assert!(state.selecting_model_for_provider.is_none());
+        assert_eq!(state.max_items(), SUPPORTED_PROVIDERS.len());
+
+        // Enter model drilldown for anthropic
+        state.selecting_model_for_provider = Some("anthropic".to_string());
+        state.provider_models = vec![
+            crate::agent::models::ModelInfo {
+                id: "claude-3-7-sonnet-20250219".to_string(),
+                name: "Claude 3.7 Sonnet".to_string(),
+                description: None,
+                context_length: Some(200_000),
+                is_free: false,
+            },
+            crate::agent::models::ModelInfo {
+                id: "claude-3-5-sonnet-20241022".to_string(),
+                name: "Claude 3.5 Sonnet".to_string(),
+                description: None,
+                context_length: Some(200_000),
+                is_free: false,
+            },
+        ];
+        state.model_selected_index = 0;
+
+        assert_eq!(state.max_items(), 2);
+        state.next_item();
+        assert_eq!(state.model_selected_index, 1);
+        state.next_item();
+        assert_eq!(state.model_selected_index, 1); // at boundary
+        state.prev_item();
+        assert_eq!(state.model_selected_index, 0);
+
+        // Switching tab cancels drilldown
+        state.next_tab();
+        assert_eq!(state.active_tab, SettingsTab::Workspace);
+        assert!(state.selecting_model_for_provider.is_none());
+        assert!(state.provider_models.is_empty());
+    }
+
+    #[test]
+    fn test_render_settings_model_drilldown_and_narrow_scroll() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
+        state.selecting_model_for_provider = Some("anthropic".to_string());
+        state.provider_models = vec![
+            crate::agent::models::ModelInfo {
+                id: "claude-3-7-sonnet-20250219".to_string(),
+                name: "Claude 3.7 Sonnet".to_string(),
+                description: None,
+                context_length: Some(200_000),
+                is_free: false,
+            },
+            crate::agent::models::ModelInfo {
+                id: "claude-3-5-haiku-20241022".to_string(),
+                name: "Claude 3.5 Haiku".to_string(),
+                description: None,
+                context_length: Some(200_000),
+                is_free: false,
+            },
+        ];
+        state.model_selected_index = 0;
+
+        let theme = Theme::default();
+        // Test standard view
+        let backend = TestBackend::new(95, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_settings(f, area, &theme, &state);
+            })
+            .unwrap();
+
+        // Test narrow view (e.g. 55 cols) to exercise horizontal scrolling and indicator rendering
+        let narrow_backend = TestBackend::new(55, 24);
+        let mut narrow_terminal = Terminal::new(narrow_backend).unwrap();
+        narrow_terminal
+            .draw(|f| {
+                let area = f.area();
+                render_settings(f, area, &theme, &state);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_truncate_middle_and_format_tokens() {
+        assert_eq!(truncate_middle("hello", 10), "hello");
+        assert_eq!(
+            truncate_middle("/home/user/super/long/workspace/path/to/project", 25),
+            "/home/user/.../to/project"
+        );
+        assert_eq!(format_context_tokens(Some(2_000_000)), "2M");
+        assert_eq!(format_context_tokens(Some(128_000)), "128k");
+        assert_eq!(format_context_tokens(Some(512)), "512");
+        assert_eq!(format_context_tokens(None), "-");
     }
 }

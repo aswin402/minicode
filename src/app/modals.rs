@@ -1581,122 +1581,305 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
-            ModalState::Settings(state) => match key.code {
-                KeyCode::Tab => {
-                    state.next_tab();
-                }
-                KeyCode::BackTab => {
-                    state.prev_tab();
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    state.prev_item();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    state.next_item();
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => match state.active_tab {
-                    crate::ui::modals::settings::SettingsTab::Providers => {
-                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
-                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
-                            state.active_provider = prov.to_string();
-                            state.active_model = self.config.get_default_model_for_provider(prov);
+            ModalState::Settings(state) => {
+                // If currently in Model Selection drilldown:
+                if state.selecting_model_for_provider.is_some() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Backspace => {
+                            state.selecting_model_for_provider = None;
+                            state.provider_models.clear();
+                            state.model_selected_index = 0;
                         }
-                    }
-                    crate::ui::modals::settings::SettingsTab::Workspace => {
-                        state.save_to_workspace = !state.save_to_workspace;
-                    }
-                    crate::ui::modals::settings::SettingsTab::Autonomy => {
-                        match state.selected_index {
-                            0 => {
-                                state.auto_approve = !state.auto_approve;
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            state.prev_item();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            state.next_item();
+                        }
+                        KeyCode::Tab => {
+                            state.next_tab();
+                        }
+                        KeyCode::BackTab => {
+                            state.prev_tab();
+                        }
+                        KeyCode::Enter => {
+                            if !state.provider_models.is_empty()
+                                && state.model_selected_index < state.provider_models.len()
+                            {
+                                let prov = state
+                                    .selecting_model_for_provider
+                                    .take()
+                                    .unwrap_or_default();
+                                let chosen_model =
+                                    state.provider_models[state.model_selected_index].id.clone();
+
+                                // 1. Update config default_models map
+                                self.config
+                                    .provider
+                                    .default_models
+                                    .insert(prov.to_lowercase(), chosen_model.clone());
+
+                                // 2. Update active provider & model
+                                state.active_provider = prov.clone();
+                                state.active_model = chosen_model.clone();
+                                self.config.provider.default = prov.clone();
+                                self.config.provider.model = chosen_model.clone();
+
+                                // 3. Save to target config layer
+                                if state.save_to_workspace {
+                                    let ws_minicode_dir = self
+                                        .workspace_root
+                                        .join(crate::constants::WORKSPACE_DIR_NAME);
+                                    let _ = std::fs::create_dir_all(&ws_minicode_dir);
+                                    let _ = self.config.save(Some(&self.workspace_root));
+                                    let _ = crate::config::Config::save_workspace_preference(
+                                        &self.workspace_root,
+                                        &prov,
+                                        &chosen_model,
+                                    );
+                                } else {
+                                    let _ = self.config.save(None);
+                                }
+
+                                // 4. Update live agent provider runtime
+                                let custom_url = self.config.get_provider_base_url(&prov);
+                                let key_res = self.config.get_api_key(&prov);
+                                let (new_prov, prov_err) =
+                                    crate::agent::provider::create_provider_or_fallback(
+                                        &prov,
+                                        key_res,
+                                        custom_url.as_deref(),
+                                    );
+                                let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                    config: Box::new(self.config.clone()),
+                                    provider: new_prov,
+                                });
+
+                                if let Some(err) = prov_err {
+                                    self.timeline.add_status(format!(
+                                        "⚠️ Switched provider to '{}' and default model to '{}', but provider reported: {}",
+                                        prov, chosen_model, err
+                                    ));
+                                } else {
+                                    self.timeline.add_status(format!(
+                                        "✔ Set default model for '{}' to '{}' (active)",
+                                        prov, chosen_model
+                                    ));
+                                }
+
+                                state.provider_models.clear();
+                                state.model_selected_index = 0;
                             }
-                            1 => {
-                                state.thinking_budget = match state.thinking_budget {
-                                    0 => 4096,
-                                    4096 => 8192,
-                                    8192 => 16384,
-                                    16384 => 32768,
-                                    _ => 0,
-                                };
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // Standard Settings Modal Key Handling:
+                match key.code {
+                    KeyCode::Tab | KeyCode::Right => {
+                        state.next_tab();
+                    }
+                    KeyCode::BackTab | KeyCode::Left => {
+                        state.prev_tab();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        state.prev_item();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        state.next_item();
+                    }
+                    KeyCode::Char(' ') => match state.active_tab {
+                        crate::ui::modals::settings::SettingsTab::Providers => {
+                            if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                                let prov =
+                                    crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                                state.active_provider = prov.to_string();
+                                state.active_model =
+                                    self.config.get_default_model_for_provider(prov);
+                                self.timeline.add_status(format!(
+                                    "✔ Active provider switched to '{}' ({})",
+                                    prov, state.active_model
+                                ));
                             }
-                            2 => {
-                                state.approval_policy =
-                                    match state.approval_policy.to_lowercase().as_str() {
-                                        "strict" => "prompt".to_string(),
-                                        "prompt" => "permissive".to_string(),
-                                        _ => "strict".to_string(),
+                        }
+                        crate::ui::modals::settings::SettingsTab::Workspace => {
+                            state.save_to_workspace = !state.save_to_workspace;
+                        }
+                        crate::ui::modals::settings::SettingsTab::Autonomy => {
+                            match state.selected_index {
+                                0 => {
+                                    state.auto_approve = !state.auto_approve;
+                                }
+                                1 => {
+                                    state.thinking_budget = match state.thinking_budget {
+                                        0 => 4096,
+                                        4096 => 8192,
+                                        8192 => 16384,
+                                        16384 => 32768,
+                                        _ => 0,
                                     };
+                                }
+                                2 => {
+                                    state.approval_policy =
+                                        match state.approval_policy.to_lowercase().as_str() {
+                                            "strict" => "prompt".to_string(),
+                                            "prompt" => "permissive".to_string(),
+                                            _ => "strict".to_string(),
+                                        };
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
+                        crate::ui::modals::settings::SettingsTab::Probes => {
+                            state.probing = true;
+                            let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
+                            state.probe_results = Some(results);
+                            state.probing = false;
+                        }
+                    },
+                    KeyCode::Enter => match state.active_tab {
+                        crate::ui::modals::settings::SettingsTab::Providers => {
+                            if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                                let prov =
+                                    crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                                let prov_str = prov.to_string();
+
+                                // Fetch live models with fallback to static catalog
+                                let api_key = self.config.get_api_key(prov).unwrap_or_default();
+                                let custom_url = self.config.get_provider_base_url(prov);
+                                let live_models = self
+                                    .model_fetcher
+                                    .fetch_models(prov, &api_key, custom_url.as_deref())
+                                    .await
+                                    .unwrap_or_default();
+
+                                let models = if !live_models.is_empty() {
+                                    live_models
+                                } else {
+                                    let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(prov);
+                                    fb.into_iter()
+                                        .map(|item| crate::agent::models::ModelInfo {
+                                            id: item.id,
+                                            name: item.name,
+                                            description: None,
+                                            context_length: Some(item.context_length),
+                                            is_free: false,
+                                        })
+                                        .collect()
+                                };
+
+                                let current_default =
+                                    self.config.get_default_model_for_provider(prov);
+                                let def_idx = models
+                                    .iter()
+                                    .position(|m| {
+                                        m.id == current_default || m.name == current_default
+                                    })
+                                    .unwrap_or(0);
+
+                                state.selecting_model_for_provider = Some(prov_str);
+                                state.provider_models = models;
+                                state.model_selected_index = def_idx;
+                            }
+                        }
+                        crate::ui::modals::settings::SettingsTab::Workspace => {
+                            state.save_to_workspace = !state.save_to_workspace;
+                        }
+                        crate::ui::modals::settings::SettingsTab::Autonomy => {
+                            match state.selected_index {
+                                0 => {
+                                    state.auto_approve = !state.auto_approve;
+                                }
+                                1 => {
+                                    state.thinking_budget = match state.thinking_budget {
+                                        0 => 4096,
+                                        4096 => 8192,
+                                        8192 => 16384,
+                                        16384 => 32768,
+                                        _ => 0,
+                                    };
+                                }
+                                2 => {
+                                    state.approval_policy =
+                                        match state.approval_policy.to_lowercase().as_str() {
+                                            "strict" => "prompt".to_string(),
+                                            "prompt" => "permissive".to_string(),
+                                            _ => "strict".to_string(),
+                                        };
+                                }
+                                _ => {}
+                            }
+                        }
+                        crate::ui::modals::settings::SettingsTab::Probes => {
+                            state.probing = true;
+                            let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
+                            state.probe_results = Some(results);
+                            state.probing = false;
+                        }
+                    },
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        let old_provider = self.config.provider.default.clone();
+                        let old_model = self.config.provider.model.clone();
+                        let old_auto_approve = self.config.agent.auto_approve;
+                        let old_thinking = self.config.provider.thinking_budget;
+                        let old_policy = self.config.agent.approval_policy.clone();
+
+                        self.config.provider.default = state.active_provider.clone();
+                        self.config.provider.model = state.active_model.clone();
+                        self.config.agent.auto_approve = state.auto_approve;
+                        self.config.provider.thinking_budget = if state.thinking_budget == 0 {
+                            None
+                        } else {
+                            Some(state.thinking_budget)
+                        };
+                        self.config.agent.approval_policy = state.approval_policy.clone();
+
+                        if state.save_to_workspace {
+                            let ws_minicode_dir = self
+                                .workspace_root
+                                .join(crate::constants::WORKSPACE_DIR_NAME);
+                            let _ = std::fs::create_dir_all(&ws_minicode_dir);
+                            let _ = self.config.save(Some(&self.workspace_root));
+                            let _ = crate::config::Config::save_workspace_preference(
+                                &self.workspace_root,
+                                &self.config.provider.default,
+                                &self.config.provider.model,
+                            );
+                        } else {
+                            let _ = self.config.save(None);
+                        }
+
+                        let config_changed = old_provider != self.config.provider.default
+                            || old_model != self.config.provider.model
+                            || old_auto_approve != self.config.agent.auto_approve
+                            || old_thinking != self.config.provider.thinking_budget
+                            || old_policy != self.config.agent.approval_policy;
+
+                        if config_changed {
+                            let custom_url = self
+                                .config
+                                .get_provider_base_url(&self.config.provider.default);
+                            let key_res = self.config.get_api_key(&self.config.provider.default);
+                            let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
+                                &self.config.provider.default,
+                                key_res,
+                                custom_url.as_deref(),
+                            );
+                            let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                config: Box::new(self.config.clone()),
+                                provider: new_prov,
+                            });
+                        }
+
+                        self.timeline
+                            .add_status("✔ Settings saved successfully".to_string());
+                        self.modal = ModalState::None;
                     }
-                    crate::ui::modals::settings::SettingsTab::Probes => {
-                        state.probing = true;
-                        let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
-                        state.probe_results = Some(results);
-                        state.probing = false;
-                    }
-                },
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    let old_provider = self.config.provider.default.clone();
-                    let old_model = self.config.provider.model.clone();
-                    let old_auto_approve = self.config.agent.auto_approve;
-                    let old_thinking = self.config.provider.thinking_budget;
-                    let old_policy = self.config.agent.approval_policy.clone();
-
-                    self.config.provider.default = state.active_provider.clone();
-                    self.config.provider.model = state.active_model.clone();
-                    self.config.agent.auto_approve = state.auto_approve;
-                    self.config.provider.thinking_budget = if state.thinking_budget == 0 {
-                        None
-                    } else {
-                        Some(state.thinking_budget)
-                    };
-                    self.config.agent.approval_policy = state.approval_policy.clone();
-
-                    if state.save_to_workspace {
-                        let ws_minicode_dir = self
-                            .workspace_root
-                            .join(crate::constants::WORKSPACE_DIR_NAME);
-                        let _ = std::fs::create_dir_all(&ws_minicode_dir);
-                        let _ = self.config.save(Some(&self.workspace_root));
-                        let _ = crate::config::Config::save_workspace_preference(
-                            &self.workspace_root,
-                            &self.config.provider.default,
-                            &self.config.provider.model,
-                        );
-                    } else {
-                        let _ = self.config.save(None);
-                    }
-
-                    let config_changed = old_provider != self.config.provider.default
-                        || old_model != self.config.provider.model
-                        || old_auto_approve != self.config.agent.auto_approve
-                        || old_thinking != self.config.provider.thinking_budget
-                        || old_policy != self.config.agent.approval_policy;
-
-                    if config_changed {
-                        let custom_url = self
-                            .config
-                            .get_provider_base_url(&self.config.provider.default);
-                        let key_res = self.config.get_api_key(&self.config.provider.default);
-                        let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
-                            &self.config.provider.default,
-                            key_res,
-                            custom_url.as_deref(),
-                        );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
-                    }
-
-                    self.timeline
-                        .add_status("✔ Settings saved successfully".to_string());
-                    self.modal = ModalState::None;
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             ModalState::ConfigApproval {
                 proposal,
                 selected_index,
