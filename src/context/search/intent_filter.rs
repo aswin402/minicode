@@ -40,14 +40,40 @@ impl IntentClassifier {
             categories.insert(ToolCategory::Web);
         }
 
-        // 3. Onpkg & Stack Scaffolding Intent
-        if lower.contains("onpkg")
+        // 3. MiniKit Architecture Stacks, Dependencies & Skills Intent
+        if lower.contains("minikit")
+            || lower.contains("kit ")
+            || lower.contains("kit_")
+            || lower.contains("onpkg")
             || lower.contains("stack")
             || lower.contains("scaffold")
             || lower.contains("template")
+            || lower.contains("bootstrap")
             || lower.contains("add pkg")
             || lower.contains("add package")
             || lower.contains("install package")
+            || lower.contains("install pkg")
+            || lower.contains("add dependency")
+            || lower.contains("add dep")
+            || lower.contains("dependencies")
+            || lower.contains("dependency")
+            || lower.contains("package")
+            || lower.contains("packages")
+            || lower.contains("library")
+            || lower.contains("libraries")
+            || lower.contains("npm i")
+            || lower.contains("npm install")
+            || lower.contains("yarn add")
+            || lower.contains("pnpm add")
+            || lower.contains("bun add")
+            || lower.contains("cargo add")
+            || lower.contains("pip install")
+            || lower.contains("uv add")
+            || lower.contains("flutter pub")
+            || lower.contains("drift")
+            || lower.contains("self-heal")
+            || lower.contains("skill")
+            || lower.contains("skills")
         {
             categories.insert(ToolCategory::Onpkg);
         }

@@ -86,12 +86,12 @@ impl FromStr for ToolCategory {
             "search" | "find" | "ast" | "symbol" => Ok(Self::Search),
             "git" | "vcs" | "diff" => Ok(Self::Git),
             "web" | "browser" | "crawl" | "internet" => Ok(Self::Web),
-            "onpkg" | "stack" | "pkg" | "package" => Ok(Self::Onpkg),
+            "kit" | "minikit" | "onpkg" | "stack" | "pkg" | "package" | "dep" | "dependencies" => Ok(Self::Onpkg),
             "codegraph" | "graph" | "explore" | "architecture" => Ok(Self::Codegraph),
             "agent" | "agents" | "swarm" | "subagent" => Ok(Self::Agent),
             "memory" | "plan" | "wiki" | "skill" | "skills" => Ok(Self::Memory),
             other => Err(format!(
-                "Unknown tool category '{}'. Available: files, exec, search, git, web, onpkg, codegraph, agent, memory, all",
+                "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, all",
                 other
             )),
         }
@@ -105,12 +105,14 @@ pub fn activate_tools_schema() -> ToolSchema {
 
 /// JSON Schema for the `activate_tools` dynamic meta-tool with connected MCP servers advertised.
 pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSchema {
-    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
+    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
 
     let mut enums = vec![
         "git".to_string(),
         "web".to_string(),
         "codegraph".to_string(),
+        "kit".to_string(),
+        "minikit".to_string(),
         "onpkg".to_string(),
         "agent".to_string(),
         "search".to_string(),

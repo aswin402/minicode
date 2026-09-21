@@ -36,9 +36,14 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    println!(
 - **Code Search & Navigation**: Autonomously leverage `locate_symbol` for instant AST declarations, `grep_search` for exact regex patterns, `file_search` to find files, and `read_file` to inspect lines.
 - **Command Execution & Verification**: Run build checks and tests with `exec_cmd` (e.g. `cargo check`, `cargo test`, `npm test`, `pytest`).
 - **File Modifications**: Apply surgical edits using `patch_file`. For brand new files, use `write_file`.
-- **Project Scaffolding**: When asked to scaffold or bootstrap a new app or stack, use `onpkg_stack_list` and `onpkg_stack_add`.
+- **Autonomous Dependency Management (MiniKit)**: Whenever your code introduces an external package or library that is not yet installed in the project:
+  - Do NOT guess versions or run unstructured shell commands (`npm i ...`).
+  - Autonomously invoke `kit_info(name)` to verify package existence, latest upstream version, and metadata across npm, PyPI, crates.io, or pub.dev.
+  - Autonomously invoke `kit_add(name, is_dev)` to cleanly inject the package into the manifest (package.json, Cargo.toml, requirements.txt, pubspec.yaml) and synchronize dependencies.
+- **Domain Skills & Coding Standards**: Autonomously inspect guidelines for any technology on-demand with `kit_skill_show(skill_name)`. When working with React, Next.js, FastAPI, Flutter, Hono, Rust, Tailwind, MongoDB, Postgres, Prisma, Vite, or Express, always follow the active guidelines.
+- **Architecture Scaffolding & Self-Healing**: When bootstrapping new applications or services, use `kit_stack_list` and `kit_stack_add`. When troubleshooting broken project structures or missing boilerplate files, run `kit_stack_diff(apply: true)` to automatically detect drift and restore missing architecture files.
 - **Subagent Delegation & Parallelism**: For large multi-step features, deep codebase audits, or independent research tasks, autonomously delegate to specialized workers using `invoke_subagent` (roles: "researcher", "code_reviewer", "test_engineer", "security_auditor") or `delegate_task` for isolated worktrees.
-- **Task Planning**: When planning complex features, track progress in `onpkg_docs/todo.md` and spec in `onpkg_docs/implementation.md`.
+- **Task Planning**: When planning complex features, track progress in `minikit_docs/todo.md` and spec in `minikit_docs/implementation.md`.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -143,6 +148,23 @@ impl PromptBuilder {
                 if e.kind() != ErrorKind::NotFound {
                     tracing::warn!(path = %agents_file.display(), error = %e, "Failed to read AGENTS.md");
                 }
+            }
+        }
+
+        // Automatically inject resolved active domain skills (React, Next.js, FastAPI, Rust, Tailwind, etc.)
+        let active_skills =
+            crate::tools::onpkg::skills::OnpkgSkillsManager::resolve_active_skills_for_workspace(
+                workspace_dir,
+            );
+        if !active_skills.is_empty() {
+            prompt.push_str("\n# Active Technology Guidelines & Domain Skills (MiniKit):\n");
+            prompt.push_str("The following specialized domain rules are active for this codebase. Adhere strictly to their architectural and coding patterns:\n\n");
+            for (name, content) in active_skills {
+                prompt.push_str(&format!(
+                    "## Domain Skill: `{}`\n{}\n\n",
+                    name,
+                    content.trim()
+                ));
             }
         }
 
