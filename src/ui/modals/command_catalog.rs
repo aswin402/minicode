@@ -102,6 +102,20 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/theme | /theme catppuccin",
     },
     CommandCatalogItem {
+        name: "/settings",
+        category: "Config & Runtime",
+        shortcut: "F3",
+        description: "Interactive settings modal: providers, models, autonomy & connection probes",
+        example: "/settings | /config | /settings autonomy | /settings probes",
+    },
+    CommandCatalogItem {
+        name: "/config",
+        category: "Config & Runtime",
+        shortcut: "F3",
+        description: "Workspace configuration & preference manager (alias for /settings)",
+        example: "/config | /settings",
+    },
+    CommandCatalogItem {
         name: "/configure",
         category: "Config & Runtime",
         shortcut: "F2",

@@ -42,7 +42,7 @@ impl CommandCategory {
 }
 
 /// A command item displayed in the floating spotlight palette.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct PaletteCommand {
     pub slash_name: &'static str,
     pub title: &'static str,
@@ -80,6 +80,20 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         description: "Choose AI model or provider interactively",
         category: CommandCategory::System,
         shortcut: Some("Ctrl+L"),
+    },
+    PaletteCommand {
+        slash_name: "/settings",
+        title: "Settings & Preferences",
+        description: "Interactive settings modal: providers, models, autonomy & probes",
+        category: CommandCategory::System,
+        shortcut: Some("F3"),
+    },
+    PaletteCommand {
+        slash_name: "/config",
+        title: "Workspace Config",
+        description: "Manage provider defaults, autonomy & settings (alias for /settings)",
+        category: CommandCategory::System,
+        shortcut: Some("F3"),
     },
     PaletteCommand {
         slash_name: "/configure",
@@ -474,7 +488,7 @@ impl<'a> InputDock<'a> {
         let selected_category =
             CommandCategory::all()[self.category_index % CommandCategory::all().len()];
 
-        PALETTE_COMMANDS
+        let mut results: Vec<&'static PaletteCommand> = PALETTE_COMMANDS
             .iter()
             .filter(|cmd| {
                 // Category filter
@@ -492,18 +506,43 @@ impl<'a> InputDock<'a> {
                     return true;
                 }
 
-                cmd.title.to_lowercase().contains(&query)
-                    || cmd
-                        .slash_name
-                        .trim_start_matches('/')
-                        .to_lowercase()
-                        .contains(&query)
-                    || cmd.description.to_lowercase().contains(&query)
-                    || cmd
-                        .shortcut
-                        .is_some_and(|s| s.to_lowercase().contains(&query))
+                let name = cmd.slash_name.trim_start_matches('/').to_lowercase();
+                let title = cmd.title.to_lowercase();
+                let desc = cmd.description.to_lowercase();
+                let shortcut = cmd.shortcut.map(|s| s.to_lowercase());
+
+                name.contains(&query)
+                    || title.contains(&query)
+                    || desc.contains(&query)
+                    || shortcut.as_ref().is_some_and(|s| s.contains(&query))
             })
-            .collect()
+            .collect();
+
+        if !query.is_empty() {
+            results.sort_by_key(|cmd| {
+                let name = cmd.slash_name.trim_start_matches('/').to_lowercase();
+                let title = cmd.title.to_lowercase();
+                let desc = cmd.description.to_lowercase();
+
+                if name == query {
+                    0
+                } else if name.starts_with(&query) {
+                    1
+                } else if title.starts_with(&query) {
+                    2
+                } else if name.contains(&query) {
+                    3
+                } else if title.contains(&query) {
+                    4
+                } else if desc.contains(&query) {
+                    5
+                } else {
+                    6
+                }
+            });
+        }
+
+        results
     }
 
     /// Returns the currently selected palette command candidate
@@ -597,9 +636,11 @@ impl<'a> InputDock<'a> {
                 let trimmed = text.trim().to_string();
 
                 // If user typed an exact or prefix slash command with palette open,
-                // resolve to the highlighted slash command
+                // resolve to the highlighted or exact slash command
                 let final_prompt = if is_slash_open && !matching.is_empty() {
-                    if let Some(cmd) = self.selected_palette_command() {
+                    if let Some(exact_cmd) = matching.iter().find(|cmd| cmd.slash_name == trimmed) {
+                        exact_cmd.slash_name.to_string()
+                    } else if let Some(cmd) = self.selected_palette_command() {
                         cmd.slash_name.to_string()
                     } else {
                         trimmed
@@ -1028,5 +1069,23 @@ fn calculate_hash(data: &[u8]) -> u64 {
         assert_eq!(dock.textarea.lines().len(), 20);
         // Required height is capped at 5 lines + 2 borders = 7
         assert_eq!(dock.required_height(), 7);
+    }
+
+    #[test]
+    fn test_palette_commands_include_settings() {
+        let mut dock = InputDock::new();
+        dock.textarea.insert_str("/set");
+
+        assert!(dock.has_active_slash_query());
+        let matches = dock.matching_palette_commands();
+        assert!(!matches.is_empty(), "Should match /settings on /set");
+        assert!(
+            matches.iter().any(|cmd| cmd.slash_name == "/settings"),
+            "Expected /settings in matching palette commands"
+        );
+
+        let enter_key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let submission = dock.handle_key(enter_key).expect("submit slash command");
+        assert_eq!(submission.full, "/settings");
     }
 }

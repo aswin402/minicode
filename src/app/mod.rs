@@ -841,9 +841,15 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // F2 opens interactive Workspace Analysis modal
+                                // F2 opens interactive Provider Select modal
                                 if key_event.code == KeyCode::F(2) {
                                     self.modal = ModalState::new_provider_select();
+                                    continue;
+                                }
+
+                                // F3 opens interactive Settings modal
+                                if key_event.code == KeyCode::F(3) {
+                                    self.modal = ModalState::new_settings(&self.config, &self.workspace_root);
                                     continue;
                                 }
 

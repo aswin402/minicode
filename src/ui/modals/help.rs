@@ -43,6 +43,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /settings  ", Style::default().fg(theme.success)),
+            Span::styled(
+                "Configure providers, models, autonomy & probes (F3)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /theme     ", Style::default().fg(theme.success)),
             Span::styled(
                 "Switch TUI color theme palette interactively",

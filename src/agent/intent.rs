@@ -489,7 +489,7 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         match first_word.as_str() {
             "/help" | "/commands" | "/model" | "/models" | "/theme" | "/themes" | "/context"
             | "/tokens" | "/cost" | "/costs" | "/status" | "/exit" | "/quit" | "/clear"
-            | "/setup" | "/configure" | "/config" | "/compact" => {
+            | "/setup" | "/configure" | "/config" | "/compact" | "/settings" | "/preferences" => {
                 return false;
             }
             "/init" | "/index" | "/analyze" | "/map" | "/explore" | "/diff" | "/undo"

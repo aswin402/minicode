@@ -125,7 +125,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Interactive configuration wizard (setup active provider, models, and API keys)
-    #[command(alias = "configure", alias = "config")]
+    #[command(alias = "configure", alias = "config", alias = "settings")]
     Setup,
 
     /// Execute a one-shot autonomous task non-interactively

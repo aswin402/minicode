@@ -175,19 +175,24 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/settings"
-            || prompt.starts_with("/settings ")
-            || prompt == "/config"
-            || prompt.starts_with("/config ")
-            || prompt == "/preferences"
-            || prompt.starts_with("/preferences ")
+        let prompt_trimmed = prompt.trim();
+        let prompt_lower = prompt_trimmed.to_lowercase();
+        if prompt_lower == "/settings"
+            || prompt_lower.starts_with("/settings ")
+            || prompt_lower == "/config"
+            || prompt_lower.starts_with("/config ")
+            || prompt_lower == "/preferences"
+            || prompt_lower.starts_with("/preferences ")
         {
-            let remainder = if let Some(r) = prompt.strip_prefix("/settings") {
+            let remainder = if let Some(r) = prompt_trimmed.strip_prefix("/settings") {
                 r.trim()
-            } else if let Some(r) = prompt.strip_prefix("/config") {
+            } else if let Some(r) = prompt_trimmed.strip_prefix("/config") {
                 r.trim()
             } else {
-                prompt.strip_prefix("/preferences").unwrap_or("").trim()
+                prompt_trimmed
+                    .strip_prefix("/preferences")
+                    .unwrap_or("")
+                    .trim()
             };
 
             if remainder.is_empty() {
