@@ -235,6 +235,7 @@ pub async fn exec_cmd_with_context(
     if !log_notice.is_empty() && !compacted.contains("last_exec.log") {
         compacted.push_str(&log_notice);
     }
+    compacted = crate::security::sanitize_text(&compacted);
 
     if !status.success() {
         let frames = crate::context::search::fault_localizer::FaultLocalizer::extract_trace_frames(

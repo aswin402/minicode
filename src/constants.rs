@@ -921,7 +921,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 139;
+pub const TOTAL_TOOL_COUNT: usize = 143;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

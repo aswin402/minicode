@@ -9,6 +9,7 @@ pub mod logging;
 pub mod lsp;
 pub mod mcp;
 pub mod sandbox;
+pub mod security;
 pub mod session;
 pub mod tools;
 pub mod ui;

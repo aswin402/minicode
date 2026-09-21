@@ -1,5 +1,8 @@
+pub mod builtin_skills;
 pub mod client;
+pub mod diff;
 pub mod doctor;
+pub mod pkg;
 pub mod scaffolder;
 pub mod skills;
 pub mod stacks;
@@ -223,9 +226,24 @@ impl OnpkgService {
         Ok(OnpkgSkillsManager::list_skills(workspace_root))
     }
 
+    /// Shows full content of an agent skill.
+    pub async fn show_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
+        OnpkgSkillsManager::show_skill(workspace_root, skill_name)
+    }
+
     /// Installs an agent skill into the project.
     pub async fn install_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
         OnpkgSkillsManager::install_skill(workspace_root, skill_name)
+    }
+
+    /// Evaluates workspace architecture drift against the stack template and optionally heals missing files.
+    pub async fn diff_stack(
+        workspace_root: &Path,
+        stack_name_opt: Option<&str>,
+        apply: bool,
+    ) -> Result<String> {
+        let res = diff::diff_stack(workspace_root, stack_name_opt, apply)?;
+        Ok(res.format_report())
     }
 
     /// Synchronizes project dependencies, onpkg.json manifest, AGENTS.md, and onpkg_docs.

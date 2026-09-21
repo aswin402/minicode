@@ -9,6 +9,7 @@ mod logging;
 pub mod lsp;
 mod mcp;
 mod sandbox;
+pub mod security;
 mod session;
 mod tools;
 mod ui;
@@ -176,8 +177,42 @@ enum Commands {
     /// Run multi-runtime environment health checks and diagnostics
     Doctor,
 
+    /// Initialize a new onpkg project or scaffold a stack
+    Init {
+        /// Project name (defaults to current directory name)
+        name: Option<String>,
+
+        /// Architecture stack template to scaffold (e.g. 'react-vite-gsap', 'hono-api', 'fastapi')
+        #[arg(short, long)]
+        stack: Option<String>,
+    },
+
+    /// Manage, inspect, and install battle-tested domain skills
+    Skill {
+        #[command(subcommand)]
+        action: Option<SkillCommands>,
+    },
+
+    /// Multi-ecosystem package search and dependency management (npm, PyPI, crates.io, pub.dev)
+    Pkg {
+        #[command(subcommand)]
+        action: PkgCommands,
+    },
+
     /// Synchronize onpkg.json and AGENTS.md with current workspace
-    Sync,
+    Sync {
+        /// Live watch directory and automatically sync on file changes
+        #[arg(long, short)]
+        watch: bool,
+
+        /// Skip generating AGENTS.md workflow file
+        #[arg(long)]
+        no_agents_md: bool,
+
+        /// Create a symlink CLAUDE.md pointing to AGENTS.md
+        #[arg(long)]
+        symlink_claude: bool,
+    },
 
     /// Generate an autonomous milestone implementation plan in onpkg_docs/todo.md
     Plan {
@@ -260,6 +295,65 @@ enum StackCommands {
         /// Skip post-scaffold package manager installation
         #[arg(long)]
         no_install: bool,
+    },
+
+    /// Inspect architectural drift between workspace and canonical stack template
+    Diff {
+        /// Name of the stack template (defaults to current stack in onpkg.json)
+        name: Option<String>,
+
+        /// Automatically restore and re-scaffold missing architecture template files
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillCommands {
+    /// List all installed and available built-in domain skills
+    List,
+
+    /// Show full guidelines and instructions of a domain skill
+    Show {
+        /// Name of the skill to inspect (e.g. 'react', 'next', 'tailwind', 'rust', 'frontend-design')
+        name: String,
+    },
+
+    /// Install a domain skill into the project (.minicode/skills/<name>/SKILL.md)
+    Install {
+        /// Name of skill to install
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PkgCommands {
+    /// Show real-time package metadata and latest version from upstream registries
+    Info {
+        /// Name of package
+        name: String,
+
+        /// Runtime ecosystem (npm, pypi, cargo, pub)
+        #[arg(short, long)]
+        runtime: Option<String>,
+    },
+
+    /// Add a verified package to project dependencies and onpkg.json
+    Add {
+        /// Name of package
+        name: String,
+
+        /// Version specifier (defaults to latest upstream)
+        #[arg(short, long)]
+        version: Option<String>,
+
+        /// Runtime ecosystem (npm, pypi, cargo, pub)
+        #[arg(short, long)]
+        runtime: Option<String>,
+
+        /// Add as development dependency
+        #[arg(short, long)]
+        dev: bool,
     },
 }
 
@@ -418,10 +512,56 @@ async fn main() -> anyhow::Result<()> {
             let report = tools::onpkg::doctor::OnpkgDoctor::diagnose();
             println!("{}", report);
         }
-        Some(Commands::Sync) => {
-            match tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical) {
-                Ok(msg) => println!("✔ {}", msg),
-                Err(e) => eprintln!("✗ Sync failed: {}", e),
+        Some(Commands::Init { name, stack }) => {
+            handle_init_cli(&workspace_canonical, name, stack).await?;
+        }
+        Some(Commands::Skill { action }) => {
+            handle_skill_cli(&workspace_canonical, action).await?;
+        }
+        Some(Commands::Pkg { action }) => {
+            handle_pkg_cli(&workspace_canonical, action).await?;
+        }
+        Some(Commands::Sync {
+            watch,
+            no_agents_md: _,
+            symlink_claude,
+        }) => {
+            if symlink_claude {
+                let claude_md = workspace_canonical.join("CLAUDE.md");
+                let agents_md = workspace_canonical.join(crate::constants::AGENTS_MD_FILE);
+                if agents_md.exists() && !claude_md.exists() {
+                    #[cfg(unix)]
+                    {
+                        std::os::unix::fs::symlink(&agents_md, &claude_md).ok();
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        std::fs::copy(&agents_md, &claude_md).ok();
+                    }
+                    println!("✔ Linked CLAUDE.md -> AGENTS.md");
+                }
+            }
+            if watch {
+                println!(
+                    "👀 Watching `{}` for changes to auto-sync onpkg...",
+                    workspace_canonical.display()
+                );
+                let mut last_status = String::new();
+                loop {
+                    if let Ok(msg) = tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical)
+                    {
+                        if msg != last_status {
+                            println!("✔ [{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+                            last_status = msg;
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                }
+            } else {
+                match tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical) {
+                    Ok(msg) => println!("✔ {}", msg),
+                    Err(e) => eprintln!("✗ Sync failed: {}", e),
+                }
             }
         }
         Some(Commands::Plan { prompt }) => {
@@ -595,6 +735,124 @@ async fn handle_stack_cli(
             )
             .await?;
             println!("{}", res);
+        }
+        Some(StackCommands::Diff { name, apply }) => {
+            let res =
+                tools::onpkg::OnpkgService::diff_stack(workspace, name.as_deref(), apply).await?;
+            println!("{}", res);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> anyhow::Result<()> {
+    match action {
+        None | Some(SkillCommands::List) => {
+            println!(
+                "{}",
+                tools::onpkg::OnpkgService::list_skills(workspace).await?
+            );
+        }
+        Some(SkillCommands::Show { name }) => {
+            println!(
+                "{}",
+                tools::onpkg::OnpkgService::show_skill(workspace, &name).await?
+            );
+        }
+        Some(SkillCommands::Install { name }) => {
+            println!(
+                "{}",
+                tools::onpkg::OnpkgService::install_skill(workspace, &name).await?
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_pkg_cli(workspace: &Path, action: PkgCommands) -> anyhow::Result<()> {
+    let registry = tools::onpkg::pkg::PkgRegistry::new();
+    match action {
+        PkgCommands::Info { name, runtime } => {
+            let info = registry
+                .fetch_info(&name, runtime.as_deref(), workspace)
+                .await?;
+            println!(
+                "\n📦 Package: \x1b[1m\x1b[38;2;162;119;255m{}\x1b[0m (Ecosystem: {})",
+                info.name, info.runtime
+            );
+            println!("• Latest Version: {}", info.version);
+            println!("• Description   : {}", info.description);
+            if let Some(h) = info.homepage {
+                println!("• Homepage      : {}", h);
+            }
+            if let Some(r) = info.repository {
+                println!("• Repository    : {}", r);
+            }
+            if let Some(l) = info.license {
+                println!("• License       : {}", l);
+            }
+            println!();
+        }
+        PkgCommands::Add {
+            name,
+            version,
+            runtime,
+            dev,
+        } => {
+            let res = registry
+                .add_to_project(
+                    workspace,
+                    &name,
+                    version.as_deref(),
+                    runtime.as_deref(),
+                    dev,
+                )
+                .await?;
+            println!("{}", res);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_init_cli(
+    workspace: &Path,
+    name_opt: Option<String>,
+    stack_opt: Option<String>,
+) -> anyhow::Result<()> {
+    if let Some(stack_name) = stack_opt {
+        let res = tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+            workspace,
+            &stack_name,
+            None,
+            false,
+        )
+        .await?;
+        println!("{}", res);
+    } else {
+        let project_name = name_opt.unwrap_or_else(|| {
+            workspace
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("app")
+                .to_string()
+        });
+        let manifest_path = workspace.join(crate::constants::ONPKG_MANIFEST_FILE);
+        if !manifest_path.exists() {
+            let manifest = serde_json::json!({
+                "name": project_name,
+                "version": "0.1.0",
+                "runtime": "generic",
+                "package_manager": "custom",
+                "packages": [],
+                "dev_packages": [],
+                "active_skills": []
+            });
+            std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+            println!("✔ Created project manifest `{}`", manifest_path.display());
+        }
+        match tools::onpkg::sync::OnpkgSyncEngine::sync(workspace) {
+            Ok(msg) => println!("✔ {}", msg),
+            Err(e) => eprintln!("✗ Sync failed: {}", e),
         }
     }
     Ok(())
