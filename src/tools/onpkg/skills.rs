@@ -292,12 +292,12 @@ impl OnpkgSkillsManager {
         Ok(())
     }
 
-    /// Autonomously resolves active domain skills for a workspace.
-    /// First checks minikit.json/onpkg.json `active_skills`. If absent, auto-detects from package manifests.
-    pub fn resolve_active_skills_for_workspace(workspace_root: &Path) -> Vec<(String, String)> {
+    /// Resolves the list of explicitly configured skill names from the workspace manifest (`minikit.json` or `onpkg.json`), if any.
+    /// No hardcoded heuristics or file guessing: minicode's LLM agent decides when to consult,
+    /// show, or install skills via `kit_skill_show` dynamically, or when instructed by the user.
+    pub fn get_manifest_active_skills(workspace_root: &Path) -> Vec<String> {
         let mut skill_names = Vec::new();
 
-        // 1. Check project manifest active_skills
         if let Some(manifest_path) = super::resolve_manifest_path(workspace_root) {
             if let Ok(content) = fs::read_to_string(&manifest_path) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -315,104 +315,7 @@ impl OnpkgSkillsManager {
             }
         }
 
-        // 2. If no skills found in manifest, auto-detect from project files
-        if skill_names.is_empty() {
-            // Rust
-            if workspace_root.join("Cargo.toml").exists() {
-                skill_names.push("rust".to_string());
-            }
-
-            // JavaScript / TypeScript / Node / Bun
-            let pkg_json = workspace_root.join("package.json");
-            if pkg_json.exists() {
-                if let Ok(content) = fs::read_to_string(&pkg_json) {
-                    let lower = content.to_lowercase();
-                    if lower.contains("\"next\"") {
-                        skill_names.push("next".to_string());
-                    } else if lower.contains("\"react\"") {
-                        skill_names.push("react".to_string());
-                    }
-
-                    if lower.contains("tailwind") {
-                        skill_names.push("tailwind".to_string());
-                    }
-                    if lower.contains("\"hono\"") {
-                        skill_names.push("hono".to_string());
-                    }
-                    if lower.contains("\"express\"") {
-                        skill_names.push("express".to_string());
-                    }
-                    if lower.contains("\"prisma\"") || lower.contains("@prisma/client") {
-                        skill_names.push("prisma".to_string());
-                    }
-                    if lower.contains("\"mongodb\"") || lower.contains("\"mongoose\"") {
-                        skill_names.push("mongodb".to_string());
-                    }
-                    if lower.contains("\"vite\"") {
-                        skill_names.push("vite".to_string());
-                    }
-                }
-            }
-
-            // Python / FastAPI
-            let pyproject = workspace_root.join("pyproject.toml");
-            let reqs = workspace_root.join("requirements.txt");
-            if pyproject.exists() || reqs.exists() {
-                let py_content = fs::read_to_string(&pyproject).unwrap_or_default()
-                    + &fs::read_to_string(&reqs).unwrap_or_default();
-                if py_content.to_lowercase().contains("fastapi") {
-                    skill_names.push("fastapi".to_string());
-                }
-            }
-
-            // Flutter / Dart
-            if workspace_root.join("pubspec.yaml").exists() {
-                skill_names.push("flutter".to_string());
-            }
-        }
-
-        // 3. Resolve content for each skill
-        let mut results = Vec::new();
-        for name in skill_names {
-            // A. Check local .minicode/skills/<name>/SKILL.md
-            let local_path = workspace_root
-                .join(".minicode")
-                .join("skills")
-                .join(&name)
-                .join("SKILL.md");
-            if local_path.exists() {
-                if let Ok(content) = fs::read_to_string(&local_path) {
-                    results.push((name, content));
-                    continue;
-                }
-            }
-
-            // B. Check minikit_docs / onpkg_docs
-            let mut found_doc = false;
-            for dir_name in &[
-                crate::constants::MINIKIT_DOCS_DIR,
-                crate::constants::ONPKG_DOCS_DIR,
-            ] {
-                let doc_path = workspace_root.join(dir_name).join(format!("{}.md", name));
-                if doc_path.exists() {
-                    if let Ok(content) = fs::read_to_string(&doc_path) {
-                        results.push((name.clone(), content));
-                        found_doc = true;
-                        break;
-                    }
-                }
-            }
-            if found_doc {
-                continue;
-            }
-
-            // C. Check embedded built-in library
-            if let Some(builtin) = find_builtin_skill(&name) {
-                results.push((name, builtin.content.to_string()));
-            }
-        }
-
-        results
+        skill_names
     }
 }
 
@@ -447,21 +350,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_active_skills_auto_detection() {
+    fn test_get_manifest_active_skills() {
         let temp = TempDir::new().unwrap();
-        // Create a mock package.json with React and Tailwind
-        let pkg_json = r#"{
-            "dependencies": {
-                "react": "^19.0.0",
-                "tailwindcss": "^4.0.0"
-            }
+        let manifest = r#"{
+            "name": "test-app",
+            "active_skills": ["react", "tailwind"]
         }"#;
-        fs::write(temp.path().join("package.json"), pkg_json).unwrap();
+        fs::write(temp.path().join("minikit.json"), manifest).unwrap();
 
-        let resolved = OnpkgSkillsManager::resolve_active_skills_for_workspace(temp.path());
-        assert_eq!(resolved.len(), 2);
-        let names: Vec<String> = resolved.iter().map(|(n, _)| n.clone()).collect();
-        assert!(names.contains(&"react".to_string()));
-        assert!(names.contains(&"tailwind".to_string()));
+        let skills = OnpkgSkillsManager::get_manifest_active_skills(temp.path());
+        assert_eq!(skills, vec!["react".to_string(), "tailwind".to_string()]);
     }
 }
