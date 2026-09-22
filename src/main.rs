@@ -335,6 +335,20 @@ enum StackCommands {
         #[arg(long)]
         apply: bool,
     },
+
+    /// Create a new custom stack template specification in .minicode/stacks/
+    New {
+        /// Name of the stack template to create
+        name: String,
+
+        /// Target runtime ecosystem ('bun', 'npm', 'cargo', 'uv', 'flutter')
+        #[arg(short, long, default_value = "bun")]
+        runtime: String,
+
+        /// Save globally in ~/.config/minicode/stacks/ instead of workspace
+        #[arg(short, long)]
+        global: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -351,6 +365,12 @@ enum SkillCommands {
     /// Install a domain skill into the project (.minicode/skills/<name>/SKILL.md)
     Install {
         /// Name of skill to install
+        name: String,
+    },
+
+    /// Remove an installed domain skill from the project (.minicode/skills/<name>)
+    Remove {
+        /// Name of skill to remove
         name: String,
     },
 }
@@ -811,6 +831,21 @@ async fn handle_stack_cli(
                 tools::onpkg::OnpkgService::diff_stack(workspace, name.as_deref(), apply).await?;
             println!("{}", res);
         }
+        Some(StackCommands::New {
+            name,
+            runtime,
+            global,
+        }) => {
+            let path = tools::onpkg::scaffolder::OnpkgScaffolder::create_custom_stack(
+                workspace, &name, &runtime, global,
+            )?;
+            println!(
+                "✔ Created custom stack template `{}` at `{}`",
+                name,
+                path.display()
+            );
+            println!("💡 Edit this JSON file to customize template files, dependencies, and architecture.");
+        }
     }
     Ok(())
 }
@@ -833,6 +868,12 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
             println!(
                 "{}",
                 tools::onpkg::OnpkgService::install_skill(workspace, &name).await?
+            );
+        }
+        Some(SkillCommands::Remove { name }) => {
+            println!(
+                "{}",
+                tools::onpkg::OnpkgService::remove_skill(workspace, &name).await?
             );
         }
     }

@@ -57,6 +57,75 @@ impl OnpkgScaffolder {
             .find(|s| s.name.to_lowercase() == norm)
     }
 
+    /// Creates a starter custom stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
+    pub fn create_custom_stack(
+        workspace_root: &Path,
+        name: &str,
+        runtime: &str,
+        global: bool,
+    ) -> Result<PathBuf> {
+        let norm = name.trim().to_lowercase();
+        let target_dir = if global {
+            let home = dirs::home_dir().ok_or_else(|| ToolError::InvalidArguments {
+                name: "kit_stack_new".to_string(),
+                reason: "Could not determine home directory".to_string(),
+            })?;
+            home.join(".config").join("minicode").join("stacks")
+        } else {
+            workspace_root.join(".minicode").join("stacks")
+        };
+
+        fs::create_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
+            path: target_dir.display().to_string(),
+            source: e,
+        })?;
+
+        let file_path = target_dir.join(format!("{}.json", norm));
+        if file_path.exists() {
+            return Err(ToolError::InvalidArguments {
+                name: "kit_stack_new".to_string(),
+                reason: format!(
+                    "Custom stack template `{}` already exists at `{}`",
+                    norm,
+                    file_path.display()
+                ),
+            }
+            .into());
+        }
+
+        let starter_stack = Stack {
+            name: norm.clone(),
+            runtime: runtime.trim().to_lowercase(),
+            description: format!("Custom {} stack template for {}", runtime, norm),
+            packages: vec![],
+            dev_packages: vec![],
+            transitive_packages: vec![],
+            files: vec![crate::tools::onpkg::stacks::StackFile {
+                path: "README.md".to_string(),
+                content: format!(
+                    "# {}\n\nCustom architecture stack created with minicode.\n",
+                    norm
+                ),
+                binary_content: None,
+            }],
+            hooks: vec![],
+        };
+
+        let json = serde_json::to_string_pretty(&starter_stack).map_err(|e| {
+            ToolError::InvalidArguments {
+                name: "kit_stack_new".to_string(),
+                reason: format!("Failed to serialize stack JSON: {}", e),
+            }
+        })?;
+
+        fs::write(&file_path, json).map_err(|e| ToolError::FileOp {
+            path: file_path.display().to_string(),
+            source: e,
+        })?;
+
+        Ok(file_path)
+    }
+
     /// Finds a stack by name, prioritizing workspace-specific stacks in `.minicode/stacks`.
     pub fn find_stack_in_workspace(workspace_root: &Path, name: &str) -> Option<Stack> {
         let norm = name.trim().to_lowercase();
@@ -302,5 +371,19 @@ mod tests {
         assert!(target.join("src/index.ts").exists());
         assert!(target.join("minikit.json").exists());
         assert!(target.join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn test_create_custom_stack() {
+        let temp = TempDir::new().unwrap();
+        let path =
+            OnpkgScaffolder::create_custom_stack(temp.path(), "my-starter", "bun", false).unwrap();
+        assert!(path.exists());
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"name\": \"my-starter\""));
+        assert!(content.contains("\"runtime\": \"bun\""));
+
+        let found = OnpkgScaffolder::find_stack_in_workspace(temp.path(), "my-starter");
+        assert!(found.is_some());
     }
 }

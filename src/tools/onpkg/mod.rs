@@ -274,6 +274,11 @@ impl OnpkgService {
         OnpkgSkillsManager::install_skill(workspace_root, skill_name)
     }
 
+    /// Removes an installed agent skill from the project.
+    pub async fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
+        OnpkgSkillsManager::remove_skill(workspace_root, skill_name)
+    }
+
     /// Evaluates workspace architecture drift against the stack template and optionally heals missing files.
     pub async fn diff_stack(
         workspace_root: &Path,

@@ -292,6 +292,84 @@ impl OnpkgSkillsManager {
         Ok(())
     }
 
+    /// Removes an installed custom skill from the workspace (.minicode/skills/<name>).
+    pub fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
+        let clean = skill_name.trim().to_lowercase();
+        let target_dir = workspace_root.join(".minicode").join("skills").join(&clean);
+        let mut removed = false;
+
+        if target_dir.exists() {
+            fs::remove_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
+                path: target_dir.display().to_string(),
+                source: e,
+            })?;
+            removed = true;
+        }
+
+        let target_file = workspace_root
+            .join(".minicode")
+            .join("skills")
+            .join(format!("{}.md", clean));
+        if target_file.exists() {
+            fs::remove_file(&target_file).map_err(|e| ToolError::FileOp {
+                path: target_file.display().to_string(),
+                source: e,
+            })?;
+            removed = true;
+        }
+
+        for docs_dir in &[
+            crate::constants::MINIKIT_DOCS_DIR,
+            crate::constants::ONPKG_DOCS_DIR,
+        ] {
+            let doc_file = workspace_root.join(docs_dir).join(format!("{}.md", clean));
+            if doc_file.exists() {
+                fs::remove_file(&doc_file).ok();
+                removed = true;
+            }
+        }
+
+        Self::remove_from_manifest_active_skills(workspace_root, &clean).ok();
+        OnpkgSyncEngine::sync(workspace_root).ok();
+
+        if removed {
+            Ok(format!(
+                "✔ Successfully removed skill `{}` from workspace.",
+                clean
+            ))
+        } else {
+            Ok(format!(
+                "ℹ Skill `{}` was not found installed in workspace.",
+                clean
+            ))
+        }
+    }
+
+    fn remove_from_manifest_active_skills(workspace_root: &Path, skill_name: &str) -> Result<()> {
+        let manifest_path = match super::resolve_manifest_path(workspace_root) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let content = fs::read_to_string(&manifest_path).map_err(|e| ToolError::FileOp {
+            path: manifest_path.display().to_string(),
+            source: e,
+        })?;
+
+        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(skills) = val.get_mut("active_skills").and_then(|s| s.as_array_mut()) {
+                skills.retain(|s| {
+                    s.as_str().map(|n| n.to_lowercase()) != Some(skill_name.to_lowercase())
+                });
+                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                    fs::write(&manifest_path, pretty).ok();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Resolves the list of explicitly configured skill names from the workspace manifest (`minikit.json` or `onpkg.json`), if any.
     /// No hardcoded heuristics or file guessing: minicode's LLM agent decides when to consult,
     /// show, or install skills via `kit_skill_show` dynamically, or when instructed by the user.
@@ -360,5 +438,18 @@ mod tests {
 
         let skills = OnpkgSkillsManager::get_manifest_active_skills(temp.path());
         assert_eq!(skills, vec!["react".to_string(), "tailwind".to_string()]);
+    }
+
+    #[test]
+    fn test_remove_skill() {
+        let temp = TempDir::new().unwrap();
+        // 1. Install skill
+        OnpkgSkillsManager::install_skill(temp.path(), "react").unwrap();
+        assert!(temp.path().join(".minicode/skills/react/SKILL.md").exists());
+
+        // 2. Remove skill
+        let msg = OnpkgSkillsManager::remove_skill(temp.path(), "react").unwrap();
+        assert!(msg.contains("Successfully removed skill `react`"));
+        assert!(!temp.path().join(".minicode/skills/react").exists());
     }
 }
