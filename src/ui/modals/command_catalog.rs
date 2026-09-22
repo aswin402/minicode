@@ -126,8 +126,30 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         name: "/stack",
         category: "Workflows & Scaffolding",
         shortcut: "",
-        description: "Interactive multi-runtime stack wizard & template scaffolder (onpkg)",
+        description: "Interactive multi-runtime stack wizard & template scaffolder (MiniKit)",
         example: "/stack nextjs | /stack react-vite",
+    },
+    CommandCatalogItem {
+        name: "/kit",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description:
+            "MiniKit project toolkit: templates, packages, domain skills, and drift healing",
+        example: "/kit | /kit stacks | /kit new <name> | /kit skills | /kit sync | /kit doctor",
+    },
+    CommandCatalogItem {
+        name: "/skills",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "List and view domain-specific architectural skills and best practices",
+        example: "/skills | /kit skill <name>",
+    },
+    CommandCatalogItem {
+        name: "/drift",
+        category: "Code & Inspection",
+        shortcut: "",
+        description: "Detect and self-heal architecture template drift (/drift or /heal)",
+        example: "/drift | /heal",
     },
     CommandCatalogItem {
         name: "/terminal",

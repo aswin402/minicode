@@ -767,6 +767,41 @@ impl<'a> App<'a> {
                             "/stack" => {
                                 self.modal = ModalState::new_stack_select();
                             }
+                            "/kit" => {
+                                let help = "🛠️ **MiniKit — Autonomous Project Toolkit & Architecture Engine**\n\
+                                  • `/kit stacks` (or `/stacks`)       — Browse and scaffold architecture templates\n\
+                                  • `/kit new <name> [--runtime <rt>]` — Create custom stack template in `.minicode/stacks/`\n\
+                                  • `/kit skills` (or `/skills`)       — View installed & built-in domain skills\n\
+                                  • `/kit skill <name>`                — Inspect specific skill guidelines\n\
+                                  • `/kit diff` (or `/drift`)          — Check template drift against original blueprint\n\
+                                  • `/kit heal` (or `/heal`)           — Self-heal missing files and dependencies\n\
+                                  • `/kit add <pkg>`                   — Autonomous dependency addition & intelligence\n\
+                                  • `/kit sync` (or `/sync`)           — Synchronize minikit.json, AGENTS.md, & skills\n\
+                                  • `/kit doctor` (or `/doctor`)       — Multi-runtime environment & toolchain diagnostics";
+                                self.timeline.add_status(help.to_string());
+                                self.modal = ModalState::None;
+                            }
+                            "/skills" => {
+                                let list =
+                                    crate::tools::onpkg::skills::OnpkgSkillsManager::list_skills(
+                                        &self.workspace_root,
+                                    );
+                                self.timeline.add_status(list);
+                                self.modal = ModalState::None;
+                            }
+                            "/drift" => {
+                                match crate::tools::onpkg::diff::diff_stack(
+                                    &self.workspace_root,
+                                    None,
+                                    false,
+                                ) {
+                                    Ok(res) => self.timeline.add_status(res.format_report()),
+                                    Err(e) => self
+                                        .timeline
+                                        .add_status(format!("✗ Drift check failed: {}", e)),
+                                }
+                                self.modal = ModalState::None;
+                            }
                             "/model" | "/provider" => {
                                 self.modal = ModalState::new_provider_select();
                             }

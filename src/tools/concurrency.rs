@@ -115,9 +115,21 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         "search_web" | "fetch_or_browse" | "browser_snapshot" => ToolSafetyLevel::ReadOnly,
         "browser_navigate" => ToolSafetyLevel::Mutating,
 
-        // onpkg Scaffolding Tools
-        "onpkg_stack_list" => ToolSafetyLevel::ReadOnly,
-        "onpkg_stack_add" | "onpkg_pkg_add" => ToolSafetyLevel::Mutating,
+        // onpkg & MiniKit Scaffolding, Package & Skill Tools
+        "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"
+        | "kit_doctor" | "onpkg_stack_list" | "onpkg_stack_show" | "onpkg_skill_list"
+        | "onpkg_skill_show" | "onpkg_pkg_info" | "onpkg_doctor" => ToolSafetyLevel::ReadOnly,
+
+        "kit_stack_add"
+        | "kit_stack_diff"
+        | "kit_skill_install"
+        | "kit_add"
+        | "kit_sync"
+        | "onpkg_stack_add"
+        | "onpkg_stack_diff"
+        | "onpkg_skill_install"
+        | "onpkg_pkg_add"
+        | "onpkg_sync" => ToolSafetyLevel::Mutating,
 
         // Multi-Agent & Reasoning Inspection
         "explore_hypotheses"

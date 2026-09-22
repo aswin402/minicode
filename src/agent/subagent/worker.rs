@@ -38,16 +38,16 @@ impl SubagentWorker {
 
         match &self.config.role {
             SubagentRole::Scout => {
-                "You are an expert Scout Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
+                "You are an expert Scout Subagent. Your mission is to explore the codebase or online documentation thoroughly and answer the user's research request. You have READ-ONLY tools. You can consult technology domain guidelines with `kit_skill_show(name)` and inspect upstream package metadata with `kit_info(name)`. Be concise, precise, cite exact file paths, line numbers, and return structured summaries.".to_string()
             }
             SubagentRole::Reviewer => {
-                "You are a Senior Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
+                "You are a Senior Reviewer Subagent. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. You can verify technology standards against `kit_skill_show(name)`. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Provide actionable feedback.".to_string()
             }
             SubagentRole::Tester => {
                 "You are a QA & Test Engineer Subagent. Your mission is to run test suites, analyze test failures, reproduce edge cases, and ensure high test coverage.".to_string()
             }
             SubagentRole::Coder => {
-                "You are a specialized Coder Subagent executing an assigned implementation task. Fulfill the user's instructions accurately and concisely.".to_string()
+                "You are a specialized Coder Subagent executing an assigned implementation task. Fulfill the user's instructions accurately and concisely. You have access to MiniKit tools: consult technology standards with `kit_skill_show(name)`, verify and add dependencies cleanly with `kit_info` and `kit_add`, and detect or heal template drift with `kit_stack_diff`.".to_string()
             }
         }
     }

@@ -273,6 +273,167 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
+        if prompt_lower == "/kit"
+            || prompt_lower.starts_with("/kit ")
+            || prompt_lower == "/drift"
+            || prompt_lower == "/heal"
+            || prompt_lower == "/skills"
+            || prompt_lower == "/sync"
+            || prompt_lower == "/doctor"
+        {
+            let sub = if prompt_lower.starts_with("/kit ") {
+                prompt_trimmed.strip_prefix("/kit").unwrap_or("").trim()
+            } else if prompt_lower == "/drift" {
+                "diff"
+            } else if prompt_lower == "/heal" {
+                "heal"
+            } else if prompt_lower == "/skills" {
+                "skills"
+            } else if prompt_lower == "/sync" {
+                "sync"
+            } else if prompt_lower == "/doctor" {
+                "doctor"
+            } else {
+                ""
+            };
+
+            let sub_lower = sub.to_lowercase();
+            if sub_lower.is_empty() || sub_lower == "help" {
+                let help =
+                    "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Packages & Skills):\n\
+  • `/kit stacks` (or `/stacks`)       — Browse and scaffold architecture templates\n\
+  • `/kit new <name> [--runtime <rt>]`  — Create a new custom stack template specification\n\
+  • `/kit skills` (or `/skills`)       — List all installed & built-in domain skills\n\
+  • `/kit skill <name>`                — Inspect guidelines & patterns for a technology\n\
+  • `/kit diff` (or `/drift`)          — Inspect workspace architecture drift from template\n\
+  • `/kit heal` (or `/heal`)           — Automatically restore missing stack template files\n\
+  • `/kit sync` (or `/sync`)           — Scan project, sync `minikit.json`, AGENTS.md & docs\n\
+  • `/kit doctor` (or `/doctor`)       — Diagnose runtimes (bun, uv, cargo, flutter, npm)\n\
+  • `/kit add <pkg>`                   — Prompt agent to verify and add external dependency";
+                self.timeline.add_status(help.to_string());
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "stacks" || sub_lower == "stack" || sub_lower == "stack list" {
+                self.modal = ModalState::new_stack_select();
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("new ") || sub_lower.starts_with("stack new ") {
+                let remainder = sub_lower
+                    .strip_prefix("stack new ")
+                    .or_else(|| sub_lower.strip_prefix("new "))
+                    .unwrap_or("")
+                    .trim();
+                if remainder.is_empty() {
+                    self.timeline.add_status(
+                        "⚠ Usage: `/kit new <template-name> [--runtime <bun|uv|cargo|flutter>] [--global]`".to_string(),
+                    );
+                } else {
+                    let parts: Vec<&str> = remainder.split_whitespace().collect();
+                    let stack_name = parts[0];
+                    let mut runtime = "bun";
+                    let mut global = false;
+                    let mut i = 1;
+                    while i < parts.len() {
+                        if (parts[i] == "--runtime" || parts[i] == "-r") && i + 1 < parts.len() {
+                            runtime = parts[i + 1];
+                            i += 2;
+                        } else if parts[i] == "--global" || parts[i] == "-g" {
+                            global = true;
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    match crate::tools::onpkg::scaffolder::OnpkgScaffolder::create_custom_stack(
+                        &self.workspace_root,
+                        stack_name,
+                        runtime,
+                        global,
+                    ) {
+                        Ok(p) => {
+                            self.timeline.add_status(format!(
+                                "✔ Created custom stack template `{}` at `{}`\n💡 Edit this JSON file to customize template files, dependencies, and architecture.",
+                                stack_name,
+                                p.display()
+                            ));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ Failed to create custom stack: {}", e));
+                        }
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "skills" || sub_lower == "skill list" {
+                let list = crate::tools::onpkg::skills::OnpkgSkillsManager::list_skills(
+                    &self.workspace_root,
+                );
+                self.timeline.add_status(list);
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("skill ") {
+                let skill_name = sub.strip_prefix("skill ").unwrap_or("").trim();
+                match crate::tools::onpkg::skills::OnpkgSkillsManager::show_skill(
+                    &self.workspace_root,
+                    skill_name,
+                ) {
+                    Ok(content) => {
+                        self.timeline.add_status(content);
+                    }
+                    Err(e) => {
+                        self.timeline
+                            .add_status(format!("✗ Failed to show skill `{}`: {}", skill_name, e));
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "sync" {
+                match crate::tools::onpkg::sync::OnpkgSyncEngine::sync(&self.workspace_root) {
+                    Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                    Err(e) => self.timeline.add_status(format!("✗ Sync failed: {}", e)),
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "doctor" {
+                let diag = crate::tools::onpkg::doctor::OnpkgDoctor::diagnose();
+                self.timeline.add_status(diag);
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "diff" {
+                match crate::tools::onpkg::diff::diff_stack(&self.workspace_root, None, false) {
+                    Ok(res) => self.timeline.add_status(res.format_report()),
+                    Err(e) => self
+                        .timeline
+                        .add_status(format!("✗ Drift check failed: {}", e)),
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "heal" || sub_lower == "diff --apply" {
+                match crate::tools::onpkg::diff::diff_stack(&self.workspace_root, None, true) {
+                    Ok(res) => self.timeline.add_status(res.format_report()),
+                    Err(e) => self
+                        .timeline
+                        .add_status(format!("✗ Drift self-healing failed: {}", e)),
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("add ") {
+                let pkg_name = sub.strip_prefix("add ").unwrap_or("").trim();
+                if pkg_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit add <package-name>`".to_string());
+                    return Ok(CommandAction::Continue);
+                }
+                let add_prompt = format!(
+                    "Use MiniKit dependency intelligence to verify and add package `{}` to the project: call `kit_info` to inspect metadata and `kit_add` to update dependencies.",
+                    pkg_name
+                );
+                self.timeline.add_user_message(prompt.to_string());
+                self.is_working = true;
+                self.current_activity = Some(crate::ui::AgentActivity::ExecutingCommand {
+                    command: format!("kit add {}", pkg_name),
+                });
+                self.work_start = Some(Instant::now());
+                let cancel = tokio_util::sync::CancellationToken::new();
+                self.cancel_token = Some(cancel.clone());
+                let _ = control_tx.send(AgentCommand::Prompt(add_prompt, Some(cancel)));
+                return Ok(CommandAction::Continue);
+            }
+        }
+
         if prompt == "/explore" || prompt.starts_with("/explore ") {
             let query = prompt.trim_start_matches("/explore").trim();
             if query.is_empty() {
