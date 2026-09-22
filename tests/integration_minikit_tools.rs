@@ -7,6 +7,7 @@ use minicode::tools::registry::minikit_tools;
 use minicode::tools::ToolRegistry;
 use minicode::ui::input::PALETTE_COMMANDS;
 use minicode::ui::modal::ModalState;
+use serde_json::json;
 use tempfile::tempdir;
 
 #[test]
@@ -38,6 +39,11 @@ fn test_minikit_schemas_registered_in_registry() {
     assert!(
         names.contains(&"kit_doctor".to_string()) || names.contains(&"onpkg_doctor".to_string())
     );
+    assert!(
+        names.contains(&"kit_stack_snapshot".to_string())
+            || names.contains(&"minikit_stack_snapshot".to_string())
+            || names.contains(&"onpkg_stack_snapshot".to_string())
+    );
 
     // Global ToolRegistry check
     let global_schemas = ToolRegistry::get_tool_schemas();
@@ -46,6 +52,7 @@ fn test_minikit_schemas_registered_in_registry() {
         global_names.contains(&"kit_stack_add".to_string())
             || global_names.contains(&"onpkg_stack_add".to_string())
     );
+    assert!(global_names.contains(&"kit_stack_snapshot".to_string()));
 }
 
 #[test]
@@ -485,4 +492,114 @@ fn test_workspace_custom_stack_scoping() {
     // All stacks for workspace should include it
     let all = MiniKitScaffolder::get_all_stacks_for(Some(workspace));
     assert!(all.iter().any(|s| s.name == "scoped-custom"));
+}
+
+#[tokio::test]
+async fn test_snapshot_stack_tool_dispatch_and_scaffold_cycle() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // 1. Setup a realistic project in the workspace
+    let package_json = json!({
+        "name": "sample-microservice",
+        "dependencies": {
+            "hono": "^4.0.0",
+            "zod": "^3.22.0"
+        },
+        "devDependencies": {
+            "typescript": "^5.0.0"
+        }
+    });
+    std::fs::write(
+        workspace.join("package.json"),
+        serde_json::to_string_pretty(&package_json).unwrap(),
+    )
+    .unwrap();
+
+    let src_dir = workspace.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(
+        src_dir.join("index.ts"),
+        "import { Hono } from 'hono';\nconst app = new Hono();\nexport default app;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src_dir.join("routes.ts"),
+        "export const routes = ['/health', '/api'];\n",
+    )
+    .unwrap();
+
+    // 2. Dispatch snapshot tool via ToolRegistry
+    let args = json!({
+        "name": "sample-microservice-stack",
+        "description": "Auto-snapshotted microservice template",
+        "global": false
+    });
+    let res = ToolRegistry::dispatch(
+        workspace,
+        "call_snap_1",
+        "kit_stack_snapshot",
+        &args,
+        None,
+        1,
+    )
+    .await;
+    assert!(res.success, "Tool dispatch failed: {}", res.output);
+    assert!(res.output.contains("sample-microservice-stack"));
+    assert!(res.output.contains("Successfully snapshotted workspace into custom stack"));
+
+    // 3. Verify the stack file was created in .minicode/stacks/
+    let stack_path = workspace
+        .join(".minicode")
+        .join("stacks")
+        .join("sample-microservice-stack.json");
+    assert!(stack_path.exists());
+
+    // 4. Verify discovery via MiniKitScaffolder
+    let found = MiniKitScaffolder::find_stack_in_workspace(workspace, "sample-microservice-stack");
+    assert!(found.is_some());
+    let stack = found.unwrap();
+    assert_eq!(stack.name, "sample-microservice-stack");
+    assert_eq!(stack.runtime, "node");
+    assert!(stack.packages.contains(&"hono".to_string()));
+    assert!(stack.packages.contains(&"zod".to_string()));
+    assert!(stack.dev_packages.contains(&"typescript".to_string()));
+    assert!(stack.files.iter().any(|f| f.path == "src/index.ts"));
+    assert!(stack.files.iter().any(|f| f.path == "src/routes.ts"));
+
+    // 5. Test alias dispatch (minikit_stack_snapshot or onpkg_stack_snapshot)
+    let alias_args = json!({
+        "name": "alias-stack",
+        "global": false
+    });
+    let alias_res = ToolRegistry::dispatch(
+        workspace,
+        "call_snap_2",
+        "onpkg_stack_snapshot",
+        &alias_args,
+        None,
+        1,
+    )
+    .await;
+    assert!(
+        alias_res.success,
+        "Alias dispatch failed: {}",
+        alias_res.output
+    );
+    assert!(alias_res.output.contains("alias-stack"));
+
+    // 6. Test scaffolding the snapshotted stack into a new target directory
+    let target_dir = temp_dir.path().join("spawned-service");
+    let scaffold_res = MiniKitScaffolder::scaffold(
+        workspace,
+        "sample-microservice-stack",
+        Some(target_dir.to_str().unwrap()),
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(scaffold_res.contains("sample-microservice-stack"));
+    assert!(target_dir.join("src/index.ts").exists());
+    assert!(target_dir.join("src/routes.ts").exists());
+    assert!(target_dir.join("package.json").exists());
 }

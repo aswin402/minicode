@@ -147,6 +147,339 @@ impl MiniKitScaffolder {
         Ok(file_path)
     }
 
+    /// Snapshots the current workspace or subproject into a reusable MiniKit stack template JSON
+    /// in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
+    pub fn snapshot_workspace_to_stack(
+        workspace_root: &Path,
+        name: &str,
+        description: Option<&str>,
+        global: bool,
+    ) -> Result<(PathBuf, usize, usize)> {
+        let norm = name.trim().to_lowercase();
+        if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
+            return Err(ToolError::InvalidArguments {
+                name: "kit_stack_snapshot".to_string(),
+                reason: format!(
+                    "Invalid stack name '{}': must not contain path separators or traversal",
+                    name
+                ),
+            }
+            .into());
+        }
+
+        let target_dir = if global {
+            let home = dirs::home_dir().ok_or_else(|| ToolError::InvalidArguments {
+                name: "kit_stack_snapshot".to_string(),
+                reason: "Could not determine home directory".to_string(),
+            })?;
+            home.join(".config").join("minicode").join("stacks")
+        } else {
+            workspace_root.join(".minicode").join("stacks")
+        };
+
+        fs::create_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
+            path: target_dir.display().to_string(),
+            source: e,
+        })?;
+
+        let file_path = target_dir.join(format!("{}.json", norm));
+
+        // 1. Detect runtime and package manager
+        let (runtime, _) = super::sync::MiniKitSyncEngine::detect_runtime(workspace_root);
+
+        // 2. Extract dependencies from manifest or project config files
+        let (packages, dev_packages) = Self::extract_dependencies_from_workspace(workspace_root);
+
+        // 3. Collect files using ignore::WalkBuilder (respects .gitignore)
+        let files = Self::collect_files_for_snapshot(workspace_root)?;
+        let files_count = files.len();
+        let packages_count = packages.len() + dev_packages.len();
+
+        let desc = match description {
+            Some(d) if !d.trim().is_empty() => d.trim().to_string(),
+            _ => format!(
+                "Snapshot template of {} ({} files, {} packages)",
+                norm, files_count, packages_count
+            ),
+        };
+
+        let stack = Stack {
+            name: norm.clone(),
+            runtime: runtime.to_string(),
+            description: desc,
+            packages,
+            dev_packages,
+            transitive_packages: vec![],
+            files,
+            hooks: vec![],
+        };
+
+        let json =
+            serde_json::to_string_pretty(&stack).map_err(|e| ToolError::InvalidArguments {
+                name: "kit_stack_snapshot".to_string(),
+                reason: format!("Failed to serialize stack JSON: {}", e),
+            })?;
+
+        fs::write(&file_path, json).map_err(|e| ToolError::FileOp {
+            path: file_path.display().to_string(),
+            source: e,
+        })?;
+
+        Ok((file_path, files_count, packages_count))
+    }
+
+    fn extract_dependencies_from_workspace(workspace_root: &Path) -> (Vec<String>, Vec<String>) {
+        let mut packages = Vec::new();
+        let mut dev_packages = Vec::new();
+
+        // 1. Check minikit.json or onpkg.json
+        for manifest_name in &[
+            crate::constants::MINIKIT_MANIFEST_FILE,
+            crate::constants::MINICODE_MANIFEST_FILE,
+            crate::constants::ONPKG_MANIFEST_FILE,
+        ] {
+            let manifest_path = workspace_root.join(manifest_name);
+            if manifest_path.exists() {
+                if let Ok(content) = fs::read_to_string(&manifest_path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(pkgs) = val.get("packages").and_then(|p| p.as_array()) {
+                            for p in pkgs {
+                                if let Some(s) = p.as_str() {
+                                    if !packages.contains(&s.to_string()) {
+                                        packages.push(s.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(dev) = val.get("dev_packages").and_then(|d| d.as_array()) {
+                            for d in dev {
+                                if let Some(s) = d.as_str() {
+                                    if !dev_packages.contains(&s.to_string()) {
+                                        dev_packages.push(s.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        if !packages.is_empty() || !dev_packages.is_empty() {
+                            return (packages, dev_packages);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Check package.json (Node/Bun/Deno)
+        let pkg_json = workspace_root.join("package.json");
+        if pkg_json.exists() {
+            if let Ok(content) = fs::read_to_string(&pkg_json) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(deps) = val.get("dependencies").and_then(|d| d.as_object()) {
+                        for k in deps.keys() {
+                            if !packages.contains(k) {
+                                packages.push(k.clone());
+                            }
+                        }
+                    }
+                    if let Some(devs) = val.get("devDependencies").and_then(|d| d.as_object()) {
+                        for k in devs.keys() {
+                            if !dev_packages.contains(k) {
+                                dev_packages.push(k.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Check Cargo.toml (Rust)
+        let cargo_toml = workspace_root.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = fs::read_to_string(&cargo_toml) {
+                if let Ok(val) = toml::from_str::<toml::Value>(&content) {
+                    if let Some(deps) = val.get("dependencies").and_then(|d| d.as_table()) {
+                        for k in deps.keys() {
+                            if !packages.contains(k) {
+                                packages.push(k.clone());
+                            }
+                        }
+                    }
+                    if let Some(devs) = val.get("dev-dependencies").and_then(|d| d.as_table()) {
+                        for k in devs.keys() {
+                            if !dev_packages.contains(k) {
+                                dev_packages.push(k.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Check requirements.txt (Python)
+        let req_txt = workspace_root.join("requirements.txt");
+        if req_txt.exists() {
+            if let Ok(content) = fs::read_to_string(&req_txt) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
+                        continue;
+                    }
+                    let pkg_name = trimmed
+                        .split(&['=', '<', '>', '~', '!'][..])
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    if !pkg_name.is_empty() && !packages.contains(&pkg_name.to_string()) {
+                        packages.push(pkg_name.to_string());
+                    }
+                }
+            }
+        }
+
+        // 5. Check pubspec.yaml (Flutter/Dart)
+        let pubspec = workspace_root.join("pubspec.yaml");
+        if pubspec.exists() {
+            if let Ok(content) = fs::read_to_string(&pubspec) {
+                let mut in_deps = false;
+                let mut in_dev_deps = false;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("dependencies:") {
+                        in_deps = true;
+                        in_dev_deps = false;
+                        continue;
+                    } else if trimmed.starts_with("dev_dependencies:") {
+                        in_deps = false;
+                        in_dev_deps = true;
+                        continue;
+                    } else if !line.starts_with(' ')
+                        && !line.starts_with('\t')
+                        && line.contains(':')
+                    {
+                        in_deps = false;
+                        in_dev_deps = false;
+                    }
+
+                    if (in_deps || in_dev_deps) && !trimmed.is_empty() && !trimmed.starts_with('#')
+                    {
+                        if let Some((k, _)) = trimmed.split_once(':') {
+                            let k = k.trim();
+                            if k != "flutter" && k != "sdk" {
+                                if in_deps && !packages.contains(&k.to_string()) {
+                                    packages.push(k.to_string());
+                                } else if in_dev_deps && !dev_packages.contains(&k.to_string()) {
+                                    dev_packages.push(k.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        packages.sort();
+        dev_packages.sort();
+        (packages, dev_packages)
+    }
+
+    fn collect_files_for_snapshot(
+        workspace_root: &Path,
+    ) -> Result<Vec<crate::tools::minikit::stacks::StackFile>> {
+        let mut files = Vec::new();
+        const MAX_FILE_SIZE: u64 = 512 * 1024; // 512 KB
+        const MAX_TOTAL_FILES: usize = 500;
+
+        let walker = ignore::WalkBuilder::new(workspace_root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .build();
+
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let rel = match path.strip_prefix(workspace_root) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+
+            // Exclude directories and meta-files
+            let should_exclude = rel_str.starts_with(".git/")
+                || rel_str == ".git"
+                || rel_str.starts_with(".minicode/")
+                || rel_str == ".minicode"
+                || rel_str.starts_with(".onpkg/")
+                || rel_str == ".onpkg"
+                || rel_str.starts_with("node_modules/")
+                || rel_str.starts_with("target/")
+                || rel_str.starts_with("dist/")
+                || rel_str.starts_with("build/")
+                || rel_str.starts_with(".next/")
+                || rel_str.starts_with("__pycache__/")
+                || rel_str.starts_with(".venv/")
+                || rel_str.starts_with("venv/")
+                || rel_str.starts_with(".turbo/")
+                || rel_str.starts_with(".cache/")
+                || rel_str.ends_with(".lock")
+                || rel_str == "package-lock.json"
+                || rel_str == "pnpm-lock.yaml"
+                || rel_str == "yarn.lock"
+                || rel_str == "bun.lockb"
+                || rel_str == "bun.lock"
+                || rel_str.ends_with(".sqlite")
+                || rel_str.ends_with(".sqlite3")
+                || rel_str.ends_with(".db")
+                || rel_str.ends_with(".pyc")
+                || rel_str.ends_with(".DS_Store");
+
+            if should_exclude {
+                continue;
+            }
+
+            if let Ok(metadata) = path.metadata() {
+                if metadata.len() > MAX_FILE_SIZE {
+                    continue;
+                }
+            }
+
+            if let Ok(bytes) = fs::read(path) {
+                match String::from_utf8(bytes.clone()) {
+                    Ok(text) => {
+                        files.push(crate::tools::minikit::stacks::StackFile {
+                            path: rel_str,
+                            content: text,
+                            binary_content: None,
+                        });
+                    }
+                    Err(_) => {
+                        files.push(crate::tools::minikit::stacks::StackFile {
+                            path: rel_str,
+                            content: String::new(),
+                            binary_content: Some(bytes),
+                        });
+                    }
+                }
+            }
+
+            if files.len() >= MAX_TOTAL_FILES {
+                break;
+            }
+        }
+
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
+    }
+
     /// Deletes a custom stack template from `.minicode/stacks/<name>.json` (or globally `~/.config/minicode/stacks/`).
     pub fn delete_custom_stack(
         workspace_root: &Path,
@@ -511,5 +844,121 @@ mod tests {
 
         let found = OnpkgScaffolder::find_stack_in_workspace(temp.path(), "my-starter");
         assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_workspace_to_stack_and_scaffold_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        // 1. Create realistic project files
+        let src = ws.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("index.ts"),
+            "import { Hono } from 'hono';\nexport const app = new Hono();\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("README.md"),
+            "# Sample Project\nSnapshot test project\n",
+        )
+        .unwrap();
+
+        let pkg_json = serde_json::json!({
+            "name": "sample-project",
+            "dependencies": {
+                "hono": "^4.0.0",
+                "@hono/node-server": "^1.0.0"
+            },
+            "devDependencies": {
+                "typescript": "^5.0.0",
+                "@types/node": "^20.0.0"
+            }
+        });
+        fs::write(
+            ws.join("package.json"),
+            serde_json::to_string_pretty(&pkg_json).unwrap(),
+        )
+        .unwrap();
+
+        // 2. Perform snapshot
+        let (stack_path, files_count, pkgs_count) = MiniKitScaffolder::snapshot_workspace_to_stack(
+            ws,
+            "snap-api",
+            Some("Snapshot of API"),
+            false,
+        )
+        .unwrap();
+
+        assert!(stack_path.exists());
+        assert_eq!(files_count, 3); // src/index.ts, README.md, package.json
+        assert_eq!(pkgs_count, 4); // 2 deps + 2 devDeps
+
+        // 3. Find and verify stack
+        let found = MiniKitScaffolder::find_stack_in_workspace(ws, "snap-api");
+        assert!(found.is_some());
+        let stack = found.unwrap();
+        assert_eq!(stack.name, "snap-api");
+        assert_eq!(stack.description, "Snapshot of API");
+        assert!(stack.packages.contains(&"hono".to_string()));
+        assert!(stack.dev_packages.contains(&"typescript".to_string()));
+
+        // 4. Scaffold from this snapshot into a new directory
+        let out_dir = temp.path().join("generated-app");
+        let scaffold_res =
+            MiniKitScaffolder::scaffold(ws, "snap-api", Some(out_dir.to_str().unwrap()), true)
+                .await
+                .unwrap();
+
+        assert!(scaffold_res.contains("Successfully scaffolded stack `snap-api`"));
+        assert!(out_dir.join("src/index.ts").exists());
+        assert!(out_dir.join("package.json").exists());
+        assert!(out_dir.join("README.md").exists());
+        assert!(out_dir.join("minikit.json").exists());
+    }
+
+    #[test]
+    fn test_snapshot_excludes_vcs_and_build_artifacts() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        // Create normal file
+        fs::create_dir_all(ws.join("src")).unwrap();
+        fs::write(ws.join("src/main.rs"), "fn main() {}").unwrap();
+
+        // Create git and build directories
+        fs::create_dir_all(ws.join(".git/objects")).unwrap();
+        fs::write(ws.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        fs::create_dir_all(ws.join("target/debug")).unwrap();
+        fs::write(ws.join("target/debug/bin"), "binary").unwrap();
+        fs::create_dir_all(ws.join("node_modules/pkg")).unwrap();
+        fs::write(ws.join("node_modules/pkg/index.js"), "module").unwrap();
+        fs::write(ws.join("Cargo.lock"), "# lockfile").unwrap();
+
+        let (stack_path, files_count, _) =
+            MiniKitScaffolder::snapshot_workspace_to_stack(ws, "clean-snap", None, false).unwrap();
+
+        assert!(stack_path.exists());
+        // Only src/main.rs should be included
+        assert_eq!(files_count, 1);
+        let stack = MiniKitScaffolder::find_stack_in_workspace(ws, "clean-snap").unwrap();
+        assert_eq!(stack.files.len(), 1);
+        assert_eq!(stack.files[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn test_snapshot_invalid_names() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        assert!(MiniKitScaffolder::snapshot_workspace_to_stack(ws, "", None, false).is_err());
+        assert!(
+            MiniKitScaffolder::snapshot_workspace_to_stack(ws, "../traversal", None, false)
+                .is_err()
+        );
+        assert!(
+            MiniKitScaffolder::snapshot_workspace_to_stack(ws, "sub/dir", None, false).is_err()
+        );
     }
 }

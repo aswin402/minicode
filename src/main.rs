@@ -110,7 +110,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 147 tools)
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 148 tools)
     #[arg(long, global = true)]
     tools: Option<String>,
 
@@ -345,6 +345,20 @@ enum StackCommands {
         /// Target runtime ecosystem ('bun', 'npm', 'cargo', 'uv', 'flutter')
         #[arg(short, long, default_value = "bun")]
         runtime: String,
+
+        /// Save globally in ~/.config/minicode/stacks/ instead of workspace
+        #[arg(short, long)]
+        global: bool,
+    },
+
+    /// Snapshot the current workspace structure and package dependencies into a reusable stack template
+    Snapshot {
+        /// Name of the stack template to generate
+        name: String,
+
+        /// Optional description of the stack template
+        #[arg(short, long)]
+        description: Option<String>,
 
         /// Save globally in ~/.config/minicode/stacks/ instead of workspace
         #[arg(short, long)]
@@ -852,6 +866,20 @@ async fn handle_stack_cli(
                 path.display()
             );
             println!("💡 Edit this JSON file to customize template files, dependencies, and architecture.");
+        }
+        Some(StackCommands::Snapshot {
+            name,
+            description,
+            global,
+        }) => {
+            let res = tools::minikit::MiniKitService::snapshot_stack(
+                workspace,
+                &name,
+                description.as_deref(),
+                global,
+            )
+            .await?;
+            println!("{}", res);
         }
     }
     Ok(())

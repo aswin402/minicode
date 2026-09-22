@@ -209,6 +209,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "kit_stack_snapshot".to_string(),
+            description: "Snapshot the current workspace or repository into a reusable MiniKit stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the new stack template (e.g. 'my-api', 'auth-service', 'portfolio')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional human-readable description of the template"
+                    },
+                    "global": {
+                        "type": "boolean",
+                        "description": "If true, saves globally in ~/.config/minicode/stacks/ instead of local .minicode/stacks/"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
             name: "kit_skill_remove".to_string(),
             description: "Remove and uninstall a domain skill from the project workspace (.minicode/skills/<name> and manifest active_skills).".to_string(),
             parameters: json!({
@@ -318,6 +340,25 @@ pub async fn dispatch(
                 crate::tools::minikit::MiniKitService::delete_custom_stack(
                     workspace_root,
                     name,
+                    global,
+                )
+                .await
+            }
+            .await,
+        ),
+        "kit_stack_snapshot" | "minikit_stack_snapshot" | "onpkg_stack_snapshot" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_stack_snapshot".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    })?;
+                let description = opt_str(args, "description");
+                let global = opt_bool(args, "global", false);
+                crate::tools::minikit::MiniKitService::snapshot_stack(
+                    workspace_root,
+                    name,
+                    description,
                     global,
                 )
                 .await

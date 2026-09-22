@@ -268,7 +268,7 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/stack" || prompt == "/stacks" {
+        if prompt_lower == "/stack" || prompt_lower == "/stacks" {
             self.modal = ModalState::new_stack_select();
             return Ok(CommandAction::Continue);
         }
@@ -276,27 +276,36 @@ impl<'a> App<'a> {
         // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")
+            || prompt_lower.starts_with("/stack ")
             || prompt_lower == "/drift"
             || prompt_lower == "/heal"
             || prompt_lower == "/skills"
             || prompt_lower == "/sync"
             || prompt_lower == "/doctor"
         {
-            let sub = if prompt_lower.starts_with("/kit ") {
-                prompt_trimmed.strip_prefix("/kit").unwrap_or("").trim()
+            let sub_owned = if prompt_lower.starts_with("/kit ") {
+                prompt_trimmed
+                    .strip_prefix("/kit")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            } else if prompt_lower.starts_with("/stack ") {
+                let rest = prompt_trimmed.strip_prefix("/stack").unwrap_or("").trim();
+                format!("stack {}", rest)
             } else if prompt_lower == "/drift" {
-                "diff"
+                "diff".to_string()
             } else if prompt_lower == "/heal" {
-                "heal"
+                "heal".to_string()
             } else if prompt_lower == "/skills" {
-                "skills"
+                "skills".to_string()
             } else if prompt_lower == "/sync" {
-                "sync"
+                "sync".to_string()
             } else if prompt_lower == "/doctor" {
-                "doctor"
+                "doctor".to_string()
             } else {
-                ""
+                String::new()
             };
+            let sub = sub_owned.as_str();
 
             let sub_lower = sub.to_lowercase();
             if sub_lower.is_empty() || sub_lower == "help" {
@@ -305,6 +314,7 @@ impl<'a> App<'a> {
   • `/kit stacks` (or `/stacks`)          — Interactive stack picker and scaffold wizard\n\
   • `/kit show <name>`                    — Inspect files and dependencies of a stack\n\
   • `/kit stack add <name> [--dir <p>]`   — Directly scaffold a template into workspace\n\
+  • `/kit snapshot <name> [--global]`     — Snapshot workspace into a reusable stack template\n\
   • `/kit new <name> [--runtime <rt>]`    — Create a new custom stack template specification\n\
   • `/kit stack remove <name>`            — Remove a custom stack template specification\n\
   • `/kit skills` (or `/skills`)          — List all installed & built-in domain skills\n\
@@ -416,6 +426,53 @@ impl<'a> App<'a> {
                         Err(e) => self
                             .timeline
                             .add_status(format!("✗ Failed to remove stack template: {}", e)),
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("snapshot ") || sub_lower.starts_with("stack snapshot ")
+            {
+                let remainder = sub
+                    .strip_prefix("stack snapshot ")
+                    .or_else(|| sub.strip_prefix("snapshot "))
+                    .unwrap_or("")
+                    .trim();
+                if remainder.is_empty() {
+                    self.timeline.add_status(
+                        "⚠ Usage: `/kit snapshot <template-name> [--desc <text>] [--global]`"
+                            .to_string(),
+                    );
+                } else {
+                    let parts: Vec<&str> = remainder.split_whitespace().collect();
+                    let stack_name = parts[0];
+                    let mut desc = None;
+                    let mut global = false;
+                    let mut i = 1;
+                    while i < parts.len() {
+                        if (parts[i] == "--desc" || parts[i] == "-d" || parts[i] == "--description")
+                            && i + 1 < parts.len()
+                        {
+                            desc = Some(parts[i + 1]);
+                            i += 2;
+                        } else if parts[i] == "--global" || parts[i] == "-g" {
+                            global = true;
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    match crate::tools::minikit::MiniKitService::snapshot_stack(
+                        &self.workspace_root,
+                        stack_name,
+                        desc,
+                        global,
+                    )
+                    .await
+                    {
+                        Ok(res) => self.timeline.add_status(res),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to snapshot stack template `{}`: {}",
+                            stack_name, e
+                        )),
                     }
                 }
                 return Ok(CommandAction::Continue);

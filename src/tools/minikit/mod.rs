@@ -309,6 +309,25 @@ impl MiniKitService {
         ))
     }
 
+    /// Snapshots the current workspace or repository into a reusable stack template JSON in `.minicode/stacks/<name>.json` (or globally).
+    pub async fn snapshot_stack(
+        workspace_root: &Path,
+        name: &str,
+        description: Option<&str>,
+        global: bool,
+    ) -> Result<String> {
+        let (path, files_count, pkgs_count) = MiniKitScaffolder::snapshot_workspace_to_stack(
+            workspace_root,
+            name,
+            description,
+            global,
+        )?;
+        Ok(format!(
+            "✔ Successfully snapshotted workspace into custom stack `{}` ({} files, {} packages) at `{}`",
+            name, files_count, pkgs_count, path.display()
+        ))
+    }
+
     /// Deletes a custom stack template JSON from `.minicode/stacks/<name>.json` (or globally).
     pub async fn delete_custom_stack(
         workspace_root: &Path,

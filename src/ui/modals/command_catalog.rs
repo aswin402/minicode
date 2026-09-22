@@ -135,7 +135,8 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         shortcut: "",
         description:
             "MiniKit project toolkit: templates, packages, domain skills, and drift healing",
-        example: "/kit | /kit stacks | /kit new <name> | /kit skills | /kit sync | /kit doctor",
+        example:
+            "/kit | /kit stacks | /kit snapshot <name> | /kit new <name> | /kit skills | /kit sync",
     },
     CommandCatalogItem {
         name: "/skills",

@@ -150,6 +150,9 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "onpkg_skill_remove"
         | "onpkg_pkg_add"
         | "onpkg_pkg_remove"
+        | "kit_stack_snapshot"
+        | "minikit_stack_snapshot"
+        | "onpkg_stack_snapshot"
         | "onpkg_sync" => ToolSafetyLevel::Mutating,
 
         // Multi-Agent & Reasoning Inspection
