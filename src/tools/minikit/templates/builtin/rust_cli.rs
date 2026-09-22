@@ -1,6 +1,6 @@
 #![allow(clippy::all, unused)]
 
-use crate::tools::onpkg::stacks::{Stack, StackFile};
+use crate::tools::minikit::stacks::{Stack, StackFile};
 
 pub fn rust_cli() -> Stack {
     Stack {

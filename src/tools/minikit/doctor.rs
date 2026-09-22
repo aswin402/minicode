@@ -1,9 +1,12 @@
 use std::process::Command;
 
 /// Native multi-runtime environment health diagnostics.
-pub struct OnpkgDoctor;
+pub struct MiniKitDoctor;
 
-impl OnpkgDoctor {
+#[allow(dead_code)]
+pub type OnpkgDoctor = MiniKitDoctor;
+
+impl MiniKitDoctor {
     /// Inspects all runtime tools and package managers on the current system.
     pub fn diagnose() -> String {
         let tools = [
@@ -12,6 +15,7 @@ impl OnpkgDoctor {
             ("Node.js", "node", "--version"),
             ("Python 3", "python3", "--version"),
             ("Rust / Cargo", "cargo", "--version"),
+            ("Go", "go", "version"),
             ("Flutter", "flutter", "--version"),
             ("npm", "npm", "--version"),
             ("pnpm", "pnpm", "--version"),
@@ -20,7 +24,7 @@ impl OnpkgDoctor {
             ("GitHub CLI", "gh", "--version"),
         ];
 
-        let mut res = String::from("🩺 **minicode + onpkg Multi-Runtime Diagnostics**\n\n");
+        let mut res = String::from("🩺 **minicode + MiniKit Multi-Runtime Diagnostics**\n\n");
         res.push_str("| Runtime / Tool | Status | Version / Details |\n");
         res.push_str("| :--- | :---: | :--- |\n");
 

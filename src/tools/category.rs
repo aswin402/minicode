@@ -13,20 +13,24 @@ pub enum ToolCategory {
     Search,
     Git,
     Web,
-    Onpkg,
+    #[serde(alias = "onpkg")]
+    MiniKit,
     Codegraph,
     Agent,
     Memory,
 }
 
 impl ToolCategory {
+    #[allow(non_upper_case_globals, dead_code)]
+    pub const Onpkg: ToolCategory = ToolCategory::MiniKit;
+
     pub const ALL: [ToolCategory; 9] = [
         ToolCategory::Files,
         ToolCategory::Exec,
         ToolCategory::Search,
         ToolCategory::Git,
         ToolCategory::Web,
-        ToolCategory::Onpkg,
+        ToolCategory::MiniKit,
         ToolCategory::Codegraph,
         ToolCategory::Agent,
         ToolCategory::Memory,
@@ -39,7 +43,7 @@ impl ToolCategory {
             Self::Search => "search",
             Self::Git => "git",
             Self::Web => "web",
-            Self::Onpkg => "onpkg",
+            Self::MiniKit => "minikit",
             Self::Codegraph => "codegraph",
             Self::Agent => "agent",
             Self::Memory => "memory",
@@ -53,7 +57,7 @@ impl ToolCategory {
             Self::Search => "Codebase search & symbols (grep_search, locate_symbol, hybrid_search, ast_query)",
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
             Self::Web => "Web search & browser automation (search_web, fetch_or_browse, browser_navigate)",
-            Self::Onpkg => "MiniKit & onpkg stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
+            Self::MiniKit => "MiniKit & onpkg stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
             Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning & skills (create_plan, update_progress, wiki_write)",
@@ -68,7 +72,7 @@ impl ToolCategory {
             Self::Search => registry::search_tools::get_schemas(),
             Self::Git => registry::git_tools::get_schemas(),
             Self::Web => registry::web_tools::get_schemas(),
-            Self::Onpkg => registry::onpkg_tools::get_schemas(),
+            Self::MiniKit => registry::minikit_tools::get_schemas(),
             Self::Codegraph => registry::explore_tools::get_schemas(),
             Self::Agent => registry::agent_tools::get_schemas(),
             Self::Memory => registry::context_tools::get_schemas(),
@@ -86,7 +90,7 @@ impl FromStr for ToolCategory {
             "search" | "find" | "ast" | "symbol" => Ok(Self::Search),
             "git" | "vcs" | "diff" => Ok(Self::Git),
             "web" | "browser" | "crawl" | "internet" => Ok(Self::Web),
-            "kit" | "minikit" | "onpkg" | "stack" | "pkg" | "package" | "dep" | "dependencies" => Ok(Self::Onpkg),
+            "kit" | "minikit" | "onpkg" | "stack" | "pkg" | "package" | "dep" | "dependencies" => Ok(Self::MiniKit),
             "codegraph" | "graph" | "explore" | "architecture" => Ok(Self::Codegraph),
             "agent" | "agents" | "swarm" | "subagent" => Ok(Self::Agent),
             "memory" | "plan" | "wiki" | "skill" | "skills" => Ok(Self::Memory),
@@ -364,7 +368,11 @@ mod tests {
         );
         assert_eq!(
             "onpkg".parse::<ToolCategory>().unwrap(),
-            ToolCategory::Onpkg
+            ToolCategory::MiniKit
+        );
+        assert_eq!(
+            "minikit".parse::<ToolCategory>().unwrap(),
+            ToolCategory::MiniKit
         );
         assert_eq!(
             "agent".parse::<ToolCategory>().unwrap(),

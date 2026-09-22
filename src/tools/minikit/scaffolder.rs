@@ -1,13 +1,16 @@
 use crate::error::{Result, ToolError};
-use crate::tools::onpkg::stacks::{builtin::builtin_stacks, Stack};
+use crate::tools::minikit::stacks::{builtin::builtin_stacks, Stack};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Native engine for scaffolding application stacks, generating manifests, and auto-installing packages.
-pub struct OnpkgScaffolder;
+pub struct MiniKitScaffolder;
 
-impl OnpkgScaffolder {
+#[allow(dead_code)]
+pub type OnpkgScaffolder = MiniKitScaffolder;
+
+impl MiniKitScaffolder {
     /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
     pub fn get_all_stacks() -> Vec<Stack> {
         Self::get_all_stacks_for(None)
@@ -118,7 +121,7 @@ impl OnpkgScaffolder {
             packages: vec![],
             dev_packages: vec![],
             transitive_packages: vec![],
-            files: vec![crate::tools::onpkg::stacks::StackFile {
+            files: vec![crate::tools::minikit::stacks::StackFile {
                 path: "README.md".to_string(),
                 content: format!(
                     "# {}\n\nCustom architecture stack created with minicode.\n",
@@ -358,13 +361,13 @@ impl OnpkgScaffolder {
 
         // 4. Generate initial workflow docs under minikit_docs and onpkg_docs
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
-        super::sync::OnpkgSyncEngine::ensure_workflow_docs(
+        super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &docs_dir,
             &project_name,
             &stack.runtime,
         );
         let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
-        super::sync::OnpkgSyncEngine::ensure_workflow_docs(
+        super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &onpkg_docs,
             &project_name,
             &stack.runtime,

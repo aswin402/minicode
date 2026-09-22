@@ -243,7 +243,8 @@ enum Commands {
         symlink_claude: bool,
     },
 
-    /// Generate an autonomous milestone implementation plan in onpkg_docs/todo.md
+    /// Generate an autonomous milestone implementation plan in minikit_docs/todo.md
+    #[command(alias = "p")]
     Plan {
         /// The feature or task specification to plan
         prompt: Option<String>,
@@ -579,7 +580,7 @@ async fn main() -> anyhow::Result<()> {
             handle_review_cli(&workspace_canonical, staged, json).await?;
         }
         Some(Commands::Doctor) => {
-            let report = tools::onpkg::doctor::OnpkgDoctor::diagnose();
+            let report = tools::minikit::doctor::MiniKitDoctor::diagnose();
             println!("{}", report);
         }
         Some(Commands::Init { name, stack }) => {
@@ -638,7 +639,8 @@ async fn main() -> anyhow::Result<()> {
                 );
                 let mut last_status = String::new();
                 loop {
-                    if let Ok(msg) = tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical)
+                    if let Ok(msg) =
+                        tools::minikit::sync::MiniKitSyncEngine::sync(&workspace_canonical)
                     {
                         if msg != last_status {
                             println!("✔ [{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
@@ -648,17 +650,22 @@ async fn main() -> anyhow::Result<()> {
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 }
             } else {
-                match tools::onpkg::sync::OnpkgSyncEngine::sync(&workspace_canonical) {
+                match tools::minikit::sync::MiniKitSyncEngine::sync(&workspace_canonical) {
                     Ok(msg) => println!("✔ {}", msg),
                     Err(e) => eprintln!("✗ Sync failed: {}", e),
                 }
             }
         }
         Some(Commands::Plan { prompt }) => {
+            let docs_dir = tools::minikit::resolve_docs_dir(&workspace_canonical);
+            let docs_name = docs_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
             let plan_task = if let Some(p) = prompt {
-                format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", p)
+                format!("Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}", docs_name, p)
             } else {
-                "Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
+                format!("Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.", docs_name, docs_name)
             };
             run_headless_task(
                 &workspace_canonical,
@@ -758,7 +765,7 @@ async fn handle_stack_cli(
 ) -> anyhow::Result<()> {
     match action {
         None | Some(StackCommands::List) => {
-            let stacks = tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+            let stacks = tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
             if json_mode {
                 println!("{}", serde_json::to_string_pretty(&stacks)?);
             } else {
@@ -779,7 +786,7 @@ async fn handle_stack_cli(
             }
         }
         Some(StackCommands::Show { name }) => {
-            let stacks = tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+            let stacks = tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
             if let Some(s) = stacks
                 .into_iter()
                 .find(|s| s.name.eq_ignore_ascii_case(&name))
@@ -817,7 +824,7 @@ async fn handle_stack_cli(
             dest,
             no_install,
         }) => {
-            let res = tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+            let res = tools::minikit::scaffolder::MiniKitScaffolder::scaffold(
                 workspace,
                 &name,
                 dest.as_deref().and_then(|p| p.to_str()),
@@ -827,8 +834,8 @@ async fn handle_stack_cli(
             println!("{}", res);
         }
         Some(StackCommands::Diff { name, apply }) => {
-            let res =
-                tools::onpkg::OnpkgService::diff_stack(workspace, name.as_deref(), apply).await?;
+            let res = tools::minikit::MiniKitService::diff_stack(workspace, name.as_deref(), apply)
+                .await?;
             println!("{}", res);
         }
         Some(StackCommands::New {
@@ -836,7 +843,7 @@ async fn handle_stack_cli(
             runtime,
             global,
         }) => {
-            let path = tools::onpkg::scaffolder::OnpkgScaffolder::create_custom_stack(
+            let path = tools::minikit::scaffolder::MiniKitScaffolder::create_custom_stack(
                 workspace, &name, &runtime, global,
             )?;
             println!(
@@ -855,25 +862,25 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
         None | Some(SkillCommands::List) => {
             println!(
                 "{}",
-                tools::onpkg::OnpkgService::list_skills(workspace).await?
+                tools::minikit::MiniKitService::list_skills(workspace).await?
             );
         }
         Some(SkillCommands::Show { name }) => {
             println!(
                 "{}",
-                tools::onpkg::OnpkgService::show_skill(workspace, &name).await?
+                tools::minikit::MiniKitService::show_skill(workspace, &name).await?
             );
         }
         Some(SkillCommands::Install { name }) => {
             println!(
                 "{}",
-                tools::onpkg::OnpkgService::install_skill(workspace, &name).await?
+                tools::minikit::MiniKitService::install_skill(workspace, &name).await?
             );
         }
         Some(SkillCommands::Remove { name }) => {
             println!(
                 "{}",
-                tools::onpkg::OnpkgService::remove_skill(workspace, &name).await?
+                tools::minikit::MiniKitService::remove_skill(workspace, &name).await?
             );
         }
     }
@@ -881,7 +888,7 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
 }
 
 async fn handle_kit_cli(workspace: &Path, action: KitCommands) -> anyhow::Result<()> {
-    let registry = tools::onpkg::pkg::PkgRegistry::new();
+    let registry = tools::minikit::pkg::PkgRegistry::new();
     match action {
         KitCommands::Info { name, runtime } => {
             let info = registry
@@ -928,11 +935,11 @@ async fn handle_kit_cli(workspace: &Path, action: KitCommands) -> anyhow::Result
             handle_skill_cli(workspace, action).await?;
         }
         KitCommands::Sync => {
-            let res = tools::onpkg::sync::OnpkgSyncEngine::sync(workspace)?;
+            let res = tools::minikit::sync::MiniKitSyncEngine::sync(workspace)?;
             println!("{}", res);
         }
         KitCommands::Doctor => {
-            let report = tools::onpkg::doctor::OnpkgDoctor::diagnose();
+            let report = tools::minikit::doctor::MiniKitDoctor::diagnose();
             println!("{}", report);
         }
     }
@@ -945,7 +952,7 @@ async fn handle_init_cli(
     stack_opt: Option<String>,
 ) -> anyhow::Result<()> {
     if let Some(stack_name) = stack_opt {
-        let res = tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+        let res = tools::minikit::scaffolder::MiniKitScaffolder::scaffold(
             workspace,
             &stack_name,
             None,
@@ -961,7 +968,7 @@ async fn handle_init_cli(
                 .unwrap_or("app")
                 .to_string()
         });
-        let manifest_path = workspace.join(crate::constants::ONPKG_MANIFEST_FILE);
+        let manifest_path = workspace.join(crate::constants::MINIKIT_MANIFEST_FILE);
         if !manifest_path.exists() {
             let manifest = serde_json::json!({
                 "name": project_name,
@@ -972,10 +979,16 @@ async fn handle_init_cli(
                 "dev_packages": [],
                 "active_skills": []
             });
-            std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+            let manifest_str = serde_json::to_string_pretty(&manifest)?;
+            std::fs::write(&manifest_path, &manifest_str)?;
+            std::fs::write(
+                workspace.join(crate::constants::ONPKG_MANIFEST_FILE),
+                &manifest_str,
+            )
+            .ok();
             println!("✔ Created project manifest `{}`", manifest_path.display());
         }
-        match tools::onpkg::sync::OnpkgSyncEngine::sync(workspace) {
+        match tools::minikit::sync::MiniKitSyncEngine::sync(workspace) {
             Ok(msg) => println!("✔ {}", msg),
             Err(e) => eprintln!("✗ Sync failed: {}", e),
         }
@@ -1281,11 +1294,16 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                 }
             }
             StdinCommand::ExecuteCommand { command: cmd, args } => {
+                let docs_dir = tools::minikit::resolve_docs_dir(workspace);
+                let docs_name = docs_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
                 let full_prompt = match (cmd.as_str(), args) {
-                    ("/plan", Some(q)) if !q.is_empty() => format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", q),
-                    ("/plan", _) => "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string(),
-                    ("/goal", Some(q)) if !q.is_empty() => format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", q),
-                    ("/goal", _) => "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string(),
+                    ("/plan", Some(q)) if !q.is_empty() => format!("Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}", docs_name, q),
+                    ("/plan", _) => format!("Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.", docs_name, docs_name),
+                    ("/goal", Some(q)) if !q.is_empty() => format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", q, docs_name),
+                    ("/goal", _) => format!("<!-- GOAL --> Execute all pending tasks in {}/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name),
                     (c, Some(a)) if !a.is_empty() => format!("{} {}", c, a),
                     (c, _) => c.to_string(),
                 };

@@ -48,7 +48,7 @@ async fn test_intent_classifier_domain_detection() {
 
     // 5. Onpkg intent
     let onpkg_intent = IntentClassifier::detect("scaffold a new stack with onpkg template");
-    assert!(onpkg_intent.contains(&ToolCategory::Onpkg));
+    assert!(onpkg_intent.contains(&ToolCategory::MiniKit));
 
     // 6. Multi-agent intent
     let agent_intent = IntentClassifier::detect("delegate this subtask to a subagent swarm");

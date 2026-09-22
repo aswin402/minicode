@@ -783,14 +783,14 @@ impl<'a> App<'a> {
                             }
                             "/skills" => {
                                 let list =
-                                    crate::tools::onpkg::skills::OnpkgSkillsManager::list_skills(
+                                    crate::tools::minikit::skills::MiniKitSkillsManager::list_skills(
                                         &self.workspace_root,
                                     );
                                 self.timeline.add_status(list);
                                 self.modal = ModalState::None;
                             }
                             "/drift" => {
-                                match crate::tools::onpkg::diff::diff_stack(
+                                match crate::tools::minikit::diff::diff_stack(
                                     &self.workspace_root,
                                     None,
                                     false,
@@ -1073,7 +1073,7 @@ impl<'a> App<'a> {
 
                         let ws = self.workspace_root.clone();
                         tokio::spawn(async move {
-                            match crate::tools::onpkg::scaffolder::OnpkgScaffolder::scaffold(
+                            match crate::tools::minikit::scaffolder::MiniKitScaffolder::scaffold(
                                 &ws,
                                 &stack_name,
                                 None,
@@ -1085,14 +1085,14 @@ impl<'a> App<'a> {
                                     tracing::info!(
                                         stack = %stack_name,
                                         output = %msg,
-                                        "Native onpkg stack scaffolded successfully"
+                                        "Native MiniKit stack scaffolded successfully"
                                     );
                                 }
                                 Err(e) => {
                                     tracing::error!(
                                         stack = %stack_name,
                                         error = %e,
-                                        "Native onpkg stack scaffolding failed"
+                                        "Native MiniKit stack scaffolding failed"
                                     );
                                 }
                             }

@@ -3,9 +3,12 @@ use std::fs;
 use std::path::Path;
 
 /// Native engine for scanning workspace dependencies, updating `minikit.json`/`onpkg.json`, and refreshing `AGENTS.md`.
-pub struct OnpkgSyncEngine;
+pub struct MiniKitSyncEngine;
 
-impl OnpkgSyncEngine {
+#[allow(dead_code)]
+pub type OnpkgSyncEngine = MiniKitSyncEngine;
+
+impl MiniKitSyncEngine {
     /// Detects project runtime and primary configuration files.
     pub fn detect_runtime(workspace_root: &Path) -> (&'static str, &'static str) {
         if workspace_root.join("Cargo.toml").exists() {

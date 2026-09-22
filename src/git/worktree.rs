@@ -49,7 +49,13 @@ impl WorktreeManager {
             .await?;
 
         // Copy project configuration files into worktree if they exist in root
-        for config_file in &[".env", "onpkg.json", "Cargo.toml", "package.json"] {
+        for config_file in &[
+            ".env",
+            "minikit.json",
+            "onpkg.json",
+            "Cargo.toml",
+            "package.json",
+        ] {
             let src = self.workspace_root.join(config_file);
             let dst = worktree_path.join(config_file);
             if src.exists() && !dst.exists() {

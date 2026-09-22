@@ -1,7 +1,7 @@
-//! Native onpkg stack selection wizard modal rendering.
+//! Native MiniKit stack selection wizard modal rendering.
 
 use crate::constants::{STACK_PREVIEW_MAX_FILES, STACK_SELECT_HEIGHT_PCT, STACK_SELECT_WIDTH_PCT};
-use crate::tools::onpkg::stacks::Stack;
+use crate::tools::minikit::stacks::Stack;
 use crate::ui::layout_utils::centered_rect;
 use crate::ui::modals::common::compute_scroll_offset;
 use crate::ui::theme::Theme;
@@ -24,7 +24,7 @@ pub fn render_stack_select(
     frame.render_widget(Clear, popup_area);
 
     let outer_block = Block::default()
-        .title(" 📦 Native onpkg Stack Wizard ")
+        .title(" 📦 Native MiniKit Stack Wizard ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(

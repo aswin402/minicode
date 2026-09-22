@@ -332,7 +332,7 @@ impl<'a> App<'a> {
                     self.timeline
                         .add_status("⚠ Usage: `/kit show <stack-name>`".to_string());
                 } else {
-                    match crate::tools::onpkg::OnpkgService::show_stack(
+                    match crate::tools::minikit::MiniKitService::show_stack(
                         &self.workspace_root,
                         stack_name,
                     )
@@ -373,7 +373,7 @@ impl<'a> App<'a> {
                             i += 1;
                         }
                     }
-                    match crate::tools::onpkg::OnpkgService::add_stack(
+                    match crate::tools::minikit::MiniKitService::add_stack(
                         &self.workspace_root,
                         stack_name,
                         target_dir,
@@ -407,7 +407,7 @@ impl<'a> App<'a> {
                 } else {
                     let stack_name = parts[0];
                     let global = parts.contains(&"--global") || parts.contains(&"-g");
-                    match crate::tools::onpkg::scaffolder::OnpkgScaffolder::delete_custom_stack(
+                    match crate::tools::minikit::scaffolder::MiniKitScaffolder::delete_custom_stack(
                         &self.workspace_root,
                         stack_name,
                         global,
@@ -446,7 +446,7 @@ impl<'a> App<'a> {
                             i += 1;
                         }
                     }
-                    match crate::tools::onpkg::scaffolder::OnpkgScaffolder::create_custom_stack(
+                    match crate::tools::minikit::scaffolder::MiniKitScaffolder::create_custom_stack(
                         &self.workspace_root,
                         stack_name,
                         runtime,
@@ -467,7 +467,7 @@ impl<'a> App<'a> {
                 }
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "skills" || sub_lower == "skill list" {
-                let list = crate::tools::onpkg::skills::OnpkgSkillsManager::list_skills(
+                let list = crate::tools::minikit::skills::MiniKitSkillsManager::list_skills(
                     &self.workspace_root,
                 );
                 self.timeline.add_status(list);
@@ -482,7 +482,7 @@ impl<'a> App<'a> {
                     self.timeline
                         .add_status("⚠ Usage: `/kit skill remove <skill-name>`".to_string());
                 } else {
-                    match crate::tools::onpkg::skills::OnpkgSkillsManager::remove_skill(
+                    match crate::tools::minikit::skills::MiniKitSkillsManager::remove_skill(
                         &self.workspace_root,
                         skill_name,
                     ) {
@@ -505,7 +505,7 @@ impl<'a> App<'a> {
                     self.timeline
                         .add_status("⚠ Usage: `/kit skill install <skill-name>`".to_string());
                 } else {
-                    match crate::tools::onpkg::skills::OnpkgSkillsManager::install_skill(
+                    match crate::tools::minikit::skills::MiniKitSkillsManager::install_skill(
                         &self.workspace_root,
                         skill_name,
                     ) {
@@ -519,7 +519,7 @@ impl<'a> App<'a> {
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("skill ") {
                 let skill_name = sub.strip_prefix("skill ").unwrap_or("").trim();
-                match crate::tools::onpkg::skills::OnpkgSkillsManager::show_skill(
+                match crate::tools::minikit::skills::MiniKitSkillsManager::show_skill(
                     &self.workspace_root,
                     skill_name,
                 ) {
@@ -533,17 +533,17 @@ impl<'a> App<'a> {
                 }
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "sync" {
-                match crate::tools::onpkg::sync::OnpkgSyncEngine::sync(&self.workspace_root) {
+                match crate::tools::minikit::sync::MiniKitSyncEngine::sync(&self.workspace_root) {
                     Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
                     Err(e) => self.timeline.add_status(format!("✗ Sync failed: {}", e)),
                 }
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "doctor" {
-                let diag = crate::tools::onpkg::doctor::OnpkgDoctor::diagnose();
+                let diag = crate::tools::minikit::doctor::MiniKitDoctor::diagnose();
                 self.timeline.add_status(diag);
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "diff" {
-                match crate::tools::onpkg::diff::diff_stack(&self.workspace_root, None, false) {
+                match crate::tools::minikit::diff::diff_stack(&self.workspace_root, None, false) {
                     Ok(res) => self.timeline.add_status(res.format_report()),
                     Err(e) => self
                         .timeline
@@ -551,7 +551,7 @@ impl<'a> App<'a> {
                 }
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "heal" || sub_lower == "diff --apply" {
-                match crate::tools::onpkg::diff::diff_stack(&self.workspace_root, None, true) {
+                match crate::tools::minikit::diff::diff_stack(&self.workspace_root, None, true) {
                     Ok(res) => self.timeline.add_status(res.format_report()),
                     Err(e) => self
                         .timeline
@@ -589,7 +589,7 @@ impl<'a> App<'a> {
                     self.timeline
                         .add_status("⚠ Usage: `/kit remove <package-name>`".to_string());
                 } else {
-                    let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
+                    let registry = crate::tools::minikit::pkg::PkgRegistry::new();
                     match registry.remove_from_project(&self.workspace_root, pkg_name, None) {
                         Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
                         Err(e) => self.timeline.add_status(format!(
@@ -626,10 +626,21 @@ impl<'a> App<'a> {
 
         if prompt == "/plan" || prompt.starts_with("/plan ") {
             let query = prompt.trim_start_matches("/plan").trim();
+            let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
+            let docs_name = docs_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
             let plan_prompt = if query.is_empty() {
-                "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in onpkg_docs/todo.md and onpkg_docs/implementation.md.".to_string()
+                format!(
+                    "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.",
+                    docs_name, docs_name
+                )
             } else {
-                format!("Plan and break down the following implementation into actionable verifiable tasks in onpkg_docs/todo.md: {}", query)
+                format!(
+                    "Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}",
+                    docs_name, query
+                )
             };
             self.timeline.add_user_message(prompt.to_string());
             self.is_working = true;
@@ -837,12 +848,17 @@ impl<'a> App<'a> {
                             );
                         }
                     }
+                    let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
+                    let docs_name = docs_dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
                     let goal_prompt = if trimmed.is_empty() {
-                        "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
+                        format!("<!-- GOAL --> Execute all pending tasks in {}/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name)
                     } else {
                         format!(
-                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
-                            trimmed
+                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
+                            trimmed, docs_name
                         )
                     };
                     self.timeline.add_user_message(prompt.to_string());

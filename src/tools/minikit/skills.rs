@@ -1,13 +1,16 @@
 use crate::error::{Result, ToolError};
-use crate::tools::onpkg::builtin_skills::{find_builtin_skill, get_all_builtin_skills};
-use crate::tools::onpkg::sync::OnpkgSyncEngine;
+use crate::tools::minikit::builtin_skills::{find_builtin_skill, get_all_builtin_skills};
+use crate::tools::minikit::sync::MiniKitSyncEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Native skills manager for listing, showing, and installing domain skills into the workspace.
-pub struct OnpkgSkillsManager;
+pub struct MiniKitSkillsManager;
 
-impl OnpkgSkillsManager {
+#[allow(dead_code)]
+pub type OnpkgSkillsManager = MiniKitSkillsManager;
+
+impl MiniKitSkillsManager {
     /// Returns the standard search paths for skills.
     pub fn get_skill_paths(workspace_root: &Path) -> Vec<PathBuf> {
         let mut paths = vec![
@@ -206,18 +209,21 @@ impl OnpkgSkillsManager {
                 source: e,
             })?;
             Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-            OnpkgSyncEngine::sync(workspace_root).ok();
+            MiniKitSyncEngine::sync(workspace_root).ok();
             return Ok(format!(
                 "✔ Successfully installed built-in skill `{}` into `.minicode/skills/{}/SKILL.md`\nDescription: {}\nManifest & OKF knowledge docs synchronized.",
                 builtin.name, clean_name, builtin.description
             ));
         }
 
-        // 2. If skill exists in global ~/.onpkg/skills or ~/.config/minicode/skills, copy it
+        // 2. If skill exists in global ~/.minikit/skills, ~/.onpkg/skills or ~/.config/minicode/skills, copy it
         if let Some(home) = dirs::home_dir() {
             let global_candidates = [
                 home.join(".config")
                     .join("minicode")
+                    .join("skills")
+                    .join(format!("{}.md", clean_name)),
+                home.join(".minikit")
                     .join("skills")
                     .join(format!("{}.md", clean_name)),
                 home.join(".onpkg")
@@ -225,6 +231,10 @@ impl OnpkgSkillsManager {
                     .join(format!("{}.md", clean_name)),
                 home.join(".config")
                     .join("minicode")
+                    .join("skills")
+                    .join(clean_name)
+                    .join("SKILL.md"),
+                home.join(".minikit")
                     .join("skills")
                     .join(clean_name)
                     .join("SKILL.md"),
@@ -238,7 +248,7 @@ impl OnpkgSkillsManager {
                         source: e,
                     })?;
                     Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-                    OnpkgSyncEngine::sync(workspace_root).ok();
+                    MiniKitSyncEngine::sync(workspace_root).ok();
                     return Ok(format!(
                         "✔ Successfully installed skill `{}` from `{}` into `.minicode/skills/{}/SKILL.md`",
                         clean_name, c.display(), clean_name
@@ -258,7 +268,7 @@ impl OnpkgSkillsManager {
             source: e,
         })?;
         Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-        OnpkgSyncEngine::sync(workspace_root).ok();
+        MiniKitSyncEngine::sync(workspace_root).ok();
 
         Ok(format!(
             "✔ Successfully created and installed custom skill `{}` at `.minicode/skills/{}/SKILL.md`",
@@ -340,7 +350,7 @@ impl OnpkgSkillsManager {
         }
 
         Self::remove_from_manifest_active_skills(workspace_root, &clean).ok();
-        OnpkgSyncEngine::sync(workspace_root).ok();
+        MiniKitSyncEngine::sync(workspace_root).ok();
 
         if removed {
             Ok(format!(

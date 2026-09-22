@@ -1,4 +1,4 @@
-//! Embedded library of 14 battle-tested, production domain skills from onpkg.
+//! Embedded library of 14 battle-tested, production domain skills in MiniKit.
 
 pub struct BuiltinSkill {
     pub name: &'static str,

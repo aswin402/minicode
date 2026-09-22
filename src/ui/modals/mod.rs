@@ -75,7 +75,7 @@ pub enum ModalState {
         cached_summary: Option<crate::session::store::SessionSummary>,
     },
     StackSelect {
-        stacks: Vec<crate::tools::onpkg::stacks::Stack>,
+        stacks: Vec<crate::tools::minikit::stacks::Stack>,
         filtered_indices: Vec<usize>,
         selected_index: usize,
         filter: String,
@@ -288,7 +288,7 @@ impl ModalState {
     }
 
     pub fn new_stack_select() -> Self {
-        let stacks = crate::tools::onpkg::scaffolder::OnpkgScaffolder::get_all_stacks();
+        let stacks = crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
         let count = stacks.len();
         ModalState::StackSelect {
             stacks,

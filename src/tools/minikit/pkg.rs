@@ -156,7 +156,7 @@ impl PkgRegistry {
         Self::add_to_kit_manifest(workspace_root, clean_name, is_dev)?;
 
         // 3. Trigger MiniKit sync engine
-        crate::tools::onpkg::sync::OnpkgSyncEngine::sync(workspace_root).ok();
+        crate::tools::minikit::sync::MiniKitSyncEngine::sync(workspace_root).ok();
 
         let desc = pkg_info
             .map(|i| format!("\nDescription: {}", i.description))
@@ -770,7 +770,7 @@ impl PkgRegistry {
             }
         }
 
-        crate::tools::onpkg::sync::OnpkgSyncEngine::sync(workspace_root).ok();
+        crate::tools::minikit::sync::MiniKitSyncEngine::sync(workspace_root).ok();
 
         if removed {
             Ok(format!(

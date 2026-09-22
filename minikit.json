@@ -1,0 +1,134 @@
+{
+  "active_skills": [
+    "rust"
+  ],
+  "agent_instructions": {
+    "active_skills": [
+      "content.md",
+      "design.md",
+      "implementation.md",
+      "index.md",
+      "log.md",
+      "prd.md",
+      "review_fix_plan.md",
+      "review_fix_todo.md",
+      "rust.md",
+      "todo.md"
+    ],
+    "docs_directory": "minikit_docs/"
+  },
+  "architecture": {
+    "entrypoint": "src/main.rs"
+  },
+  "name": "minicode",
+  "package_manager": "cargo",
+  "packages": {
+    "added_by_agent": [
+      "colored",
+      "crossterm",
+      "eventsource-stream",
+      "grep-regex",
+      "grep-searcher",
+      "ignore",
+      "petgraph",
+      "pulldown-cmark",
+      "ratatui",
+      "reqwest",
+      "scraper",
+      "serde",
+      "serde_json",
+      "similar",
+      "syntect",
+      "thiserror",
+      "tokio",
+      "toml",
+      "tracing",
+      "tree-sitter",
+      "tree-sitter-javascript",
+      "tree-sitter-python",
+      "tree-sitter-rust",
+      "tree-sitter-typescript",
+      "tui-textarea"
+    ],
+    "core": [
+      "anyhow",
+      "async-stream",
+      "async-trait",
+      "chrono",
+      "clap",
+      "crossterm",
+      "dirs",
+      "dotenvy",
+      "futures",
+      "htmd",
+      "ignore",
+      "indexmap",
+      "libc",
+      "petgraph",
+      "pulldown-cmark",
+      "ratatui",
+      "regex",
+      "reqwest",
+      "reqwest-eventsource",
+      "scraper",
+      "serde",
+      "serde_json",
+      "similar",
+      "syntect",
+      "thiserror",
+      "tiktoken-rs",
+      "tokio",
+      "tokio-stream",
+      "tokio-tungstenite",
+      "tokio-util",
+      "toml",
+      "tracing",
+      "tracing-appender",
+      "tracing-subscriber",
+      "tree-sitter",
+      "tree-sitter-javascript",
+      "tree-sitter-python",
+      "tree-sitter-rust",
+      "tree-sitter-typescript",
+      "tui-textarea",
+      "unicode-width",
+      "url",
+      "uuid",
+      "which"
+    ]
+  },
+  "project": {
+    "name": "minicode",
+    "package_manager": "cargo",
+    "runtime": "rust",
+    "stack": "rust-cli"
+  },
+  "runtime": "rust",
+  "scripts": {
+    "build": "cargo build --release",
+    "check": "cargo check",
+    "dev": "cargo run",
+    "test": "cargo test"
+  },
+  "sources": {
+    "directories": [
+      "src",
+      "minikit_docs",
+      "onpkg_docs"
+    ],
+    "file_patterns": [
+      "*.md",
+      "*.rs",
+      "*.toml",
+      "*.json"
+    ],
+    "files": [
+      "Cargo.toml",
+      "README.md",
+      "AGENTS.md",
+      "minikit.json",
+      "onpkg.json",
+      "src/main.rs"
+    ]
+  }
+}

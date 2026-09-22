@@ -9,9 +9,9 @@ pub mod exec;
 pub mod fs;
 pub mod github;
 pub mod middleware;
-pub mod onpkg;
+pub mod minikit;
 #[allow(unused_imports)]
-pub use onpkg as minikit;
+pub use minikit as onpkg;
 pub mod param;
 pub mod registry;
 pub mod repair;
@@ -52,7 +52,7 @@ impl ToolRegistry {
         schemas.extend(registry::agent_tools::get_schemas());
         schemas.extend(registry::context_tools::get_schemas());
         schemas.extend(registry::web_tools::get_schemas());
-        schemas.extend(registry::onpkg_tools::get_schemas());
+        schemas.extend(registry::minikit_tools::get_schemas());
         schemas.extend(registry::explore_tools::get_schemas());
         schemas
     }
@@ -242,8 +242,9 @@ impl ToolRegistry {
             return res;
         }
 
-        // 8. onpkg Stack Scaffolding & Sync Tools
-        if let Some(res) = registry::onpkg_tools::dispatch(tool_name, args, workspace_root).await {
+        // 8. MiniKit Stack Scaffolding & Sync Tools
+        if let Some(res) = registry::minikit_tools::dispatch(tool_name, args, workspace_root).await
+        {
             return res;
         }
 

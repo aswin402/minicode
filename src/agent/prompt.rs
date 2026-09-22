@@ -154,7 +154,7 @@ impl PromptBuilder {
 
         // Notify LLM of any explicitly configured project skills in minikit.json
         let manifest_skills =
-            crate::tools::onpkg::skills::OnpkgSkillsManager::get_manifest_active_skills(
+            crate::tools::minikit::skills::MiniKitSkillsManager::get_manifest_active_skills(
                 workspace_dir,
             );
         if !manifest_skills.is_empty() {

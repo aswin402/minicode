@@ -75,7 +75,7 @@ impl IntentClassifier {
             || lower.contains("skill")
             || lower.contains("skills")
         {
-            categories.insert(ToolCategory::Onpkg);
+            categories.insert(ToolCategory::MiniKit);
         }
 
         // 4. CodeGraph & Architecture Intent
@@ -258,9 +258,11 @@ mod tests {
     }
 
     #[test]
-    fn test_intent_detection_onpkg() {
-        let detected = IntentClassifier::detect("scaffold a new stack with onpkg");
-        assert!(detected.contains(&ToolCategory::Onpkg));
+    fn test_intent_detection_minikit() {
+        let detected = IntentClassifier::detect("scaffold a new stack with minikit");
+        assert!(detected.contains(&ToolCategory::MiniKit));
+        let detected2 = IntentClassifier::detect("scaffold a new stack with onpkg");
+        assert!(detected2.contains(&ToolCategory::MiniKit));
     }
 
     #[test]

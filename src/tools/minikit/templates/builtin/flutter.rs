@@ -1,6 +1,6 @@
 #![allow(clippy::all, unused)]
 
-use crate::tools::onpkg::stacks::{Stack, StackFile};
+use crate::tools::minikit::stacks::{Stack, StackFile};
 
 pub fn flutter_riverpod(app_name: Option<&str>) -> Stack {
     let name = app_name.unwrap_or("my_app").to_string();

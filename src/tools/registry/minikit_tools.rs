@@ -252,7 +252,7 @@ pub async fn dispatch(
         "kit_stack_list" | "onpkg_stack_list" => Some(
             async {
                 let category = opt_str(args, "category");
-                crate::tools::onpkg::OnpkgService::list_stacks(workspace_root, category).await
+                crate::tools::minikit::MiniKitService::list_stacks(workspace_root, category).await
             }
             .await,
         ),
@@ -264,7 +264,7 @@ pub async fn dispatch(
                             name: "kit_stack_show".to_string(),
                             reason: "Missing required argument 'stack_name'".to_string(),
                         })?;
-                crate::tools::onpkg::OnpkgService::show_stack(workspace_root, stack_name).await
+                crate::tools::minikit::MiniKitService::show_stack(workspace_root, stack_name).await
             }
             .await,
         ),
@@ -278,7 +278,7 @@ pub async fn dispatch(
                         })?;
                 let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
-                crate::tools::onpkg::OnpkgService::add_stack(
+                crate::tools::minikit::MiniKitService::add_stack(
                     workspace_root,
                     stack_name,
                     target_dir,
@@ -297,7 +297,7 @@ pub async fn dispatch(
                     })?;
                 let runtime = opt_str(args, "runtime").unwrap_or("bun");
                 let global = opt_bool(args, "global", false);
-                crate::tools::onpkg::OnpkgService::create_custom_stack(
+                crate::tools::minikit::MiniKitService::create_custom_stack(
                     workspace_root,
                     name,
                     runtime,
@@ -315,8 +315,12 @@ pub async fn dispatch(
                         reason: "Missing required argument 'name'".to_string(),
                     })?;
                 let global = opt_bool(args, "global", false);
-                crate::tools::onpkg::OnpkgService::delete_custom_stack(workspace_root, name, global)
-                    .await
+                crate::tools::minikit::MiniKitService::delete_custom_stack(
+                    workspace_root,
+                    name,
+                    global,
+                )
+                .await
             }
             .await,
         ),
@@ -324,13 +328,14 @@ pub async fn dispatch(
             async {
                 let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
                 let apply = opt_bool(args, "apply", false);
-                crate::tools::onpkg::OnpkgService::diff_stack(workspace_root, stack_name, apply)
+                crate::tools::minikit::MiniKitService::diff_stack(workspace_root, stack_name, apply)
                     .await
             }
             .await,
         ),
         "kit_skill_list" | "onpkg_skill_list" => Some(
-            async { crate::tools::onpkg::OnpkgService::list_skills(workspace_root).await }.await,
+            async { crate::tools::minikit::MiniKitService::list_skills(workspace_root).await }
+                .await,
         ),
         "kit_skill_show" | "onpkg_skill_show" => Some(
             async {
@@ -339,7 +344,7 @@ pub async fn dispatch(
                         name: "kit_skill_show".to_string(),
                         reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
-                crate::tools::onpkg::OnpkgService::show_skill(workspace_root, skill_name).await
+                crate::tools::minikit::MiniKitService::show_skill(workspace_root, skill_name).await
             }
             .await,
         ),
@@ -350,7 +355,8 @@ pub async fn dispatch(
                         name: "kit_skill_install".to_string(),
                         reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
-                crate::tools::onpkg::OnpkgService::install_skill(workspace_root, skill_name).await
+                crate::tools::minikit::MiniKitService::install_skill(workspace_root, skill_name)
+                    .await
             }
             .await,
         ),
@@ -361,7 +367,8 @@ pub async fn dispatch(
                         name: "kit_skill_remove".to_string(),
                         reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
-                crate::tools::onpkg::OnpkgService::remove_skill(workspace_root, skill_name).await
+                crate::tools::minikit::MiniKitService::remove_skill(workspace_root, skill_name)
+                    .await
             }
             .await,
         ),
@@ -375,7 +382,7 @@ pub async fn dispatch(
                         }
                     })?;
                 let runtime = opt_str(args, "runtime");
-                let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
+                let registry = crate::tools::minikit::pkg::PkgRegistry::new();
                 let info = registry.fetch_info(name, runtime, workspace_root).await?;
                 let out = serde_json::to_string_pretty(&info).map_err(|e| {
                     crate::error::ToolError::CommandExec(format!(
@@ -399,7 +406,7 @@ pub async fn dispatch(
                 let version = opt_str(args, "version");
                 let runtime = opt_str(args, "runtime");
                 let is_dev = opt_bool(args, "is_dev", false);
-                let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
+                let registry = crate::tools::minikit::pkg::PkgRegistry::new();
                 registry
                     .add_to_project(workspace_root, name, version, runtime, is_dev)
                     .await
@@ -416,16 +423,17 @@ pub async fn dispatch(
                         }
                     })?;
                 let runtime = opt_str(args, "runtime");
-                crate::tools::onpkg::OnpkgService::remove_package(workspace_root, name, runtime)
+                crate::tools::minikit::MiniKitService::remove_package(workspace_root, name, runtime)
                     .await
             }
             .await,
         ),
         "kit_sync" | "onpkg_sync" => Some(
-            async { crate::tools::onpkg::OnpkgService::sync_project(workspace_root).await }.await,
+            async { crate::tools::minikit::MiniKitService::sync_project(workspace_root).await }
+                .await,
         ),
         "kit_doctor" | "onpkg_doctor" => Some(
-            async { crate::tools::onpkg::OnpkgService::run_doctor(workspace_root).await }.await,
+            async { crate::tools::minikit::MiniKitService::run_doctor(workspace_root).await }.await,
         ),
         _ => None,
     }

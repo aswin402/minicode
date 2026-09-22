@@ -377,7 +377,10 @@ impl SemanticCommitSynthesizer {
             Some("session".to_string())
         } else if clean.starts_with("tests/") {
             Some("tests".to_string())
-        } else if clean.starts_with("onpkg_docs/") || clean.ends_with(".md") {
+        } else if clean.starts_with("minikit_docs/")
+            || clean.starts_with("onpkg_docs/")
+            || clean.ends_with(".md")
+        {
             Some("docs".to_string())
         } else if clean.ends_with(".toml") || clean.ends_with(".lock") {
             Some("deps".to_string())
@@ -405,7 +408,10 @@ impl SemanticCommitSynthesizer {
                 .all(|f| f.starts_with("tests/") || f.ends_with("_test.rs"));
         let has_docs_only = !files.is_empty()
             && files.iter().all(|f| {
-                f.ends_with(".md") || f.starts_with("docs/") || f.starts_with("onpkg_docs/")
+                f.ends_with(".md")
+                    || f.starts_with("docs/")
+                    || f.starts_with("minikit_docs/")
+                    || f.starts_with("onpkg_docs/")
             });
         let has_build_only = !files.is_empty()
             && files
@@ -545,7 +551,10 @@ impl SemanticCommitSynthesizer {
         for f in files {
             if f.starts_with("tests/") || f.ends_with("_test.rs") {
                 test_files.push(f.clone());
-            } else if f.ends_with(".md") || f.starts_with("onpkg_docs/") {
+            } else if f.ends_with(".md")
+                || f.starts_with("minikit_docs/")
+                || f.starts_with("onpkg_docs/")
+            {
                 doc_files.push(f.clone());
             } else if f.ends_with(".toml") || f.ends_with(".lock") {
                 build_files.push(f.clone());

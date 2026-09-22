@@ -1,5 +1,5 @@
 use crate::error::{Result, ToolError};
-use crate::tools::onpkg::scaffolder::OnpkgScaffolder;
+use crate::tools::minikit::scaffolder::MiniKitScaffolder;
 use similar::{ChangeTag, TextDiff};
 use std::fs;
 use std::path::Path;
@@ -112,9 +112,9 @@ pub fn diff_stack(
         }
     };
 
-    let stack =
-        OnpkgScaffolder::find_stack_in_workspace(workspace_root, &stack_name).ok_or_else(|| {
-            let available: Vec<String> = OnpkgScaffolder::get_all_stacks()
+    let stack = MiniKitScaffolder::find_stack_in_workspace(workspace_root, &stack_name)
+        .ok_or_else(|| {
+            let available: Vec<String> = MiniKitScaffolder::get_all_stacks()
                 .into_iter()
                 .map(|s| s.name)
                 .collect();

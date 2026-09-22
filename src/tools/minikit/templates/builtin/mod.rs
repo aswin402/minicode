@@ -11,7 +11,7 @@ mod react_vite;
 mod rust_cli;
 mod static_website;
 
-use crate::tools::onpkg::stacks::Stack;
+use crate::tools::minikit::stacks::Stack;
 
 pub fn builtin_stacks() -> Vec<Stack> {
     vec![
