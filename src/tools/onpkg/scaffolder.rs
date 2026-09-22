@@ -228,9 +228,11 @@ impl OnpkgScaffolder {
         });
 
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
+        let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
+        fs::write(&manifest_path, &manifest_json).ok();
         fs::write(
-            &manifest_path,
-            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+            dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE),
+            &manifest_json,
         )
         .ok();
 
@@ -257,13 +259,19 @@ impl OnpkgScaffolder {
         );
         fs::write(dest_dir.join("AGENTS.md"), agents_md).ok();
 
-        // 4. Generate initial task tracker under minikit_docs/todo.md
+        // 4. Generate initial workflow docs under minikit_docs and onpkg_docs
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
-        fs::create_dir_all(&docs_dir).ok();
-        fs::write(
-            docs_dir.join("todo.md"),
-            "# Project Tasks\n\n- [x] Initial stack scaffolding with MiniKit engine\n- [ ] Configure core application features\n",
-        ).ok();
+        super::sync::OnpkgSyncEngine::ensure_workflow_docs(
+            &docs_dir,
+            &project_name,
+            &stack.runtime,
+        );
+        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
+        super::sync::OnpkgSyncEngine::ensure_workflow_docs(
+            &onpkg_docs,
+            &project_name,
+            &stack.runtime,
+        );
 
         // 5. Post-scaffold install hooks
         let mut install_msg = String::new();

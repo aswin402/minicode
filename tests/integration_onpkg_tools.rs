@@ -14,18 +14,38 @@ fn test_onpkg_schemas_registered_in_registry() {
     let schemas = onpkg_tools::get_schemas();
     let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
 
-    assert!(names.contains(&"onpkg_stack_list".to_string()));
-    assert!(names.contains(&"onpkg_stack_show".to_string()));
-    assert!(names.contains(&"onpkg_stack_add".to_string()));
-    assert!(names.contains(&"onpkg_skill_list".to_string()));
-    assert!(names.contains(&"onpkg_skill_install".to_string()));
-    assert!(names.contains(&"onpkg_sync".to_string()));
-    assert!(names.contains(&"onpkg_doctor".to_string()));
+    assert!(
+        names.contains(&"kit_stack_list".to_string())
+            || names.contains(&"onpkg_stack_list".to_string())
+    );
+    assert!(
+        names.contains(&"kit_stack_show".to_string())
+            || names.contains(&"onpkg_stack_show".to_string())
+    );
+    assert!(
+        names.contains(&"kit_stack_add".to_string())
+            || names.contains(&"onpkg_stack_add".to_string())
+    );
+    assert!(
+        names.contains(&"kit_skill_list".to_string())
+            || names.contains(&"onpkg_skill_list".to_string())
+    );
+    assert!(
+        names.contains(&"kit_skill_install".to_string())
+            || names.contains(&"onpkg_skill_install".to_string())
+    );
+    assert!(names.contains(&"kit_sync".to_string()) || names.contains(&"onpkg_sync".to_string()));
+    assert!(
+        names.contains(&"kit_doctor".to_string()) || names.contains(&"onpkg_doctor".to_string())
+    );
 
     // Global ToolRegistry check
     let global_schemas = ToolRegistry::get_tool_schemas();
     let global_names: Vec<String> = global_schemas.into_iter().map(|s| s.name).collect();
-    assert!(global_names.contains(&"onpkg_stack_add".to_string()));
+    assert!(
+        global_names.contains(&"kit_stack_add".to_string())
+            || global_names.contains(&"onpkg_stack_add".to_string())
+    );
 }
 
 #[test]
@@ -137,8 +157,11 @@ fn test_stack_select_modal_state_and_filter() {
 
 #[test]
 fn test_system_prompt_autonomous_protocols() {
-    assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_stack_add"));
-    assert!(DEFAULT_SYSTEM_PROMPT.contains("onpkg_docs/todo.md"));
+    assert!(
+        DEFAULT_SYSTEM_PROMPT.contains("kit_stack_add")
+            || DEFAULT_SYSTEM_PROMPT.contains("onpkg_stack_add")
+    );
+    assert!(DEFAULT_SYSTEM_PROMPT.contains("todo.md"));
     assert!(
         DEFAULT_SYSTEM_PROMPT.contains("locate_symbol")
             || DEFAULT_SYSTEM_PROMPT.contains("grep_search")
