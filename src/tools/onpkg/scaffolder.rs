@@ -8,17 +8,72 @@ use std::process::Command;
 pub struct OnpkgScaffolder;
 
 impl OnpkgScaffolder {
-    /// Returns all natively embedded built-in stacks.
+    /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
     pub fn get_all_stacks() -> Vec<Stack> {
-        builtin_stacks()
+        let mut stacks = builtin_stacks();
+
+        let mut search_dirs = Vec::new();
+        if let Ok(cwd) = std::env::current_dir() {
+            search_dirs.push(cwd.join(".minicode").join("stacks"));
+            search_dirs.push(cwd.join(".minikit").join("stacks"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            search_dirs.push(home.join(".config").join("minicode").join("stacks"));
+            search_dirs.push(home.join(".minikit").join("stacks"));
+            search_dirs.push(home.join(".onpkg").join("stacks"));
+        }
+
+        for dir in search_dirs {
+            if !dir.exists() || !dir.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().is_some_and(|e| e == "json") {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            if let Ok(stack) = serde_json::from_str::<Stack>(&content) {
+                                if !stacks
+                                    .iter()
+                                    .any(|s| s.name.eq_ignore_ascii_case(&stack.name))
+                                {
+                                    stacks.push(stack);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stacks
     }
 
-    /// Finds a stack by name.
+    /// Finds a stack by name across built-in and custom templates.
     pub fn find_stack(name: &str) -> Option<Stack> {
         let norm = name.trim().to_lowercase();
         Self::get_all_stacks()
             .into_iter()
             .find(|s| s.name.to_lowercase() == norm)
+    }
+
+    /// Finds a stack by name, prioritizing workspace-specific stacks in `.minicode/stacks`.
+    pub fn find_stack_in_workspace(workspace_root: &Path, name: &str) -> Option<Stack> {
+        let norm = name.trim().to_lowercase();
+        for dir_name in &[".minicode", ".minikit"] {
+            let candidate = workspace_root
+                .join(dir_name)
+                .join("stacks")
+                .join(format!("{}.json", norm));
+            if candidate.exists() {
+                if let Ok(content) = fs::read_to_string(&candidate) {
+                    if let Ok(stack) = serde_json::from_str::<Stack>(&content) {
+                        return Some(stack);
+                    }
+                }
+            }
+        }
+        Self::find_stack(name)
     }
 
     /// Scaffolds a stack into `target_dir`.
@@ -28,13 +83,13 @@ impl OnpkgScaffolder {
         target_dir_opt: Option<&str>,
         no_install: bool,
     ) -> Result<String> {
-        let stack = Self::find_stack(stack_name).ok_or_else(|| {
+        let stack = Self::find_stack_in_workspace(workspace_root, stack_name).ok_or_else(|| {
             let available: Vec<String> =
                 Self::get_all_stacks().into_iter().map(|s| s.name).collect();
             ToolError::InvalidArguments {
-                name: "onpkg_stack_add".to_string(),
+                name: "kit_stack_add".to_string(),
                 reason: format!(
-                    "Stack `{}` not found. Available built-in stacks: {}",
+                    "Stack `{}` not found. Available built-in and custom stacks: {}",
                     stack_name,
                     available.join(", ")
                 ),
@@ -195,5 +250,57 @@ impl OnpkgScaffolder {
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_custom_workspace_stack_scaffolding() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        // 1. Create a custom stack template in .minicode/stacks/my-custom.json
+        let stacks_dir = ws.join(".minicode").join("stacks");
+        fs::create_dir_all(&stacks_dir).unwrap();
+
+        let custom_stack = serde_json::json!({
+            "name": "my-custom",
+            "runtime": "bun",
+            "description": "My custom microservice template",
+            "packages": ["hono"],
+            "dev_packages": ["typescript"],
+            "files": [
+                {
+                    "path": "src/index.ts",
+                    "content": "import { Hono } from 'hono';\nconst app = new Hono();\nexport default app;"
+                }
+            ]
+        });
+        fs::write(
+            stacks_dir.join("my-custom.json"),
+            serde_json::to_string_pretty(&custom_stack).unwrap(),
+        )
+        .unwrap();
+
+        // 2. Discover stack
+        let found = OnpkgScaffolder::find_stack_in_workspace(ws, "my-custom");
+        assert!(found.is_some());
+        let stack = found.unwrap();
+        assert_eq!(stack.name, "my-custom");
+        assert_eq!(stack.files.len(), 1);
+
+        // 3. Scaffold stack
+        let target = ws.join("service-output");
+        let res = OnpkgScaffolder::scaffold(ws, "my-custom", Some(target.to_str().unwrap()), true)
+            .await
+            .unwrap();
+        assert!(res.contains("Successfully scaffolded stack `my-custom`"));
+        assert!(target.join("src/index.ts").exists());
+        assert!(target.join("minikit.json").exists());
+        assert!(target.join("AGENTS.md").exists());
     }
 }

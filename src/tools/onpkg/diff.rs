@@ -112,20 +112,21 @@ pub fn diff_stack(
         }
     };
 
-    let stack = OnpkgScaffolder::find_stack(&stack_name).ok_or_else(|| {
-        let available: Vec<String> = OnpkgScaffolder::get_all_stacks()
-            .into_iter()
-            .map(|s| s.name)
-            .collect();
-        ToolError::InvalidArguments {
-            name: "kit_stack_diff".to_string(),
-            reason: format!(
-                "Stack `{}` not found in catalog. Available stacks: {}",
-                stack_name,
-                available.join(", ")
-            ),
-        }
-    })?;
+    let stack =
+        OnpkgScaffolder::find_stack_in_workspace(workspace_root, &stack_name).ok_or_else(|| {
+            let available: Vec<String> = OnpkgScaffolder::get_all_stacks()
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            ToolError::InvalidArguments {
+                name: "kit_stack_diff".to_string(),
+                reason: format!(
+                    "Stack `{}` not found in catalog. Available stacks: {}",
+                    stack_name,
+                    available.join(", ")
+                ),
+            }
+        })?;
 
     let mut missing_files = Vec::new();
     let mut modified_files = Vec::new();
