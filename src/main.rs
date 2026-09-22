@@ -110,7 +110,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 110 tools)
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 147 tools)
     #[arg(long, global = true)]
     tools: Option<String>,
 

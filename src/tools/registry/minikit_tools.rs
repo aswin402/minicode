@@ -249,14 +249,14 @@ pub async fn dispatch(
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
-        "kit_stack_list" | "onpkg_stack_list" => Some(
+        "kit_stack_list" | "minikit_stack_list" | "onpkg_stack_list" => Some(
             async {
                 let category = opt_str(args, "category");
                 crate::tools::minikit::MiniKitService::list_stacks(workspace_root, category).await
             }
             .await,
         ),
-        "kit_stack_show" | "onpkg_stack_show" => Some(
+        "kit_stack_show" | "minikit_stack_show" | "onpkg_stack_show" => Some(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
@@ -268,7 +268,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_stack_add" | "onpkg_stack_add" => Some(
+        "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add" => Some(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
@@ -288,7 +288,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_stack_new" | "onpkg_stack_new" => Some(
+        "kit_stack_new" | "minikit_stack_new" | "onpkg_stack_new" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
@@ -307,7 +307,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_stack_remove" | "onpkg_stack_remove" => Some(
+        "kit_stack_remove" | "minikit_stack_remove" | "onpkg_stack_remove" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
@@ -324,7 +324,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_stack_diff" | "onpkg_stack_diff" => Some(
+        "kit_stack_diff" | "minikit_stack_diff" | "onpkg_stack_diff" => Some(
             async {
                 let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
                 let apply = opt_bool(args, "apply", false);
@@ -333,11 +333,11 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_skill_list" | "onpkg_skill_list" => Some(
+        "kit_skill_list" | "minikit_skill_list" | "onpkg_skill_list" => Some(
             async { crate::tools::minikit::MiniKitService::list_skills(workspace_root).await }
                 .await,
         ),
-        "kit_skill_show" | "onpkg_skill_show" => Some(
+        "kit_skill_show" | "minikit_skill_show" | "onpkg_skill_show" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
@@ -348,7 +348,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_skill_install" | "onpkg_skill_install" => Some(
+        "kit_skill_install" | "minikit_skill_install" | "onpkg_skill_install" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
@@ -360,7 +360,7 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_skill_remove" | "onpkg_skill_remove" => Some(
+        "kit_skill_remove" | "minikit_skill_remove" | "onpkg_skill_remove" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
@@ -372,29 +372,30 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => Some(
-            async {
-                let name =
-                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
-                        crate::error::ToolError::InvalidArguments {
+        "kit_info" | "kit_pkg_info" | "minikit_info" | "minikit_pkg_info" | "onpkg_pkg_info" => {
+            Some(
+                async {
+                    let name = get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(
+                        || crate::error::ToolError::InvalidArguments {
                             name: "kit_info".to_string(),
                             reason: "Missing required argument 'name'".to_string(),
-                        }
+                        },
+                    )?;
+                    let runtime = opt_str(args, "runtime");
+                    let registry = crate::tools::minikit::pkg::PkgRegistry::new();
+                    let info = registry.fetch_info(name, runtime, workspace_root).await?;
+                    let out = serde_json::to_string_pretty(&info).map_err(|e| {
+                        crate::error::ToolError::CommandExec(format!(
+                            "Failed to serialize package info: {}",
+                            e
+                        ))
                     })?;
-                let runtime = opt_str(args, "runtime");
-                let registry = crate::tools::minikit::pkg::PkgRegistry::new();
-                let info = registry.fetch_info(name, runtime, workspace_root).await?;
-                let out = serde_json::to_string_pretty(&info).map_err(|e| {
-                    crate::error::ToolError::CommandExec(format!(
-                        "Failed to serialize package info: {}",
-                        e
-                    ))
-                })?;
-                Ok(out)
-            }
-            .await,
-        ),
-        "kit_add" | "kit_pkg_add" | "onpkg_pkg_add" => Some(
+                    Ok(out)
+                }
+                .await,
+            )
+        }
+        "kit_add" | "kit_pkg_add" | "minikit_add" | "minikit_pkg_add" | "onpkg_pkg_add" => Some(
             async {
                 let name =
                     get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
@@ -413,7 +414,8 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_remove" | "kit_pkg_remove" | "onpkg_pkg_remove" | "onpkg_pkg_rm" => Some(
+        "kit_remove" | "kit_pkg_remove" | "minikit_remove" | "minikit_pkg_remove"
+        | "onpkg_pkg_remove" | "onpkg_pkg_rm" => Some(
             async {
                 let name =
                     get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
@@ -428,11 +430,11 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_sync" | "onpkg_sync" => Some(
+        "kit_sync" | "minikit_sync" | "onpkg_sync" => Some(
             async { crate::tools::minikit::MiniKitService::sync_project(workspace_root).await }
                 .await,
         ),
-        "kit_doctor" | "onpkg_doctor" => Some(
+        "kit_doctor" | "minikit_doctor" | "onpkg_doctor" => Some(
             async { crate::tools::minikit::MiniKitService::run_doctor(workspace_root).await }.await,
         ),
         _ => None,

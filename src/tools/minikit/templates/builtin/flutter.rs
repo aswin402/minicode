@@ -1462,7 +1462,7 @@ class _FeatureCard extends StatelessWidget {
                 binary_content: None,
             },
             StackFile {
-                path: "lib/onpkg_main.dart".into(),
+                path: "lib/main.dart".into(),
                 content: format!(
                     r##"import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

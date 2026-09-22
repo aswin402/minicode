@@ -306,6 +306,24 @@ impl MiniKitScaffolder {
                     source: e,
                 })?;
             }
+
+            // If the template file belongs to onpkg_docs/, mirror it into minikit_docs/
+            if f.path.starts_with(crate::constants::ONPKG_DOCS_DIR) {
+                let minikit_rel = f.path.replacen(
+                    crate::constants::ONPKG_DOCS_DIR,
+                    crate::constants::MINIKIT_DOCS_DIR,
+                    1,
+                );
+                let minikit_file_path = dest_dir.join(&minikit_rel);
+                if let Some(parent) = minikit_file_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                if let Some(bin) = &f.binary_content {
+                    let _ = fs::write(&minikit_file_path, bin);
+                } else {
+                    let _ = fs::write(&minikit_file_path, &f.content);
+                }
+            }
         }
 
         // 2. Generate onpkg.json manifest

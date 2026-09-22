@@ -149,7 +149,7 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'onpkg', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
+                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
                     "enum": enums
                 },
                 "reason": {

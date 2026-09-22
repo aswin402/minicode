@@ -1167,6 +1167,30 @@ impl Config {
             }
         }
 
+        // Check custom endpoints configured by the user
+        if let Some(custom_name) = self.provider.custom_endpoints.keys().next() {
+            let model = self
+                .provider
+                .default_models
+                .get(custom_name)
+                .map(|m| m.as_str())
+                .unwrap_or("default-model");
+            return Some((custom_name.as_str(), model));
+        }
+
+        // Check any custom API keys configured by the user
+        for (custom_name, key) in &self.provider.api_keys {
+            if !key.trim().is_empty() {
+                let model = self
+                    .provider
+                    .default_models
+                    .get(custom_name)
+                    .map(|m| m.as_str())
+                    .unwrap_or("default-model");
+                return Some((custom_name.as_str(), model));
+            }
+        }
+
         None
     }
 
@@ -1261,7 +1285,7 @@ impl Config {
                 .or_else(|_| env_trimmed("GLM_API_KEY"))
                 .or_else(|_| env_trimmed("BIGMODEL_API_KEY")),
             "mistral" => env_trimmed("MISTRAL_API_KEY"),
-            "ollama" => return Ok(String::new()),
+            "ollama" => env_trimmed("OLLAMA_API_KEY"),
             custom => {
                 let sanitized_custom = custom.to_uppercase().replace(['-', '.'], "_");
                 let env_var = format!("{}_API_KEY", sanitized_custom);

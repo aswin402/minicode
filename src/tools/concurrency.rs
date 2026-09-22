@@ -117,8 +117,10 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
         // onpkg & MiniKit Scaffolding, Package & Skill Tools
         "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"
-        | "kit_doctor" | "onpkg_stack_list" | "onpkg_stack_show" | "onpkg_skill_list"
-        | "onpkg_skill_show" | "onpkg_pkg_info" | "onpkg_doctor" => ToolSafetyLevel::ReadOnly,
+        | "kit_doctor" | "minikit_stack_list" | "minikit_stack_show" | "minikit_skill_list"
+        | "minikit_skill_show" | "minikit_info" | "minikit_pkg_info" | "minikit_doctor"
+        | "onpkg_stack_list" | "onpkg_stack_show" | "onpkg_skill_list" | "onpkg_skill_show"
+        | "onpkg_pkg_info" | "onpkg_doctor" => ToolSafetyLevel::ReadOnly,
 
         "kit_stack_add"
         | "kit_stack_new"
@@ -129,6 +131,17 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "kit_add"
         | "kit_remove"
         | "kit_sync"
+        | "minikit_stack_add"
+        | "minikit_stack_new"
+        | "minikit_stack_remove"
+        | "minikit_stack_diff"
+        | "minikit_skill_install"
+        | "minikit_skill_remove"
+        | "minikit_add"
+        | "minikit_pkg_add"
+        | "minikit_remove"
+        | "minikit_pkg_remove"
+        | "minikit_sync"
         | "onpkg_stack_add"
         | "onpkg_stack_new"
         | "onpkg_stack_remove"
