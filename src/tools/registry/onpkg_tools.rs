@@ -260,8 +260,9 @@ pub async fn dispatch(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
-                        .ok_or_else(|| {
-                            require_str(args, "stack_name", "kit_stack_show").unwrap_err()
+                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                            name: "kit_stack_show".to_string(),
+                            reason: "Missing required argument 'stack_name'".to_string(),
                         })?;
                 crate::tools::onpkg::OnpkgService::show_stack(workspace_root, stack_name).await
             }
@@ -271,8 +272,9 @@ pub async fn dispatch(
             async {
                 let stack_name =
                     get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
-                        .ok_or_else(|| {
-                            require_str(args, "stack_name", "kit_stack_add").unwrap_err()
+                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                            name: "kit_stack_add".to_string(),
+                            reason: "Missing required argument 'stack_name'".to_string(),
                         })?;
                 let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
@@ -289,7 +291,10 @@ pub async fn dispatch(
         "kit_stack_new" | "onpkg_stack_new" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
-                    .ok_or_else(|| require_str(args, "name", "kit_stack_new").unwrap_err())?;
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_stack_new".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    })?;
                 let runtime = opt_str(args, "runtime").unwrap_or("bun");
                 let global = opt_bool(args, "global", false);
                 crate::tools::onpkg::OnpkgService::create_custom_stack(
@@ -305,7 +310,10 @@ pub async fn dispatch(
         "kit_stack_remove" | "onpkg_stack_remove" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
-                    .ok_or_else(|| require_str(args, "name", "kit_stack_remove").unwrap_err())?;
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_stack_remove".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    })?;
                 let global = opt_bool(args, "global", false);
                 crate::tools::onpkg::OnpkgService::delete_custom_stack(workspace_root, name, global)
                     .await
@@ -327,8 +335,9 @@ pub async fn dispatch(
         "kit_skill_show" | "onpkg_skill_show" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| {
-                        require_str(args, "skill_name", "kit_skill_show").unwrap_err()
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_skill_show".to_string(),
+                        reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
                 crate::tools::onpkg::OnpkgService::show_skill(workspace_root, skill_name).await
             }
@@ -337,8 +346,9 @@ pub async fn dispatch(
         "kit_skill_install" | "onpkg_skill_install" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| {
-                        require_str(args, "skill_name", "kit_skill_install").unwrap_err()
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_skill_install".to_string(),
+                        reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
                 crate::tools::onpkg::OnpkgService::install_skill(workspace_root, skill_name).await
             }
@@ -347,8 +357,9 @@ pub async fn dispatch(
         "kit_skill_remove" | "onpkg_skill_remove" => Some(
             async {
                 let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| {
-                        require_str(args, "skill_name", "kit_skill_remove").unwrap_err()
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_skill_remove".to_string(),
+                        reason: "Missing required argument 'skill_name'".to_string(),
                     })?;
                 crate::tools::onpkg::OnpkgService::remove_skill(workspace_root, skill_name).await
             }
@@ -356,8 +367,13 @@ pub async fn dispatch(
         ),
         "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => Some(
             async {
-                let name = get_str_with_aliases(args, &["name", "pkg", "package"])
-                    .ok_or_else(|| require_str(args, "name", "kit_info").unwrap_err())?;
+                let name =
+                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
+                        crate::error::ToolError::InvalidArguments {
+                            name: "kit_info".to_string(),
+                            reason: "Missing required argument 'name'".to_string(),
+                        }
+                    })?;
                 let runtime = opt_str(args, "runtime");
                 let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
                 let info = registry.fetch_info(name, runtime, workspace_root).await?;
@@ -373,8 +389,13 @@ pub async fn dispatch(
         ),
         "kit_add" | "kit_pkg_add" | "onpkg_pkg_add" => Some(
             async {
-                let name = get_str_with_aliases(args, &["name", "pkg", "package"])
-                    .ok_or_else(|| require_str(args, "name", "kit_add").unwrap_err())?;
+                let name =
+                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
+                        crate::error::ToolError::InvalidArguments {
+                            name: "kit_add".to_string(),
+                            reason: "Missing required argument 'name'".to_string(),
+                        }
+                    })?;
                 let version = opt_str(args, "version");
                 let runtime = opt_str(args, "runtime");
                 let is_dev = opt_bool(args, "is_dev", false);
@@ -387,8 +408,13 @@ pub async fn dispatch(
         ),
         "kit_remove" | "kit_pkg_remove" | "onpkg_pkg_remove" | "onpkg_pkg_rm" => Some(
             async {
-                let name = get_str_with_aliases(args, &["name", "pkg", "package"])
-                    .ok_or_else(|| require_str(args, "name", "kit_remove").unwrap_err())?;
+                let name =
+                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
+                        crate::error::ToolError::InvalidArguments {
+                            name: "kit_remove".to_string(),
+                            reason: "Missing required argument 'name'".to_string(),
+                        }
+                    })?;
                 let runtime = opt_str(args, "runtime");
                 crate::tools::onpkg::OnpkgService::remove_package(workspace_root, name, runtime)
                     .await

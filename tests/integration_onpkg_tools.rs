@@ -344,7 +344,8 @@ fn test_security_path_traversal_rejection() {
     let workspace = temp_dir.path();
 
     // 1. Stack creation traversal rejection
-    let bad_create = OnpkgScaffolder::create_custom_stack(workspace, "../../bad_stack", "bun", false);
+    let bad_create =
+        OnpkgScaffolder::create_custom_stack(workspace, "../../bad_stack", "bun", false);
     assert!(bad_create.is_err());
 
     // 2. Stack deletion traversal rejection
@@ -352,7 +353,10 @@ fn test_security_path_traversal_rejection() {
     assert!(bad_delete.is_err());
 
     // 3. Skill removal traversal rejection
-    let bad_skill = minicode::tools::onpkg::skills::OnpkgSkillsManager::remove_skill(workspace, "../../bad_skill");
+    let bad_skill = minicode::tools::onpkg::skills::OnpkgSkillsManager::remove_skill(
+        workspace,
+        "../../bad_skill",
+    );
     assert!(bad_skill.is_err());
 }
 
@@ -361,27 +365,118 @@ fn test_python_requirements_collision_prevention() {
     let temp_dir = tempdir().unwrap();
     let workspace = temp_dir.path();
 
-    let initial_reqs = "requests-oauthlib==1.3.0\nrequests==2.31.0\nurllib3>=1.26.0\n# comment with requests\n";
+    let initial_reqs =
+        "requests-oauthlib==1.3.0\nrequests==2.31.0\nurllib3>=1.26.0\n# comment with requests\n";
     std::fs::write(workspace.join("requirements.txt"), initial_reqs).unwrap();
 
     let registry = minicode::tools::onpkg::pkg::PkgRegistry::new();
 
     // Remove requests - should NOT remove requests-oauthlib
-    let res = registry.remove_from_project(workspace, "requests", Some("python")).unwrap();
+    let res = registry
+        .remove_from_project(workspace, "requests", Some("python"))
+        .unwrap();
     assert!(res.contains("Successfully removed package `requests`"));
 
     let updated = std::fs::read_to_string(workspace.join("requirements.txt")).unwrap();
-    assert!(updated.contains("requests-oauthlib==1.3.0"), "requests-oauthlib must be preserved!");
+    assert!(
+        updated.contains("requests-oauthlib==1.3.0"),
+        "requests-oauthlib must be preserved!"
+    );
     assert!(updated.contains("urllib3>=1.26.0"));
-    assert!(!updated.contains("requests==2.31.0"), "requests must be removed!");
+    assert!(
+        !updated.contains("requests==2.31.0"),
+        "requests must be removed!"
+    );
 }
 
 #[test]
 fn test_stack_alias_resolution() {
-    assert_eq!(OnpkgScaffolder::find_stack("rust").map(|s| s.name), Some("rust-cli".to_string()));
-    assert_eq!(OnpkgScaffolder::find_stack("express").map(|s| s.name), Some("express-api".to_string()));
-    assert_eq!(OnpkgScaffolder::find_stack("static").map(|s| s.name), Some("static-website".to_string()));
-    assert_eq!(OnpkgScaffolder::find_stack("flutter").map(|s| s.name), Some("flutter-riverpod-my_app".to_string()));
-    assert_eq!(OnpkgScaffolder::find_stack("react").map(|s| s.name), Some("react-vite".to_string()));
-    assert_eq!(OnpkgScaffolder::find_stack("hono").map(|s| s.name), Some("hono-full".to_string()));
+    assert_eq!(
+        OnpkgScaffolder::find_stack("rust").map(|s| s.name),
+        Some("rust-cli".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("express").map(|s| s.name),
+        Some("express-api".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("static").map(|s| s.name),
+        Some("static-website".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("flutter").map(|s| s.name),
+        Some("flutter-riverpod-my_app".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("react").map(|s| s.name),
+        Some("react-vite".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("hono").map(|s| s.name),
+        Some("hono-full".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("python").map(|s| s.name),
+        Some("fastapi".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("fastapi").map(|s| s.name),
+        Some("fastapi".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("mern").map(|s| s.name),
+        Some("mern".to_string())
+    );
+    assert_eq!(
+        OnpkgScaffolder::find_stack("pern").map(|s| s.name),
+        Some("pern".to_string())
+    );
+}
+
+#[test]
+fn test_go_runtime_detection_and_removal() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    let go_mod_content = "module example.com/my-go-app\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgithub.com/stretchr/testify v1.8.4\n)\n";
+    std::fs::write(workspace.join("go.mod"), go_mod_content).unwrap();
+
+    let (rt, pm) = minicode::tools::onpkg::sync::OnpkgSyncEngine::detect_runtime(workspace);
+    assert_eq!(rt, "go");
+    assert_eq!(pm, "go");
+
+    let registry = minicode::tools::onpkg::pkg::PkgRegistry::new();
+    assert_eq!(
+        minicode::tools::onpkg::pkg::PkgRegistry::detect_runtime(workspace),
+        "go"
+    );
+
+    let res = registry
+        .remove_from_project(workspace, "github.com/gin-gonic/gin", Some("go"))
+        .unwrap();
+    assert!(res.contains("Successfully removed package"));
+
+    let updated = std::fs::read_to_string(workspace.join("go.mod")).unwrap();
+    assert!(!updated.contains("github.com/gin-gonic/gin"));
+    assert!(updated.contains("github.com/stretchr/testify"));
+}
+
+#[test]
+fn test_workspace_custom_stack_scoping() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // Create custom stack in workspace
+    let path =
+        OnpkgScaffolder::create_custom_stack(workspace, "scoped-custom", "bun", false).unwrap();
+    assert!(path.exists());
+
+    // find_stack_in_workspace should find it
+    let found = OnpkgScaffolder::find_stack_in_workspace(workspace, "scoped-custom");
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().name, "scoped-custom");
+
+    // All stacks for workspace should include it
+    let all = OnpkgScaffolder::get_all_stacks_for(Some(workspace));
+    assert!(all.iter().any(|s| s.name == "scoped-custom"));
 }

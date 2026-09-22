@@ -49,6 +49,7 @@ impl PkgRegistry {
                             "uv" | "python" | "pip" => return "pypi".to_string(),
                             "cargo" | "rust" => return "cargo".to_string(),
                             "flutter" | "dart" => return "pub".to_string(),
+                            "go" | "golang" => return "go".to_string(),
                             _ => {}
                         }
                     }
@@ -60,6 +61,8 @@ impl PkgRegistry {
             "npm".to_string()
         } else if workspace_root.join("Cargo.toml").exists() {
             "cargo".to_string()
+        } else if workspace_root.join("go.mod").exists() {
+            "go".to_string()
         } else if workspace_root.join("pyproject.toml").exists()
             || workspace_root.join("requirements.txt").exists()
         {
@@ -705,6 +708,35 @@ impl PkgRegistry {
                         .collect();
                     if removed {
                         fs::write(&pubspec_path, filtered.join("\n") + "\n").ok();
+                    }
+                }
+            }
+            "go" | "golang" => {
+                let go_mod_path = workspace_root.join("go.mod");
+                if go_mod_path.exists() {
+                    let content = fs::read_to_string(&go_mod_path).unwrap_or_default();
+                    let lines: Vec<&str> = content.lines().collect();
+                    let filtered: Vec<&str> = lines
+                        .into_iter()
+                        .filter(|l| {
+                            let trimmed = l.trim();
+                            if trimmed.starts_with("//") {
+                                return true;
+                            }
+                            let without_req =
+                                trimmed.strip_prefix("require").unwrap_or(trimmed).trim();
+                            if let Some(rem_part) = without_req.strip_prefix(clean_name) {
+                                let rem = rem_part.trim_start();
+                                if rem.is_empty() || rem.starts_with('v') || rem.starts_with('/') {
+                                    removed = true;
+                                    return false;
+                                }
+                            }
+                            true
+                        })
+                        .collect();
+                    if removed {
+                        fs::write(&go_mod_path, filtered.join("\n") + "\n").ok();
                     }
                 }
             }

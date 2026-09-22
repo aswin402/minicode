@@ -295,11 +295,7 @@ impl OnpkgSkillsManager {
     /// Removes an installed custom skill from the workspace (.minicode/skills/<name>).
     pub fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
         let clean = skill_name.trim().to_lowercase();
-        if clean.is_empty()
-            || clean.contains('/')
-            || clean.contains('\\')
-            || clean.contains("..")
-        {
+        if clean.is_empty() || clean.contains('/') || clean.contains('\\') || clean.contains("..") {
             return Err(ToolError::InvalidArguments {
                 name: "onpkg_skill_remove".to_string(),
                 reason: format!(

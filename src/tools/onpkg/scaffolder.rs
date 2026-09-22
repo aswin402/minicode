@@ -10,9 +10,18 @@ pub struct OnpkgScaffolder;
 impl OnpkgScaffolder {
     /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
     pub fn get_all_stacks() -> Vec<Stack> {
+        Self::get_all_stacks_for(None)
+    }
+
+    /// Returns all natively embedded built-in stacks plus custom stacks in the specified workspace or user directories.
+    pub fn get_all_stacks_for(workspace_root: Option<&Path>) -> Vec<Stack> {
         let mut stacks = builtin_stacks();
 
         let mut search_dirs = Vec::new();
+        if let Some(ws) = workspace_root {
+            search_dirs.push(ws.join(".minicode").join("stacks"));
+            search_dirs.push(ws.join(".minikit").join("stacks"));
+        }
         if let Ok(cwd) = std::env::current_dir() {
             search_dirs.push(cwd.join(".minicode").join("stacks"));
             search_dirs.push(cwd.join(".minikit").join("stacks"));
@@ -50,35 +59,9 @@ impl OnpkgScaffolder {
     }
 
     /// Finds a stack by name across built-in and custom templates with alias resolution.
+    #[allow(dead_code)]
     pub fn find_stack(name: &str) -> Option<Stack> {
-        let norm = name.trim().to_lowercase();
-        let all = Self::get_all_stacks();
-
-        // 1. Exact match
-        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == norm) {
-            return Some(s.clone());
-        }
-
-        // 2. Canonical technology aliases
-        let alias = match norm.as_str() {
-            "rust" | "cargo" => "rust-cli",
-            "express" => "express-api",
-            "static" | "html" | "web" => "static-website",
-            "flutter" | "flutter-riverpod" => "flutter-riverpod-my_app",
-            "react" => "react-vite",
-            "next" | "nextjs" => "next-template",
-            "hono" => "hono-full",
-            _ => norm.as_str(),
-        };
-        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == alias) {
-            return Some(s.clone());
-        }
-
-        // 3. Prefix match
-        all.into_iter().find(|s| {
-            let sn = s.name.to_lowercase();
-            sn.starts_with(&norm) || norm.starts_with(&sn)
-        })
+        Self::find_stack_in_workspace(&PathBuf::new(), name)
     }
 
     /// Creates a starter custom stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
@@ -89,11 +72,7 @@ impl OnpkgScaffolder {
         global: bool,
     ) -> Result<PathBuf> {
         let norm = name.trim().to_lowercase();
-        if norm.is_empty()
-            || norm.contains('/')
-            || norm.contains('\\')
-            || norm.contains("..")
-        {
+        if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
             return Err(ToolError::InvalidArguments {
                 name: "kit_stack_new".to_string(),
                 reason: format!(
@@ -172,11 +151,7 @@ impl OnpkgScaffolder {
         global: bool,
     ) -> Result<String> {
         let norm = stack_name.trim().to_lowercase();
-        if norm.is_empty()
-            || norm.contains('/')
-            || norm.contains('\\')
-            || norm.contains("..")
-        {
+        if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
             return Err(ToolError::InvalidArguments {
                 name: "kit_stack_remove".to_string(),
                 reason: format!(
@@ -230,23 +205,41 @@ impl OnpkgScaffolder {
         }
     }
 
-    /// Finds a stack by name, prioritizing workspace-specific stacks in `.minicode/stacks`.
+    /// Finds a stack by name, prioritizing workspace-specific stacks in `.minicode/stacks`, with alias resolution.
     pub fn find_stack_in_workspace(workspace_root: &Path, name: &str) -> Option<Stack> {
         let norm = name.trim().to_lowercase();
-        for dir_name in &[".minicode", ".minikit"] {
-            let candidate = workspace_root
-                .join(dir_name)
-                .join("stacks")
-                .join(format!("{}.json", norm));
-            if candidate.exists() {
-                if let Ok(content) = fs::read_to_string(&candidate) {
-                    if let Ok(stack) = serde_json::from_str::<Stack>(&content) {
-                        return Some(stack);
-                    }
-                }
-            }
+        let all = Self::get_all_stacks_for(if workspace_root.as_os_str().is_empty() {
+            None
+        } else {
+            Some(workspace_root)
+        });
+
+        // 1. Exact match
+        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == norm) {
+            return Some(s.clone());
         }
-        Self::find_stack(name)
+
+        // 2. Canonical technology aliases
+        let alias = match norm.as_str() {
+            "rust" | "cargo" => "rust-cli",
+            "express" => "express-api",
+            "static" | "html" | "web" => "static-website",
+            "flutter" | "flutter-riverpod" | "riverpod" => "flutter-riverpod-my_app",
+            "react" => "react-vite",
+            "next" | "nextjs" => "next-template",
+            "hono" => "hono-full",
+            "python" | "py" => "fastapi",
+            _ => norm.as_str(),
+        };
+        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == alias) {
+            return Some(s.clone());
+        }
+
+        // 3. Prefix match
+        all.into_iter().find(|s| {
+            let sn = s.name.to_lowercase();
+            sn.starts_with(&norm) || norm.starts_with(&sn)
+        })
     }
 
     /// Scaffolds a stack into `target_dir`.

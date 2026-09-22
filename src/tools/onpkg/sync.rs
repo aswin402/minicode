@@ -12,6 +12,8 @@ impl OnpkgSyncEngine {
             ("rust", "cargo")
         } else if workspace_root.join("pubspec.yaml").exists() {
             ("flutter", "flutter")
+        } else if workspace_root.join("go.mod").exists() {
+            ("go", "go")
         } else if workspace_root.join("pyproject.toml").exists()
             || workspace_root.join("requirements.txt").exists()
         {
@@ -46,6 +48,10 @@ impl OnpkgSyncEngine {
             "app/main.py",
             "src/main.py",
             "main.py",
+            "main.go",
+            "cmd/main.go",
+            "cmd/server/main.go",
+            "cmd/api/main.go",
         ];
         for ep in &entrypoint_patterns {
             if workspace_root.join(ep).exists() {

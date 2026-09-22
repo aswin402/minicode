@@ -70,7 +70,7 @@ pub struct OnpkgService;
 impl OnpkgService {
     /// Lists all available built-in and custom onpkg stacks natively.
     pub async fn list_stacks(workspace_root: &Path, category: Option<&str>) -> Result<String> {
-        let native_stacks = OnpkgScaffolder::get_all_stacks();
+        let native_stacks = OnpkgScaffolder::get_all_stacks_for(Some(workspace_root));
 
         let filtered: Vec<&Stack> = match category {
             Some(cat) if !cat.is_empty() => native_stacks
@@ -153,7 +153,7 @@ impl OnpkgService {
 
     /// Shows detailed information and file manifest of a specific stack.
     pub async fn show_stack(workspace_root: &Path, stack_name: &str) -> Result<String> {
-        if let Some(stack) = OnpkgScaffolder::find_stack(stack_name) {
+        if let Some(stack) = OnpkgScaffolder::find_stack_in_workspace(workspace_root, stack_name) {
             let mut out = format!(
                 "📦 **Stack: `{}`**\n\
                 • **Runtime / Package Manager:** `{}`\n\
@@ -197,7 +197,7 @@ impl OnpkgService {
             return Ok(out);
         }
 
-        let available: Vec<String> = OnpkgScaffolder::get_all_stacks()
+        let available: Vec<String> = OnpkgScaffolder::get_all_stacks_for(Some(workspace_root))
             .into_iter()
             .map(|s| s.name)
             .collect();
@@ -220,7 +220,7 @@ impl OnpkgService {
         no_install: bool,
     ) -> Result<String> {
         // First try native embedded scaffolder
-        if OnpkgScaffolder::find_stack(stack_name).is_some() {
+        if OnpkgScaffolder::find_stack_in_workspace(workspace_root, stack_name).is_some() {
             return OnpkgScaffolder::scaffold(workspace_root, stack_name, target_dir, no_install)
                 .await;
         }
@@ -244,7 +244,7 @@ impl OnpkgService {
             ));
         }
 
-        let available: Vec<String> = OnpkgScaffolder::get_all_stacks()
+        let available: Vec<String> = OnpkgScaffolder::get_all_stacks_for(Some(workspace_root))
             .into_iter()
             .map(|s| s.name)
             .collect();

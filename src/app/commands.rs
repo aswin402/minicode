@@ -302,11 +302,14 @@ impl<'a> App<'a> {
             if sub_lower.is_empty() || sub_lower == "help" {
                 let help =
                     "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Packages & Skills):\n\
-  • `/kit stacks` (or `/stacks`)          — Browse and scaffold architecture templates\n\
+  • `/kit stacks` (or `/stacks`)          — Interactive stack picker and scaffold wizard\n\
+  • `/kit show <name>`                    — Inspect files and dependencies of a stack\n\
+  • `/kit stack add <name> [--dir <p>]`   — Directly scaffold a template into workspace\n\
   • `/kit new <name> [--runtime <rt>]`    — Create a new custom stack template specification\n\
   • `/kit stack remove <name>`            — Remove a custom stack template specification\n\
   • `/kit skills` (or `/skills`)          — List all installed & built-in domain skills\n\
   • `/kit skill <name>`                   — Inspect guidelines & patterns for a technology\n\
+  • `/kit skill install <name>`           — Install a domain skill package into the project\n\
   • `/kit skill remove <name>`            — Uninstall a domain skill from the project\n\
   • `/kit diff` (or `/drift`)             — Inspect workspace architecture drift from template\n\
   • `/kit heal` (or `/heal`)              — Automatically restore missing stack template files\n\
@@ -318,6 +321,73 @@ impl<'a> App<'a> {
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "stacks" || sub_lower == "stack" || sub_lower == "stack list" {
                 self.modal = ModalState::new_stack_select();
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("show ") || sub_lower.starts_with("stack show ") {
+                let stack_name = sub
+                    .strip_prefix("stack show ")
+                    .or_else(|| sub.strip_prefix("show "))
+                    .unwrap_or("")
+                    .trim();
+                if stack_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit show <stack-name>`".to_string());
+                } else {
+                    match crate::tools::onpkg::OnpkgService::show_stack(
+                        &self.workspace_root,
+                        stack_name,
+                    )
+                    .await
+                    {
+                        Ok(content) => self.timeline.add_status(content),
+                        Err(e) => self
+                            .timeline
+                            .add_status(format!("✗ Failed to show stack `{}`: {}", stack_name, e)),
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("stack add ") || sub_lower.starts_with("scaffold ") {
+                let remainder = sub
+                    .strip_prefix("stack add ")
+                    .or_else(|| sub.strip_prefix("scaffold "))
+                    .unwrap_or("")
+                    .trim();
+                if remainder.is_empty() {
+                    self.timeline.add_status(
+                        "⚠ Usage: `/kit stack add <template-name> [--dir <path>] [--no-install]`"
+                            .to_string(),
+                    );
+                } else {
+                    let parts: Vec<&str> = remainder.split_whitespace().collect();
+                    let stack_name = parts[0];
+                    let mut target_dir = None;
+                    let mut no_install = false;
+                    let mut i = 1;
+                    while i < parts.len() {
+                        if (parts[i] == "--dir" || parts[i] == "-d") && i + 1 < parts.len() {
+                            target_dir = Some(parts[i + 1]);
+                            i += 2;
+                        } else if parts[i] == "--no-install" {
+                            no_install = true;
+                            i += 1;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    match crate::tools::onpkg::OnpkgService::add_stack(
+                        &self.workspace_root,
+                        stack_name,
+                        target_dir,
+                        no_install,
+                    )
+                    .await
+                    {
+                        Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to scaffold stack `{}`: {}",
+                            stack_name, e
+                        )),
+                    }
+                }
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("stack remove ")
                 || sub_lower.starts_with("stack rm ")
@@ -419,6 +489,29 @@ impl<'a> App<'a> {
                         Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
                         Err(e) => self.timeline.add_status(format!(
                             "✗ Failed to remove skill `{}`: {}",
+                            skill_name, e
+                        )),
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("skill install ") || sub_lower.starts_with("skill add ")
+            {
+                let skill_name = sub
+                    .strip_prefix("skill install ")
+                    .or_else(|| sub.strip_prefix("skill add "))
+                    .unwrap_or("")
+                    .trim();
+                if skill_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit skill install <skill-name>`".to_string());
+                } else {
+                    match crate::tools::onpkg::skills::OnpkgSkillsManager::install_skill(
+                        &self.workspace_root,
+                        skill_name,
+                    ) {
+                        Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to install skill `{}`: {}",
                             skill_name, e
                         )),
                     }
