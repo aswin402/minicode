@@ -822,9 +822,15 @@ impl TimelineView {
             "kit_doctor" | "onpkg_doctor" => "MiniKit Doctor".to_string(),
             "kit_stack_list" | "onpkg_stack_list" => "MiniKit Stack List".to_string(),
             "kit_stack_add" | "onpkg_stack_add" => "MiniKit Stack Add".to_string(),
+            "kit_stack_new" | "onpkg_stack_new" => "MiniKit Stack New".to_string(),
+            "kit_stack_remove" | "onpkg_stack_remove" => "MiniKit Stack Remove".to_string(),
             "kit_stack_diff" | "onpkg_stack_diff" => "MiniKit Stack Diff".to_string(),
+            "kit_skill_remove" | "onpkg_skill_remove" => "MiniKit Skill Remove".to_string(),
             "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => "MiniKit Package Info".to_string(),
             "kit_add" | "kit_pkg_add" | "onpkg_pkg_add" => "MiniKit Package Add".to_string(),
+            "kit_remove" | "kit_pkg_remove" | "onpkg_pkg_remove" => {
+                "MiniKit Package Remove".to_string()
+            }
             "spawn_subagent" => "Spawn Subagent".to_string(),
             "send_subagent_message" => "Message Subagent".to_string(),
             "begin_transaction" => "Begin Transaction".to_string(),

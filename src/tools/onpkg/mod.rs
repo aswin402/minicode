@@ -294,6 +294,40 @@ impl OnpkgService {
         OnpkgSyncEngine::sync(workspace_root)
     }
 
+    /// Creates a custom stack template JSON in `.minicode/stacks/<name>.json` (or globally).
+    pub async fn create_custom_stack(
+        workspace_root: &Path,
+        name: &str,
+        runtime: &str,
+        global: bool,
+    ) -> Result<String> {
+        let path = OnpkgScaffolder::create_custom_stack(workspace_root, name, runtime, global)?;
+        Ok(format!(
+            "✔ Successfully created custom stack template `{}` at `{}`",
+            name,
+            path.display()
+        ))
+    }
+
+    /// Deletes a custom stack template JSON from `.minicode/stacks/<name>.json` (or globally).
+    pub async fn delete_custom_stack(
+        workspace_root: &Path,
+        name: &str,
+        global: bool,
+    ) -> Result<String> {
+        OnpkgScaffolder::delete_custom_stack(workspace_root, name, global)
+    }
+
+    /// Removes a package dependency from the project manifest and synchronizes manifest.
+    pub async fn remove_package(
+        workspace_root: &Path,
+        name: &str,
+        runtime_opt: Option<&str>,
+    ) -> Result<String> {
+        let registry = pkg::PkgRegistry::new();
+        registry.remove_from_project(workspace_root, name, runtime_opt)
+    }
+
     /// Runs runtime and tool health diagnostics.
     pub async fn run_doctor(_workspace_root: &Path) -> Result<String> {
         Ok(OnpkgDoctor::diagnose())

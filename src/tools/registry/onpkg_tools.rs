@@ -168,6 +168,78 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {}
             }),
         },
+        ToolSchema {
+            name: "kit_stack_new".to_string(),
+            description: "Create a new custom stack template specification in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/`).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the new custom stack template"
+                    },
+                    "runtime": {
+                        "type": "string",
+                        "description": "Optional runtime ecosystem ('bun', 'node', 'uv', 'cargo', 'flutter'). Defaults to 'bun'."
+                    },
+                    "global": {
+                        "type": "boolean",
+                        "description": "If true, saves globally in ~/.config/minicode/stacks/ instead of workspace .minicode/stacks/"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
+            name: "kit_stack_remove".to_string(),
+            description: "Delete a custom stack template specification from `.minicode/stacks/<name>.json` (or globally).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the custom stack template to delete"
+                    },
+                    "global": {
+                        "type": "boolean",
+                        "description": "If true, deletes from global ~/.config/minicode/stacks/ instead of workspace"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
+            name: "kit_skill_remove".to_string(),
+            description: "Remove and uninstall a domain skill from the project workspace (.minicode/skills/<name> and manifest active_skills).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "Name of the skill to remove (e.g. 'react', 'next', 'tailwind', 'rust')"
+                    }
+                },
+                "required": ["skill_name"]
+            }),
+        },
+        ToolSchema {
+            name: "kit_remove".to_string(),
+            description: "Remove a package dependency from the project manifest (package.json, Cargo.toml, requirements.txt, pubspec.yaml) and update minikit.json.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the package to remove"
+                    },
+                    "runtime": {
+                        "type": "string",
+                        "description": "Optional ecosystem ('npm', 'pypi', 'cargo', 'pub'). Auto-detected if omitted."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
     ]
 }
 
@@ -214,6 +286,32 @@ pub async fn dispatch(
             }
             .await,
         ),
+        "kit_stack_new" | "onpkg_stack_new" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
+                    .ok_or_else(|| require_str(args, "name", "kit_stack_new").unwrap_err())?;
+                let runtime = opt_str(args, "runtime").unwrap_or("bun");
+                let global = opt_bool(args, "global", false);
+                crate::tools::onpkg::OnpkgService::create_custom_stack(
+                    workspace_root,
+                    name,
+                    runtime,
+                    global,
+                )
+                .await
+            }
+            .await,
+        ),
+        "kit_stack_remove" | "onpkg_stack_remove" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
+                    .ok_or_else(|| require_str(args, "name", "kit_stack_remove").unwrap_err())?;
+                let global = opt_bool(args, "global", false);
+                crate::tools::onpkg::OnpkgService::delete_custom_stack(workspace_root, name, global)
+                    .await
+            }
+            .await,
+        ),
         "kit_stack_diff" | "onpkg_stack_diff" => Some(
             async {
                 let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
@@ -246,6 +344,16 @@ pub async fn dispatch(
             }
             .await,
         ),
+        "kit_skill_remove" | "onpkg_skill_remove" => Some(
+            async {
+                let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
+                    .ok_or_else(|| {
+                        require_str(args, "skill_name", "kit_skill_remove").unwrap_err()
+                    })?;
+                crate::tools::onpkg::OnpkgService::remove_skill(workspace_root, skill_name).await
+            }
+            .await,
+        ),
         "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "pkg", "package"])
@@ -273,6 +381,16 @@ pub async fn dispatch(
                 let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
                 registry
                     .add_to_project(workspace_root, name, version, runtime, is_dev)
+                    .await
+            }
+            .await,
+        ),
+        "kit_remove" | "kit_pkg_remove" | "onpkg_pkg_remove" | "onpkg_pkg_rm" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "pkg", "package"])
+                    .ok_or_else(|| require_str(args, "name", "kit_remove").unwrap_err())?;
+                let runtime = opt_str(args, "runtime");
+                crate::tools::onpkg::OnpkgService::remove_package(workspace_root, name, runtime)
                     .await
             }
             .await,

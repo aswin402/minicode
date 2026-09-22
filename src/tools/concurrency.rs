@@ -121,14 +121,22 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "onpkg_skill_show" | "onpkg_pkg_info" | "onpkg_doctor" => ToolSafetyLevel::ReadOnly,
 
         "kit_stack_add"
+        | "kit_stack_new"
+        | "kit_stack_remove"
         | "kit_stack_diff"
         | "kit_skill_install"
+        | "kit_skill_remove"
         | "kit_add"
+        | "kit_remove"
         | "kit_sync"
         | "onpkg_stack_add"
+        | "onpkg_stack_new"
+        | "onpkg_stack_remove"
         | "onpkg_stack_diff"
         | "onpkg_skill_install"
+        | "onpkg_skill_remove"
         | "onpkg_pkg_add"
+        | "onpkg_pkg_remove"
         | "onpkg_sync" => ToolSafetyLevel::Mutating,
 
         // Multi-Agent & Reasoning Inspection

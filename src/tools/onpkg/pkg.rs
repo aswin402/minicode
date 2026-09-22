@@ -506,6 +506,155 @@ impl PkgRegistry {
 
         Ok(())
     }
+
+    /// Removes a dependency from the project manifest (package.json, Cargo.toml, requirements.txt, pubspec.yaml) and syncs minikit.json.
+    pub fn remove_from_project(
+        &self,
+        workspace_root: &Path,
+        name: &str,
+        runtime_opt: Option<&str>,
+    ) -> Result<String> {
+        let clean_name = name.trim();
+        if clean_name.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                name: "kit_remove".to_string(),
+                reason: "Package name cannot be empty".to_string(),
+            }
+            .into());
+        }
+
+        let runtime = runtime_opt
+            .map(|s| s.to_lowercase())
+            .unwrap_or_else(|| Self::detect_runtime(workspace_root));
+
+        let mut removed = false;
+
+        match runtime.as_str() {
+            "npm" | "bun" | "node" | "pnpm" | "yarn" => {
+                let pkg_json_path = workspace_root.join("package.json");
+                if pkg_json_path.exists() {
+                    let content = fs::read_to_string(&pkg_json_path).unwrap_or_default();
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        for key in &["dependencies", "devDependencies"] {
+                            if let Some(map) = val.get_mut(key).and_then(|d| d.as_object_mut()) {
+                                if map.remove(clean_name).is_some() {
+                                    removed = true;
+                                }
+                            }
+                        }
+                        if removed {
+                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                                fs::write(&pkg_json_path, pretty).ok();
+                            }
+                        }
+                    }
+                }
+            }
+            "cargo" | "rust" => {
+                let cargo_toml = workspace_root.join("Cargo.toml");
+                if cargo_toml.exists() {
+                    let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
+                    let lines: Vec<&str> = content.lines().collect();
+                    let filtered: Vec<&str> = lines
+                        .into_iter()
+                        .filter(|l| {
+                            let trimmed = l.trim();
+                            if let Some(rem) = trimmed.strip_prefix(clean_name) {
+                                let rem = rem.trim_start();
+                                if rem.starts_with('=')
+                                    || rem.starts_with('{')
+                                    || rem.starts_with(':')
+                                {
+                                    removed = true;
+                                    return false;
+                                }
+                            }
+                            true
+                        })
+                        .collect();
+                    if removed {
+                        fs::write(&cargo_toml, filtered.join("\n") + "\n").ok();
+                    }
+                }
+            }
+            "pypi" | "pip" | "python" | "uv" => {
+                let req_path = workspace_root.join("requirements.txt");
+                if req_path.exists() {
+                    let content = fs::read_to_string(&req_path).unwrap_or_default();
+                    let lines: Vec<&str> = content.lines().collect();
+                    let filtered: Vec<&str> = lines
+                        .into_iter()
+                        .filter(|l| {
+                            let trimmed = l.trim();
+                            if trimmed.starts_with(clean_name) {
+                                removed = true;
+                                return false;
+                            }
+                            true
+                        })
+                        .collect();
+                    if removed {
+                        fs::write(&req_path, filtered.join("\n") + "\n").ok();
+                    }
+                }
+            }
+            "pub" | "dart" | "flutter" => {
+                let pubspec_path = workspace_root.join("pubspec.yaml");
+                if pubspec_path.exists() {
+                    let content = fs::read_to_string(&pubspec_path).unwrap_or_default();
+                    let lines: Vec<&str> = content.lines().collect();
+                    let filtered: Vec<&str> = lines
+                        .into_iter()
+                        .filter(|l| {
+                            let trimmed = l.trim();
+                            if trimmed.starts_with(&format!("{}:", clean_name)) {
+                                removed = true;
+                                return false;
+                            }
+                            true
+                        })
+                        .collect();
+                    if removed {
+                        fs::write(&pubspec_path, filtered.join("\n") + "\n").ok();
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Also clean up from minikit.json / onpkg.json
+        if let Some(manifest_path) = super::resolve_manifest_path(workspace_root) {
+            let content = fs::read_to_string(&manifest_path).unwrap_or_default();
+            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                for key in &["packages", "dev_packages"] {
+                    if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
+                        let orig_len = arr.len();
+                        arr.retain(|x| x.as_str() != Some(clean_name));
+                        if arr.len() < orig_len {
+                            removed = true;
+                        }
+                    }
+                }
+                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                    fs::write(&manifest_path, pretty).ok();
+                }
+            }
+        }
+
+        crate::tools::onpkg::sync::OnpkgSyncEngine::sync(workspace_root).ok();
+
+        if removed {
+            Ok(format!(
+                "✔ Successfully removed package `{}` from {} workspace dependencies and updated manifest.",
+                clean_name, runtime
+            ))
+        } else {
+            Ok(format!(
+                "ℹ Package `{}` was not found in {} project manifests.",
+                clean_name, runtime
+            ))
+        }
+    }
 }
 
 // ── JSON Response Deserialization Models ─────────────────────────────────

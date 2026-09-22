@@ -302,19 +302,52 @@ impl<'a> App<'a> {
             if sub_lower.is_empty() || sub_lower == "help" {
                 let help =
                     "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Packages & Skills):\n\
-  • `/kit stacks` (or `/stacks`)       — Browse and scaffold architecture templates\n\
-  • `/kit new <name> [--runtime <rt>]`  — Create a new custom stack template specification\n\
-  • `/kit skills` (or `/skills`)       — List all installed & built-in domain skills\n\
-  • `/kit skill <name>`                — Inspect guidelines & patterns for a technology\n\
-  • `/kit diff` (or `/drift`)          — Inspect workspace architecture drift from template\n\
-  • `/kit heal` (or `/heal`)           — Automatically restore missing stack template files\n\
-  • `/kit sync` (or `/sync`)           — Scan project, sync `minikit.json`, AGENTS.md & docs\n\
-  • `/kit doctor` (or `/doctor`)       — Diagnose runtimes (bun, uv, cargo, flutter, npm)\n\
-  • `/kit add <pkg>`                   — Prompt agent to verify and add external dependency";
+  • `/kit stacks` (or `/stacks`)          — Browse and scaffold architecture templates\n\
+  • `/kit new <name> [--runtime <rt>]`    — Create a new custom stack template specification\n\
+  • `/kit stack remove <name>`            — Remove a custom stack template specification\n\
+  • `/kit skills` (or `/skills`)          — List all installed & built-in domain skills\n\
+  • `/kit skill <name>`                   — Inspect guidelines & patterns for a technology\n\
+  • `/kit skill remove <name>`            — Uninstall a domain skill from the project\n\
+  • `/kit diff` (or `/drift`)             — Inspect workspace architecture drift from template\n\
+  • `/kit heal` (or `/heal`)              — Automatically restore missing stack template files\n\
+  • `/kit sync` (or `/sync`)              — Scan project, sync `minikit.json`, AGENTS.md & docs\n\
+  • `/kit doctor` (or `/doctor`)          — Diagnose runtimes (bun, uv, cargo, flutter, npm)\n\
+  • `/kit add <pkg>`                      — Prompt agent to verify and add external dependency\n\
+  • `/kit remove <pkg>` (or `/kit rm`)    — Remove external dependency from manifest";
                 self.timeline.add_status(help.to_string());
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "stacks" || sub_lower == "stack" || sub_lower == "stack list" {
                 self.modal = ModalState::new_stack_select();
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("stack remove ")
+                || sub_lower.starts_with("stack rm ")
+                || sub_lower.starts_with("stack delete ")
+            {
+                let remainder = sub_lower
+                    .strip_prefix("stack remove ")
+                    .or_else(|| sub_lower.strip_prefix("stack rm "))
+                    .or_else(|| sub_lower.strip_prefix("stack delete "))
+                    .unwrap_or("")
+                    .trim();
+                let parts: Vec<&str> = remainder.split_whitespace().collect();
+                if parts.is_empty() {
+                    self.timeline.add_status(
+                        "⚠ Usage: `/kit stack remove <template-name> [--global]`".to_string(),
+                    );
+                } else {
+                    let stack_name = parts[0];
+                    let global = parts.contains(&"--global") || parts.contains(&"-g");
+                    match crate::tools::onpkg::scaffolder::OnpkgScaffolder::delete_custom_stack(
+                        &self.workspace_root,
+                        stack_name,
+                        global,
+                    ) {
+                        Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                        Err(e) => self
+                            .timeline
+                            .add_status(format!("✗ Failed to remove stack template: {}", e)),
+                    }
+                }
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("new ") || sub_lower.starts_with("stack new ") {
                 let remainder = sub_lower
@@ -368,6 +401,28 @@ impl<'a> App<'a> {
                     &self.workspace_root,
                 );
                 self.timeline.add_status(list);
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("skill remove ") || sub_lower.starts_with("skill rm ") {
+                let skill_name = sub
+                    .strip_prefix("skill remove ")
+                    .or_else(|| sub.strip_prefix("skill rm "))
+                    .unwrap_or("")
+                    .trim();
+                if skill_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit skill remove <skill-name>`".to_string());
+                } else {
+                    match crate::tools::onpkg::skills::OnpkgSkillsManager::remove_skill(
+                        &self.workspace_root,
+                        skill_name,
+                    ) {
+                        Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to remove skill `{}`: {}",
+                            skill_name, e
+                        )),
+                    }
+                }
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("skill ") {
                 let skill_name = sub.strip_prefix("skill ").unwrap_or("").trim();
@@ -430,6 +485,26 @@ impl<'a> App<'a> {
                 let cancel = tokio_util::sync::CancellationToken::new();
                 self.cancel_token = Some(cancel.clone());
                 let _ = control_tx.send(AgentCommand::Prompt(add_prompt, Some(cancel)));
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("remove ") || sub_lower.starts_with("rm ") {
+                let pkg_name = sub
+                    .strip_prefix("remove ")
+                    .or_else(|| sub.strip_prefix("rm "))
+                    .unwrap_or("")
+                    .trim();
+                if pkg_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit remove <package-name>`".to_string());
+                } else {
+                    let registry = crate::tools::onpkg::pkg::PkgRegistry::new();
+                    match registry.remove_from_project(&self.workspace_root, pkg_name, None) {
+                        Ok(msg) => self.timeline.add_status(format!("✔ {}", msg)),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to remove package `{}`: {}",
+                            pkg_name, e
+                        )),
+                    }
+                }
                 return Ok(CommandAction::Continue);
             }
         }

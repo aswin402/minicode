@@ -126,6 +126,64 @@ impl OnpkgScaffolder {
         Ok(file_path)
     }
 
+    /// Deletes a custom stack template from `.minicode/stacks/<name>.json` (or globally `~/.config/minicode/stacks/`).
+    pub fn delete_custom_stack(
+        workspace_root: &Path,
+        stack_name: &str,
+        global: bool,
+    ) -> Result<String> {
+        let norm = stack_name.trim().to_lowercase();
+        if norm.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                name: "kit_stack_remove".to_string(),
+                reason: "Stack name cannot be empty".to_string(),
+            }
+            .into());
+        }
+
+        let file_path = if global {
+            if let Some(home) = dirs::home_dir() {
+                home.join(".config")
+                    .join("minicode")
+                    .join("stacks")
+                    .join(format!("{}.json", norm))
+            } else {
+                return Err(ToolError::InvalidArguments {
+                    name: "kit_stack_remove".to_string(),
+                    reason: "Home directory could not be determined".to_string(),
+                }
+                .into());
+            }
+        } else {
+            workspace_root
+                .join(".minicode")
+                .join("stacks")
+                .join(format!("{}.json", norm))
+        };
+
+        if file_path.exists() {
+            fs::remove_file(&file_path).map_err(|e| ToolError::FileOp {
+                path: file_path.display().to_string(),
+                source: e,
+            })?;
+            Ok(format!(
+                "✔ Successfully removed custom stack template `{}` at `{}`",
+                norm,
+                file_path.display()
+            ))
+        } else {
+            Err(ToolError::InvalidArguments {
+                name: "kit_stack_remove".to_string(),
+                reason: format!(
+                    "Custom stack template `{}` not found at `{}`",
+                    norm,
+                    file_path.display()
+                ),
+            }
+            .into())
+        }
+    }
+
     /// Finds a stack by name, prioritizing workspace-specific stacks in `.minicode/stacks`.
     pub fn find_stack_in_workspace(workspace_root: &Path, name: &str) -> Option<Stack> {
         let norm = name.trim().to_lowercase();
