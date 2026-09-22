@@ -426,7 +426,30 @@ impl PkgRegistry {
 
         if req_path.exists() {
             let content = fs::read_to_string(&req_path).unwrap_or_default();
-            if !content.lines().any(|l| l.starts_with(name)) {
+            let already_present = content.lines().any(|l| {
+                let trimmed = l.trim();
+                if trimmed.starts_with('#') {
+                    return false;
+                }
+                if let Some(rem) = trimmed.strip_prefix(name) {
+                    let rem = rem.trim_start();
+                    rem.is_empty()
+                        || rem.starts_with("==")
+                        || rem.starts_with(">=")
+                        || rem.starts_with("<=")
+                        || rem.starts_with("~=")
+                        || rem.starts_with("!=")
+                        || rem.starts_with('>')
+                        || rem.starts_with('<')
+                        || rem.starts_with('[')
+                        || rem.starts_with(';')
+                        || rem.starts_with('@')
+                } else {
+                    false
+                }
+            });
+
+            if !already_present {
                 let updated = format!("{}\n{}\n", content.trim_end(), dep_line);
                 fs::write(&req_path, updated).ok();
             }
@@ -481,24 +504,53 @@ impl PkgRegistry {
     }
 
     fn add_to_kit_manifest(workspace_root: &Path, name: &str, is_dev: bool) -> Result<()> {
-        let manifest_path = match super::resolve_manifest_path(workspace_root) {
-            Some(p) => p,
-            None => return Ok(()),
-        };
+        let manifest_candidates = [
+            workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE),
+            workspace_root.join(crate::constants::MINICODE_MANIFEST_FILE),
+            workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE),
+        ];
 
-        let content = fs::read_to_string(&manifest_path).unwrap_or_default();
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-            let key = if is_dev { "dev_packages" } else { "packages" };
-            if val.get(key).is_none() {
-                val[key] = serde_json::json!([]);
+        let mut any_updated = false;
+        for manifest_path in &manifest_candidates {
+            if manifest_path.exists() {
+                let content = fs::read_to_string(manifest_path).unwrap_or_default();
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let key = if is_dev { "dev_packages" } else { "packages" };
+                    if val.get(key).is_none() {
+                        val[key] = serde_json::json!([]);
+                    }
+
+                    if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
+                        let name_val = serde_json::Value::String(name.to_string());
+                        if !arr.contains(&name_val) {
+                            arr.push(name_val);
+                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                                fs::write(manifest_path, pretty).ok();
+                                any_updated = true;
+                            }
+                        }
+                    }
+                }
             }
+        }
 
-            if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
-                let name_val = serde_json::Value::String(name.to_string());
-                if !arr.contains(&name_val) {
-                    arr.push(name_val);
-                    if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                        fs::write(&manifest_path, pretty).ok();
+        if !any_updated {
+            let primary = super::default_manifest_path(workspace_root);
+            if primary.exists() {
+                let content = fs::read_to_string(&primary).unwrap_or_default();
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let key = if is_dev { "dev_packages" } else { "packages" };
+                    if val.get(key).is_none() {
+                        val[key] = serde_json::json!([]);
+                    }
+                    if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
+                        let name_val = serde_json::Value::String(name.to_string());
+                        if !arr.contains(&name_val) {
+                            arr.push(name_val);
+                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                                fs::write(&primary, pretty).ok();
+                            }
+                        }
                     }
                 }
             }
@@ -535,7 +587,12 @@ impl PkgRegistry {
                 if pkg_json_path.exists() {
                     let content = fs::read_to_string(&pkg_json_path).unwrap_or_default();
                     if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-                        for key in &["dependencies", "devDependencies"] {
+                        for key in &[
+                            "dependencies",
+                            "devDependencies",
+                            "peerDependencies",
+                            "optionalDependencies",
+                        ] {
                             if let Some(map) = val.get_mut(key).and_then(|d| d.as_object_mut()) {
                                 if map.remove(clean_name).is_some() {
                                     removed = true;
@@ -554,12 +611,23 @@ impl PkgRegistry {
                 let cargo_toml = workspace_root.join("Cargo.toml");
                 if cargo_toml.exists() {
                     let content = fs::read_to_string(&cargo_toml).unwrap_or_default();
+                    let alt_name = if clean_name.contains('-') {
+                        clean_name.replace('-', "_")
+                    } else {
+                        clean_name.replace('_', "-")
+                    };
                     let lines: Vec<&str> = content.lines().collect();
                     let filtered: Vec<&str> = lines
                         .into_iter()
                         .filter(|l| {
                             let trimmed = l.trim();
-                            if let Some(rem) = trimmed.strip_prefix(clean_name) {
+                            if trimmed.starts_with('#') {
+                                return true;
+                            }
+                            let matched = trimmed
+                                .strip_prefix(clean_name)
+                                .or_else(|| trimmed.strip_prefix(&alt_name));
+                            if let Some(rem) = matched {
                                 let rem = rem.trim_start();
                                 if rem.starts_with('=')
                                     || rem.starts_with('{')
@@ -586,9 +654,26 @@ impl PkgRegistry {
                         .into_iter()
                         .filter(|l| {
                             let trimmed = l.trim();
-                            if trimmed.starts_with(clean_name) {
-                                removed = true;
-                                return false;
+                            if trimmed.starts_with('#') {
+                                return true;
+                            }
+                            if let Some(rem) = trimmed.strip_prefix(clean_name) {
+                                let rem = rem.trim_start();
+                                if rem.is_empty()
+                                    || rem.starts_with("==")
+                                    || rem.starts_with(">=")
+                                    || rem.starts_with("<=")
+                                    || rem.starts_with("~=")
+                                    || rem.starts_with("!=")
+                                    || rem.starts_with('>')
+                                    || rem.starts_with('<')
+                                    || rem.starts_with('[')
+                                    || rem.starts_with(';')
+                                    || rem.starts_with('@')
+                                {
+                                    removed = true;
+                                    return false;
+                                }
                             }
                             true
                         })
@@ -602,12 +687,16 @@ impl PkgRegistry {
                 let pubspec_path = workspace_root.join("pubspec.yaml");
                 if pubspec_path.exists() {
                     let content = fs::read_to_string(&pubspec_path).unwrap_or_default();
+                    let target_prefix = format!("{}:", clean_name);
                     let lines: Vec<&str> = content.lines().collect();
                     let filtered: Vec<&str> = lines
                         .into_iter()
                         .filter(|l| {
                             let trimmed = l.trim();
-                            if trimmed.starts_with(&format!("{}:", clean_name)) {
+                            if trimmed.starts_with('#') {
+                                return true;
+                            }
+                            if trimmed.starts_with(&target_prefix) {
                                 removed = true;
                                 return false;
                             }
@@ -622,21 +711,29 @@ impl PkgRegistry {
             _ => {}
         }
 
-        // Also clean up from minikit.json / onpkg.json
-        if let Some(manifest_path) = super::resolve_manifest_path(workspace_root) {
-            let content = fs::read_to_string(&manifest_path).unwrap_or_default();
-            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-                for key in &["packages", "dev_packages"] {
-                    if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
-                        let orig_len = arr.len();
-                        arr.retain(|x| x.as_str() != Some(clean_name));
-                        if arr.len() < orig_len {
-                            removed = true;
+        // Also clean up from minikit.json / minicode.json / onpkg.json
+        let manifest_candidates = [
+            workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE),
+            workspace_root.join(crate::constants::MINICODE_MANIFEST_FILE),
+            workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE),
+        ];
+
+        for manifest_path in &manifest_candidates {
+            if manifest_path.exists() {
+                let content = fs::read_to_string(manifest_path).unwrap_or_default();
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    for key in &["packages", "dev_packages"] {
+                        if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
+                            let orig_len = arr.len();
+                            arr.retain(|x| x.as_str() != Some(clean_name));
+                            if arr.len() < orig_len {
+                                removed = true;
+                            }
                         }
                     }
-                }
-                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                    fs::write(&manifest_path, pretty).ok();
+                    if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                        fs::write(manifest_path, pretty).ok();
+                    }
                 }
             }
         }

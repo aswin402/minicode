@@ -49,12 +49,36 @@ impl OnpkgScaffolder {
         stacks
     }
 
-    /// Finds a stack by name across built-in and custom templates.
+    /// Finds a stack by name across built-in and custom templates with alias resolution.
     pub fn find_stack(name: &str) -> Option<Stack> {
         let norm = name.trim().to_lowercase();
-        Self::get_all_stacks()
-            .into_iter()
-            .find(|s| s.name.to_lowercase() == norm)
+        let all = Self::get_all_stacks();
+
+        // 1. Exact match
+        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == norm) {
+            return Some(s.clone());
+        }
+
+        // 2. Canonical technology aliases
+        let alias = match norm.as_str() {
+            "rust" | "cargo" => "rust-cli",
+            "express" => "express-api",
+            "static" | "html" | "web" => "static-website",
+            "flutter" | "flutter-riverpod" => "flutter-riverpod-my_app",
+            "react" => "react-vite",
+            "next" | "nextjs" => "next-template",
+            "hono" => "hono-full",
+            _ => norm.as_str(),
+        };
+        if let Some(s) = all.iter().find(|s| s.name.to_lowercase() == alias) {
+            return Some(s.clone());
+        }
+
+        // 3. Prefix match
+        all.into_iter().find(|s| {
+            let sn = s.name.to_lowercase();
+            sn.starts_with(&norm) || norm.starts_with(&sn)
+        })
     }
 
     /// Creates a starter custom stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
@@ -65,6 +89,21 @@ impl OnpkgScaffolder {
         global: bool,
     ) -> Result<PathBuf> {
         let norm = name.trim().to_lowercase();
+        if norm.is_empty()
+            || norm.contains('/')
+            || norm.contains('\\')
+            || norm.contains("..")
+        {
+            return Err(ToolError::InvalidArguments {
+                name: "kit_stack_new".to_string(),
+                reason: format!(
+                    "Invalid stack name '{}': must not contain path separators or traversal",
+                    name
+                ),
+            }
+            .into());
+        }
+
         let target_dir = if global {
             let home = dirs::home_dir().ok_or_else(|| ToolError::InvalidArguments {
                 name: "kit_stack_new".to_string(),
@@ -133,10 +172,17 @@ impl OnpkgScaffolder {
         global: bool,
     ) -> Result<String> {
         let norm = stack_name.trim().to_lowercase();
-        if norm.is_empty() {
+        if norm.is_empty()
+            || norm.contains('/')
+            || norm.contains('\\')
+            || norm.contains("..")
+        {
             return Err(ToolError::InvalidArguments {
                 name: "kit_stack_remove".to_string(),
-                reason: "Stack name cannot be empty".to_string(),
+                reason: format!(
+                    "Invalid stack name '{}': must not contain path separators or traversal",
+                    stack_name
+                ),
             }
             .into());
         }

@@ -295,6 +295,20 @@ impl OnpkgSkillsManager {
     /// Removes an installed custom skill from the workspace (.minicode/skills/<name>).
     pub fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
         let clean = skill_name.trim().to_lowercase();
+        if clean.is_empty()
+            || clean.contains('/')
+            || clean.contains('\\')
+            || clean.contains("..")
+        {
+            return Err(ToolError::InvalidArguments {
+                name: "onpkg_skill_remove".to_string(),
+                reason: format!(
+                    "Invalid skill name '{}': must not contain path separators or traversal",
+                    skill_name
+                ),
+            }
+            .into());
+        }
         let target_dir = workspace_root.join(".minicode").join("skills").join(&clean);
         let mut removed = false;
 

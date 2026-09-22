@@ -337,3 +337,51 @@ async fn test_scaffold_new_stacks_and_drift_healing() {
     assert!(exp_dir.join("package.json").exists());
     assert!(exp_dir.join("src/index.ts").exists());
 }
+
+#[test]
+fn test_security_path_traversal_rejection() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // 1. Stack creation traversal rejection
+    let bad_create = OnpkgScaffolder::create_custom_stack(workspace, "../../bad_stack", "bun", false);
+    assert!(bad_create.is_err());
+
+    // 2. Stack deletion traversal rejection
+    let bad_delete = OnpkgScaffolder::delete_custom_stack(workspace, "../../../etc/passwd", false);
+    assert!(bad_delete.is_err());
+
+    // 3. Skill removal traversal rejection
+    let bad_skill = minicode::tools::onpkg::skills::OnpkgSkillsManager::remove_skill(workspace, "../../bad_skill");
+    assert!(bad_skill.is_err());
+}
+
+#[test]
+fn test_python_requirements_collision_prevention() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    let initial_reqs = "requests-oauthlib==1.3.0\nrequests==2.31.0\nurllib3>=1.26.0\n# comment with requests\n";
+    std::fs::write(workspace.join("requirements.txt"), initial_reqs).unwrap();
+
+    let registry = minicode::tools::onpkg::pkg::PkgRegistry::new();
+
+    // Remove requests - should NOT remove requests-oauthlib
+    let res = registry.remove_from_project(workspace, "requests", Some("python")).unwrap();
+    assert!(res.contains("Successfully removed package `requests`"));
+
+    let updated = std::fs::read_to_string(workspace.join("requirements.txt")).unwrap();
+    assert!(updated.contains("requests-oauthlib==1.3.0"), "requests-oauthlib must be preserved!");
+    assert!(updated.contains("urllib3>=1.26.0"));
+    assert!(!updated.contains("requests==2.31.0"), "requests must be removed!");
+}
+
+#[test]
+fn test_stack_alias_resolution() {
+    assert_eq!(OnpkgScaffolder::find_stack("rust").map(|s| s.name), Some("rust-cli".to_string()));
+    assert_eq!(OnpkgScaffolder::find_stack("express").map(|s| s.name), Some("express-api".to_string()));
+    assert_eq!(OnpkgScaffolder::find_stack("static").map(|s| s.name), Some("static-website".to_string()));
+    assert_eq!(OnpkgScaffolder::find_stack("flutter").map(|s| s.name), Some("flutter-riverpod-my_app".to_string()));
+    assert_eq!(OnpkgScaffolder::find_stack("react").map(|s| s.name), Some("react-vite".to_string()));
+    assert_eq!(OnpkgScaffolder::find_stack("hono").map(|s| s.name), Some("hono-full".to_string()));
+}
