@@ -646,6 +646,20 @@ impl<'a> App<'a> {
                     }
                 }
                 return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("skill match ") {
+                let file_path = sub.strip_prefix("skill match ").unwrap_or("").trim();
+                if file_path.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit skill match <file-path>`".to_string());
+                } else {
+                    let out =
+                        crate::tools::minikit::skills::MiniKitSkillsManager::format_skill_matches(
+                            &self.workspace_root,
+                            file_path,
+                        );
+                    self.timeline.add_status(out);
+                }
+                return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("skill ") {
                 let skill_name = sub.strip_prefix("skill ").unwrap_or("").trim();
                 match crate::tools::minikit::skills::MiniKitSkillsManager::show_skill(

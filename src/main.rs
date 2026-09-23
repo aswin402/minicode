@@ -398,6 +398,12 @@ enum SkillCommands {
         /// Name of skill to remove
         name: String,
     },
+
+    /// Test which skills match a specific file path by glob patterns
+    Match {
+        /// File path to test (e.g. 'src/App.tsx', 'app/main.py', 'Cargo.toml')
+        path: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -950,6 +956,12 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
             println!(
                 "{}",
                 tools::minikit::MiniKitService::remove_skill(workspace, &name).await?
+            );
+        }
+        Some(SkillCommands::Match { path }) => {
+            println!(
+                "{}",
+                tools::minikit::MiniKitService::match_skills(workspace, &path).await?
             );
         }
     }

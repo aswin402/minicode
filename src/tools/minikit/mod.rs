@@ -20,7 +20,7 @@ pub use doctor::{MiniKitDoctor, OnpkgDoctor};
 #[allow(unused_imports)]
 pub use scaffolder::{MiniKitScaffolder, OnpkgScaffolder};
 #[allow(unused_imports)]
-pub use skills::{MiniKitSkillsManager, OnpkgSkillsManager};
+pub use skills::{MiniKitSkillsManager, OnpkgSkillsManager, SkillMetadata};
 #[allow(unused_imports)]
 pub use stacks::{Stack, StackFile, StackHook};
 use std::path::{Path, PathBuf};
@@ -280,6 +280,14 @@ impl MiniKitService {
     /// Removes an installed agent skill from the project.
     pub async fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
         MiniKitSkillsManager::remove_skill(workspace_root, skill_name)
+    }
+
+    /// Matches skills whose globs or always_apply rules apply to the specified file path.
+    pub async fn match_skills(workspace_root: &Path, file_path: &str) -> Result<String> {
+        Ok(MiniKitSkillsManager::format_skill_matches(
+            workspace_root,
+            file_path,
+        ))
     }
 
     /// Evaluates workspace architecture drift against the stack template and optionally heals missing files.

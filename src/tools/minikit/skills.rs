@@ -4,6 +4,99 @@ use crate::tools::minikit::sync::MiniKitSyncEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Parsed metadata representing a progressive domain skill with glob triggers.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SkillMetadata {
+    pub name: String,
+    pub description: String,
+    pub globs: Vec<String>,
+    pub always_apply: bool,
+    pub is_builtin: bool,
+    pub path: Option<PathBuf>,
+}
+
+impl SkillMetadata {
+    /// Parses frontmatter and metadata from a markdown skill file.
+    pub fn parse_from_markdown(name: &str, content: &str, path: Option<PathBuf>) -> Self {
+        let mut description = String::new();
+        let mut globs = Vec::new();
+        let mut always_apply = false;
+
+        if let Some(rest) = content.strip_prefix("---") {
+            if let Some(end) = rest.find("---") {
+                let frontmatter = &rest[..end];
+                for line in frontmatter.lines() {
+                    let trimmed = line.trim();
+                    if let Some(r) = trimmed.strip_prefix("description:") {
+                        description = r.trim().trim_matches('"').trim_matches('\'').to_string();
+                    } else if let Some(r) = trimmed.strip_prefix("always_apply:") {
+                        always_apply = r.trim().parse::<bool>().unwrap_or(false);
+                    } else if let Some(r) = trimmed.strip_prefix("globs:") {
+                        let list_str = r.trim().trim_matches('[').trim_matches(']');
+                        for item in list_str.split(',') {
+                            let g = item.trim().trim_matches('"').trim_matches('\'');
+                            if !g.is_empty() {
+                                globs.push(g.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if description.is_empty() {
+            description = content
+                .lines()
+                .find(|l| l.starts_with('#') || !l.trim().is_empty())
+                .unwrap_or("Domain skill")
+                .trim_start_matches('#')
+                .trim()
+                .to_string();
+        }
+
+        if globs.is_empty() {
+            if let Some(builtin) = find_builtin_skill(name) {
+                globs = builtin.globs.iter().map(|s| s.to_string()).collect();
+            }
+        }
+
+        Self {
+            name: name.to_string(),
+            description,
+            globs,
+            always_apply,
+            is_builtin: false,
+            path,
+        }
+    }
+
+    /// Evaluates whether this skill applies to the given relative or absolute file path.
+    pub fn matches_path(&self, workspace_root: &Path, file_path: &Path) -> bool {
+        if self.always_apply {
+            return true;
+        }
+        if self.globs.is_empty() {
+            return false;
+        }
+
+        let rel_path = if file_path.is_absolute() {
+            file_path.strip_prefix(workspace_root).unwrap_or(file_path)
+        } else {
+            file_path
+        };
+
+        let mut builder = ignore::overrides::OverrideBuilder::new(workspace_root);
+        for g in &self.globs {
+            let _ = builder.add(g);
+        }
+        if let Ok(overrides) = builder.build() {
+            overrides.matched(rel_path, false).is_whitelist()
+        } else {
+            false
+        }
+    }
+}
+
 /// Native skills manager for listing, showing, and installing domain skills into the workspace.
 pub struct MiniKitSkillsManager;
 
@@ -415,6 +508,188 @@ impl MiniKitSkillsManager {
 
         skill_names
     }
+
+    /// Returns all available skills (installed workspace skills + built-in catalog) as SkillMetadata.
+    pub fn get_all_skills_metadata(workspace_root: &Path) -> Vec<SkillMetadata> {
+        let mut list = Vec::new();
+        let search_dirs = Self::get_skill_paths(workspace_root);
+
+        for dir in &search_dirs {
+            if !dir.exists() || !dir.is_dir() {
+                continue;
+            }
+
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                        let name = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let content = fs::read_to_string(&path).unwrap_or_default();
+                        let meta = SkillMetadata::parse_from_markdown(&name, &content, Some(path));
+                        list.push(meta);
+                    } else if path.is_dir() {
+                        let skill_file = path.join("SKILL.md");
+                        if skill_file.exists() {
+                            let name = path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            let content = fs::read_to_string(&skill_file).unwrap_or_default();
+                            let meta = SkillMetadata::parse_from_markdown(
+                                &name,
+                                &content,
+                                Some(skill_file),
+                            );
+                            list.push(meta);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add built-ins if not already in workspace
+        let builtins = get_all_builtin_skills();
+        for b in builtins {
+            if !list.iter().any(|s| s.name.eq_ignore_ascii_case(b.name)) {
+                list.push(SkillMetadata {
+                    name: b.name.to_string(),
+                    description: b.description.to_string(),
+                    globs: b.globs.iter().map(|s| s.to_string()).collect(),
+                    always_apply: false,
+                    is_builtin: true,
+                    path: None,
+                });
+            }
+        }
+
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list.dedup_by(|a, b| a.name == b.name);
+        list
+    }
+
+    /// Matches skills whose globs or always_apply rules apply to the specified file path.
+    pub fn match_skills_for_path(workspace_root: &Path, file_path: &Path) -> Vec<SkillMetadata> {
+        let all = Self::get_all_skills_metadata(workspace_root);
+        let manifest_active = Self::get_manifest_active_skills(workspace_root);
+
+        all.into_iter()
+            .filter(|s| {
+                manifest_active
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(&s.name))
+                    || s.matches_path(workspace_root, file_path)
+            })
+            .collect()
+    }
+
+    /// Formats a list of matching skills for a path.
+    pub fn format_skill_matches(workspace_root: &Path, path_str: &str) -> String {
+        let p = Path::new(path_str);
+        let matches = Self::match_skills_for_path(workspace_root, p);
+        if matches.is_empty() {
+            format!("ℹ No skills currently matched for `{}`.", path_str)
+        } else {
+            let mut out = format!(
+                "\n🎯 **Matched Skills for `{}`** ({} matches):\n\n",
+                path_str,
+                matches.len()
+            );
+            for m in matches {
+                let source = if m.is_builtin {
+                    "built-in"
+                } else {
+                    "installed"
+                };
+                let globs_str = if m.globs.is_empty() {
+                    "always".to_string()
+                } else {
+                    m.globs.join(", ")
+                };
+                out.push_str(&format!(
+                    "  • **`{}`** [{}] — {}\n    Globs: {}\n",
+                    m.name, source, m.description, globs_str
+                ));
+            }
+            out
+        }
+    }
+
+    /// Formats progressive agent prompt context (Tier 1 lightweight directory + Tier 2 matched rules).
+    pub fn format_progressive_prompt_context(
+        workspace_root: &Path,
+        active_files: &[PathBuf],
+    ) -> String {
+        let all_skills = Self::get_all_skills_metadata(workspace_root);
+        if all_skills.is_empty() {
+            return String::new();
+        }
+
+        let manifest_active = Self::get_manifest_active_skills(workspace_root);
+        let mut out = String::from("\n# Progressive Domain Skills & Guidelines (MiniKit):\n");
+
+        // Tier 1: Directory of available skills
+        out.push_str("Available technology skills in this workspace (invoke `kit_skill_show(name)` on-demand for full rules):\n");
+        for s in &all_skills {
+            let globs_hint = if !s.globs.is_empty() {
+                format!(" [globs: {}]", s.globs.join(", "))
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "  • `{}`: {}{}\n",
+                s.name, s.description, globs_hint
+            ));
+        }
+
+        // Tier 2: Automatically attach rules for active files or explicitly enabled skills
+        let mut matched_skills = Vec::new();
+        for s in &all_skills {
+            let is_manifest = manifest_active
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&s.name));
+            let matches_file = active_files
+                .iter()
+                .any(|f| s.matches_path(workspace_root, f));
+            if is_manifest || s.always_apply || matches_file {
+                matched_skills.push(s);
+            }
+        }
+
+        if !matched_skills.is_empty() {
+            out.push_str("\n## Auto-Activated Skills for Current Workspace / Files:\n");
+            for s in matched_skills {
+                out.push_str(&format!("### Skill `{}`\n", s.name));
+                let content = if let Some(p) = &s.path {
+                    fs::read_to_string(p).unwrap_or_default()
+                } else if let Some(b) = find_builtin_skill(&s.name) {
+                    b.content.to_string()
+                } else {
+                    String::new()
+                };
+
+                let body = if let Some(rest) = content.strip_prefix("---") {
+                    if let Some(end) = rest.find("---") {
+                        rest[end + 3..].trim()
+                    } else {
+                        content.as_str()
+                    }
+                } else {
+                    content.as_str()
+                };
+
+                let lines: Vec<&str> = body.lines().take(40).collect();
+                out.push_str(&lines.join("\n"));
+                out.push_str("\n\n");
+            }
+        }
+
+        out
+    }
 }
 
 #[cfg(test)]
@@ -471,5 +746,62 @@ mod tests {
         let msg = OnpkgSkillsManager::remove_skill(temp.path(), "react").unwrap();
         assert!(msg.contains("Successfully removed skill `react`"));
         assert!(!temp.path().join(".minicode/skills/react").exists());
+    }
+
+    #[test]
+    fn test_skill_metadata_parsing_and_globs() {
+        let content = r#"---
+name: custom-ui
+description: "Custom UI guidelines"
+globs: ["src/ui/**/*.tsx", "components/**/*.jsx"]
+always_apply: false
+---
+
+# Custom UI
+Follow design tokens.
+"#;
+        let meta = SkillMetadata::parse_from_markdown("custom-ui", content, None);
+        assert_eq!(meta.name, "custom-ui");
+        assert_eq!(meta.description, "Custom UI guidelines");
+        assert_eq!(meta.globs, vec!["src/ui/**/*.tsx", "components/**/*.jsx"]);
+        assert!(!meta.always_apply);
+    }
+
+    #[test]
+    fn test_skill_glob_matching() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        let react_skill = SkillMetadata {
+            name: "react".to_string(),
+            description: "React guidelines".to_string(),
+            globs: vec!["**/*.tsx".to_string(), "**/*.jsx".to_string()],
+            always_apply: false,
+            is_builtin: true,
+            path: None,
+        };
+
+        assert!(react_skill.matches_path(ws, Path::new("src/components/Button.tsx")));
+        assert!(react_skill.matches_path(ws, Path::new("app/index.jsx")));
+        assert!(!react_skill.matches_path(ws, Path::new("src/api/handler.rs")));
+    }
+
+    #[test]
+    fn test_progressive_prompt_context_generation() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        let active_files = vec![PathBuf::from("src/App.tsx")];
+        let prompt_context =
+            MiniKitSkillsManager::format_progressive_prompt_context(ws, &active_files);
+
+        // Tier 1 check: lists available skills
+        assert!(prompt_context.contains("Progressive Domain Skills & Guidelines"));
+        assert!(prompt_context.contains("react"));
+        assert!(prompt_context.contains("rust"));
+
+        // Tier 2 check: auto-activated react because App.tsx matches react globs
+        assert!(prompt_context.contains("Auto-Activated Skills for Current Workspace / Files"));
+        assert!(prompt_context.contains("### Skill `react`"));
     }
 }

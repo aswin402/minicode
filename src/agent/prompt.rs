@@ -152,17 +152,14 @@ impl PromptBuilder {
             }
         }
 
-        // Notify LLM of any explicitly configured project skills in minikit.json
-        let manifest_skills =
-            crate::tools::minikit::skills::MiniKitSkillsManager::get_manifest_active_skills(
+        // Progressive Agent Skills (Tier 1 index + Tier 2 auto-activation based on active workspace/files)
+        let progressive_skills =
+            crate::tools::minikit::skills::MiniKitSkillsManager::format_progressive_prompt_context(
                 workspace_dir,
+                &[],
             );
-        if !manifest_skills.is_empty() {
-            prompt.push_str("\n# Configured Project Skills (MiniKit):\n");
-            prompt.push_str(&format!(
-                "This workspace has configured active skills: {}. You can inspect their detailed guidelines on-demand using `kit_skill_show(skill_name)`.\n",
-                manifest_skills.join(", ")
-            ));
+        if !progressive_skills.is_empty() {
+            prompt.push_str(&progressive_skills);
         }
 
         // Append custom user/turn instructions if provided
