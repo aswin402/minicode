@@ -260,6 +260,17 @@ enum Commands {
         prompt: Option<String>,
     },
 
+    /// MiniPower: Native autonomous software engineering methodology, planning, and verification
+    #[command(alias = "superpower", alias = "mp")]
+    Power {
+        #[command(subcommand)]
+        action: Option<PowerCommands>,
+
+        /// Output in machine-readable JSON format
+        #[arg(long, global = true)]
+        json: bool,
+    },
+
     /// View conversation session history and analytical summaries
     History {
         /// Output in machine-readable JSON format
@@ -310,6 +321,34 @@ enum Commands {
         #[arg(long)]
         filter: Option<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum PowerCommands {
+    /// Show MiniPower methodology pillars and anti-rationalization guardrails
+    Status,
+
+    /// Initiate a Socratic brainstorming & spec refinement session
+    Brainstorm {
+        /// Feature, bug, or topic to brainstorm
+        topic: String,
+    },
+
+    /// Generate a structured, bite-sized implementation plan with acceptance criteria
+    Plan {
+        /// Feature, bug, or topic to plan
+        topic: String,
+    },
+
+    /// Run multi-agent adversarial code review across Spec Compliance & Code Quality
+    Review {
+        /// Only review staged changes (--cached)
+        #[arg(short = 's', long)]
+        staged: bool,
+    },
+
+    /// Run the 4-Gate Pre-Completion Verification Barrier against current changes
+    Verify,
 }
 
 #[derive(Subcommand, Debug)]
@@ -736,6 +775,9 @@ async fn main() -> anyhow::Result<()> {
                 None,
             )
             .await?;
+        }
+        Some(Commands::Power { action, json }) => {
+            handle_power_cli(&workspace_canonical, &config, action, json, cli.json_stream).await?;
         }
         Some(Commands::History { json }) => {
             let store = session::store::SessionStore::with_workspace(&workspace_canonical);
@@ -1173,6 +1215,83 @@ async fn handle_review_cli(workspace: &Path, staged: bool, json_mode: bool) -> a
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", git::reviewer::GitReviewer::format_report(&report));
+    }
+    Ok(())
+}
+
+async fn handle_power_cli(
+    workspace: &Path,
+    config: &Config,
+    action: Option<PowerCommands>,
+    json_mode: bool,
+    json_stream: bool,
+) -> anyhow::Result<()> {
+    match action {
+        None | Some(PowerCommands::Status) => {
+            if json_mode {
+                let summary = serde_json::json!({
+                    "framework": "MiniPower",
+                    "pillars": [
+                        "Socratic Brainstorming",
+                        "Git Worktree Isolation",
+                        "Bite-Sized Planning",
+                        "Two-Stage Subagent Review",
+                        "Strict Red/Green TDD",
+                        "Evidence Before Assertions"
+                    ],
+                    "red_flags": crate::agent::minipower::MiniPowerEngine::anti_rationalization_table()
+                });
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            } else {
+                println!(
+                    "{}",
+                    crate::agent::minipower::MiniPowerEngine::format_status_summary()
+                );
+            }
+        }
+        Some(PowerCommands::Brainstorm { topic }) => {
+            let prompt = crate::agent::minipower::MiniPowerEngine::format_brainstorm_prompt(
+                workspace, &topic,
+            );
+            run_headless_task(workspace, config, &prompt, json_stream, None).await?;
+        }
+        Some(PowerCommands::Plan { topic }) => {
+            let prompt =
+                crate::agent::minipower::MiniPowerEngine::format_plan_prompt(workspace, &topic);
+            run_headless_task(workspace, config, &prompt, json_stream, None).await?;
+        }
+        Some(PowerCommands::Review { staged }) => {
+            handle_review_cli(workspace, staged, json_mode).await?;
+        }
+        Some(PowerCommands::Verify) => {
+            let git = crate::git::GitService::new(workspace.to_path_buf());
+            let modified_files = if git.is_git_repo().await {
+                if let Ok(st) = git.get_status().await {
+                    let mut all = st.staged;
+                    all.extend(st.unstaged);
+                    all.sort();
+                    all.dedup();
+                    all
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+            let report = crate::agent::verification_barrier::VerificationBarrier::verify(
+                workspace,
+                &modified_files,
+            )
+            .await;
+            if json_mode {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.format_report());
+            }
+            if !report.all_passed {
+                std::process::exit(1);
+            }
+        }
     }
     Ok(())
 }

@@ -32,6 +32,14 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/goal | /goal add <item> | /goal done <id> | /goal reset | /goal run <prompt>",
     },
     CommandCatalogItem {
+        name: "/power",
+        category: "Agent & Automation",
+        shortcut: "Ctrl+P",
+        description:
+            "MiniPower native autonomous engineering methodology, brainstorming & verification",
+        example: "/power | /power brainstorm <topic> | /power plan <topic> | /power review | /power verify",
+    },
+    CommandCatalogItem {
         name: "/diff",
         category: "Code & Inspection",
         shortcut: "Ctrl+D",

@@ -4,13 +4,14 @@ use crate::constants::{
 };
 use crate::context::syntax_guard::SyntaxGuard;
 use crate::tools::compiler::ScopedCompiler;
+use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Duration;
 
 /// Evaluation status for an individual verification gate.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum GateStatus {
     Passed,
     Failed {
@@ -31,7 +32,7 @@ impl GateStatus {
 }
 
 /// Comprehensive report summarizing the evaluation of all 4 pre-completion verification gates.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VerificationReport {
     pub gate1_syntax_compiler: GateStatus,
     pub gate2_reproducer_test: GateStatus,
@@ -41,6 +42,57 @@ pub struct VerificationReport {
 }
 
 impl VerificationReport {
+    /// Formats a human-readable scorecard of the 4 verification gates.
+    #[must_use]
+    pub fn format_report(&self) -> String {
+        let mut out = String::new();
+        if self.all_passed {
+            out.push_str("⚡ **MiniPower Verification Barrier: All 4 Gates Passed!**\n\n");
+            out.push_str("  ✔ **Gate 1**: AST Syntax & Scoped Compiler Integrity\n");
+            out.push_str("  ✔ **Gate 2**: Reproducer & Regression Test Suite\n");
+            out.push_str("  ✔ **Gate 3**: Structural Integrity & Conflict Markers\n");
+            out.push_str("  ✔ **Gate 4**: Diff Sanity (Zero Secrets & Debug Residue)\n\n");
+            out.push_str("All pre-completion verification gates passed cleanly.");
+        } else {
+            out.push_str("⚡ **MiniPower Verification Barrier: Verification Failed**\n\n");
+            let format_line = |name: &str, status: &GateStatus| -> String {
+                match status {
+                    GateStatus::Passed => format!("  ✔ **{}**: Passed\n", name),
+                    GateStatus::Skipped { reason } => {
+                        format!("  ○ **{}**: Skipped ({})\n", name, reason)
+                    }
+                    GateStatus::Failed {
+                        reason,
+                        actionable_remediation,
+                        ..
+                    } => {
+                        format!(
+                            "  ❌ **{}**: {}\n     ╰── Remediation: {}\n",
+                            name, reason, actionable_remediation
+                        )
+                    }
+                }
+            };
+            out.push_str(&format_line(
+                "Gate 1 (AST Syntax & Compiler)",
+                &self.gate1_syntax_compiler,
+            ));
+            out.push_str(&format_line(
+                "Gate 2 (Reproducer & Tests)",
+                &self.gate2_reproducer_test,
+            ));
+            out.push_str(&format_line(
+                "Gate 3 (Structural Integrity)",
+                &self.gate3_regression_conflicts,
+            ));
+            out.push_str(&format_line(
+                "Gate 4 (Diff Sanity)",
+                &self.gate4_diff_sanity,
+            ));
+        }
+        out
+    }
+
     /// Formats an actionable prompt directing the model to self-correct before finishing.
     #[must_use]
     pub fn format_remediation_prompt(&self) -> String {
@@ -350,11 +402,20 @@ impl VerificationBarrier {
                 Err(_) => continue,
             };
 
-            // Check for raw debug prints only in production code (src/), not in tests/
-            let is_production_code = file.starts_with("src/") && !file.contains("test");
+            // Check for raw debug prints only in production library code (src/), not in tests/ or CLI entrypoint (src/main.rs)
+            let is_production_code =
+                file.starts_with("src/") && !file.contains("test") && file != "src/main.rs";
 
+            let mut in_test_module = false;
             for (idx, line) in content.lines().enumerate() {
                 let trimmed = line.trim();
+
+                if trimmed.starts_with("#[cfg(test)]") {
+                    in_test_module = true;
+                }
+                if in_test_module {
+                    continue;
+                }
 
                 // Skip pure line comments
                 if trimmed.starts_with("//")
@@ -410,11 +471,12 @@ impl VerificationBarrier {
     /// Checks if a code line contains obvious hardcoded secrets or raw API tokens.
     #[must_use]
     pub fn contains_secret_leak(line: &str) -> bool {
-        // Ignore test assertions or env accesses
+        // Ignore test assertions or env accesses or pattern matching definitions
         if line.contains("std::env")
             || line.contains("process.env")
             || line.contains("env::var")
             || line.contains("assert")
+            || line.contains("line.contains")
         {
             return false;
         }

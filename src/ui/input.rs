@@ -153,6 +153,14 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+R"),
     },
     PaletteCommand {
+        slash_name: "/power",
+        title: "MiniPower Methodology",
+        description:
+            "Native autonomous engineering methodology, brainstorming, review & verification",
+        category: CommandCategory::Intelligence,
+        shortcut: Some("Ctrl+P"),
+    },
+    PaletteCommand {
         slash_name: "/context",
         title: "Context Inspector",
         description: "Interactive context breakdown, zone allocations & KV-cache",

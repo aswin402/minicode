@@ -766,6 +766,14 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // Ctrl+P displays MiniPower status overview & methodology
+                                if key_event.code == KeyCode::Char('p') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.timeline.add_user_message("/power".to_string());
+                                    let status = crate::agent::minipower::MiniPowerEngine::format_status_summary();
+                                    self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(status));
+                                    continue;
+                                }
+
                                 // Ctrl+R triggers code review
                                 if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     self.timeline.add_user_message("/review".to_string());

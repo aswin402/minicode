@@ -1055,6 +1055,106 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/power" || prompt.starts_with("/power ") {
+            let arg = prompt.trim_start_matches("/power").trim();
+            self.timeline.add_user_message(prompt.to_string());
+            if arg.is_empty() || arg == "status" {
+                let status = crate::agent::minipower::MiniPowerEngine::format_status_summary();
+                self.timeline
+                    .entries
+                    .push(crate::ui::view::TimelineEntry::AssistantMarkdown(status));
+            } else if let Some(topic) = arg.strip_prefix("brainstorm") {
+                let topic = topic.trim();
+                if topic.is_empty() {
+                    self.timeline.add_status(
+                        "⚠️ Please provide a topic to brainstorm. Usage: `/power brainstorm <feature or idea>`"
+                            .to_string(),
+                    );
+                } else {
+                    let prompt_text =
+                        crate::agent::minipower::MiniPowerEngine::format_brainstorm_prompt(
+                            &self.workspace_root,
+                            topic,
+                        );
+                    self.is_working = true;
+                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
+                    self.work_start = Some(Instant::now());
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    self.cancel_token = Some(cancel.clone());
+                    let _ = control_tx.send(AgentCommand::Prompt(prompt_text, Some(cancel)));
+                }
+            } else if let Some(topic) = arg.strip_prefix("plan") {
+                let topic = topic.trim();
+                if topic.is_empty() {
+                    self.timeline.add_status(
+                        "⚠️ Please provide a topic to plan. Usage: `/power plan <feature or task>`"
+                            .to_string(),
+                    );
+                } else {
+                    let prompt_text = crate::agent::minipower::MiniPowerEngine::format_plan_prompt(
+                        &self.workspace_root,
+                        topic,
+                    );
+                    self.is_working = true;
+                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
+                    self.work_start = Some(Instant::now());
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    self.cancel_token = Some(cancel.clone());
+                    let _ = control_tx.send(AgentCommand::Prompt(prompt_text, Some(cancel)));
+                }
+            } else if arg == "review" || arg.starts_with("review ") {
+                let staged_only = arg.split_whitespace().any(|w| w == "--staged" || w == "-s");
+                self.timeline
+                    .add_status("🛡️ Running multi-agent adversarial code review...".to_string());
+                match crate::git::GitReviewer::review_workspace(&self.workspace_root, staged_only)
+                    .await
+                {
+                    Ok(report) => {
+                        let formatted = crate::git::GitReviewer::format_report(&report);
+                        self.timeline
+                            .entries
+                            .push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                    }
+                    Err(e) => {
+                        self.timeline
+                            .add_status(format!("✗ Code review error: {}", e));
+                    }
+                }
+            } else if arg == "verify" {
+                self.timeline.add_status(
+                    "⚡ Running 4-Gate Pre-Completion Verification Barrier...".to_string(),
+                );
+                let git = crate::git::GitService::new(self.workspace_root.clone());
+                let modified_files = if git.is_git_repo().await {
+                    if let Ok(st) = git.get_status().await {
+                        let mut all = st.staged;
+                        all.extend(st.unstaged);
+                        all.sort();
+                        all.dedup();
+                        all
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+                let report = crate::agent::verification_barrier::VerificationBarrier::verify(
+                    &self.workspace_root,
+                    &modified_files,
+                )
+                .await;
+                let formatted = report.format_report();
+                self.timeline
+                    .entries
+                    .push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+            } else {
+                self.timeline.add_status(
+                    "💡 MiniPower Usage:\n  • `/power` or `/power status` — Show methodology pillars and red flags\n  • `/power brainstorm <topic>` — Socratic brainstorm & spec refinement\n  • `/power plan <topic>` — Structured implementation plan builder\n  • `/power review [--staged]` — Adversarial multi-agent code review\n  • `/power verify` — 4-Gate pre-completion verification barrier".to_string(),
+                );
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
             self.modal = ModalState::new_provider_select();
             return Ok(CommandAction::Continue);

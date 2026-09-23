@@ -5,6 +5,7 @@ pub mod dag;
 pub mod hypothesis;
 pub mod intent;
 pub mod r#loop;
+pub mod minipower;
 pub mod mock_provider;
 pub mod models;
 pub mod orchestrator;
