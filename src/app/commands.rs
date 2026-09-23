@@ -776,12 +776,12 @@ impl<'a> App<'a> {
                 .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
             let plan_prompt = if query.is_empty() {
                 format!(
-                    "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.",
+                    "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/core/todo.md and {}/core/implementation.md.",
                     docs_name, docs_name
                 )
             } else {
                 format!(
-                    "Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}",
+                    "Plan and break down the following implementation into actionable verifiable tasks in {}/core/todo.md: {}",
                     docs_name, query
                 )
             };
@@ -997,10 +997,10 @@ impl<'a> App<'a> {
                         .and_then(|n| n.to_str())
                         .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
                     let goal_prompt = if trimmed.is_empty() {
-                        format!("<!-- GOAL --> Execute all pending tasks in {}/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name)
+                        format!("<!-- GOAL --> Execute all pending tasks in {}/core/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name)
                     } else {
                         format!(
-                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
+                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/core/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
                             trimmed, docs_name
                         )
                     };

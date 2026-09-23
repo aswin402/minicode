@@ -108,7 +108,13 @@ impl MiniKitSkillsManager {
     pub fn get_skill_paths(workspace_root: &Path) -> Vec<PathBuf> {
         let mut paths = vec![
             workspace_root.join(".minicode").join("skills"),
+            workspace_root
+                .join(crate::constants::MINIKIT_DOCS_DIR)
+                .join("skills"),
             workspace_root.join(crate::constants::MINIKIT_DOCS_DIR),
+            workspace_root
+                .join(crate::constants::ONPKG_DOCS_DIR)
+                .join("skills"),
             workspace_root.join(crate::constants::ONPKG_DOCS_DIR),
         ];
 
@@ -135,6 +141,21 @@ impl MiniKitSkillsManager {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                        let fname = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        // Filter out core specs and OKF catalog logs from skill listing
+                        if super::CORE_DOC_FILES
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(&fname))
+                            || fname.eq_ignore_ascii_case("index.md")
+                            || fname.eq_ignore_ascii_case("log.md")
+                        {
+                            continue;
+                        }
+
                         let name = path
                             .file_stem()
                             .unwrap_or_default()
@@ -523,6 +544,20 @@ impl MiniKitSkillsManager {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                        let fname = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        if super::CORE_DOC_FILES
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(&fname))
+                            || fname.eq_ignore_ascii_case("index.md")
+                            || fname.eq_ignore_ascii_case("log.md")
+                        {
+                            continue;
+                        }
+
                         let name = path
                             .file_stem()
                             .unwrap_or_default()

@@ -773,9 +773,9 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|n| n.to_str())
                 .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
             let plan_task = if let Some(p) = prompt {
-                format!("Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}", docs_name, p)
+                format!("Plan and break down the following implementation into actionable verifiable tasks in {}/core/todo.md: {}", docs_name, p)
             } else {
-                format!("Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.", docs_name, docs_name)
+                format!("Inspect current repository architecture and generate a structured, verifiable milestone implementation plan in {}/core/todo.md and {}/core/implementation.md.", docs_name, docs_name)
             };
             run_headless_task(
                 &workspace_canonical,
@@ -1596,10 +1596,10 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                     .and_then(|n| n.to_str())
                     .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
                 let full_prompt = match (cmd.as_str(), args) {
-                    ("/plan", Some(q)) if !q.is_empty() => format!("Plan and break down the following implementation into actionable verifiable tasks in {}/todo.md: {}", docs_name, q),
-                    ("/plan", _) => format!("Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/todo.md and {}/implementation.md.", docs_name, docs_name),
-                    ("/goal", Some(q)) if !q.is_empty() => format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", q, docs_name),
-                    ("/goal", _) => format!("<!-- GOAL --> Execute all pending tasks in {}/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name),
+                    ("/plan", Some(q)) if !q.is_empty() => format!("Plan and break down the following implementation into actionable verifiable tasks in {}/core/todo.md: {}", docs_name, q),
+                    ("/plan", _) => format!("Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/core/todo.md and {}/core/implementation.md.", docs_name, docs_name),
+                    ("/goal", Some(q)) if !q.is_empty() => format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate {}/core/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", q, docs_name),
+                    ("/goal", _) => format!("<!-- GOAL --> Execute all pending tasks in {}/core/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].", docs_name),
                     (c, Some(a)) if !a.is_empty() => format!("{} {}", c, a),
                     (c, _) => c.to_string(),
                 };

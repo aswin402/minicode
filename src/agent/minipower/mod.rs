@@ -135,8 +135,8 @@ impl MiniPowerEngine {
             1. **Do not write code yet.** Step back and analyze requirements, constraints, and architecture.\n\
             2. Ask 1-2 focused, high-leverage clarifying questions to resolve trade-offs.\n\
             3. Propose 2-3 architectural approaches with pros and cons.\n\
-            4. Once aligned, produce a structured spec to be saved in `{}/design.md`.\n",
-            topic, docs_name
+            4. Once aligned, produce a structured spec to be saved in `{}/core/spec.md` or `{}/core/design.md`.\n",
+            topic, docs_name, docs_name
         )
     }
 
@@ -158,7 +158,7 @@ impl MiniPowerEngine {
                - **Acceptance Criteria:** Verifiable conditions for completion.\n\
                - **Verification Command:** Concrete test or check (e.g. `cargo test -j 1 --lib ...`).\n\
             3. Follow strict Red/Green TDD: tests are added before or alongside implementation.\n\
-            4. Write the finalized plan into `{}/todo.md` and `{}/implementation.md`.\n",
+            4. Write the finalized plan into `{}/core/todo.md` and `{}/core/implementation.md`.\n",
             topic, docs_name, docs_name
         )
     }

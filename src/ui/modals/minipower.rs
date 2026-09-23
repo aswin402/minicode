@@ -17,6 +17,7 @@ pub enum MiniPowerTab {
     Pillars,
     RedFlags,
     VerificationBarrier,
+    PlanHierarchy,
 }
 
 impl MiniPowerTab {
@@ -25,6 +26,7 @@ impl MiniPowerTab {
             MiniPowerTab::Pillars,
             MiniPowerTab::RedFlags,
             MiniPowerTab::VerificationBarrier,
+            MiniPowerTab::PlanHierarchy,
         ]
     }
 
@@ -33,6 +35,7 @@ impl MiniPowerTab {
             MiniPowerTab::Pillars => "Pillars & Methodology",
             MiniPowerTab::RedFlags => "Anti-Rationalization",
             MiniPowerTab::VerificationBarrier => "Verification Barrier",
+            MiniPowerTab::PlanHierarchy => "Two-Tier Plan",
         }
     }
 
@@ -40,15 +43,17 @@ impl MiniPowerTab {
         match self {
             MiniPowerTab::Pillars => MiniPowerTab::RedFlags,
             MiniPowerTab::RedFlags => MiniPowerTab::VerificationBarrier,
-            MiniPowerTab::VerificationBarrier => MiniPowerTab::Pillars,
+            MiniPowerTab::VerificationBarrier => MiniPowerTab::PlanHierarchy,
+            MiniPowerTab::PlanHierarchy => MiniPowerTab::Pillars,
         }
     }
 
     pub fn prev(&self) -> Self {
         match self {
-            MiniPowerTab::Pillars => MiniPowerTab::VerificationBarrier,
+            MiniPowerTab::Pillars => MiniPowerTab::PlanHierarchy,
             MiniPowerTab::RedFlags => MiniPowerTab::Pillars,
             MiniPowerTab::VerificationBarrier => MiniPowerTab::RedFlags,
+            MiniPowerTab::PlanHierarchy => MiniPowerTab::VerificationBarrier,
         }
     }
 }
@@ -157,6 +162,7 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
         MiniPowerTab::Pillars => render_pillars_content(theme),
         MiniPowerTab::RedFlags => render_red_flags_content(theme),
         MiniPowerTab::VerificationBarrier => render_barrier_content(state, theme),
+        MiniPowerTab::PlanHierarchy => render_plan_hierarchy_content(state, theme),
     };
 
     let visible_lines: Vec<Line> = content_lines
@@ -173,7 +179,7 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
         MiniPowerTab::VerificationBarrier => {
             " [Tab/←/→] Switch Tab | [r/v] Run Live Verification | [↑/↓] Scroll | [Esc/q] Close "
         }
-        _ => " [Tab/←/→] Switch Tab | [1-3] Select Tab | [↑/↓] Scroll | [Esc/q] Close ",
+        _ => " [Tab/←/→] Switch Tab | [1-4] Select Tab | [↑/↓] Scroll | [Esc/q] Close ",
     };
     let footer = Paragraph::new(footer_text)
         .alignment(Alignment::Center)
@@ -407,6 +413,237 @@ fn render_barrier_content<'a>(state: &'a MiniPowerModalState, theme: &'a Theme) 
     lines
 }
 
+fn render_plan_hierarchy_content<'a>(
+    state: &'a MiniPowerModalState,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "📋 Two-Tier Autonomous Plan Hierarchy",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " — Strategic Roadmap & Tactical Execution",
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // --- LEVEL 1: MACRO ROADMAP ---
+    lines.push(Line::from(vec![Span::styled(
+        "═══ LEVEL 1: STRATEGIC ROADMAP (Macro Tasks) ═══",
+        Style::default()
+            .fg(theme.brand_accent)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    let todo_path = crate::tools::minikit::resolve_doc_path(&state.workspace_root, "todo.md");
+    let rel_todo = todo_path
+        .strip_prefix(&state.workspace_root)
+        .unwrap_or(&todo_path);
+
+    lines.push(Line::from(vec![
+        Span::styled("Source: ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{}", rel_todo.display()),
+            Style::default().fg(theme.info),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    if todo_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&todo_path) {
+            let mut shown_tasks = 0;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
+                    let text = trimmed
+                        .trim_start_matches("- [x]")
+                        .trim_start_matches("* [x]")
+                        .trim();
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  ✔ ",
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(text.to_string(), Style::default().fg(theme.muted)),
+                    ]));
+                    shown_tasks += 1;
+                } else if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
+                    let text = trimmed
+                        .trim_start_matches("- [ ]")
+                        .trim_start_matches("* [ ]")
+                        .trim();
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  ○ ",
+                            Style::default()
+                                .fg(theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(text.to_string(), Style::default().fg(theme.text_primary)),
+                    ]));
+                    shown_tasks += 1;
+                } else if trimmed.starts_with("## ") {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  📁 {}", trimmed.trim_start_matches('#').trim()),
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                }
+                if shown_tasks >= 15 {
+                    break;
+                }
+            }
+            if shown_tasks == 0 {
+                lines.push(Line::from(vec![Span::styled(
+                    "  (No active tasks parsed in roadmap file)",
+                    Style::default().fg(theme.muted),
+                )]));
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "  (Failed to read roadmap file)",
+                Style::default().fg(theme.destructive),
+            )]));
+        }
+    } else {
+        lines.push(Line::from(vec![Span::styled(
+            "  (Roadmap file does not exist yet. Run `/plan <goal>` or `power_plan` to generate it)",
+            Style::default().fg(theme.muted),
+        )]));
+    }
+
+    lines.push(Line::from(""));
+
+    // --- LEVEL 2: MICRO EXECUTION INTENT LEDGER ---
+    lines.push(Line::from(vec![Span::styled(
+        "═══ LEVEL 2: TACTICAL EXECUTION (Micro Intent Ledger) ═══",
+        Style::default()
+            .fg(theme.brand_accent)
+            .add_modifier(Modifier::BOLD),
+    )]));
+
+    let intent_file = state
+        .workspace_root
+        .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+    let rel_intent = intent_file
+        .strip_prefix(&state.workspace_root)
+        .unwrap_or(&intent_file);
+
+    lines.push(Line::from(vec![
+        Span::styled("Storage: ", Style::default().fg(theme.muted)),
+        Span::styled(
+            format!("{}", rel_intent.display()),
+            Style::default().fg(theme.info),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    if intent_file.exists() {
+        if let Ok(ledger) =
+            crate::context::memory::intent::IntentLedger::load_from_disk(&intent_file)
+        {
+            if !ledger.root_objective.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  🎯 Root Goal: ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        ledger.root_objective.clone(),
+                        Style::default().fg(theme.text_primary),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled("  📊 Progress: ", Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!(
+                            "{}/{} items completed",
+                            ledger.completed_count(),
+                            ledger.total_count()
+                        ),
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+            }
+
+            if ledger.items.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    "  (Intent ledger is currently empty)",
+                    Style::default().fg(theme.muted),
+                )]));
+            } else {
+                for item in &ledger.items {
+                    let is_active = ledger.active_item_id.as_deref() == Some(&item.id);
+                    let (marker, style) = match item.status {
+                        crate::context::memory::intent::RequirementStatus::Completed => (
+                            "✔ Completed  ",
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        crate::context::memory::intent::RequirementStatus::InProgress => (
+                            "▶ In-Progress",
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        crate::context::memory::intent::RequirementStatus::Blocked => (
+                            "✖ Blocked    ",
+                            Style::default()
+                                .fg(theme.destructive)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        crate::context::memory::intent::RequirementStatus::Skipped => {
+                            ("↷ Skipped    ", Style::default().fg(theme.muted))
+                        }
+                        crate::context::memory::intent::RequirementStatus::Pending => {
+                            ("○ Pending    ", Style::default().fg(theme.warning))
+                        }
+                    };
+
+                    let active_marker = if is_active { " ◀ (Active Focus)" } else { "" };
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  [{}] ", marker), style),
+                        Span::styled(item.title.clone(), Style::default().fg(theme.text_primary)),
+                        Span::styled(
+                            active_marker,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                "  (Failed to parse intent ledger)",
+                Style::default().fg(theme.destructive),
+            )]));
+        }
+    } else {
+        lines.push(Line::from(vec![Span::styled(
+            "  (No active tactical ledger. Initialized on autonomous `/goal` or `/power task` execution)",
+            Style::default().fg(theme.muted),
+        )]));
+    }
+
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,9 +653,11 @@ mod tests {
         let tab = MiniPowerTab::Pillars;
         assert_eq!(tab.next(), MiniPowerTab::RedFlags);
         assert_eq!(tab.next().next(), MiniPowerTab::VerificationBarrier);
-        assert_eq!(tab.next().next().next(), MiniPowerTab::Pillars);
+        assert_eq!(tab.next().next().next(), MiniPowerTab::PlanHierarchy);
+        assert_eq!(tab.next().next().next().next(), MiniPowerTab::Pillars);
 
-        assert_eq!(tab.prev(), MiniPowerTab::VerificationBarrier);
+        assert_eq!(tab.prev(), MiniPowerTab::PlanHierarchy);
+        assert_eq!(tab.prev().prev(), MiniPowerTab::VerificationBarrier);
     }
 
     #[test]

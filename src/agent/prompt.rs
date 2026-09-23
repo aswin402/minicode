@@ -329,9 +329,35 @@ impl PromptBuilder {
             recency.push_str("  </minipower_verification_barrier>\n");
         }
 
-        // 9. Active MiniPower Plan & Pending Tasks (from todo.md)
+        // 9. Project Blueprint Index (Core Specs in core/ available for on-demand inspection via read_file)
+        let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_dir);
+        if core_dir.exists() {
+            let mut available_specs = Vec::new();
+            for spec_file in crate::tools::minikit::CORE_DOC_FILES {
+                if core_dir.join(spec_file).exists() {
+                    available_specs.push(*spec_file);
+                }
+            }
+            if !available_specs.is_empty() {
+                recency.push_str("  <project_blueprint>\n");
+                let rel_core = core_dir.strip_prefix(workspace_dir).unwrap_or(&core_dir);
+                recency.push_str(&format!(
+                    "    Location: {}/ (Inspect on-demand via `read_file`)\n",
+                    rel_core.display()
+                ));
+                recency.push_str(&format!("    Specs: {}\n", available_specs.join(", ")));
+                recency.push_str("  </project_blueprint>\n");
+            }
+        }
+
+        // 10. Active MiniPower Plan & Pending Tasks (from core/todo.md or legacy todo.md)
+        let resolved_todo = crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");
         let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
-        let todo_candidates = [docs_dir.join("todo.md"), workspace_dir.join("todo.md")];
+        let todo_candidates = [
+            resolved_todo,
+            docs_dir.join("todo.md"),
+            workspace_dir.join("todo.md"),
+        ];
         for todo_path in &todo_candidates {
             if todo_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(todo_path) {

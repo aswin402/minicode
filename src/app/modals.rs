@@ -1975,6 +1975,11 @@ impl<'a> App<'a> {
                     state.scroll_offset = 0;
                     state.selected_index = 0;
                 }
+                KeyCode::Char('4') => {
+                    state.active_tab = crate::ui::modals::minipower::MiniPowerTab::PlanHierarchy;
+                    state.scroll_offset = 0;
+                    state.selected_index = 0;
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     state.scroll_up();
                 }

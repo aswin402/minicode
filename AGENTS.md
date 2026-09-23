@@ -28,8 +28,11 @@
 9. **Dependencies:** Ask before adding heavy new dependencies. Prefer pure-Rust crates. The `walkdir` crate is intentionally excluded — use `ignore::WalkBuilder` instead.
 
 ## Active Documentation & Specifications
-- [Product Requirements Document (PRD)](file://./onpkg_docs/prd.md)
-- [Terminal & UI Design Specification](file://./onpkg_docs/design.md)
-- [Technical Implementation Plan](file://./onpkg_docs/implementation.md)
-- [Task Tracker (todo.md)](file://./onpkg_docs/todo.md)
-- [CLI & Protocol Reference](file://./onpkg_docs/content.md)
+- [Core Philosophy & Vision](file://./onpkg_docs/core/coreidea.md)
+- [Product Requirements Document (PRD)](file://./onpkg_docs/core/prd.md)
+- [Clean Architecture & CodeGraph](file://./onpkg_docs/core/architecture.md)
+- [Technical Invariants & Spec](file://./onpkg_docs/core/spec.md)
+- [Terminal & UI Design Specification](file://./onpkg_docs/core/design.md)
+- [Technical Implementation Plan](file://./onpkg_docs/core/implementation.md)
+- [Task Tracker (todo.md)](file://./onpkg_docs/core/todo.md)
+- [CLI & Protocol Reference](file://./onpkg_docs/core/content.md)

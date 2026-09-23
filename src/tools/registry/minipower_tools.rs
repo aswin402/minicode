@@ -133,19 +133,20 @@ pub async fn dispatch(
                 let plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
 
                 if save_to_docs {
-                    let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
-                    if let Ok(()) = std::fs::create_dir_all(&docs_dir) {
-                        let todo_file = docs_dir.join("todo.md");
-                        let append_content =
-                            format!("\n\n<!-- MiniPower Plan: {} -->\n{}", topic, plan);
-                        let _ = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&todo_file)
-                            .and_then(|mut f| {
-                                std::io::Write::write_all(&mut f, append_content.as_bytes())
-                            });
+                    let todo_file =
+                        crate::tools::minikit::resolve_doc_path(workspace_root, "todo.md");
+                    if let Some(parent) = todo_file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
                     }
+                    let append_content =
+                        format!("\n\n<!-- MiniPower Plan: {} -->\n{}", topic, plan);
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&todo_file)
+                        .and_then(|mut f| {
+                            std::io::Write::write_all(&mut f, append_content.as_bytes())
+                        });
                 }
 
                 Ok(plan)

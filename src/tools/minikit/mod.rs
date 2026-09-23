@@ -66,6 +66,67 @@ pub fn resolve_docs_dir(workspace: &Path) -> PathBuf {
     minikit_docs
 }
 
+/// Canonical core workflow specification files.
+pub const CORE_DOC_FILES: &[&str] = &[
+    "coreidea.md",
+    "prd.md",
+    "architecture.md",
+    "spec.md",
+    "design.md",
+    "implementation.md",
+    "content.md",
+    "todo.md",
+];
+
+/// Resolves the core documentation directory (e.g. `minikit_docs/core/` or `onpkg_docs/core/`).
+pub fn resolve_core_docs_dir(workspace: &Path) -> PathBuf {
+    resolve_docs_dir(workspace).join("core")
+}
+
+/// Resolves the skills documentation directory (e.g. `minikit_docs/skills/`).
+#[allow(dead_code)]
+pub fn resolve_skills_docs_dir(workspace: &Path) -> PathBuf {
+    resolve_docs_dir(workspace).join("skills")
+}
+
+/// Resolves the packages documentation directory (e.g. `minikit_docs/packages/`).
+#[allow(dead_code)]
+pub fn resolve_packages_docs_dir(workspace: &Path) -> PathBuf {
+    resolve_docs_dir(workspace).join("packages")
+}
+
+/// Resolves the path to a documentation file, checking the structured `core/` directory first,
+/// falling back to legacy flat `docs_dir/`, and defaulting to `core/` for core docs.
+pub fn resolve_doc_path(workspace: &Path, doc_name: &str) -> PathBuf {
+    let docs_dir = resolve_docs_dir(workspace);
+    let core_path = docs_dir.join("core").join(doc_name);
+    if core_path.exists() {
+        return core_path;
+    }
+    let flat_path = docs_dir.join(doc_name);
+    if flat_path.exists() {
+        return flat_path;
+    }
+    let skills_path = docs_dir.join("skills").join(doc_name);
+    if skills_path.exists() {
+        return skills_path;
+    }
+    let packages_path = docs_dir.join("packages").join(doc_name);
+    if packages_path.exists() {
+        return packages_path;
+    }
+
+    // Default to core/ for canonical workflow documents, otherwise flat docs_dir
+    if CORE_DOC_FILES
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(doc_name))
+    {
+        core_path
+    } else {
+        flat_path
+    }
+}
+
 /// Full-featured native operations for onpkg / MiniKit stack scaffolding, skill management, and project sync.
 pub struct MiniKitService;
 
@@ -416,5 +477,54 @@ impl MiniKitService {
     /// Adds an architecture block into the workspace.
     pub async fn add_block(workspace_root: &Path, name: &str, force: bool) -> Result<String> {
         blocks::MiniKitBlocksManager::add_block(workspace_root, name, force)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_core_doc_resolvers() {
+        let dir = tempdir().unwrap();
+        let workspace = dir.path();
+
+        let core_dir = resolve_core_docs_dir(workspace);
+        assert_eq!(core_dir, workspace.join("minikit_docs").join("core"));
+
+        let skills_dir = resolve_skills_docs_dir(workspace);
+        assert_eq!(skills_dir, workspace.join("minikit_docs").join("skills"));
+
+        let packages_dir = resolve_packages_docs_dir(workspace);
+        assert_eq!(
+            packages_dir,
+            workspace.join("minikit_docs").join("packages")
+        );
+
+        // Canonical core docs default to core/
+        let todo_path = resolve_doc_path(workspace, "todo.md");
+        assert_eq!(
+            todo_path,
+            workspace.join("minikit_docs").join("core").join("todo.md")
+        );
+
+        let prd_path = resolve_doc_path(workspace, "prd.md");
+        assert_eq!(
+            prd_path,
+            workspace.join("minikit_docs").join("core").join("prd.md")
+        );
+
+        // If legacy flat file exists, it resolves flat file
+        let flat_todo = workspace.join("minikit_docs").join("todo.md");
+        std::fs::create_dir_all(workspace.join("minikit_docs")).unwrap();
+        std::fs::write(&flat_todo, "# Todo").unwrap();
+        assert_eq!(resolve_doc_path(workspace, "todo.md"), flat_todo);
+
+        // But if core/todo.md exists, core/ takes precedence
+        let core_todo = workspace.join("minikit_docs").join("core").join("todo.md");
+        std::fs::create_dir_all(workspace.join("minikit_docs").join("core")).unwrap();
+        std::fs::write(&core_todo, "# Core Todo").unwrap();
+        assert_eq!(resolve_doc_path(workspace, "todo.md"), core_todo);
     }
 }

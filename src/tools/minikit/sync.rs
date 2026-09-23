@@ -134,12 +134,102 @@ impl MiniKitSyncEngine {
         serde_json::Value::Object(arch)
     }
 
-    /// Ensures the 5 core spec workflow files exist under the docs directory.
-    pub fn ensure_workflow_docs(docs_dir: &Path, project_name: &str, runtime: &str) {
-        fs::create_dir_all(docs_dir).ok();
+    /// Ensures that `.minicode/` local runtime and transient memory directory is present in `.gitignore`.
+    pub fn ensure_gitignore(workspace_root: &Path) {
+        let gitignore_path = workspace_root.join(".gitignore");
+        if !gitignore_path.exists() {
+            let initial = "# minicode local runtime & transient memory\n.minicode/\n";
+            let _ = fs::write(&gitignore_path, initial);
+            return;
+        }
 
-        // 1. prd.md
-        let prd_path = docs_dir.join("prd.md");
+        if let Ok(content) = fs::read_to_string(&gitignore_path) {
+            let has_minicode = content.lines().any(|l| {
+                let t = l.trim();
+                t == ".minicode"
+                    || t == ".minicode/"
+                    || t.starts_with(".minicode/")
+                    || t.contains("/.minicode")
+            });
+            if !has_minicode {
+                let mut updated = content;
+                if !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated.push_str("\n# minicode local runtime & transient memory\n.minicode/\n");
+                let _ = fs::write(&gitignore_path, updated);
+            }
+        }
+    }
+
+    /// Ensures the canonical 8 core spec workflow files exist under `docs_dir/core/`,
+    /// categorizes `skills/` and `packages/`, and seamlessly migrates any legacy flat files.
+    pub fn ensure_workflow_docs(docs_dir: &Path, project_name: &str, runtime: &str) {
+        let core_dir = docs_dir.join("core");
+        let skills_dir = docs_dir.join("skills");
+        let packages_dir = docs_dir.join("packages");
+
+        fs::create_dir_all(&core_dir).ok();
+        fs::create_dir_all(&skills_dir).ok();
+        fs::create_dir_all(&packages_dir).ok();
+
+        // --- Automated Migration of Legacy Flat Docs without Data Loss ---
+        if let Ok(entries) = fs::read_dir(docs_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    // Leave top-level catalog files at the root
+                    if file_name.eq_ignore_ascii_case("index.md")
+                        || file_name.eq_ignore_ascii_case("log.md")
+                    {
+                        continue;
+                    }
+
+                    if super::CORE_DOC_FILES
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(&file_name))
+                    {
+                        let target = core_dir.join(&file_name);
+                        if !target.exists() {
+                            let _ = fs::rename(&path, &target);
+                        }
+                    } else if file_name.ends_with(".md") {
+                        // Migrate skill/domain markdown files into skills/
+                        let target = skills_dir.join(&file_name);
+                        if !target.exists() {
+                            let _ = fs::rename(&path, &target);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. coreidea.md (Core Project Philosophy & High-Level Vision)
+        let coreidea_path = core_dir.join("coreidea.md");
+        if !coreidea_path.exists() {
+            let coreidea = format!(
+                "# Core Philosophy & High-Level Vision 💡\n\n\
+                ## Core Purpose\n\
+                *Project: `{}` — built with `{}`.*\n\n\
+                ## Value Proposition & Tenets\n\
+                - Deterministic, fast, and resilient developer experience.\n\
+                - Rigorous modular architecture with strict separation of concerns.\n\
+                - Zero unverified assumptions: evidence before assertions.\n\n\
+                ## Non-Goals\n\
+                - Over-engineered complexity or rigid inflexible abstractions.\n",
+                project_name, runtime
+            );
+            fs::write(coreidea_path, coreidea).ok();
+        }
+
+        // 2. prd.md (Product Requirements Document)
+        let prd_path = core_dir.join("prd.md");
         if !prd_path.exists() {
             let prd = format!(
                 "# Product Requirements Document (PRD) 🚀\n\n\
@@ -156,8 +246,41 @@ impl MiniKitSyncEngine {
             fs::write(prd_path, prd).ok();
         }
 
-        // 2. design.md
-        let design_path = docs_dir.join("design.md");
+        // 3. architecture.md (Architecture & AST CodeGraph)
+        let arch_path = core_dir.join("architecture.md");
+        if !arch_path.exists() {
+            let arch = format!(
+                "# Clean Architecture & AST CodeGraph Overview: `{}` 🏛️\n\n\
+                > *Automatically synthesized and maintained by `minicode` AST & CodeGraph Engine.*\n\n\
+                ## Architectural Principles\n\
+                - Modular layers with clear unidirectional dependency boundaries.\n\
+                - AST symbol indexing and PageRank centrality graph.\n\
+                - Pure-Rust runtime portability.\n\n\
+                ## System Structure\n\
+                - `src/`: Core application logic and modules.\n",
+                project_name
+            );
+            fs::write(arch_path, arch).ok();
+        }
+
+        // 4. spec.md (Technical Specifications & Invariant Rules)
+        let spec_path = core_dir.join("spec.md");
+        if !spec_path.exists() {
+            let spec = format!(
+                "# Technical Specifications & Invariant Rules 📐\n\n\
+                ## Core Engineering Invariants\n\
+                1. **Zero Crash Invariant**: Zero unhandled panics or `.unwrap()` in production paths.\n\
+                2. **Verification Barrier**: Compile checks and tests must pass before completing work.\n\
+                3. **Portability Invariant**: Pure-system dependencies without native build friction.\n\n\
+                ## Technical Interface Contracts\n\
+                - Protocol schemas, CLI arguments, and error representations for `{}`.\n",
+                project_name
+            );
+            fs::write(spec_path, spec).ok();
+        }
+
+        // 5. design.md (Architecture & Design Specification)
+        let design_path = core_dir.join("design.md");
         if !design_path.exists() {
             let design = format!(
                 "# Architecture & Design Specification 🎨\n\n\
@@ -171,8 +294,8 @@ impl MiniKitSyncEngine {
             fs::write(design_path, design).ok();
         }
 
-        // 3. implementation.md
-        let impl_path = docs_dir.join("implementation.md");
+        // 6. implementation.md (Technical Implementation Plan)
+        let impl_path = core_dir.join("implementation.md");
         if !impl_path.exists() {
             let imp = format!(
                 "# Technical Implementation Plan 🛠️\n\n\
@@ -187,20 +310,8 @@ impl MiniKitSyncEngine {
             fs::write(impl_path, imp).ok();
         }
 
-        // 4. todo.md
-        let todo_path = docs_dir.join("todo.md");
-        if !todo_path.exists() {
-            let todo = "# Task Tracker (todo.md) 📋\n\n\
-                ## Active Milestone\n\
-                - [x] Initial project setup and architecture sync\n\
-                - [ ] Implement core features\n\
-                - [ ] Add integration and unit tests\n\
-                - [ ] Verification and documentation\n";
-            fs::write(todo_path, todo).ok();
-        }
-
-        // 5. content.md
-        let content_path = docs_dir.join("content.md");
+        // 7. content.md (Content & Interface Catalog)
+        let content_path = core_dir.join("content.md");
         if !content_path.exists() {
             let content = format!(
                 "# Content & Interface Catalog 📝\n\n\
@@ -209,6 +320,18 @@ impl MiniKitSyncEngine {
                 project_name
             );
             fs::write(content_path, content).ok();
+        }
+
+        // 8. todo.md (Task Tracker & Macro Roadmap)
+        let todo_path = core_dir.join("todo.md");
+        if !todo_path.exists() {
+            let todo = "# Task Tracker (todo.md) 📋\n\n\
+                ## Active Milestone\n\
+                - [x] Initial project setup and architecture sync\n\
+                - [ ] Implement core features\n\
+                - [ ] Add integration and unit tests\n\
+                - [ ] Verification and documentation\n";
+            fs::write(todo_path, todo).ok();
         }
     }
 
@@ -259,7 +382,10 @@ impl MiniKitSyncEngine {
             fs::write(&onpkg_json_path, &manifest_json).ok();
         }
 
-        // 2. Refresh AGENTS.md if missing
+        // 2. Ensure .gitignore protects .minicode/ local runtime & transient memory
+        Self::ensure_gitignore(workspace_root);
+
+        // 3. Refresh AGENTS.md if missing
         let docs_dir = super::resolve_docs_dir(workspace_root);
         let docs_dir_name = docs_dir
             .file_name()
@@ -275,20 +401,54 @@ impl MiniKitSyncEngine {
                 - **Name:** `{}`\n\
                 - **Runtime:** `{}`\n\
                 - **Package Manager:** `{}`\n\n\
-                ## Documentation & Guidelines\n\
-                - Follow active rules under `{}/`.\n",
-                project_name, project_name, runtime, package_manager, docs_dir_name
+                ## Active Documentation & Specifications\n\
+                - [Core Philosophy & Vision](file://./{}/core/coreidea.md)\n\
+                - [Product Requirements Document (PRD)](file://./{}/core/prd.md)\n\
+                - [Architecture & AST CodeGraph](file://./{}/core/architecture.md)\n\
+                - [Technical Invariants & Spec](file://./{}/core/spec.md)\n\
+                - [Design Specification](file://./{}/core/design.md)\n\
+                - [Technical Implementation Plan](file://./{}/core/implementation.md)\n\
+                - [Task Tracker (todo.md)](file://./{}/core/todo.md)\n\
+                - [Content Reference](file://./{}/core/content.md)\n",
+                project_name,
+                project_name,
+                runtime,
+                package_manager,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name,
+                docs_dir_name
             );
             fs::write(&agents_md_path, agents_md).ok();
         }
 
-        // 3. Ensure docs directory exists and synchronize the 5 workflow documents
+        // 4. Ensure docs directory exists and synchronize the 8 core workflow documents
         Self::ensure_workflow_docs(&docs_dir, project_name, runtime);
 
         // Also ensure onpkg_docs exists for backward compatibility if configured
         let onpkg_docs = workspace_root.join(crate::constants::ONPKG_DOCS_DIR);
         if onpkg_docs.exists() {
             Self::ensure_workflow_docs(&onpkg_docs, project_name, runtime);
+        }
+
+        // 5. Wire AST CodeGraph & synthesize clean architecture documentation into core/architecture.md
+        let arch_options = crate::context::governance::doc_synthesizer::ArchitectureDocOptions {
+            include_mermaid: true,
+            include_symbol_catalog: true,
+            write_to_file: false,
+        };
+        if let Ok(arch_report) =
+            crate::context::governance::doc_synthesizer::ArchitectureDocSynthesizer::synthesize(
+                workspace_root,
+                arch_options,
+            )
+        {
+            let arch_file = docs_dir.join("core").join("architecture.md");
+            fs::write(&arch_file, arch_report.markdown_content).ok();
         }
 
         crate::context::okf::OkfManager::generate_index_md(&docs_dir).ok();
@@ -308,14 +468,90 @@ impl MiniKitSyncEngine {
             • Manifest: {} (Runtime: `{}`, Package Manager: `{}`)\n\
             • Architecture: {:?}\n\
             • Instructions: AGENTS.md\n\
-            • Workflow Docs: {}/ (prd.md, design.md, implementation.md, todo.md, content.md)\n\
+            • Core Specs: {}/core/ (coreidea.md, prd.md, architecture.md, spec.md, design.md, implementation.md, content.md, todo.md)\n\
+            • Domain Skills: {}/skills/ | Package Docs: {}/packages/\n\
+            • Memory Isolation: .minicode/ (.gitignore verified)\n\
             • OKF Catalog: index.md & log.md updated",
             project_name,
             manifest_filename,
             runtime,
             package_manager,
             manifest["architecture"],
+            docs_dir_name,
+            docs_dir_name,
             docs_dir_name
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_ensure_gitignore() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        // Case 1: .gitignore doesn't exist -> created with .minicode/
+        MiniKitSyncEngine::ensure_gitignore(ws);
+        let content = fs::read_to_string(ws.join(".gitignore")).unwrap();
+        assert!(content.contains(".minicode/"));
+
+        // Case 2: existing .gitignore without .minicode/ -> appended
+        fs::write(ws.join(".gitignore"), "target/\n.env\n").unwrap();
+        MiniKitSyncEngine::ensure_gitignore(ws);
+        let content2 = fs::read_to_string(ws.join(".gitignore")).unwrap();
+        assert!(content2.starts_with("target/\n.env\n"));
+        assert!(content2.contains(".minicode/"));
+
+        // Case 3: already contains .minicode/ -> unchanged
+        MiniKitSyncEngine::ensure_gitignore(ws);
+        let content3 = fs::read_to_string(ws.join(".gitignore")).unwrap();
+        assert_eq!(content2, content3);
+    }
+
+    #[test]
+    fn test_ensure_workflow_docs_scaffolding_and_migration() {
+        let dir = tempdir().unwrap();
+        let docs = dir.path().join("minikit_docs");
+        fs::create_dir_all(&docs).unwrap();
+
+        // Simulate legacy flat docs directory
+        fs::write(docs.join("prd.md"), "# Custom PRD").unwrap();
+        fs::write(docs.join("todo.md"), "# Custom Todo").unwrap();
+        fs::write(docs.join("rust.md"), "# Rust Skill").unwrap();
+        fs::write(docs.join("index.md"), "# Catalog Index").unwrap();
+
+        MiniKitSyncEngine::ensure_workflow_docs(&docs, "my_app", "rust");
+
+        // Verify categories exist
+        assert!(docs.join("core").is_dir());
+        assert!(docs.join("skills").is_dir());
+        assert!(docs.join("packages").is_dir());
+
+        // Verify index.md was preserved at root
+        assert!(docs.join("index.md").is_file());
+
+        // Verify legacy flat core files were migrated to core/ without data loss
+        let migrated_prd = fs::read_to_string(docs.join("core").join("prd.md")).unwrap();
+        assert_eq!(migrated_prd, "# Custom PRD");
+
+        let migrated_todo = fs::read_to_string(docs.join("core").join("todo.md")).unwrap();
+        assert_eq!(migrated_todo, "# Custom Todo");
+
+        // Verify non-core .md was migrated to skills/
+        let migrated_skill = fs::read_to_string(docs.join("skills").join("rust.md")).unwrap();
+        assert_eq!(migrated_skill, "# Rust Skill");
+
+        // Verify all 8 canonical core files exist
+        for core_file in crate::tools::minikit::CORE_DOC_FILES {
+            assert!(
+                docs.join("core").join(core_file).exists(),
+                "Missing core file {}",
+                core_file
+            );
+        }
     }
 }

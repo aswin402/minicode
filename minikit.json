@@ -18,7 +18,10 @@
     "docs_directory": "minikit_docs/"
   },
   "architecture": {
-    "entrypoint": "src/main.rs"
+    "components": "src/ui",
+    "entrypoint": "src/main.rs",
+    "routing": "src/app",
+    "tests": "tests"
   },
   "name": "minicode",
   "package_manager": "cargo",
