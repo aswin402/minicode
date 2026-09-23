@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod app;
+pub mod blocks;
 pub mod config;
 pub mod constants;
 pub mod context;

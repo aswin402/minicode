@@ -77,7 +77,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.10", features = ["v4"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
 
 # Linux-only kernel sandbox; excluded on other targets where it cannot build
 [target.'cfg(target_os = "linux")'.dependencies]
