@@ -155,8 +155,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/power",
         title: "MiniPower Methodology",
-        description:
-            "Native autonomous engineering methodology, brainstorming, review & verification",
+        description: "Native autonomous engineering methodology, worktrees, review & verification",
         category: CommandCategory::Intelligence,
         shortcut: Some("Ctrl+P"),
     },

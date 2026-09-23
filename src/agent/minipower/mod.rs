@@ -284,7 +284,7 @@ impl MiniPowerEngine {
         }
 
         out.push_str(
-            "\n💡 Commands: `/power brainstorm <topic>`, `/power plan <topic>`, `/power review`, `/power verify`\n",
+            "\n💡 Commands: Ctrl+P (Modal), `/power task <prompt>`, `/power brainstorm <topic>`, `/power plan <topic>`, `/power review`, `/power verify`\n",
         );
 
         out
