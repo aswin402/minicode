@@ -1,47 +1,44 @@
-# Task 1 Execution Report: Universal API Key Masking & Dual-Layer Workspace Registry (`workspaces.toml`)
+# Task 1 Execution Report: MiniBlocks Domain Models, Categories, & Palette Validation
 
 ## Status: DONE
 
-- **Commit Hash:** `06c4a1b6e0b24e06423578a15e7d83fcb30ea431`
-- **Target Components:**
-  - `src/constants.rs`
-  - `src/config.rs`
-- **Phase:** Autonomous Configuration & Workspace Memory (Task 1)
+- **Commit Hash:** `4656ae7865dca8f2f6b383cc1af77ca68317233c`
+- **Target Files:**
+  - `src/blocks/models.rs`
+  - `src/blocks/mod.rs`
+  - `src/lib.rs`
+  - `Cargo.toml` / `Cargo.lock`
+- **Phase:** MiniBlocks Native UI Component & Design Warehouse (Task 1)
 
 ---
 
 ## 1. Summary of Changes
 
-1. **Universal API Key Masking (`src/config.rs`):**
-   - Implemented `pub fn mask_api_key(key: &str) -> String`:
-     - Empty / whitespace-only string -> `""`
-     - Keys with `<= 8` characters -> 8 bullet characters (`"••••••••"`)
-     - Keys with `> 8` characters -> First 4 characters + `"..."` + Last 4 characters (e.g. `"sk-a...cdef"` / `"AIza...0XYZ"`)
-     - UTF-8 safe iteration via `.chars()` avoiding slicing panics across multi-byte characters.
+1. **`BlockCategory` (`src/blocks/models.rs`):**
+   - Implemented enum with 28 variants: `Navbar`, `Hero`, `Footer`, `Sidebar`, `Card`, `Form`, `Modal`, `Table`, `Pricing`, `Testimonial`, `Cta`, `Feature`, `Faq`, `Contact`, `Auth`, `Dashboard`, `Settings`, `Profile`, `Landing`, `Blog`, `Ecommerce`, `Error`, `Loading`, `Notification`, `Button`, `Input`, `Section`, `Other`.
+   - Derived `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "lowercase")]`.
+   - Implemented `from_str_loose(s: &str) -> Self` providing case-insensitive, hyphen/underscore normalization, and keyword/alias detection (e.g. `hero-section` -> `Hero`, `pricing_table` -> `Pricing`, `e-commerce` -> `Ecommerce`, `CTA` -> `Cta`).
+   - Implemented `Display` and `FromStr`.
 
-2. **Registry Constant (`src/constants.rs`):**
-   - Defined `pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";` in `src/constants.rs`.
+2. **`BlockFramework` (`src/blocks/models.rs`):**
+   - Implemented enum with 6 variants: `Tailwind`, `Css`, `Scss`, `Shadcn`, `React`, `Svelte`.
+   - Derived `Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize` with `#[serde(rename_all = "lowercase")]`.
+   - Implemented `from_str_loose(s: &str) -> Self` normalizing `tailwindcss` -> `Tailwind`, `vanillacss` -> `Css`, `sass`/`scss` -> `Scss`, `shadcnui` -> `Shadcn`, `jsx`/`tsx` -> `React`, `sveltekit` -> `Svelte`.
+   - Implemented `Display` and `FromStr`.
 
-3. **Workspace Memory Types (`src/config.rs`):**
-   - Implemented `WorkspacePreference` (`provider: String`, `model: String`, `last_used: String`).
-   - Implemented `WorkspaceRegistry` (`workspaces: HashMap<String, WorkspacePreference>`).
+3. **Domain Models (`src/blocks/models.rs`):**
+   - `BlockComponent`: Represents an individual component with `id`, `name`, `description`, `category`, `framework`, `code`, `dependencies`, `tags`, `version`, `created_at`, `updated_at`. Implemented `BlockComponent::new(...)`.
+   - `BlockPalette`: Represents a 4-color design token palette (`[String; 4]`). Implemented `BlockPalette::new(...)` which strictly validates that all 4 entries are valid hex color tokens (`#RGB` or `#RRGGBB`). Returns `Err(BlockError::InvalidHexColor)` if invalid.
+   - `BlockGradient`: Represents a CSS gradient preset with `id`, `name`, `css`, `colors`, and `tags`. Implemented `BlockGradient::new(...)`.
+   - `BlockTemplate`: Represents a complete assembled multi-section layout with `id`, `name`, `description`, `component_ids`, `base_layout`, and `default_variables`. Implemented `BlockTemplate::new(...)`.
+   - `BlockStats`: Represents warehouse metrics with total counts and category/framework frequency maps (`HashMap<BlockCategory, usize>`, `HashMap<BlockFramework, usize>`).
 
-4. **Persistence Helpers & Config Integration (`src/config.rs`):**
-   - `pub fn load_workspace_preference_from_file(workspace_root: &Path, registry_path: &Path) -> Option<WorkspacePreference>`:
-     Reads TOML registry file and matches by workspace root string or canonicalized path.
-   - `pub fn save_workspace_preference_to_file(workspace_root: &Path, provider: &str, model: &str, registry_path: &Path) -> anyhow::Result<()>`:
-     Upserts the workspace preference with timestamp, creates parent directories if needed, and writes formatted TOML.
-   - `Config::get_workspace_registry_path() -> Option<PathBuf>`:
-     Resolves global registry path (`~/.config/minicode/workspaces.toml`).
-   - `Config::load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference>`:
-     Canonicalizes path and loads from global registry.
-   - `Config::save_workspace_preference(workspace_root: &Path, provider: &str, model: &str) -> anyhow::Result<()>`:
-     Canonicalizes path and upserts to global registry.
-
-5. **Error Handling & Quality:**
+4. **Error Handling & Module Exposure (`src/blocks/mod.rs` & `src/lib.rs`):**
+   - Implemented `BlockError` using `thiserror::Error` with variants: `ComponentNotFound`, `PaletteNotFound`, `GradientNotFound`, `TemplateNotFound`, `InvalidHexColor`, `Storage`, `Io`, and `Json`.
+   - Re-exported all models and errors via `src/blocks/mod.rs`.
+   - Exposed `pub mod blocks;` in `src/lib.rs`.
+   - Enabled `"serde"` feature on `uuid` crate dependency in `Cargo.toml`.
    - Zero `.unwrap()` or `.expect()` calls in non-test code.
-   - Clippy-clean (`cargo clippy -j 1 --bin minicode -- -D warnings` passed with 0 warnings).
-   - Formatted via `cargo fmt`.
 
 ---
 
@@ -49,38 +46,29 @@
 
 ### Targeted Test Suite:
 ```bash
-cargo test -j 1 --lib config::tests::test_mask_api_key_variations
+cargo test -j 1 --lib blocks::models::tests
 ```
 ```text
-   Compiling minicode v0.3.38 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 21.63s
-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
+   Compiling minicode v0.3.39 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.23s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
 
-running 1 test
-test config::tests::test_mask_api_key_variations ... ok
+running 4 tests
+test blocks::models::tests::test_palette_hex_validation ... ok
+test blocks::models::tests::test_framework_serialization_and_parsing ... ok
+test blocks::models::tests::test_category_serialization_and_parsing ... ok
+test blocks::models::tests::test_component_instantiation ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 534 filtered out; finished in 0.00s
-```
-
-```bash
-cargo test -j 1 --lib config::tests::test_workspace_preference_roundtrip
-```
-```text
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
-
-running 1 test
-test config::tests::test_workspace_preference_roundtrip ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 534 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 604 filtered out; finished in 0.00s
 ```
 
 ### Quality Gates:
-- `cargo fmt`: Clean formatting applied.
-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings (`Finished dev profile in 41.94s`).
+- `cargo fmt`: Formatted cleanly with zero diffs.
+- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings.
+- `cargo clippy -j 1 --lib -- -D warnings`: Passed cleanly with zero warnings.
 
 ---
 
 ## 3. Concerns & Follow-ups
-- **Concerns:** None. All functions and types meet specifications and pass targeted tests.
-- **Ready for Next Task:** Dynamic 6-tier Provider & Model Resolution Hierarchy.
+- **Concerns:** None. All domain models, validation logic, and error types strictly adhere to the specification.
+- **Ready for Next Task:** Task 2 (BlockStore Inverted Indexing, Persistence, and Fuzzy Search).

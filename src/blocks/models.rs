@@ -321,7 +321,13 @@ impl BlockPalette {
         colors: [String; 4],
         tags: Vec<String>,
     ) -> Result<Self, BlockError> {
-        for color in &colors {
+        let normalized_colors = [
+            colors[0].trim().to_uppercase(),
+            colors[1].trim().to_uppercase(),
+            colors[2].trim().to_uppercase(),
+            colors[3].trim().to_uppercase(),
+        ];
+        for color in &normalized_colors {
             if !is_valid_hex_color(color) {
                 return Err(BlockError::InvalidHexColor(color.clone()));
             }
@@ -329,7 +335,7 @@ impl BlockPalette {
         Ok(Self {
             id: Uuid::new_v4(),
             name: name.into(),
-            colors,
+            colors: normalized_colors,
             tags,
         })
     }

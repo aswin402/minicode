@@ -1,260 +1,706 @@
-06c4a1b feat(config): implement universal API key masking and dual-layer workspace registry
---- STATS ---
- src/config.rs    | 176 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
- src/constants.rs |   2 +
- 2 files changed, 177 insertions(+), 1 deletion(-)
---- DIFF ---
-diff --git a/src/config.rs b/src/config.rs
-index 0e57f4d..7f91454 100644
---- a/src/config.rs
-+++ b/src/config.rs
-@@ -1,14 +1,14 @@
- use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
- use crate::error::{ConfigError, Result};
- use serde::{Deserialize, Serialize};
--use std::path::Path;
-+use std::path::{Path, PathBuf};
- #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
- pub struct Config {
-     #[serde(default)]
-     pub provider: ProviderConfig,
+4656ae7 feat(blocks): implement MiniBlocks domain models, categories, and palette validation
+---
+ Cargo.lock           |   1 +
+ Cargo.toml           |   2 +-
+ src/blocks/mod.rs    |  23 ++
+ src/blocks/models.rs | 591 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/lib.rs           |   1 +
+ 5 files changed, 617 insertions(+), 1 deletion(-)
+---
+diff --git a/Cargo.lock b/Cargo.lock
+index 7f0d2e6..49e7d62 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3092,20 +3092,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
  
-     #[serde(default)]
-     pub agent: AgentConfig,
+ [[package]]
+ name = "uuid"
+ version = "1.24.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
+ dependencies = [
+  "getrandom 0.4.3",
+  "js-sys",
++ "serde_core",
+  "wasm-bindgen",
+ ]
  
-     #[serde(default)]
-     pub ui: UiConfig,
-@@ -1127,20 +1127,160 @@ impl Config {
-         } else {
-             env_var.to_string()
-         };
+ [[package]]
+ name = "valuable"
+ version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
  
-         Err(ConfigError::MissingApiKey {
-             provider: provider_name.to_string(),
-             env_var: env_var_string,
-         }
-         .into())
-     }
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index 3e5e64d..5c0f325 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -70,21 +70,21 @@ libc = "0.2"
+ unicode-width = "0.2"
+ 
+ # Utilities & Error Handling
+ anyhow = "1.0"
+ thiserror = "1.0"
+ indexmap = { version = "2.6", features = ["serde"] }
+ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+ tracing-appender = "0.2"
+ chrono = { version = "0.4", features = ["serde"] }
+-uuid = { version = "1.10", features = ["v4"] }
++uuid = { version = "1.10", features = ["v4", "serde"] }
+ 
+ # Linux-only kernel sandbox; excluded on other targets where it cannot build
+ [target.'cfg(target_os = "linux")'.dependencies]
+ landlock = "0.4"
+ 
+ 
+ [features]
+ default = []
+ 
+ [dev-dependencies]
+diff --git a/src/blocks/mod.rs b/src/blocks/mod.rs
+new file mode 100644
+index 0000000..1a7cbe3
+--- /dev/null
++++ b/src/blocks/mod.rs
+@@ -0,0 +1,23 @@
++pub mod models;
 +
-+    /// Returns the path to the global workspaces registry file (~/.config/minicode/workspaces.toml)
-+    #[allow(dead_code)]
-+    pub fn get_workspace_registry_path() -> Option<PathBuf> {
-+        dirs::config_dir().map(|d| {
-+            d.join(crate::constants::CONFIG_DIR_NAME)
-+                .join(crate::constants::WORKSPACES_FILE_NAME)
++pub use models::*;
++
++#[derive(Debug, thiserror::Error)]
++pub enum BlockError {
++    #[error("Component not found: {0}")]
++    ComponentNotFound(String),
++    #[error("Palette not found: {0}")]
++    PaletteNotFound(String),
++    #[error("Gradient not found: {0}")]
++    GradientNotFound(String),
++    #[error("Template not found: {0}")]
++    TemplateNotFound(String),
++    #[error("Invalid hex color code: '{0}' (expected #RGB or #RRGGBB)")]
++    InvalidHexColor(String),
++    #[error("Storage error: {0}")]
++    Storage(String),
++    #[error("IO error: {0}")]
++    Io(#[from] std::io::Error),
++    #[error("JSON error: {0}")]
++    Json(#[from] serde_json::Error),
++}
+diff --git a/src/blocks/models.rs b/src/blocks/models.rs
+new file mode 100644
+index 0000000..eb686fa
+--- /dev/null
++++ b/src/blocks/models.rs
+@@ -0,0 +1,591 @@
++use chrono::{DateTime, Utc};
++use serde::{Deserialize, Serialize};
++use std::collections::HashMap;
++use uuid::Uuid;
++
++pub use super::BlockError;
++
++/// Validates whether a given string is a valid hex color code (#RGB or #RRGGBB).
++pub fn is_valid_hex_color(s: &str) -> bool {
++    let bytes = s.trim().as_bytes();
++    (bytes.len() == 4 || bytes.len() == 7)
++        && bytes.first() == Some(&b'#')
++        && bytes[1..].iter().all(|b| b.is_ascii_hexdigit())
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum BlockCategory {
++    Navbar,
++    Hero,
++    Footer,
++    Sidebar,
++    Card,
++    Form,
++    Modal,
++    Table,
++    Pricing,
++    Testimonial,
++    Cta,
++    Feature,
++    Faq,
++    Contact,
++    Auth,
++    Dashboard,
++    Settings,
++    Profile,
++    Landing,
++    Blog,
++    Ecommerce,
++    Error,
++    Loading,
++    Notification,
++    Button,
++    Input,
++    Section,
++    Other,
++}
++
++impl BlockCategory {
++    /// Flexible loose string parser supporting case-insensitivity, hyphens, underscores, and common aliases.
++    pub fn from_str_loose(s: &str) -> Self {
++        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
++        match clean.as_str() {
++            "navbar" | "nav" | "navigation" | "header" => Self::Navbar,
++            "hero" | "herosection" => Self::Hero,
++            "footer" | "footersection" | "footers" => Self::Footer,
++            "sidebar" | "sidebars" | "aside" => Self::Sidebar,
++            "card" | "cards" => Self::Card,
++            "form" | "forms" => Self::Form,
++            "modal" | "modals" | "dialog" | "dialogs" | "popup" => Self::Modal,
++            "table" | "tables" | "datatable" => Self::Table,
++            "pricing" | "pricingtable" | "pricetable" | "prices" | "price" => Self::Pricing,
++            "testimonial" | "testimonials" | "review" | "reviews" => Self::Testimonial,
++            "cta" | "calltoaction" => Self::Cta,
++            "feature" | "features" => Self::Feature,
++            "faq" | "faqs" => Self::Faq,
++            "contact" | "contactus" => Self::Contact,
++            "auth" | "authentication" | "login" | "signin" | "signup" | "register" => Self::Auth,
++            "dashboard" | "dashboards" => Self::Dashboard,
++            "settings" | "setting" => Self::Settings,
++            "profile" | "profiles" | "userprofile" => Self::Profile,
++            "landing" | "landingpage" => Self::Landing,
++            "blog" | "blogs" | "post" | "posts" | "article" => Self::Blog,
++            "ecommerce" | "ecom" | "shop" | "store" | "cart" | "checkout" => Self::Ecommerce,
++            "error" | "404" | "500" => Self::Error,
++            "loading" | "spinner" | "skeleton" => Self::Loading,
++            "notification" | "notifications" | "alert" | "alerts" | "toast" | "toasts" => {
++                Self::Notification
++            }
++            "button" | "buttons" | "btn" => Self::Button,
++            "input" | "inputs" | "field" | "formcontrol" | "textfield" => Self::Input,
++            "section" | "sections" => Self::Section,
++            "other" | "misc" | "general" => Self::Other,
++            other => {
++                if other.contains("pricing") {
++                    Self::Pricing
++                } else if other.contains("hero") {
++                    Self::Hero
++                } else if other.contains("nav") {
++                    Self::Navbar
++                } else if other.contains("footer") {
++                    Self::Footer
++                } else if other.contains("sidebar") {
++                    Self::Sidebar
++                } else if other.contains("modal") || other.contains("dialog") {
++                    Self::Modal
++                } else if other.contains("testimonial") || other.contains("review") {
++                    Self::Testimonial
++                } else if other.contains("landing") {
++                    Self::Landing
++                } else if other.contains("table") {
++                    Self::Table
++                } else if other.contains("form") {
++                    Self::Form
++                } else if other.contains("card") {
++                    Self::Card
++                } else if other.contains("cta") {
++                    Self::Cta
++                } else if other.contains("feature") {
++                    Self::Feature
++                } else if other.contains("faq") {
++                    Self::Faq
++                } else if other.contains("contact") {
++                    Self::Contact
++                } else if other.contains("auth")
++                    || other.contains("login")
++                    || other.contains("signup")
++                {
++                    Self::Auth
++                } else if other.contains("dash") {
++                    Self::Dashboard
++                } else if other.contains("setting") {
++                    Self::Settings
++                } else if other.contains("profile") {
++                    Self::Profile
++                } else if other.contains("blog") {
++                    Self::Blog
++                } else if other.contains("ecom")
++                    || other.contains("shop")
++                    || other.contains("store")
++                {
++                    Self::Ecommerce
++                } else if other.contains("error") {
++                    Self::Error
++                } else if other.contains("loading")
++                    || other.contains("spinner")
++                    || other.contains("skeleton")
++                {
++                    Self::Loading
++                } else if other.contains("notif")
++                    || other.contains("toast")
++                    || other.contains("alert")
++                {
++                    Self::Notification
++                } else if other.contains("button") || other == "btn" {
++                    Self::Button
++                } else if other.contains("input") {
++                    Self::Input
++                } else if other.contains("section") {
++                    Self::Section
++                } else {
++                    Self::Other
++                }
++            }
++        }
++    }
++}
++
++impl std::fmt::Display for BlockCategory {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let s = match self {
++            Self::Navbar => "navbar",
++            Self::Hero => "hero",
++            Self::Footer => "footer",
++            Self::Sidebar => "sidebar",
++            Self::Card => "card",
++            Self::Form => "form",
++            Self::Modal => "modal",
++            Self::Table => "table",
++            Self::Pricing => "pricing",
++            Self::Testimonial => "testimonial",
++            Self::Cta => "cta",
++            Self::Feature => "feature",
++            Self::Faq => "faq",
++            Self::Contact => "contact",
++            Self::Auth => "auth",
++            Self::Dashboard => "dashboard",
++            Self::Settings => "settings",
++            Self::Profile => "profile",
++            Self::Landing => "landing",
++            Self::Blog => "blog",
++            Self::Ecommerce => "ecommerce",
++            Self::Error => "error",
++            Self::Loading => "loading",
++            Self::Notification => "notification",
++            Self::Button => "button",
++            Self::Input => "input",
++            Self::Section => "section",
++            Self::Other => "other",
++        };
++        write!(f, "{s}")
++    }
++}
++
++impl std::str::FromStr for BlockCategory {
++    type Err = std::convert::Infallible;
++
++    fn from_str(s: &str) -> Result<Self, Self::Err> {
++        Ok(Self::from_str_loose(s))
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
++#[serde(rename_all = "lowercase")]
++pub enum BlockFramework {
++    Tailwind,
++    Css,
++    Scss,
++    Shadcn,
++    React,
++    Svelte,
++}
++
++impl BlockFramework {
++    /// Flexible loose string parser supporting common names, extensions, and aliases.
++    pub fn from_str_loose(s: &str) -> Self {
++        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
++        match clean.as_str() {
++            "react" | "jsx" | "tsx" | "next" | "nextjs" => Self::React,
++            "tailwind" | "tailwindcss" | "tw" => Self::Tailwind,
++            "css" | "vanillacss" | "vanilla" | "html" => Self::Css,
++            "scss" | "sass" => Self::Scss,
++            "shadcn" | "shadcnui" | "shadcn-ui" => Self::Shadcn,
++            "svelte" | "sveltekit" => Self::Svelte,
++            _ => {
++                if clean.contains("react") || clean.contains("jsx") || clean.contains("tsx") {
++                    Self::React
++                } else if clean.contains("tailwind") {
++                    Self::Tailwind
++                } else if clean.contains("shadcn") {
++                    Self::Shadcn
++                } else if clean.contains("svelte") {
++                    Self::Svelte
++                } else if clean.contains("scss") || clean.contains("sass") {
++                    Self::Scss
++                } else if clean.contains("css") {
++                    Self::Css
++                } else {
++                    Self::Tailwind
++                }
++            }
++        }
++    }
++}
++
++impl std::fmt::Display for BlockFramework {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let s = match self {
++            Self::Tailwind => "tailwind",
++            Self::Css => "css",
++            Self::Scss => "scss",
++            Self::Shadcn => "shadcn",
++            Self::React => "react",
++            Self::Svelte => "svelte",
++        };
++        write!(f, "{s}")
++    }
++}
++
++impl std::str::FromStr for BlockFramework {
++    type Err = std::convert::Infallible;
++
++    fn from_str(s: &str) -> Result<Self, Self::Err> {
++        Ok(Self::from_str_loose(s))
++    }
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct BlockComponent {
++    pub id: Uuid,
++    pub name: String,
++    pub description: String,
++    pub category: BlockCategory,
++    pub framework: BlockFramework,
++    pub code: String,
++    pub dependencies: Vec<String>,
++    pub tags: Vec<String>,
++    pub version: u32,
++    pub created_at: DateTime<Utc>,
++    pub updated_at: DateTime<Utc>,
++}
++
++impl BlockComponent {
++    pub fn new(
++        name: impl Into<String>,
++        description: impl Into<String>,
++        category: BlockCategory,
++        framework: BlockFramework,
++        code: impl Into<String>,
++        dependencies: Vec<String>,
++        tags: Vec<String>,
++    ) -> Self {
++        let now = Utc::now();
++        Self {
++            id: Uuid::new_v4(),
++            name: name.into(),
++            description: description.into(),
++            category,
++            framework,
++            code: code.into(),
++            dependencies,
++            tags,
++            version: 1,
++            created_at: now,
++            updated_at: now,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct BlockPalette {
++    pub id: Uuid,
++    pub name: String,
++    pub colors: [String; 4], // Exactly 4 hex tokens: [Background, Surface, Accent, Text]
++    pub tags: Vec<String>,
++}
++
++impl BlockPalette {
++    pub fn new(
++        name: impl Into<String>,
++        colors: [String; 4],
++        tags: Vec<String>,
++    ) -> Result<Self, BlockError> {
++        for color in &colors {
++            if !is_valid_hex_color(color) {
++                return Err(BlockError::InvalidHexColor(color.clone()));
++            }
++        }
++        Ok(Self {
++            id: Uuid::new_v4(),
++            name: name.into(),
++            colors,
++            tags,
 +        })
 +    }
-+
-+    /// Loads the stored preference for the given workspace root from the global registry.
-+    #[allow(dead_code)]
-+    pub fn load_workspace_preference(workspace_root: &Path) -> Option<WorkspacePreference> {
-+        let registry_path = Self::get_workspace_registry_path()?;
-+        let canonical = match workspace_root.canonicalize() {
-+            Ok(c) => c,
-+            Err(_) => workspace_root.to_path_buf(),
-+        };
-+        load_workspace_preference_from_file(&canonical, &registry_path)
-+            .or_else(|| load_workspace_preference_from_file(workspace_root, &registry_path))
-+    }
-+
-+    /// Saves the preferred provider and model for the given workspace root into the global registry.
-+    #[allow(dead_code)]
-+    pub fn save_workspace_preference(
-+        workspace_root: &Path,
-+        provider: &str,
-+        model: &str,
-+    ) -> anyhow::Result<()> {
-+        let registry_path = match Self::get_workspace_registry_path() {
-+            Some(p) => p,
-+            None => anyhow::bail!("Unable to determine config directory"),
-+        };
-+        let canonical = match workspace_root.canonicalize() {
-+            Ok(c) => c,
-+            Err(_) => workspace_root.to_path_buf(),
-+        };
-+        save_workspace_preference_to_file(&canonical, provider, model, &registry_path)
-+    }
 +}
 +
-+/// Universally masks sensitive credentials for safe display and tool returns.
-+/// Empty or whitespace-only keys return empty string.
-+/// Keys <= 8 chars return 8 bullet points "••••••••".
-+/// Keys > 8 chars return first 4 chars + "..." + last 4 chars (e.g. "sk-a...cdef").
-+#[allow(dead_code)]
-+pub fn mask_api_key(key: &str) -> String {
-+    let trimmed = key.trim();
-+    if trimmed.is_empty() {
-+        return String::new();
-+    }
-+    let char_count = trimmed.chars().count();
-+    if char_count <= 8 {
-+        return "••••••••".to_string();
-+    }
-+    let prefix: String = trimmed.chars().take(4).collect();
-+    let suffix: String = trimmed.chars().skip(char_count.saturating_sub(4)).collect();
-+    format!("{}...{}", prefix, suffix)
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct BlockGradient {
++    pub id: Uuid,
++    pub name: String,
++    pub css: String,
++    pub colors: Vec<String>,
++    pub tags: Vec<String>,
 +}
 +
-+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-+#[allow(dead_code)]
-+pub struct WorkspacePreference {
-+    pub provider: String,
-+    pub model: String,
-+    #[serde(default)]
-+    pub last_used: String,
-+}
-+
-+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-+#[allow(dead_code)]
-+pub struct WorkspaceRegistry {
-+    #[serde(default)]
-+    pub workspaces: std::collections::HashMap<String, WorkspacePreference>,
-+}
-+
-+/// Loads a workspace preference from a specific registry file path.
-+#[allow(dead_code)]
-+pub fn load_workspace_preference_from_file(
-+    workspace_root: &Path,
-+    registry_path: &Path,
-+) -> Option<WorkspacePreference> {
-+    if !registry_path.exists() {
-+        return None;
-+    }
-+    let content = match std::fs::read_to_string(registry_path) {
-+        Ok(c) => c,
-+        Err(_) => return None,
-+    };
-+    let registry: WorkspaceRegistry = match toml::from_str(&content) {
-+        Ok(r) => r,
-+        Err(_) => return None,
-+    };
-+    let key = workspace_root.to_string_lossy().to_string();
-+    if let Some(pref) = registry.workspaces.get(&key) {
-+        return Some(pref.clone());
-+    }
-+    if let Ok(canon) = workspace_root.canonicalize() {
-+        let canon_key = canon.to_string_lossy().to_string();
-+        if let Some(pref) = registry.workspaces.get(&canon_key) {
-+            return Some(pref.clone());
++impl BlockGradient {
++    pub fn new(
++        name: impl Into<String>,
++        css: impl Into<String>,
++        colors: Vec<String>,
++        tags: Vec<String>,
++    ) -> Self {
++        Self {
++            id: Uuid::new_v4(),
++            name: name.into(),
++            css: css.into(),
++            colors,
++            tags,
 +        }
 +    }
-+    None
 +}
 +
-+/// Saves or updates a workspace preference into a specific registry file path.
-+#[allow(dead_code)]
-+pub fn save_workspace_preference_to_file(
-+    workspace_root: &Path,
-+    provider: &str,
-+    model: &str,
-+    registry_path: &Path,
-+) -> anyhow::Result<()> {
-+    let mut registry = if registry_path.exists() {
-+        match std::fs::read_to_string(registry_path) {
-+            Ok(content) => toml::from_str::<WorkspaceRegistry>(&content).unwrap_or_default(),
-+            Err(_) => WorkspaceRegistry::default(),
++#[derive(Debug, Clone, Serialize, Deserialize)]
++pub struct BlockTemplate {
++    pub id: Uuid,
++    pub name: String,
++    pub description: String,
++    pub component_ids: Vec<Uuid>,
++    pub base_layout: String,
++    pub default_variables: serde_json::Value,
++}
++
++impl BlockTemplate {
++    pub fn new(
++        name: impl Into<String>,
++        description: impl Into<String>,
++        component_ids: Vec<Uuid>,
++        base_layout: impl Into<String>,
++        default_variables: serde_json::Value,
++    ) -> Self {
++        Self {
++            id: Uuid::new_v4(),
++            name: name.into(),
++            description: description.into(),
++            component_ids,
++            base_layout: base_layout.into(),
++            default_variables,
 +        }
-+    } else {
-+        WorkspaceRegistry::default()
-+    };
-+
-+    if let Some(parent) = registry_path.parent() {
-+        std::fs::create_dir_all(parent)?;
 +    }
++}
 +
-+    let key = workspace_root.to_string_lossy().to_string();
-+    registry.workspaces.insert(
-+        key,
-+        WorkspacePreference {
-+            provider: provider.to_string(),
-+            model: model.to_string(),
-+            last_used: chrono::Utc::now().to_rfc3339(),
-+        },
-+    );
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub struct BlockStats {
++    pub total_components: usize,
++    pub total_palettes: usize,
++    pub total_gradients: usize,
++    pub total_templates: usize,
++    pub category_counts: HashMap<BlockCategory, usize>,
++    pub framework_counts: HashMap<BlockFramework, usize>,
++}
 +
-+    let content = toml::to_string_pretty(&registry)?;
-+    std::fs::write(registry_path, content)?;
-+    Ok(())
- }
- 
- #[cfg(test)]
- mod tests {
-     use super::*;
- 
-     #[test]
-     fn test_default_config() {
-         let config = Config::default();
-         assert_eq!(config.provider.default, "gemini");
-@@ -1350,11 +1490,45 @@ mod tests {
-         // Default models
-         assert_eq!(
-             Config::get_default_model_for_provider("ollama"),
-             "qwen2.5-coder"
-         );
-         assert_eq!(
-             Config::get_default_model_for_provider("lmstudio"),
-             "local-model"
-         );
-     }
++#[cfg(test)]
++mod tests {
++    use super::*;
 +
 +    #[test]
-+    fn test_mask_api_key_variations() {
-+        assert_eq!(mask_api_key(""), "");
-+        assert_eq!(mask_api_key("   "), "");
-+        assert_eq!(mask_api_key("short"), "••••••••");
-+        assert_eq!(mask_api_key("12345678"), "••••••••");
-+        assert_eq!(mask_api_key("sk-ant-1234567890abcdef"), "sk-a...cdef");
-+        assert_eq!(mask_api_key("AIzaSyD-1234567890XYZ"), "AIza...0XYZ");
++    fn test_category_serialization_and_parsing() {
++        assert_eq!(
++            BlockCategory::from_str_loose("navbar"),
++            BlockCategory::Navbar
++        );
++        assert_eq!(
++            BlockCategory::from_str_loose("hero-section"),
++            BlockCategory::Hero
++        );
++        assert_eq!(
++            BlockCategory::from_str_loose("pricing_table"),
++            BlockCategory::Pricing
++        );
++        assert_eq!(
++            BlockCategory::from_str_loose("unknown_foo"),
++            BlockCategory::Other
++        );
++        assert_eq!(BlockCategory::from_str_loose("CTA"), BlockCategory::Cta);
++        assert_eq!(
++            BlockCategory::from_str_loose("e-commerce"),
++            BlockCategory::Ecommerce
++        );
++
++        // Test serde serialization
++        let cat = BlockCategory::Navbar;
++        let json = serde_json::to_string(&cat).unwrap();
++        assert_eq!(json, "\"navbar\"");
++        let deserialized: BlockCategory = serde_json::from_str(&json).unwrap();
++        assert_eq!(deserialized, BlockCategory::Navbar);
 +    }
 +
 +    #[test]
-+    fn test_workspace_preference_roundtrip() {
-+        let temp_dir = tempfile::tempdir().unwrap();
-+        let ws_path = temp_dir.path();
++    fn test_framework_serialization_and_parsing() {
++        assert_eq!(
++            BlockFramework::from_str_loose("react"),
++            BlockFramework::React
++        );
++        assert_eq!(
++            BlockFramework::from_str_loose("tailwind"),
++            BlockFramework::Tailwind
++        );
++        assert_eq!(
++            BlockFramework::from_str_loose("tailwindcss"),
++            BlockFramework::Tailwind
++        );
++        assert_eq!(BlockFramework::from_str_loose("css"), BlockFramework::Css);
++        assert_eq!(
++            BlockFramework::from_str_loose("vanillacss"),
++            BlockFramework::Css
++        );
++        assert_eq!(
++            BlockFramework::from_str_loose("shadcn"),
++            BlockFramework::Shadcn
++        );
++        assert_eq!(
++            BlockFramework::from_str_loose("shadcnui"),
++            BlockFramework::Shadcn
++        );
++        assert_eq!(BlockFramework::from_str_loose("sass"), BlockFramework::Scss);
++        assert_eq!(BlockFramework::from_str_loose("scss"), BlockFramework::Scss);
++        assert_eq!(BlockFramework::from_str_loose("tsx"), BlockFramework::React);
++        assert_eq!(
++            BlockFramework::from_str_loose("svelte"),
++            BlockFramework::Svelte
++        );
 +
-+        // Initially none
-+        let pref = load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml"));
-+        assert!(pref.is_none());
-+
-+        // Save preference
-+        save_workspace_preference_to_file(
-+            ws_path,
-+            "anthropic",
-+            "claude-3-7-sonnet-20250219",
-+            &ws_path.join("workspaces.toml"),
-+        )
-+        .unwrap();
-+
-+        let pref =
-+            load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml")).unwrap();
-+        assert_eq!(pref.provider, "anthropic");
-+        assert_eq!(pref.model, "claude-3-7-sonnet-20250219");
++        // Test serde serialization
++        let fw = BlockFramework::Tailwind;
++        let json = serde_json::to_string(&fw).unwrap();
++        assert_eq!(json, "\"tailwind\"");
++        let deserialized: BlockFramework = serde_json::from_str(&json).unwrap();
++        assert_eq!(deserialized, BlockFramework::Tailwind);
 +    }
- }
-diff --git a/src/constants.rs b/src/constants.rs
-index dd478a9..ba68ce4 100644
---- a/src/constants.rs
-+++ b/src/constants.rs
-@@ -3,20 +3,22 @@
- 
- // === Directory & File Names ===
- /// Name of global configuration directory (~/.config/minicode)
- pub const CONFIG_DIR_NAME: &str = "minicode";
- /// Application binary and package name
- pub const APP_NAME: &str = "minicode";
- /// Name of workspace-local hidden configuration directory (.minicode)
- pub const WORKSPACE_DIR_NAME: &str = ".minicode";
- /// Standard configuration file name (config.toml)
- pub const CONFIG_FILE_NAME: &str = "config.toml";
-+/// Global workspaces registry file name (workspaces.toml)
-+pub const WORKSPACES_FILE_NAME: &str = "workspaces.toml";
- /// Default environment variable file (.env)
- pub const ENV_FILE_NAME: &str = ".env";
- /// Memory storage JSON file name
- pub const MEMORY_FILE: &str = "memory.json";
- /// Progressive memory local JSON file name (.minicode/progressive_memory.json)
- pub const PROGRESSIVE_MEMORY_FILE: &str = "progressive_memory.json";
- /// Global progressive memory JSON file name (~/.config/minicode/global_memory.json)
- pub const GLOBAL_PROGRESSIVE_MEMORY_FILE: &str = "global_memory.json";
- /// Maximum progressive memory entries to retain per tier
- pub const MAX_PROGRESSIVE_TIER_ENTRIES: usize = 100;
++
++    #[test]
++    fn test_palette_hex_validation() {
++        let valid = BlockPalette::new(
++            "Nordic Frost",
++            [
++                "#2E3440".into(),
++                "#3B4252".into(),
++                "#88C0D0".into(),
++                "#ECEFF4".into(),
++            ],
++            vec!["cold".into(), "nordic".into()],
++        );
++        assert!(valid.is_ok());
++        let pal = valid.unwrap();
++        assert_eq!(pal.name, "Nordic Frost");
++        assert_eq!(pal.colors[0], "#2E3440");
++
++        // Valid 3-char hex with '#'
++        let valid_short = BlockPalette::new(
++            "Short Hex",
++            ["#fff".into(), "#000".into(), "#abc".into(), "#123".into()],
++            vec![],
++        );
++        assert!(valid_short.is_ok());
++
++        // Invalid: missing '#'
++        let invalid_no_hash = BlockPalette::new(
++            "Missing Hash",
++            [
++                "2E3440".into(),
++                "#3B4252".into(),
++                "#88C0D0".into(),
++                "#ECEFF4".into(),
++            ],
++            vec![],
++        );
++        assert!(invalid_no_hash.is_err());
++
++        // Invalid: malformed string
++        let invalid_str = BlockPalette::new(
++            "Bad Hex",
++            [
++                "#123".into(),
++                "not-a-hex".into(),
++                "#FFFFFF".into(),
++                "#000000".into(),
++            ],
++            vec![],
++        );
++        assert!(invalid_str.is_err());
++
++        // Invalid: wrong length
++        let invalid_len = BlockPalette::new(
++            "Bad Length",
++            [
++                "#12".into(),
++                "#3B4252".into(),
++                "#88C0D0".into(),
++                "#ECEFF4".into(),
++            ],
++            vec![],
++        );
++        assert!(invalid_len.is_err());
++
++        // Invalid: non-hex characters
++        let invalid_chars = BlockPalette::new(
++            "Bad Chars",
++            [
++                "#GGGGGG".into(),
++                "#3B4252".into(),
++                "#88C0D0".into(),
++                "#ECEFF4".into(),
++            ],
++            vec![],
++        );
++        assert!(invalid_chars.is_err());
++    }
++
++    #[test]
++    fn test_component_instantiation() {
++        let comp = BlockComponent::new(
++            "Responsive Navbar",
++            "A clean responsive navbar with mobile drawer",
++            BlockCategory::Navbar,
++            BlockFramework::Tailwind,
++            "<nav className=\"flex items-center justify-between p-4\">...</nav>",
++            vec!["lucide-react".into()],
++            vec!["nav".into(), "responsive".into()],
++        );
++
++        assert_eq!(comp.name, "Responsive Navbar");
++        assert_eq!(
++            comp.description,
++            "A clean responsive navbar with mobile drawer"
++        );
++        assert_eq!(comp.category, BlockCategory::Navbar);
++        assert_eq!(comp.framework, BlockFramework::Tailwind);
++        assert_eq!(comp.version, 1);
++        assert_eq!(comp.dependencies, vec!["lucide-react"]);
++        assert_eq!(comp.tags, vec!["nav", "responsive"]);
++        assert!(comp.created_at <= Utc::now());
++        assert_eq!(comp.created_at, comp.updated_at);
++
++        // Test serde serialization of component
++        let json = serde_json::to_string(&comp).unwrap();
++        let deserialized: BlockComponent = serde_json::from_str(&json).unwrap();
++        assert_eq!(deserialized.id, comp.id);
++        assert_eq!(deserialized.name, comp.name);
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 5789256..482e64f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,12 +1,13 @@
+ pub mod agent;
+ pub mod app;
++pub mod blocks;
+ pub mod config;
+ pub mod constants;
+ pub mod context;
+ pub mod error;
+ pub mod git;
+ pub mod logging;
+ pub mod lsp;
+ pub mod mcp;
+ pub mod sandbox;
+ pub mod security;
