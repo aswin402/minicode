@@ -211,6 +211,23 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "complete_task"
         | "quarantine_flaky_tests" => ToolSafetyLevel::Mutating,
 
+        // MiniPower Autonomous Methodology & Verification Inspection
+        "power_status"
+        | "minipower_status"
+        | "power_brainstorm"
+        | "minipower_brainstorm"
+        | "power_review"
+        | "minipower_review"
+        | "power_verify"
+        | "minipower_verify" => ToolSafetyLevel::ReadOnly,
+
+        // MiniPower Planning & Worktree Task Execution
+        "power_plan"
+        | "minipower_plan"
+        | "power_worktree_task"
+        | "minipower_worktree_task"
+        | "power_task" => ToolSafetyLevel::Mutating,
+
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,
     }
@@ -244,6 +261,10 @@ mod tests {
         assert_eq!(classify_tool("git_diff"), ToolSafetyLevel::ReadOnly);
         assert_eq!(classify_tool("search_web"), ToolSafetyLevel::ReadOnly);
         assert_eq!(classify_tool("code_explore"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("power_status"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("power_verify"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("power_review"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("power_brainstorm"), ToolSafetyLevel::ReadOnly);
         assert!(is_read_only("read_file"));
         assert!(!is_barrier("read_file"));
     }
@@ -257,6 +278,11 @@ mod tests {
         assert_eq!(classify_tool("git_commit"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("fanout_subagents"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("create_plan"), ToolSafetyLevel::Mutating);
+        assert_eq!(classify_tool("power_plan"), ToolSafetyLevel::Mutating);
+        assert_eq!(
+            classify_tool("power_worktree_task"),
+            ToolSafetyLevel::Mutating
+        );
         assert!(!is_read_only("write_file"));
         assert!(is_barrier("write_file"));
     }

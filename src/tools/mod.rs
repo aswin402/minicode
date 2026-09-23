@@ -53,6 +53,7 @@ impl ToolRegistry {
         schemas.extend(registry::context_tools::get_schemas());
         schemas.extend(registry::web_tools::get_schemas());
         schemas.extend(registry::minikit_tools::get_schemas());
+        schemas.extend(registry::minipower_tools::get_schemas());
         schemas.extend(registry::explore_tools::get_schemas());
         schemas
     }
@@ -250,6 +251,13 @@ impl ToolRegistry {
 
         // 9. CodeGraph Surgical Exploration & Diff Impact Tools
         if let Some(res) = registry::explore_tools::dispatch(tool_name, args, workspace_root).await
+        {
+            return res;
+        }
+
+        // 10. MiniPower Autonomous Methodology & Verification Tools
+        if let Some(res) =
+            registry::minipower_tools::dispatch(tool_name, args, workspace_root).await
         {
             return res;
         }

@@ -403,8 +403,10 @@ impl VerificationBarrier {
             };
 
             // Check for raw debug prints only in production library code (src/), not in tests/ or CLI entrypoint (src/main.rs)
-            let is_production_code =
-                file.starts_with("src/") && !file.contains("test") && file != "src/main.rs";
+            let is_production_code = file.starts_with("src/")
+                && !file.contains("test")
+                && file != "src/main.rs"
+                && file != "src/constants.rs";
 
             let mut in_test_module = false;
             for (idx, line) in content.lines().enumerate() {

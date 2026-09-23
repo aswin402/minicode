@@ -150,6 +150,24 @@ impl IntentClassifier {
             categories.insert(ToolCategory::Memory);
         }
 
+        // 8. MiniPower Autonomous Methodology & Verification Intent
+        if lower.contains("power")
+            || lower.contains("minipower")
+            || lower.contains("superpower")
+            || lower.contains("verify")
+            || lower.contains("verification")
+            || lower.contains("barrier")
+            || lower.contains("review")
+            || lower.contains("brainstorm")
+            || lower.contains("socratic")
+            || lower.contains("tdd")
+            || lower.contains("red flag")
+            || lower.contains("worktree")
+            || lower.contains("compliance")
+        {
+            categories.insert(ToolCategory::MiniPower);
+        }
+
         categories
     }
 
@@ -263,6 +281,19 @@ mod tests {
         assert!(detected.contains(&ToolCategory::MiniKit));
         let detected2 = IntentClassifier::detect("scaffold a new stack with onpkg");
         assert!(detected2.contains(&ToolCategory::MiniKit));
+    }
+
+    #[test]
+    fn test_intent_detection_minipower() {
+        let detected =
+            IntentClassifier::detect("verify these changes against the verification barrier");
+        assert!(detected.contains(&ToolCategory::MiniPower));
+        let detected2 =
+            IntentClassifier::detect("execute this task in an isolated worktree with minipower");
+        assert!(detected2.contains(&ToolCategory::MiniPower));
+        let detected3 =
+            IntentClassifier::detect("brainstorm the architecture first using socratic method");
+        assert!(detected3.contains(&ToolCategory::MiniPower));
     }
 
     #[test]

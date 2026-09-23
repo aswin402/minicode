@@ -7,5 +7,8 @@ pub mod git_tools;
 pub mod minikit_tools;
 #[allow(unused_imports)]
 pub use minikit_tools as onpkg_tools;
+pub mod minipower_tools;
+#[allow(unused_imports)]
+pub use minipower_tools as power_tools;
 pub mod search_tools;
 pub mod web_tools;

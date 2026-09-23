@@ -45,15 +45,17 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
   - **Architecture Scaffolding, Custom Templates & Self-Healing**: When bootstrapping a project or when instructed by the user, use `kit_stack_list` and `kit_stack_add`. To author custom architecture specifications, use `kit_stack_new` and `kit_stack_remove`. When investigating broken project structures, missing files, or when the user asks to check drift, run `kit_stack_diff(apply: true)` to self-heal the repository architecture.
 - **Subagent Delegation & Parallelism**: For large multi-step features, deep codebase audits, or independent research tasks, autonomously delegate to specialized workers using `invoke_subagent` (roles: "researcher", "code_reviewer", "test_engineer", "security_auditor") or `delegate_task` for isolated worktrees.
 - **Task Planning**: When planning complex features, track progress in `minikit_docs/todo.md` and spec in `minikit_docs/implementation.md`.
-- **MiniPower Autonomous Engineering Methodology & Guardrails**:
-  - **Spec Before Code (Brainstorming)**: Never guess or jump into editing code when requirements are loose. Clarify intent, surface trade-offs, and chunk specifications before modifying repository files.
-  - **Two-Stage Subagent Review**: When executing tasks with subagents or swarms, evaluate every task across two distinct review stages: Stage 1 (Spec Compliance: exact acceptance criteria met) and Stage 2 (Code Quality: no panics, clean error handling, edge cases covered).
-  - **Strict Test-Driven Development (TDD)**: Follow Red-Green-Refactor: write or update failing tests first, verify the failure, write minimal code to pass, and refactor cleanly.
-  - **Evidence Before Assertions**: Never claim "it works" or "all tests pass" without executing the command via `exec_cmd` and verifying exit code 0.
-  - **Anti-Rationalization Guardrails**:
+- **Autonomous MiniPower (Methodology, Verification Barrier, Worktrees & Planning)**:
+  - **Inspection & Methodology**: Autonomously invoke `power_status` to inspect active engineering principles, anti-rationalization guardrails, and verification rules.
+  - **Spec Before Code & Brainstorming**: When a user's prompt is high-level, open-ended, or ambiguous, do NOT immediately write code. Autonomously call `power_brainstorm(topic)` to explore trade-offs, clarify scope, and propose concrete architectural options.
+  - **Bite-Sized Atomic Planning**: For multi-step implementations, refactors, or new features, call `power_plan(topic, save_to_docs: true)` to structure tasks into 2-5 minute atomic units with verifiable acceptance criteria in `todo.md`.
+  - **Isolated Ephemeral Worktree Execution**: When implementing risky features or running parallel trials, use `power_worktree_task(task)` to execute the task in an isolated Git worktree sandbox with automated 3-way merge arbitration.
+  - **Two-Stage Multi-Agent Code Review**: Before finishing any substantial changes, autonomously run `power_review` to conduct an adversarial review across Stage 1 (Spec Compliance) and Stage 2 (Code Quality, zero unwraps/panics, security).
+  - **4-Gate Pre-Completion Verification Barrier**: Never conclude a task or claim completion without running `power_verify` or executing compiler/test checks via `exec_cmd`. `power_verify` programmatically guarantees Gate 1 (Compiler & Syntax Integrity), Gate 2 (Unit & Regression Tests), Gate 3 (Merge Conflicts & Structural Integrity), and Gate 4 (Clean Diff & Secret Leak Prevention).
+  - **Strict TDD & Anti-Rationalization Guardrails**:
     - "This is a simple one-liner, no tests needed" -> False. Small unverified edits break systems. Write a test first.
     - "I'll write tests after implementation" -> False. TDD enforces Red before Green.
-    - "I can verify this by reading the code" -> False. Reading is not execution. Run the actual compiler or test runner.
+    - "I can verify this by reading the code" -> False. Reading is not execution. Run `power_verify` or `exec_cmd`.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -316,7 +318,43 @@ impl PromptBuilder {
             recency.push_str("  </git_status>\n");
         }
 
-        // 8. Dynamic Memory Anchor (active objective, key decisions, blockers)
+        // 8. MiniPower Verification Barrier Reminder (if modifications exist)
+        let has_modified_files = git_status
+            .as_ref()
+            .map(|s| !s.staged.is_empty() || !s.unstaged.is_empty())
+            .unwrap_or(false);
+        if has_modified_files {
+            recency.push_str("  <minipower_verification_barrier>\n");
+            recency.push_str("    Notice: Uncommitted changes detected in working tree. Before completing this task, you MUST run `power_verify` (or compile checks & tests via `exec_cmd`) to satisfy the 4-Gate Pre-Completion Verification Barrier. Evidence before assertions always.\n");
+            recency.push_str("  </minipower_verification_barrier>\n");
+        }
+
+        // 9. Active MiniPower Plan & Pending Tasks (from todo.md)
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
+        let todo_candidates = [docs_dir.join("todo.md"), workspace_dir.join("todo.md")];
+        for todo_path in &todo_candidates {
+            if todo_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(todo_path) {
+                    let pending: Vec<&str> = content
+                        .lines()
+                        .filter(|l| l.trim().starts_with("- [ ]") || l.trim().starts_with("* [ ]"))
+                        .take(5)
+                        .collect();
+                    if !pending.is_empty() {
+                        recency.push_str("  <minipower_active_plan>\n");
+                        let rel_path = todo_path.strip_prefix(workspace_dir).unwrap_or(todo_path);
+                        recency.push_str(&format!("    Source: {}\n", rel_path.display()));
+                        for task in pending {
+                            recency.push_str(&format!("    {}\n", task.trim()));
+                        }
+                        recency.push_str("  </minipower_active_plan>\n");
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 10. Dynamic Memory Anchor (active objective, key decisions, blockers)
         if let Some(anchor) = memory_anchor {
             if !anchor.trim().is_empty() {
                 recency.push_str("  <task_anchor>\n");
@@ -540,5 +578,39 @@ mod tests {
             kv_pos < focus_pos,
             "intent_focus must be at tail after KV_CACHE_ANCHOR"
         );
+    }
+
+    #[test]
+    fn test_build_recency_context_minipower_barrier_and_plan() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let todo_file = temp_dir.path().join("todo.md");
+        std::fs::write(
+            &todo_file,
+            "# Task Tracker\n- [ ] Task 1: Autonomous MiniPower wiring\n- [x] Task 0: Done\n",
+        )
+        .unwrap();
+
+        let git_status = crate::git::GitStatus {
+            branch: "main".to_string(),
+            staged: vec!["src/agent/prompt.rs".to_string()],
+            unstaged: vec![],
+            untracked: vec![],
+            conflicted: vec![],
+            is_clean: false,
+        };
+
+        let recency = PromptBuilder::build_recency_context(
+            temp_dir.path(),
+            None,
+            &[],
+            Some(&git_status),
+            None,
+            None,
+        );
+
+        assert!(recency.contains("<minipower_verification_barrier>"));
+        assert!(recency.contains("4-Gate Pre-Completion Verification Barrier"));
+        assert!(recency.contains("<minipower_active_plan>"));
+        assert!(recency.contains("Task 1: Autonomous MiniPower wiring"));
     }
 }
