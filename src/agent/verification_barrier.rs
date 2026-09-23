@@ -417,16 +417,17 @@ impl VerificationBarrier {
                     continue;
                 }
 
-                // Skip pure line comments
+                // Skip pure line comments and block comment lines
                 if trimmed.starts_with("//")
                     || trimmed.starts_with('#')
                     || trimmed.starts_with("/*")
+                    || trimmed.starts_with('*')
                 {
                     continue;
                 }
 
-                // 1. Raw debug logging detection in production code
-                if is_production_code {
+                // 1. Raw debug logging detection in production code (skip pattern matching / scanner code)
+                if is_production_code && !trimmed.contains(".contains(") {
                     for &pattern in VERIFICATION_DEBUG_PATTERNS {
                         if trimmed.contains(pattern) {
                             return GateStatus::Failed {

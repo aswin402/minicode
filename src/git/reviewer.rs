@@ -67,9 +67,31 @@ impl GitReviewer {
         let mut score = 100_u32;
 
         // 1. Secret & Sensitive Data Audit
+        let mut current_file = String::new();
         for line in diff_text.lines() {
+            if let Some(stripped) = line.strip_prefix("+++ b/") {
+                current_file = stripped.trim().to_string();
+                continue;
+            }
+
             if line.starts_with('+') && !line.starts_with("+++") {
-                let added = &line[1..].trim();
+                let added = line[1..].trim();
+
+                // Skip comments
+                if added.starts_with("//")
+                    || added.starts_with('#')
+                    || added.starts_with("/*")
+                    || added.starts_with('*')
+                {
+                    continue;
+                }
+
+                let is_test = current_file.contains("test")
+                    || current_file.contains("spec")
+                    || current_file.starts_with("tests/");
+                let is_cli_entrypoint =
+                    current_file == "src/main.rs" || current_file.ends_with("/main.rs");
+
                 if (added.contains("api_key")
                     || added.contains("secret")
                     || added.contains("password")
@@ -92,8 +114,8 @@ impl GitReviewer {
                     score = score.saturating_sub(25);
                 }
 
-                // 2. Unsafe / Panic Patterns (for Rust code)
-                if added.contains(".unwrap()") || added.contains(".expect(") {
+                // 2. Unsafe / Panic Patterns (for Rust production code only, not tests)
+                if !is_test && (added.contains(".unwrap()") || added.contains(".expect(")) {
                     findings.push(ReviewFinding {
                         category: "Correctness & Invariant Safety".to_string(),
                         severity: "MEDIUM".to_string(),
@@ -104,10 +126,12 @@ impl GitReviewer {
                     score = score.saturating_sub(10);
                 }
 
-                // 3. Debug logging in library code
-                if added.contains("println!")
-                    || added.contains("eprintln!")
-                    || added.contains("console.log")
+                // 3. Debug logging in library code (exclude tests and CLI binary entrypoint)
+                if !is_test
+                    && !is_cli_entrypoint
+                    && (added.contains("println!")
+                        || added.contains("eprintln!")
+                        || added.contains("console.log"))
                 {
                     findings.push(ReviewFinding {
                         category: "Architecture & Observability".to_string(),
@@ -267,5 +291,42 @@ impl GitReviewer {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_report_clean() {
+        let report = ReviewReport {
+            total_score: 100,
+            files_audited: 5,
+            findings: vec![],
+            summary: "Scorecard Summary".to_string(),
+        };
+        let formatted = GitReviewer::format_report(&report);
+        assert!(formatted.contains("All checks passed cleanly"));
+    }
+
+    #[test]
+    fn test_format_report_with_findings() {
+        let report = ReviewReport {
+            total_score: 85,
+            files_audited: 3,
+            findings: vec![ReviewFinding {
+                category: "Correctness".to_string(),
+                severity: "HIGH".to_string(),
+                title: "Potential Panic".to_string(),
+                details: "Use error propagation".to_string(),
+                line_hint: Some("+ let x = y.unwrap();".to_string()),
+            }],
+            summary: "Scorecard Summary".to_string(),
+        };
+        let formatted = GitReviewer::format_report(&report);
+        assert!(formatted.contains("[HIGH]"));
+        assert!(formatted.contains("Potential Panic"));
+        assert!(formatted.contains("+ let x = y.unwrap();"));
     }
 }

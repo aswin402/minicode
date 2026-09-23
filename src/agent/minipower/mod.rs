@@ -121,7 +121,13 @@ impl MiniPowerEngine {
     }
 
     /// Generates Socratic brainstorming prompt for pre-implementation discovery.
-    pub fn format_brainstorm_prompt(_workspace: &Path, topic: &str) -> String {
+    pub fn format_brainstorm_prompt(workspace: &Path, topic: &str) -> String {
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace);
+        let docs_name = docs_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
+
         format!(
             "### 🧠 MiniPower: Socratic Brainstorming & Spec Refinement\n\n\
             **Goal/Topic:** {}\n\n\
@@ -129,13 +135,19 @@ impl MiniPowerEngine {
             1. **Do not write code yet.** Step back and analyze requirements, constraints, and architecture.\n\
             2. Ask 1-2 focused, high-leverage clarifying questions to resolve trade-offs.\n\
             3. Propose 2-3 architectural approaches with pros and cons.\n\
-            4. Once aligned, produce a structured spec to be saved in `minikit_docs/design.md`.\n",
-            topic
+            4. Once aligned, produce a structured spec to be saved in `{}/design.md`.\n",
+            topic, docs_name
         )
     }
 
     /// Generates structured task planning prompt with bite-sized tasks and acceptance tests.
-    pub fn format_plan_prompt(_workspace: &Path, topic: &str) -> String {
+    pub fn format_plan_prompt(workspace: &Path, topic: &str) -> String {
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace);
+        let docs_name = docs_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
+
         format!(
             "### 🛠️ MiniPower: Structured Implementation Plan Builder\n\n\
             **Goal/Topic:** {}\n\n\
@@ -146,8 +158,8 @@ impl MiniPowerEngine {
                - **Acceptance Criteria:** Verifiable conditions for completion.\n\
                - **Verification Command:** Concrete test or check (e.g. `cargo test -j 1 --lib ...`).\n\
             3. Follow strict Red/Green TDD: tests are added before or alongside implementation.\n\
-            4. Write the finalized plan into `minikit_docs/todo.md` and `minikit_docs/implementation.md`.\n",
-            topic
+            4. Write the finalized plan into `{}/todo.md` and `{}/implementation.md`.\n",
+            topic, docs_name, docs_name
         )
     }
 
