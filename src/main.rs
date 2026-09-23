@@ -110,7 +110,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 148 tools)
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 150 tools)
     #[arg(long, global = true)]
     tools: Option<String>,
 
@@ -146,6 +146,16 @@ enum Commands {
     Stack {
         #[command(subcommand)]
         action: Option<StackCommands>,
+
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Manage modular architecture blocks (docker, github-ci, gitignore, editorconfig, healthcheck, tailwind)
+    Block {
+        #[command(subcommand)]
+        action: Option<BlockCommands>,
 
         /// Output in machine-readable JSON format
         #[arg(long)]
@@ -391,6 +401,28 @@ enum SkillCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum BlockCommands {
+    /// List all available modular architecture blocks
+    List,
+
+    /// Show detailed contents and files of an architecture block
+    Show {
+        /// Name of the architecture block (e.g. 'docker', 'github-ci', 'gitignore', 'editorconfig', 'healthcheck', 'tailwind')
+        name: String,
+    },
+
+    /// Add a modular architecture block into the workspace
+    Add {
+        /// Name of the architecture block to add
+        name: String,
+
+        /// Overwrite existing workspace files if conflicts are detected
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum KitCommands {
     /// Show real-time package metadata and latest version from upstream registries
     Info {
@@ -424,6 +456,12 @@ enum KitCommands {
     Stack {
         #[command(subcommand)]
         action: StackCommands,
+    },
+
+    /// Manage modular architecture blocks (docker, github-ci, gitignore, editorconfig, healthcheck, tailwind)
+    Block {
+        #[command(subcommand)]
+        action: Option<BlockCommands>,
     },
 
     /// Manage, inspect, and install domain skills
@@ -586,6 +624,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Stack { action, json }) => {
             handle_stack_cli(&workspace_canonical, action, json).await?;
+        }
+        Some(Commands::Block { action, json }) => {
+            handle_block_cli(&workspace_canonical, action, json).await?;
         }
         Some(Commands::Diff { staged, json }) => {
             handle_diff_cli(&workspace_canonical, staged, json).await?;
@@ -915,6 +956,49 @@ async fn handle_skill_cli(workspace: &Path, action: Option<SkillCommands>) -> an
     Ok(())
 }
 
+async fn handle_block_cli(
+    workspace: &Path,
+    action: Option<BlockCommands>,
+    json_mode: bool,
+) -> anyhow::Result<()> {
+    match action {
+        None | Some(BlockCommands::List) => {
+            if json_mode {
+                let blocks =
+                    tools::minikit::blocks::MiniKitBlocksManager::get_all_blocks(workspace);
+                println!("{}", serde_json::to_string_pretty(&blocks)?);
+            } else {
+                println!(
+                    "{}",
+                    tools::minikit::MiniKitService::list_blocks(workspace).await?
+                );
+                println!("💡 Run `minicode block add <name> [--force]` or `minicode kit block add <name>` to install.\n");
+            }
+        }
+        Some(BlockCommands::Show { name }) => {
+            if json_mode {
+                if let Some(b) =
+                    tools::minikit::blocks::MiniKitBlocksManager::find_block(workspace, &name)
+                {
+                    println!("{}", serde_json::to_string_pretty(&b)?);
+                } else {
+                    eprintln!("✗ Architecture block `{}` not found.", name);
+                }
+            } else {
+                println!(
+                    "{}",
+                    tools::minikit::MiniKitService::show_block(workspace, &name).await?
+                );
+            }
+        }
+        Some(BlockCommands::Add { name, force }) => {
+            let res = tools::minikit::MiniKitService::add_block(workspace, &name, force).await?;
+            println!("{}", res);
+        }
+    }
+    Ok(())
+}
+
 async fn handle_kit_cli(workspace: &Path, action: KitCommands) -> anyhow::Result<()> {
     let registry = tools::minikit::pkg::PkgRegistry::new();
     match action {
@@ -958,6 +1042,9 @@ async fn handle_kit_cli(workspace: &Path, action: KitCommands) -> anyhow::Result
         }
         KitCommands::Stack { action } => {
             handle_stack_cli(workspace, Some(action), false).await?;
+        }
+        KitCommands::Block { action } => {
+            handle_block_cli(workspace, action, false).await?;
         }
         KitCommands::Skill { action } => {
             handle_skill_cli(workspace, action).await?;

@@ -262,6 +262,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["name"]
             }),
         },
+        ToolSchema {
+            name: "kit_block_list".to_string(),
+            description: "List all available modular architecture blocks (docker, github-ci, gitignore, editorconfig, healthcheck, tailwind) and custom workspace blocks.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolSchema {
+            name: "kit_block_add".to_string(),
+            description: "Add a modular architecture block (docker, github-ci, gitignore, editorconfig, healthcheck, tailwind) into the project workspace with conflict detection.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the architecture block to add (e.g. 'docker', 'github-ci', 'gitignore', 'editorconfig', 'healthcheck', 'tailwind')"
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "If true, overwrite existing files without prompting"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
     ]
 }
 
@@ -477,6 +503,33 @@ pub async fn dispatch(
         ),
         "kit_doctor" | "minikit_doctor" | "onpkg_doctor" => Some(
             async { crate::tools::minikit::MiniKitService::run_doctor(workspace_root).await }.await,
+        ),
+        "kit_block_list" | "minikit_block_list" | "onpkg_block_list" => Some(
+            async { crate::tools::minikit::MiniKitService::list_blocks(workspace_root).await }
+                .await,
+        ),
+        "kit_block_show" | "minikit_block_show" | "onpkg_block_show" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "block", "block_name"])
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_block_show".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    })?;
+                crate::tools::minikit::MiniKitService::show_block(workspace_root, name).await
+            }
+            .await,
+        ),
+        "kit_block_add" | "minikit_block_add" | "onpkg_block_add" => Some(
+            async {
+                let name = get_str_with_aliases(args, &["name", "block", "block_name"])
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "kit_block_add".to_string(),
+                        reason: "Missing required argument 'name'".to_string(),
+                    })?;
+                let force = opt_bool(args, "force", false);
+                crate::tools::minikit::MiniKitService::add_block(workspace_root, name, force).await
+            }
+            .await,
         ),
         _ => None,
     }

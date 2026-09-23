@@ -1,3 +1,4 @@
+pub mod blocks;
 pub mod builtin_skills;
 pub mod client;
 pub mod diff;
@@ -10,6 +11,8 @@ pub mod sync;
 pub mod types;
 
 use crate::error::Result;
+#[allow(unused_imports)]
+pub use blocks::{ArchitectureBlock, MiniKitBlocksManager, OnpkgBlocksManager};
 #[allow(unused_imports)]
 pub use client::{MiniKitClient, OnpkgClient};
 #[allow(unused_imports)]
@@ -350,5 +353,47 @@ impl MiniKitService {
     /// Runs runtime and tool health diagnostics.
     pub async fn run_doctor(_workspace_root: &Path) -> Result<String> {
         Ok(MiniKitDoctor::diagnose())
+    }
+
+    /// Lists all available architecture blocks.
+    pub async fn list_blocks(workspace_root: &Path) -> Result<String> {
+        Ok(blocks::MiniKitBlocksManager::format_list(workspace_root))
+    }
+
+    /// Shows details of a specific architecture block.
+    pub async fn show_block(workspace_root: &Path, name: &str) -> Result<String> {
+        let block =
+            blocks::MiniKitBlocksManager::find_block(workspace_root, name).ok_or_else(|| {
+                crate::error::ToolError::InvalidArguments {
+                    name: "kit_block_show".to_string(),
+                    reason: format!("Architecture block `{}` not found", name),
+                }
+            })?;
+
+        let mut out = format!(
+            "\n🧱 **Block: `{}`** [{}]\n📝 {}\n\n📁 Files ({} files):\n",
+            block.name,
+            block.category,
+            block.description,
+            block.files.len()
+        );
+        for f in &block.files {
+            out.push_str(&format!("  ├── {}\n", f.path));
+        }
+        if !block.packages.is_empty() {
+            out.push_str(&format!("\n⚡ Packages: {}\n", block.packages.join(", ")));
+        }
+        if !block.dev_packages.is_empty() {
+            out.push_str(&format!(
+                "⚡ Dev Packages: {}\n",
+                block.dev_packages.join(", ")
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Adds an architecture block into the workspace.
+    pub async fn add_block(workspace_root: &Path, name: &str, force: bool) -> Result<String> {
+        blocks::MiniKitBlocksManager::add_block(workspace_root, name, force)
     }
 }

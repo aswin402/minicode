@@ -273,10 +273,13 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
+        // MiniKit Slash Commands (/kit, /stacks, /skills, /blocks, /drift, /heal, /sync, /doctor)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")
             || prompt_lower.starts_with("/stack ")
+            || prompt_lower == "/block"
+            || prompt_lower == "/blocks"
+            || prompt_lower.starts_with("/block ")
             || prompt_lower == "/drift"
             || prompt_lower == "/heal"
             || prompt_lower == "/skills"
@@ -292,6 +295,11 @@ impl<'a> App<'a> {
             } else if prompt_lower.starts_with("/stack ") {
                 let rest = prompt_trimmed.strip_prefix("/stack").unwrap_or("").trim();
                 format!("stack {}", rest)
+            } else if prompt_lower.starts_with("/block ") {
+                let rest = prompt_trimmed.strip_prefix("/block").unwrap_or("").trim();
+                format!("block {}", rest)
+            } else if prompt_lower == "/block" || prompt_lower == "/blocks" {
+                "blocks".to_string()
             } else if prompt_lower == "/drift" {
                 "diff".to_string()
             } else if prompt_lower == "/heal" {
@@ -310,10 +318,13 @@ impl<'a> App<'a> {
             let sub_lower = sub.to_lowercase();
             if sub_lower.is_empty() || sub_lower == "help" {
                 let help =
-                    "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Packages & Skills):\n\
+                    "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Blocks, Packages & Skills):\n\
   • `/kit stacks` (or `/stacks`)          — Interactive stack picker and scaffold wizard\n\
   • `/kit show <name>`                    — Inspect files and dependencies of a stack\n\
   • `/kit stack add <name> [--dir <p>]`   — Directly scaffold a template into workspace\n\
+  • `/kit blocks` (or `/blocks`)          — List all available modular architecture blocks\n\
+  • `/kit block <name>`                   — Inspect files and dependencies of an architecture block\n\
+  • `/kit block add <name> [--force]`     — Add modular block (docker, ci, tailwind, etc.) into workspace\n\
   • `/kit snapshot <name> [--global]`     — Snapshot workspace into a reusable stack template\n\
   • `/kit new <name> [--runtime <rt>]`    — Create a new custom stack template specification\n\
   • `/kit stack remove <name>`            — Remove a custom stack template specification\n\
@@ -331,6 +342,67 @@ impl<'a> App<'a> {
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "stacks" || sub_lower == "stack" || sub_lower == "stack list" {
                 self.modal = ModalState::new_stack_select();
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "blocks" || sub_lower == "block" || sub_lower == "block list" {
+                match crate::tools::minikit::MiniKitService::list_blocks(&self.workspace_root).await
+                {
+                    Ok(list) => self.timeline.add_status(list),
+                    Err(e) => self
+                        .timeline
+                        .add_status(format!("✗ Failed to list architecture blocks: {}", e)),
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("block show ")
+                || (sub_lower.starts_with("block ") && !sub_lower.starts_with("block add "))
+            {
+                let block_name = sub
+                    .strip_prefix("block show ")
+                    .or_else(|| sub.strip_prefix("block "))
+                    .unwrap_or("")
+                    .trim();
+                if block_name.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit block show <block-name>`".to_string());
+                } else {
+                    match crate::tools::minikit::MiniKitService::show_block(
+                        &self.workspace_root,
+                        block_name,
+                    )
+                    .await
+                    {
+                        Ok(content) => self.timeline.add_status(content),
+                        Err(e) => self
+                            .timeline
+                            .add_status(format!("✗ Failed to show block `{}`: {}", block_name, e)),
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            } else if sub_lower.starts_with("block add ") {
+                let remainder = sub.strip_prefix("block add ").unwrap_or("").trim();
+                if remainder.is_empty() {
+                    self.timeline
+                        .add_status("⚠ Usage: `/kit block add <block-name> [--force]`".to_string());
+                } else {
+                    let force = remainder.contains("--force") || remainder.contains("-f");
+                    let block_name = remainder
+                        .replace("--force", "")
+                        .replace("-f", "")
+                        .trim()
+                        .to_string();
+                    match crate::tools::minikit::MiniKitService::add_block(
+                        &self.workspace_root,
+                        &block_name,
+                        force,
+                    )
+                    .await
+                    {
+                        Ok(msg) => self.timeline.add_status(msg),
+                        Err(e) => self.timeline.add_status(format!(
+                            "✗ Failed to add architecture block `{}`: {}",
+                            block_name, e
+                        )),
+                    }
+                }
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("show ") || sub_lower.starts_with("stack show ") {
                 let stack_name = sub

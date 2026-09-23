@@ -44,6 +44,14 @@ fn test_minikit_schemas_registered_in_registry() {
             || names.contains(&"minikit_stack_snapshot".to_string())
             || names.contains(&"onpkg_stack_snapshot".to_string())
     );
+    assert!(
+        names.contains(&"kit_block_list".to_string())
+            || names.contains(&"onpkg_block_list".to_string())
+    );
+    assert!(
+        names.contains(&"kit_block_add".to_string())
+            || names.contains(&"onpkg_block_add".to_string())
+    );
 
     // Global ToolRegistry check
     let global_schemas = ToolRegistry::get_tool_schemas();
@@ -53,6 +61,8 @@ fn test_minikit_schemas_registered_in_registry() {
             || global_names.contains(&"onpkg_stack_add".to_string())
     );
     assert!(global_names.contains(&"kit_stack_snapshot".to_string()));
+    assert!(global_names.contains(&"kit_block_list".to_string()));
+    assert!(global_names.contains(&"kit_block_add".to_string()));
 }
 
 #[test]
@@ -604,4 +614,66 @@ async fn test_snapshot_stack_tool_dispatch_and_scaffold_cycle() {
     assert!(target_dir.join("src/index.ts").exists());
     assert!(target_dir.join("src/routes.ts").exists());
     assert!(target_dir.join("package.json").exists());
+}
+
+#[tokio::test]
+async fn test_architecture_blocks_tool_dispatch_and_conflict_handling() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // 1. List blocks via tool registry dispatch
+    let list_res = ToolRegistry::dispatch(
+        workspace,
+        "call_block_1",
+        "kit_block_list",
+        &json!({}),
+        None,
+        1,
+    )
+    .await;
+    assert!(list_res.success);
+    assert!(list_res.output.contains("Available Architecture Blocks"));
+    assert!(list_res.output.contains("docker"));
+    assert!(list_res.output.contains("editorconfig"));
+
+    // 2. Add editorconfig block
+    let add_res = ToolRegistry::dispatch(
+        workspace,
+        "call_block_2",
+        "kit_block_add",
+        &json!({ "name": "editorconfig" }),
+        None,
+        1,
+    )
+    .await;
+    assert!(add_res.success);
+    assert!(workspace.join(".editorconfig").exists());
+
+    // 3. Attempt to add again without force: conflict detected
+    let conflict_res = ToolRegistry::dispatch(
+        workspace,
+        "call_block_3",
+        "kit_block_add",
+        &json!({ "name": "editorconfig" }),
+        None,
+        1,
+    )
+    .await;
+    assert!(!conflict_res.success);
+    assert!(conflict_res.output.to_lowercase().contains("conflict"));
+
+    // 4. Overwrite with force = true
+    let force_res = ToolRegistry::dispatch(
+        workspace,
+        "call_block_4",
+        "kit_block_add",
+        &json!({ "name": "editorconfig", "force": true }),
+        None,
+        1,
+    )
+    .await;
+    assert!(force_res.success);
+    assert!(force_res
+        .output
+        .contains("Successfully added architecture block"));
 }
