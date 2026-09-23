@@ -21,13 +21,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "kit_stack_show".to_string(),
-            description: "Inspect the exact structure, package dependencies, and files of a specific MiniKit stack template.".to_string(),
+            description: "Inspect the exact structure, package dependencies, and files of a specific MiniKit stack template or remote GitHub repository (e.g. 'gh:owner/repo').".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "stack_name": {
                         "type": "string",
-                        "description": "Name of the stack template (e.g. 'next-template', 'react-vite-gsap', 'fastapi')"
+                        "description": "Name of the stack template or remote GitHub repo (e.g. 'next-template', 'react-vite-gsap', 'fastapi', 'gh:owner/repo')"
                     }
                 },
                 "required": ["stack_name"]
@@ -35,13 +35,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "kit_stack_add".to_string(),
-            description: "Scaffold a complete, production-grade application stack into the target folder with automatic dependency installation and AGENTS.md / minikit_docs generation.".to_string(),
+            description: "Scaffold a complete, production-grade application stack into the target folder from built-in templates or remote GitHub repositories (e.g. 'gh:owner/repo[/path][#ref]') with automatic dependency installation and AGENTS.md / minikit_docs generation.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "stack_name": {
                         "type": "string",
-                        "description": "Name of the stack template to scaffold (e.g. 'react-vite-gsap', 'next-template', 'fastapi', 'flutter-riverpod-my_app')"
+                        "description": "Name of the stack template or remote GitHub repo to scaffold (e.g. 'react-vite-gsap', 'next-template', 'fastapi', 'gh:owner/repo', 'gh:shadcn-ui/ui/apps/www#main')"
                     },
                     "target_dir": {
                         "type": "string",

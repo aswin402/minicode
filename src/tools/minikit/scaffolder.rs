@@ -30,6 +30,7 @@ impl MiniKitScaffolder {
         if let Ok(mut cache) = STACK_DIR_CACHE.write() {
             cache.clear();
         }
+        let _ = crate::tools::minikit::remote::MiniKitRemoteManager::clear_cache();
     }
 
     /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
@@ -316,7 +317,9 @@ impl MiniKitScaffolder {
         Ok((file_path, files_count, packages_count))
     }
 
-    fn extract_dependencies_from_workspace(workspace_root: &Path) -> (Vec<String>, Vec<String>) {
+    pub fn extract_dependencies_from_workspace(
+        workspace_root: &Path,
+    ) -> (Vec<String>, Vec<String>) {
         let mut packages = Vec::new();
         let mut dev_packages = Vec::new();
 
@@ -667,6 +670,17 @@ impl MiniKitScaffolder {
         })
     }
 
+    /// Checks if a stack name or path is a remote repository specification.
+    pub fn is_remote_spec(name: &str) -> bool {
+        crate::tools::minikit::remote::RemoteStackSpec::is_remote(name)
+    }
+
+    /// Inspects and displays information about a remote repository stack template.
+    pub async fn show_remote(workspace_root: &Path, stack_name: &str) -> Result<String> {
+        crate::tools::minikit::remote::MiniKitRemoteManager::show_remote(workspace_root, stack_name)
+            .await
+    }
+
     /// Scaffolds a stack into `target_dir`.
     pub async fn scaffold(
         workspace_root: &Path,
@@ -674,6 +688,16 @@ impl MiniKitScaffolder {
         target_dir_opt: Option<&str>,
         no_install: bool,
     ) -> Result<String> {
+        if Self::is_remote_spec(stack_name) {
+            return crate::tools::minikit::remote::MiniKitRemoteManager::scaffold_remote(
+                workspace_root,
+                stack_name,
+                target_dir_opt,
+                no_install,
+            )
+            .await;
+        }
+
         let stack = Self::find_stack_in_workspace(workspace_root, stack_name).ok_or_else(|| {
             let available: Vec<String> =
                 Self::get_all_stacks().into_iter().map(|s| s.name).collect();
@@ -833,7 +857,7 @@ impl MiniKitScaffolder {
     }
 
     /// Automatically runs the best package installer for the runtime.
-    fn run_package_installer(runtime: &str, dest_dir: &Path) -> String {
+    pub fn run_package_installer(runtime: &str, dest_dir: &Path) -> String {
         let (cmd, args) = match runtime {
             "bun" => ("bun", vec!["install"]),
             "uv" => ("uv", vec!["sync"]),

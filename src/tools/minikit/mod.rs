@@ -4,6 +4,7 @@ pub mod client;
 pub mod diff;
 pub mod doctor;
 pub mod pkg;
+pub mod remote;
 pub mod scaffolder;
 pub mod skills;
 pub mod stacks;
@@ -17,6 +18,8 @@ pub use blocks::{ArchitectureBlock, MiniKitBlocksManager, OnpkgBlocksManager};
 pub use client::{MiniKitClient, OnpkgClient};
 #[allow(unused_imports)]
 pub use doctor::{MiniKitDoctor, OnpkgDoctor};
+#[allow(unused_imports)]
+pub use remote::{MiniKitRemoteManager, RemoteStackSpec};
 #[allow(unused_imports)]
 pub use scaffolder::{MiniKitScaffolder, OnpkgScaffolder};
 #[allow(unused_imports)]
@@ -155,6 +158,10 @@ impl MiniKitService {
 
     /// Shows detailed information and file manifest of a specific stack.
     pub async fn show_stack(workspace_root: &Path, stack_name: &str) -> Result<String> {
+        if MiniKitScaffolder::is_remote_spec(stack_name) {
+            return MiniKitScaffolder::show_remote(workspace_root, stack_name).await;
+        }
+
         if let Some(stack) = MiniKitScaffolder::find_stack_in_workspace(workspace_root, stack_name)
         {
             let mut out = format!(
@@ -222,6 +229,12 @@ impl MiniKitService {
         target_dir: Option<&str>,
         no_install: bool,
     ) -> Result<String> {
+        // If it's a remote specifier (e.g. gh:owner/repo), scaffold directly via remote engine
+        if MiniKitScaffolder::is_remote_spec(stack_name) {
+            return MiniKitScaffolder::scaffold(workspace_root, stack_name, target_dir, no_install)
+                .await;
+        }
+
         // First try native embedded scaffolder
         if MiniKitScaffolder::find_stack_in_workspace(workspace_root, stack_name).is_some() {
             return MiniKitScaffolder::scaffold(workspace_root, stack_name, target_dir, no_install)

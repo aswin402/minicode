@@ -843,10 +843,16 @@ async fn handle_stack_cli(
                     );
                     println!("    \x1b[38;2;140;140;150m{}\x1b[0m", s.description);
                 }
-                println!("\n💡 Run `minicode stack add <name> [--dest <path>]` to scaffold.\n");
+                println!("\n💡 Run `minicode stack add <name|gh:owner/repo> [--dest <path>]` to scaffold.\n");
             }
         }
         Some(StackCommands::Show { name }) => {
+            if tools::minikit::scaffolder::MiniKitScaffolder::is_remote_spec(&name) {
+                let out = tools::minikit::MiniKitService::show_stack(workspace, &name).await?;
+                println!("{}", out);
+                return Ok(());
+            }
+
             let stacks = tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
             if let Some(s) = stacks
                 .into_iter()

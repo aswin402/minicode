@@ -677,3 +677,110 @@ async fn test_architecture_blocks_tool_dispatch_and_conflict_handling() {
         .output
         .contains("Successfully added architecture block"));
 }
+
+#[tokio::test]
+async fn test_remote_stack_scaffolding_and_dispatch() {
+    let fixture_dir = tempdir().unwrap();
+    let fixture_repo = fixture_dir.path();
+
+    // 1. Initialize local git repository as fixture
+    let run_git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(fixture_repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run_git(&["init", "-b", "main"]);
+    run_git(&["config", "user.name", "test-user"]);
+    run_git(&["config", "user.email", "test@example.com"]);
+    run_git(&["config", "commit.gpgsign", "false"]);
+
+    // Create fixture files
+    std::fs::write(
+        fixture_repo.join("package.json"),
+        r#"{"name": "remote-app", "dependencies": {"hono": "^4.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(fixture_repo.join("src")).unwrap();
+    std::fs::write(
+        fixture_repo.join("src").join("index.ts"),
+        "import { Hono } from 'hono';\nconst app = new Hono();\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(fixture_repo.join("apps").join("subapp")).unwrap();
+    std::fs::write(
+        fixture_repo.join("apps").join("subapp").join("sub.ts"),
+        "export const hello = 'subapp';\n",
+    )
+    .unwrap();
+
+    run_git(&["add", "."]);
+    run_git(&["commit", "-m", "initial remote template commit"]);
+
+    let workspace_dir = tempdir().unwrap();
+    let workspace = workspace_dir.path();
+
+    // 2. Test native MiniKitScaffolder with file:// spec
+    let spec = format!("file://{}", fixture_repo.display());
+    let scaffold_res = MiniKitScaffolder::scaffold(workspace, &spec, Some("app1"), true)
+        .await
+        .unwrap();
+
+    assert!(scaffold_res.contains("Successfully scaffolded remote stack"));
+    assert!(workspace.join("app1").join("package.json").exists());
+    assert!(workspace.join("app1").join("src").join("index.ts").exists());
+    assert!(workspace.join("app1").join("minikit.json").exists());
+    assert!(workspace.join("app1").join("AGENTS.md").exists());
+    assert!(workspace
+        .join("app1")
+        .join("minikit_docs")
+        .join("prd.md")
+        .exists());
+    assert!(!workspace.join("app1").join(".git").exists());
+
+    // 3. Test ToolRegistry::dispatch for kit_stack_add with remote spec
+    let dispatch_res = ToolRegistry::dispatch(
+        workspace,
+        "call_remote_1",
+        "kit_stack_add",
+        &json!({
+            "stack_name": spec,
+            "target_dir": "app2",
+            "no_install": true
+        }),
+        None,
+        1,
+    )
+    .await;
+
+    assert!(dispatch_res.success);
+    assert!(dispatch_res
+        .output
+        .contains("Successfully scaffolded remote stack"));
+    assert!(workspace.join("app2").join("package.json").exists());
+    assert!(workspace.join("app2").join("src").join("index.ts").exists());
+
+    // 4. Test ToolRegistry::dispatch for kit_stack_show with remote spec
+    let show_res = ToolRegistry::dispatch(
+        workspace,
+        "call_remote_2",
+        "kit_stack_show",
+        &json!({
+            "stack_name": spec
+        }),
+        None,
+        1,
+    )
+    .await;
+
+    assert!(show_res.success);
+    assert!(show_res.output.contains("Remote Stack:"));
+    assert!(show_res.output.contains("package.json"));
+}
