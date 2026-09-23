@@ -349,6 +349,16 @@ enum PowerCommands {
 
     /// Run the 4-Gate Pre-Completion Verification Barrier against current changes
     Verify,
+
+    /// Execute an isolated mutating task in an ephemeral Git worktree with verification
+    Task {
+        /// Task prompt or feature description to execute
+        prompt: String,
+
+        /// Automatically merge back to workspace if verification passes
+        #[arg(long, default_value_t = true)]
+        auto_merge: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1290,6 +1300,40 @@ async fn handle_power_cli(
             }
             if !report.all_passed {
                 std::process::exit(1);
+            }
+        }
+        Some(PowerCommands::Task { prompt, auto_merge }) => {
+            if !json_mode {
+                println!(
+                    "\n⚡ Executing isolated MiniPower task in ephemeral Git worktree...\n  • Prompt    : {}\n  • Auto-merge: {}\n",
+                    prompt, auto_merge
+                );
+            }
+            let task_item = crate::agent::subagent::fanout::FanoutTaskItem {
+                task: prompt.clone(),
+                role: crate::agent::subagent::types::SubagentRole::Coder,
+                workspace_mode: Some(crate::agent::subagent::types::WorkspaceMode::Worktree),
+                max_iterations: Some(15),
+                check_cmd: None,
+            };
+            let report = crate::agent::subagent::fanout::FanoutOrchestrator::execute_fanout(
+                workspace,
+                vec![task_item],
+                crate::agent::subagent::fanout::FanoutJoinMode::All,
+                auto_merge,
+                1,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if json_mode {
+                let json_out = serde_json::json!({
+                    "prompt": prompt,
+                    "auto_merge": auto_merge,
+                    "report": report,
+                });
+                println!("{}", serde_json::to_string_pretty(&json_out)?);
+            } else {
+                println!("{}", report);
             }
         }
     }

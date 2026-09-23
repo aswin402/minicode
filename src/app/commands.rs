@@ -1058,11 +1058,51 @@ impl<'a> App<'a> {
         if prompt == "/power" || prompt.starts_with("/power ") {
             let arg = prompt.trim_start_matches("/power").trim();
             self.timeline.add_user_message(prompt.to_string());
-            if arg.is_empty() || arg == "status" {
-                let status = crate::agent::minipower::MiniPowerEngine::format_status_summary();
-                self.timeline
-                    .entries
-                    .push(crate::ui::view::TimelineEntry::AssistantMarkdown(status));
+            if arg.is_empty() || arg == "status" || arg == "modal" {
+                self.modal = ModalState::new_minipower(&self.workspace_root);
+            } else if let Some(task_prompt) = arg.strip_prefix("task") {
+                let task_prompt = task_prompt.trim();
+                if task_prompt.is_empty() {
+                    self.timeline.add_status(
+                        "⚠️ Please provide a task description. Usage: `/power task <prompt>`"
+                            .to_string(),
+                    );
+                } else {
+                    self.timeline.add_status(format!(
+                        "⚡ Launching isolated MiniPower worktree task: '{}'...",
+                        task_prompt
+                    ));
+                    let ws = self.workspace_root.clone();
+                    let t_prompt = task_prompt.to_string();
+                    let task_item = crate::agent::subagent::fanout::FanoutTaskItem {
+                        task: t_prompt,
+                        role: crate::agent::subagent::types::SubagentRole::Coder,
+                        workspace_mode: Some(
+                            crate::agent::subagent::types::WorkspaceMode::Worktree,
+                        ),
+                        max_iterations: Some(15),
+                        check_cmd: None,
+                    };
+                    match crate::agent::subagent::fanout::FanoutOrchestrator::execute_fanout(
+                        &ws,
+                        vec![task_item],
+                        crate::agent::subagent::fanout::FanoutJoinMode::All,
+                        true,
+                        1,
+                    )
+                    .await
+                    {
+                        Ok(report) => {
+                            self.timeline
+                                .entries
+                                .push(crate::ui::view::TimelineEntry::AssistantMarkdown(report));
+                        }
+                        Err(e) => {
+                            self.timeline
+                                .add_status(format!("✗ MiniPower worktree task failed: {}", e));
+                        }
+                    }
+                }
             } else if let Some(topic) = arg.strip_prefix("brainstorm") {
                 let topic = topic.trim();
                 if topic.is_empty() {
@@ -1149,7 +1189,7 @@ impl<'a> App<'a> {
                     .push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
             } else {
                 self.timeline.add_status(
-                    "💡 MiniPower Usage:\n  • `/power` or `/power status` — Show methodology pillars and red flags\n  • `/power brainstorm <topic>` — Socratic brainstorm & spec refinement\n  • `/power plan <topic>` — Structured implementation plan builder\n  • `/power review [--staged]` — Adversarial multi-agent code review\n  • `/power verify` — 4-Gate pre-completion verification barrier".to_string(),
+                    "💡 MiniPower Usage:\n  • `/power` or `/power status` — Interactive methodology & verification modal\n  • `/power task <prompt>` — Execute mutating task in isolated Git worktree\n  • `/power brainstorm <topic>` — Socratic brainstorm & spec refinement\n  • `/power plan <topic>` — Structured implementation plan builder\n  • `/power review [--staged]` — Adversarial multi-agent code review\n  • `/power verify` — 4-Gate pre-completion verification barrier".to_string(),
                 );
             }
             return Ok(CommandAction::Continue);

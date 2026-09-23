@@ -9,6 +9,7 @@ pub mod context_diagnostics;
 pub mod exit_confirm;
 pub mod git_diff;
 pub mod help;
+pub mod minipower;
 pub mod model_select;
 pub mod provider_select;
 pub mod session_browser;
@@ -144,11 +145,16 @@ pub enum ModalState {
         proposal: crate::tools::registry::agent_tools::config_tools::ConfigChangeProposal,
         selected_index: usize,
     },
+    MiniPower(minipower::MiniPowerModalState),
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_minipower(workspace_root: &std::path::Path) -> Self {
+        Self::MiniPower(minipower::MiniPowerModalState::new(workspace_root))
     }
 
     pub fn new_settings(config: &crate::config::Config, workspace_root: &std::path::Path) -> Self {
@@ -844,6 +850,9 @@ impl ModalState {
                 selected_index,
             } => {
                 settings::render_config_approval(frame, area, theme, proposal, *selected_index);
+            }
+            ModalState::MiniPower(state) => {
+                minipower::render_minipower(frame, state, area, theme);
             }
         }
     }

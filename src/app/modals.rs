@@ -1952,6 +1952,74 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
             }
+            ModalState::MiniPower(state) => match key.code {
+                KeyCode::Tab | KeyCode::Right => {
+                    state.next_tab();
+                }
+                KeyCode::BackTab | KeyCode::Left => {
+                    state.prev_tab();
+                }
+                KeyCode::Char('1') => {
+                    state.active_tab = crate::ui::modals::minipower::MiniPowerTab::Pillars;
+                    state.scroll_offset = 0;
+                    state.selected_index = 0;
+                }
+                KeyCode::Char('2') => {
+                    state.active_tab = crate::ui::modals::minipower::MiniPowerTab::RedFlags;
+                    state.scroll_offset = 0;
+                    state.selected_index = 0;
+                }
+                KeyCode::Char('3') => {
+                    state.active_tab =
+                        crate::ui::modals::minipower::MiniPowerTab::VerificationBarrier;
+                    state.scroll_offset = 0;
+                    state.selected_index = 0;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.scroll_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    state.scroll_down();
+                }
+                KeyCode::Char('r') | KeyCode::Char('v') | KeyCode::Enter => {
+                    state.is_evaluating = true;
+                    let git = crate::git::GitService::new(self.workspace_root.clone());
+                    let modified_files = if git.is_git_repo().await {
+                        if let Ok(st) = git.get_status().await {
+                            let mut all = st.staged;
+                            all.extend(st.unstaged);
+                            all.sort();
+                            all.dedup();
+                            all
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        vec![]
+                    };
+                    let report = crate::agent::verification_barrier::VerificationBarrier::verify(
+                        &self.workspace_root,
+                        &modified_files,
+                    )
+                    .await;
+                    state.set_report(report);
+                    state.is_evaluating = false;
+                    if state.active_tab
+                        != crate::ui::modals::minipower::MiniPowerTab::VerificationBarrier
+                    {
+                        state.active_tab =
+                            crate::ui::modals::minipower::MiniPowerTab::VerificationBarrier;
+                        state.scroll_offset = 0;
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
         }
     }
 

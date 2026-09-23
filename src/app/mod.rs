@@ -766,11 +766,9 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // Ctrl+P displays MiniPower status overview & methodology
+                                // Ctrl+P displays interactive MiniPower methodology & verification modal
                                 if key_event.code == KeyCode::Char('p') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                                    self.timeline.add_user_message("/power".to_string());
-                                    let status = crate::agent::minipower::MiniPowerEngine::format_status_summary();
-                                    self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(status));
+                                    self.modal = ModalState::new_minipower(&self.workspace_root);
                                     continue;
                                 }
 
