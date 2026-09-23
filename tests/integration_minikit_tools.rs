@@ -546,7 +546,9 @@ async fn test_snapshot_stack_tool_dispatch_and_scaffold_cycle() {
     .await;
     assert!(res.success, "Tool dispatch failed: {}", res.output);
     assert!(res.output.contains("sample-microservice-stack"));
-    assert!(res.output.contains("Successfully snapshotted workspace into custom stack"));
+    assert!(res
+        .output
+        .contains("Successfully snapshotted workspace into custom stack"));
 
     // 3. Verify the stack file was created in .minicode/stacks/
     let stack_path = workspace

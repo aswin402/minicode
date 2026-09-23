@@ -1,8 +1,22 @@
 use crate::error::{Result, ToolError};
 use crate::tools::minikit::stacks::{builtin::builtin_stacks, Stack};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{LazyLock, RwLock};
+use std::time::SystemTime;
+
+static BUILTIN_STACKS_CACHE: LazyLock<Vec<Stack>> = LazyLock::new(builtin_stacks);
+
+#[derive(Clone, Debug)]
+struct DirectoryStackCache {
+    last_mtime: SystemTime,
+    stacks: Vec<Stack>,
+}
+
+static STACK_DIR_CACHE: LazyLock<RwLock<HashMap<PathBuf, DirectoryStackCache>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Native engine for scaffolding application stacks, generating manifests, and auto-installing packages.
 pub struct MiniKitScaffolder;
@@ -11,6 +25,13 @@ pub struct MiniKitScaffolder;
 pub type OnpkgScaffolder = MiniKitScaffolder;
 
 impl MiniKitScaffolder {
+    /// Clears the directory stack cache (useful for testing and post-mutation invalidation).
+    pub fn clear_cache() {
+        if let Ok(mut cache) = STACK_DIR_CACHE.write() {
+            cache.clear();
+        }
+    }
+
     /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
     pub fn get_all_stacks() -> Vec<Stack> {
         Self::get_all_stacks_for(None)
@@ -18,42 +39,105 @@ impl MiniKitScaffolder {
 
     /// Returns all natively embedded built-in stacks plus custom stacks in the specified workspace or user directories.
     pub fn get_all_stacks_for(workspace_root: Option<&Path>) -> Vec<Stack> {
-        let mut stacks = builtin_stacks();
+        let mut stacks = BUILTIN_STACKS_CACHE.clone();
 
         let mut search_dirs = Vec::new();
         if let Some(ws) = workspace_root {
-            search_dirs.push(ws.join(".minicode").join("stacks"));
-            search_dirs.push(ws.join(".minikit").join("stacks"));
+            let s1 = ws.join(".minicode").join("stacks");
+            let s2 = ws.join(".minikit").join("stacks");
+            if !search_dirs.contains(&s1) {
+                search_dirs.push(s1);
+            }
+            if !search_dirs.contains(&s2) {
+                search_dirs.push(s2);
+            }
         }
         if let Ok(cwd) = std::env::current_dir() {
-            search_dirs.push(cwd.join(".minicode").join("stacks"));
-            search_dirs.push(cwd.join(".minikit").join("stacks"));
+            let s1 = cwd.join(".minicode").join("stacks");
+            let s2 = cwd.join(".minikit").join("stacks");
+            if !search_dirs.contains(&s1) {
+                search_dirs.push(s1);
+            }
+            if !search_dirs.contains(&s2) {
+                search_dirs.push(s2);
+            }
         }
         if let Some(home) = dirs::home_dir() {
-            search_dirs.push(home.join(".config").join("minicode").join("stacks"));
-            search_dirs.push(home.join(".minikit").join("stacks"));
-            search_dirs.push(home.join(".onpkg").join("stacks"));
+            let s1 = home.join(".config").join("minicode").join("stacks");
+            let s2 = home.join(".minikit").join("stacks");
+            let s3 = home.join(".onpkg").join("stacks");
+            if !search_dirs.contains(&s1) {
+                search_dirs.push(s1);
+            }
+            if !search_dirs.contains(&s2) {
+                search_dirs.push(s2);
+            }
+            if !search_dirs.contains(&s3) {
+                search_dirs.push(s3);
+            }
         }
 
         for dir in search_dirs {
-            if !dir.exists() || !dir.is_dir() {
-                continue;
-            }
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().is_some_and(|e| e == "json") {
-                        if let Ok(content) = fs::read_to_string(&path) {
-                            if let Ok(stack) = serde_json::from_str::<Stack>(&content) {
-                                if !stacks
-                                    .iter()
-                                    .any(|s| s.name.eq_ignore_ascii_case(&stack.name))
-                                {
-                                    stacks.push(stack);
+            let meta = match fs::metadata(&dir) {
+                Ok(m) if m.is_dir() => m,
+                _ => {
+                    if let Ok(mut cache) = STACK_DIR_CACHE.write() {
+                        cache.remove(&dir);
+                    }
+                    continue;
+                }
+            };
+
+            let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+
+            // Fast path: check read cache
+            let cached_stacks = {
+                let cache = STACK_DIR_CACHE.read().ok();
+                cache.and_then(|c| {
+                    c.get(&dir).and_then(|entry| {
+                        if entry.last_mtime == current_mtime {
+                            Some(entry.stacks.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+            };
+
+            let dir_stacks = if let Some(hit) = cached_stacks {
+                hit
+            } else {
+                let mut loaded = Vec::new();
+                if let Ok(entries) = fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() && path.extension().is_some_and(|e| e == "json") {
+                            if let Ok(content) = fs::read_to_string(&path) {
+                                if let Ok(stack) = serde_json::from_str::<Stack>(&content) {
+                                    loaded.push(stack);
                                 }
                             }
                         }
                     }
+                }
+                if let Ok(mut cache) = STACK_DIR_CACHE.write() {
+                    cache.insert(
+                        dir.clone(),
+                        DirectoryStackCache {
+                            last_mtime: current_mtime,
+                            stacks: loaded.clone(),
+                        },
+                    );
+                }
+                loaded
+            };
+
+            for stack in dir_stacks {
+                if !stacks
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(&stack.name))
+                {
+                    stacks.push(stack);
                 }
             }
         }
@@ -144,6 +228,8 @@ impl MiniKitScaffolder {
             source: e,
         })?;
 
+        Self::clear_cache();
+
         Ok(file_path)
     }
 
@@ -224,6 +310,8 @@ impl MiniKitScaffolder {
             path: file_path.display().to_string(),
             source: e,
         })?;
+
+        Self::clear_cache();
 
         Ok((file_path, files_count, packages_count))
     }
@@ -523,6 +611,7 @@ impl MiniKitScaffolder {
                 path: file_path.display().to_string(),
                 source: e,
             })?;
+            Self::clear_cache();
             Ok(format!(
                 "✔ Successfully removed custom stack template `{}` at `{}`",
                 norm,
@@ -960,5 +1049,34 @@ mod tests {
         assert!(
             MiniKitScaffolder::snapshot_workspace_to_stack(ws, "sub/dir", None, false).is_err()
         );
+    }
+
+    #[test]
+    fn test_stack_cache_mtime_invalidation_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        MiniKitScaffolder::clear_cache();
+
+        // 1. Initial count
+        let initial_count = MiniKitScaffolder::get_all_stacks_for(Some(ws)).len();
+
+        // 2. Create custom stack
+        MiniKitScaffolder::create_custom_stack(ws, "cached-test", "bun", false).unwrap();
+
+        // 3. get_all_stacks_for should immediately see it (cache cleared on create)
+        let with_custom = MiniKitScaffolder::get_all_stacks_for(Some(ws));
+        assert_eq!(with_custom.len(), initial_count + 1);
+        assert!(with_custom.iter().any(|s| s.name == "cached-test"));
+
+        // 4. Repeated call hits cache
+        let cached_hit = MiniKitScaffolder::get_all_stacks_for(Some(ws));
+        assert_eq!(cached_hit.len(), initial_count + 1);
+
+        // 5. Delete stack
+        MiniKitScaffolder::delete_custom_stack(ws, "cached-test", false).unwrap();
+        let after_delete = MiniKitScaffolder::get_all_stacks_for(Some(ws));
+        assert_eq!(after_delete.len(), initial_count);
+        assert!(!after_delete.iter().any(|s| s.name == "cached-test"));
     }
 }

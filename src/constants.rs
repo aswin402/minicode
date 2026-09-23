@@ -98,6 +98,10 @@ pub const ONPKG_MANIFEST_FILE: &str = "onpkg.json";
 pub const MINIKIT_DOCS_DIR: &str = "minikit_docs";
 /// Backward-compatible documentation directory for skills
 pub const ONPKG_DOCS_DIR: &str = "onpkg_docs";
+/// MiniKit architecture drift ignore filename (.minikitignore)
+pub const MINIKIT_IGNORE_FILE: &str = ".minikitignore";
+/// Backward-compatible ignore filename (.onpkgignore)
+pub const ONPKG_IGNORE_FILE: &str = ".onpkgignore";
 /// Standard git repository hidden directory name (.git)
 pub const GIT_DIR_NAME: &str = ".git";
 
