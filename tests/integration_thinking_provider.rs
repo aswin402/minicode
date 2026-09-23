@@ -521,12 +521,13 @@ fn test_provider_factory_and_config_support() {
     assert_eq!(p_claude.unwrap().name(), "anthropic");
 
     // 2. Config resolves defaults correctly
+    let cfg = Config::default();
     assert_eq!(
-        Config::get_default_model_for_provider("anthropic"),
+        cfg.get_default_model_for_provider("anthropic"),
         ANTHROPIC_DEFAULT_MODEL
     );
     assert_eq!(
-        Config::get_default_model_for_provider("claude"),
+        cfg.get_default_model_for_provider("claude"),
         ANTHROPIC_DEFAULT_MODEL
     );
 

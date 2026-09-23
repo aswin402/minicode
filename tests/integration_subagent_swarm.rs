@@ -11,58 +11,52 @@ fn test_subagent_task_spec_serialization_and_loose_parsing() {
     // 1. Loose string role parsing
     assert_eq!(
         SubagentRole::from_str_loose("researcher"),
-        SubagentRole::Researcher
+        SubagentRole::Scout
     );
     assert_eq!(
         SubagentRole::from_str_loose("research"),
-        SubagentRole::Researcher
+        SubagentRole::Scout
     );
     assert_eq!(
         SubagentRole::from_str_loose("reviewer"),
-        SubagentRole::CodeReviewer
+        SubagentRole::Reviewer
     );
     assert_eq!(
         SubagentRole::from_str_loose("code_reviewer"),
-        SubagentRole::CodeReviewer
+        SubagentRole::Reviewer
     );
-    assert_eq!(
-        SubagentRole::from_str_loose("tester"),
-        SubagentRole::TestEngineer
-    );
+    assert_eq!(SubagentRole::from_str_loose("tester"), SubagentRole::Tester);
     assert_eq!(
         SubagentRole::from_str_loose("test-engineer"),
-        SubagentRole::TestEngineer
+        SubagentRole::Tester
     );
     assert_eq!(
         SubagentRole::from_str_loose("security"),
-        SubagentRole::SecurityAuditor
+        SubagentRole::Reviewer
     );
     assert_eq!(
         SubagentRole::from_str_loose("security_auditor"),
-        SubagentRole::SecurityAuditor
+        SubagentRole::Reviewer
     );
     assert_eq!(
         SubagentRole::from_str_loose("architect"),
-        SubagentRole::Custom("architect".to_string())
+        SubagentRole::Coder
     );
-    assert_eq!(
-        SubagentRole::from_str_loose("coder"),
-        SubagentRole::Custom("coder".to_string())
-    );
+    assert_eq!(SubagentRole::from_str_loose("coder"), SubagentRole::Coder);
     assert_eq!(
         SubagentRole::from_str_loose("custom_agent"),
-        SubagentRole::Custom("custom_agent".to_string())
+        SubagentRole::Coder
     );
 
     // 2. Deserialization from JSON
     let raw_json = json!({
-        "role": "researcher",
+        "role": "scout",
         "prompt": "Find all usages of TokenBudget",
         "isolate_worktree": false,
         "timeout_secs": 90
     });
     let spec: SubagentTaskSpec = serde_json::from_value(raw_json).unwrap();
-    assert_eq!(spec.role, SubagentRole::Researcher);
+    assert_eq!(spec.role, SubagentRole::Scout);
     assert_eq!(spec.prompt, "Find all usages of TokenBudget");
     assert_eq!(spec.isolate_worktree, Some(false));
     assert_eq!(spec.timeout_secs, Some(90));
@@ -79,7 +73,7 @@ fn test_fanout_summary_formatting() {
             result: SubAgentResult {
                 id: "res-1".to_string(),
                 task_id: "res-1".to_string(),
-                role: SubagentRole::Researcher,
+                role: SubagentRole::Scout,
                 success: true,
                 final_summary: "Found 4 usages of TokenBudget in prompt.rs and loop.rs."
                     .to_string(),
@@ -100,7 +94,7 @@ fn test_fanout_summary_formatting() {
             result: SubAgentResult {
                 id: "test-2".to_string(),
                 task_id: "test-2".to_string(),
-                role: SubagentRole::TestEngineer,
+                role: SubagentRole::Tester,
                 success: true,
                 final_summary: "Executed reproducer test successfully with exit code 0."
                     .to_string(),
@@ -121,7 +115,7 @@ fn test_fanout_summary_formatting() {
             result: SubAgentResult {
                 id: "sec-3".to_string(),
                 task_id: "sec-3".to_string(),
-                role: SubagentRole::SecurityAuditor,
+                role: SubagentRole::Reviewer,
                 success: false,
                 final_summary: "Execution failed".to_string(),
                 tokens_used: 0,
@@ -192,11 +186,9 @@ async fn test_tool_dispatch_for_fanout_and_merge() {
     .await;
 
     assert!(res.success);
-    assert!(res
-        .output
-        .contains("Subagent Swarm Fan-Out Launched (2 worker(s) in background)"));
-    assert!(res.output.contains("Researcher"));
-    assert!(res.output.contains("CodeReviewer"));
+    assert!(res.output.contains("Subagent Swarm Fan-Out Completed"));
+    assert!(res.output.contains("Scout"));
+    assert!(res.output.contains("Reviewer"));
 
     // 2. Dispatch merge_subagent_worktree for non-existent ID (graceful error handling)
     let merge_args = json!({
@@ -356,11 +348,11 @@ fn test_subagent_info_telemetry_fields() {
 
     let mut info = SubagentInfo::new(
         "worker-42".to_string(),
-        SubagentRole::CodeReviewer,
+        SubagentRole::Reviewer,
         "Review git diff".to_string(),
     );
     assert_eq!(info.id, "worker-42");
-    assert_eq!(info.role, SubagentRole::CodeReviewer);
+    assert_eq!(info.role, SubagentRole::Reviewer);
     assert!(info.current_tool.is_none());
     assert_eq!(info.status_message.as_deref(), Some("Initialized"));
     assert!(!info.isolate_worktree);
@@ -417,7 +409,7 @@ async fn test_dispatch_subagent_tool_and_manage_await() {
         .output
         .contains("Background subagent spawned successfully"));
     assert!(res.output.contains("Worker ID"));
-    assert!(res.output.contains("Researcher"));
+    assert!(res.output.contains("Scout"));
     assert!(res.output.contains("Ctrl+S"));
 
     // Extract worker ID from output
