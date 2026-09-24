@@ -2,6 +2,7 @@
 
 pub mod api_key;
 pub mod architecture;
+pub mod blocks;
 pub mod code_explorer;
 pub mod command_catalog;
 pub mod common;
@@ -146,11 +147,16 @@ pub enum ModalState {
         selected_index: usize,
     },
     MiniPower(minipower::MiniPowerModalState),
+    Blocks(blocks::BlocksModalState),
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    pub fn new_blocks(workspace_root: &std::path::Path) -> Self {
+        Self::Blocks(blocks::BlocksModalState::new(workspace_root))
     }
 
     pub fn new_minipower(workspace_root: &std::path::Path) -> Self {
@@ -853,6 +859,9 @@ impl ModalState {
             }
             ModalState::MiniPower(state) => {
                 minipower::render_minipower(frame, state, area, theme);
+            }
+            ModalState::Blocks(state) => {
+                blocks::render_blocks_modal(frame, state, area, theme);
             }
         }
     }

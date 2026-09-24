@@ -865,6 +865,16 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // F6 toggles interactive MiniBlocks Warehouse modal
+                                if key_event.code == KeyCode::F(6) {
+                                    if matches!(self.modal, ModalState::Blocks(_)) {
+                                        self.modal = ModalState::None;
+                                    } else {
+                                        self.modal = ModalState::new_blocks(&self.workspace_root);
+                                    }
+                                    continue;
+                                }
+
                                 // When PTY drawer is open, route keystrokes into drawer
                                 if self.pty_drawer.is_open {
                                     match key_event.code {

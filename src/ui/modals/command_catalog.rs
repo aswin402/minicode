@@ -61,6 +61,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/plan add auth middleware",
     },
     CommandCatalogItem {
+        name: "/blocks",
+        category: "Workflows & Scaffolding",
+        shortcut: "F6",
+        description: "Browse, preview, and inject UI components, palettes, gradients & templates",
+        example: "/blocks | /miniblocks",
+    },
+    CommandCatalogItem {
         name: "/review",
         category: "Code & Inspection",
         shortcut: "Ctrl+R",

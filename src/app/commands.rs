@@ -273,12 +273,32 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniKit Slash Commands (/kit, /stacks, /skills, /blocks, /drift, /heal, /sync, /doctor)
+        if prompt_lower == "/blocks"
+            || prompt_lower == "/miniblocks"
+            || prompt_lower.starts_with("/blocks ")
+            || prompt_lower.starts_with("/miniblocks ")
+        {
+            let mut blocks_modal = ModalState::new_blocks(&self.workspace_root);
+            let query = prompt_trimmed
+                .strip_prefix("/blocks")
+                .or_else(|| prompt_trimmed.strip_prefix("/miniblocks"))
+                .unwrap_or("")
+                .trim();
+            if !query.is_empty() {
+                if let ModalState::Blocks(ref mut state) = blocks_modal {
+                    state.search_query = query.to_string();
+                    state.refresh_filtered();
+                }
+            }
+            self.modal = blocks_modal;
+            return Ok(CommandAction::Continue);
+        }
+
+        // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")
             || prompt_lower.starts_with("/stack ")
             || prompt_lower == "/block"
-            || prompt_lower == "/blocks"
             || prompt_lower.starts_with("/block ")
             || prompt_lower == "/drift"
             || prompt_lower == "/heal"
@@ -298,7 +318,7 @@ impl<'a> App<'a> {
             } else if prompt_lower.starts_with("/block ") {
                 let rest = prompt_trimmed.strip_prefix("/block").unwrap_or("").trim();
                 format!("block {}", rest)
-            } else if prompt_lower == "/block" || prompt_lower == "/blocks" {
+            } else if prompt_lower == "/block" {
                 "blocks".to_string()
             } else if prompt_lower == "/drift" {
                 "diff".to_string()

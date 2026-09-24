@@ -764,6 +764,9 @@ impl<'a> App<'a> {
                         self.modal = ModalState::None;
 
                         match selected_cmd {
+                            "/blocks" | "/miniblocks" => {
+                                self.modal = ModalState::new_blocks(&self.workspace_root);
+                            }
                             "/stack" => {
                                 self.modal = ModalState::new_stack_select();
                             }
@@ -2022,6 +2025,166 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::Blocks(state) => match key.code {
+                KeyCode::Tab | KeyCode::Right => {
+                    state.next_tab();
+                }
+                KeyCode::BackTab | KeyCode::Left => {
+                    state.prev_tab();
+                }
+                KeyCode::Char('1') => {
+                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Components;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                }
+                KeyCode::Char('2') => {
+                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Palettes;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                }
+                KeyCode::Char('3') => {
+                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Gradients;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                }
+                KeyCode::Char('4') => {
+                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Templates;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                }
+                KeyCode::Up => {
+                    state.select_prev();
+                }
+                KeyCode::Down => {
+                    state.select_next();
+                }
+                KeyCode::PageUp => {
+                    state.scroll_preview_up();
+                }
+                KeyCode::PageDown => {
+                    state.scroll_preview_down();
+                }
+                KeyCode::Char('c')
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        || state.active_tab != crate::ui::modals::blocks::BlocksTab::Components =>
+                {
+                    if let Some(code) = state.get_selected_code() {
+                        let ok = crate::ui::clipboard::copy_to_clipboard(&code);
+                        let msg = if ok {
+                            "✔ Copied to clipboard!".to_string()
+                        } else {
+                            "✗ Failed to copy to clipboard".to_string()
+                        };
+                        state.status_message = Some(msg.clone());
+                        self.timeline.add_status(msg);
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(code) = state.get_selected_code() {
+                        let _ = crate::ui::clipboard::copy_to_clipboard(&code);
+                        match state.active_tab {
+                            crate::ui::modals::blocks::BlocksTab::Components => {
+                                if let Some(id) =
+                                    state.filtered_component_ids.get(state.selected_index)
+                                {
+                                    let store = match crate::blocks::store::get_global_block_store()
+                                        .read()
+                                    {
+                                        Ok(s) => s,
+                                        Err(p) => p.into_inner(),
+                                    };
+                                    if let Some(comp) = store.get_component(id) {
+                                        let ext = match comp.framework {
+                                            crate::blocks::models::BlockFramework::React => "tsx",
+                                            crate::blocks::models::BlockFramework::Svelte => {
+                                                "svelte"
+                                            }
+                                            crate::blocks::models::BlockFramework::Css => "css",
+                                            crate::blocks::models::BlockFramework::Scss => "scss",
+                                            crate::blocks::models::BlockFramework::Tailwind
+                                            | crate::blocks::models::BlockFramework::Shadcn => {
+                                                "tsx"
+                                            }
+                                        };
+                                        let file_name = format!(
+                                            "{}.{}",
+                                            comp.name.trim().replace(' ', "_"),
+                                            ext
+                                        );
+                                        let target_dir = if state
+                                            .workspace_root
+                                            .join("src")
+                                            .join("components")
+                                            .exists()
+                                        {
+                                            state.workspace_root.join("src").join("components")
+                                        } else if state.workspace_root.join("components").exists() {
+                                            state.workspace_root.join("components")
+                                        } else if state.workspace_root.join("src").exists() {
+                                            state.workspace_root.join("src").join("components")
+                                        } else {
+                                            state.workspace_root.join("components")
+                                        };
+                                        let _ = std::fs::create_dir_all(&target_dir);
+                                        let target_file = target_dir.join(&file_name);
+                                        match std::fs::write(&target_file, &comp.code) {
+                                            Ok(_) => {
+                                                let rel = target_file
+                                                    .strip_prefix(&state.workspace_root)
+                                                    .unwrap_or(&target_file);
+                                                let msg = format!(
+                                                    "✔ Injected {} into {}",
+                                                    comp.name,
+                                                    rel.display()
+                                                );
+                                                state.status_message = Some(msg.clone());
+                                                self.timeline.add_status(msg);
+                                            }
+                                            Err(e) => {
+                                                let msg = format!(
+                                                    "✔ Copied {} to clipboard (File write note: {})",
+                                                    comp.name, e
+                                                );
+                                                state.status_message = Some(msg.clone());
+                                                self.timeline.add_status(msg);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            crate::ui::modals::blocks::BlocksTab::Palettes => {
+                                let msg = "✔ Copied palette CSS to clipboard!".to_string();
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                            }
+                            crate::ui::modals::blocks::BlocksTab::Gradients => {
+                                let msg = "✔ Copied CSS gradient to clipboard!".to_string();
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                            }
+                            crate::ui::modals::blocks::BlocksTab::Templates => {
+                                let msg = "✔ Copied template layout to clipboard!".to_string();
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Esc | KeyCode::F(6) => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Backspace => {
+                    state.handle_backspace();
+                }
+                KeyCode::Char(c) => {
+                    state.handle_char(c);
                 }
                 _ => {}
             },

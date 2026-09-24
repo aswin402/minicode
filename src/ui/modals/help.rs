@@ -50,6 +50,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /blocks    ", Style::default().fg(theme.success)),
+            Span::styled(
+                "MiniBlocks UI component & design token warehouse (F6)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /settings  ", Style::default().fg(theme.success)),
             Span::styled(
                 "Configure providers, models, autonomy & probes (F3)",
@@ -173,6 +180,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             Span::styled("  Ctrl+Y     ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Copy text selection or latest response to clipboard",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  F6         ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Toggle MiniBlocks design warehouse modal (/blocks)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),
