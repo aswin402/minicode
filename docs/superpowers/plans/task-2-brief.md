@@ -1,38 +1,118 @@
-# Task 2 Brief: Dynamic 6-Tier Provider Resolution & Default Models Map
+# Task 2 Brief: Fast In-Memory BlockStore & Inverted Index Engine
 
-## Requirements
-1. In `src/config.rs`:
-   - Add `default_models: std::collections::HashMap<String, String>` to `ProviderConfig` (with `#[serde(default)]`) and `RawProviderConfig`.
-   - Update `ProviderConfig::default()` so it does NOT hardcode "gemini" or "gemini-2.5-pro":
-     ```rust
-     default: String::new(),
-     model: String::new(),
-     default_models: std::collections::HashMap::new(),
-     ```
-   - Update `RawConfig::merge_raw` to merge `default_models`.
-2. Implement 6-Tier Resolution on `Config`:
-   - `pub fn find_first_configured_provider(&self) -> Option<(&str, &str)>`
-     Checks known providers in order: `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`, and local providers (`ollama`, `lmstudio`). If any has a valid key (or is local), returns `(provider_name, default_model)`.
-   - `pub fn resolve_active_provider_and_model(&self, workspace_root: Option<&Path>) -> (String, String)`:
-     1. If `!self.provider.default.is_empty() && !self.provider.model.is_empty()` (e.g. from CLI flag or env var override): return `(self.provider.default.clone(), self.provider.model.clone())`.
-     2. Check workspace preference: if `workspace_root` has a saved preference in `load_workspace_preference(ws)`: return that provider and model!
-     3. Check `find_first_configured_provider()`: if found, return it!
-     4. If none found, return `(String::new(), String::new())` (empty fallback, triggering Gate 1 deferred setup when prompt arrives).
-   - Implement `resolve_active_provider_and_model_with_registry(workspace_root: Option<&Path>, registry_path: Option<&Path>) -> (String, String)` for deterministic testing.
-   - Update `get_default_model_for_provider(&self, provider_name: &str) -> String`:
-     First checks `self.provider.default_models.get(provider_name)`; if present and not empty, returns it! Otherwise calls `Config::get_default_model_for_provider(provider_name)`.
-3. In `src/app/commands.rs`:
-   - In Gate 1 check:
-     If `self.config.provider.default.is_empty()`: automatically trigger Gate 1 `ModalState::new_provider_setup_required("", &prompt_to_run)`.
-4. In `Config::load`:
-   - After merging raw configs, call `resolve_active_provider_and_model(workspace_dir)`:
-     If `config.provider.default.is_empty()` or `config.provider.model.is_empty()`:
-     fill them in with the resolved provider and model!
-5. Follow TDD:
-   - Add unit test `test_dynamic_provider_resolution_hierarchy` and `test_default_models_override` in `src/config.rs`.
-   - Targeted tests:
-     `cargo test -j 1 --lib config::tests::test_dynamic_provider_resolution_hierarchy`
-     `cargo test -j 1 --lib config::tests::test_default_models_override`
-   - Run formatting: `cargo fmt`
-   - Run clippy: `cargo clippy -j 1 --bin minicode -- -D warnings`
-6. Commit with message: `feat(config): eliminate hardcoded defaults with 6-tier dynamic provider resolution`
+## Goal
+Implement the thread-safe in-memory `BlockStore` engine with inverted indices, multi-token fuzzy search, full CRUD operations across all 4 asset domains (components, palettes, gradients, templates), version history, JSON disk persistence, and global singleton store initializer.
+
+## Target Files
+- Create: `src/blocks/store.rs`
+- Modify: `src/blocks/mod.rs` (expose `pub mod store;`, re-export `BlockStore`, `BlockSearchFilter`, `BlockSearchResult`, `get_global_block_store`)
+- Tests: Inline in `src/blocks/store.rs`
+
+## Global Constraints
+1. **Targeted Tests ONLY:** Run ONLY `cargo test -j 1 --lib blocks::store::tests`. Never run the full test suite.
+2. **Error Handling:** Zero `.unwrap()` or `.expect()` in non-test code. Return `Result<T, BlockError>`.
+3. **Concurrency:** Always use `-j 1` for `cargo check` and `cargo test`.
+4. **Pure Rust:** No external C libraries or Python scripts.
+5. **No `cd` commands.**
+
+## Interfaces & Types to Produce
+
+### 1. `BlockSearchFilter` (`src/blocks/store.rs`)
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct BlockSearchFilter {
+    pub query: Option<String>,
+    pub category: Option<BlockCategory>,
+    pub framework: Option<BlockFramework>,
+    pub tags: Option<Vec<String>>,
+    pub limit: usize,
+}
+```
+
+### 2. `BlockSearchResult` (`src/blocks/store.rs`)
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockSearchResult {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub description: String,
+    pub category: BlockCategory,
+    pub framework: BlockFramework,
+    pub tags: Vec<String>,
+    pub version: u32,
+    pub score: f64,
+}
+```
+
+### 3. `BlockStore` (`src/blocks/store.rs`)
+```rust
+pub struct BlockStore {
+    components: HashMap<Uuid, BlockComponent>,
+    component_versions: HashMap<Uuid, Vec<(u32, String, DateTime<Utc>)>>,
+    palettes: HashMap<Uuid, BlockPalette>,
+    gradients: HashMap<Uuid, BlockGradient>,
+    templates: HashMap<Uuid, BlockTemplate>,
+    // Inverted indices for O(1) filtering
+    category_index: HashMap<BlockCategory, HashSet<Uuid>>,
+    framework_index: HashMap<BlockFramework, HashSet<Uuid>>,
+    tag_index: HashMap<String, HashSet<Uuid>>,
+    // Persistence path
+    persistence_path: Option<PathBuf>,
+}
+```
+
+Implement the following methods on `BlockStore`:
+- `pub fn new() -> Self` and `pub fn new_isolated(persistence_path: PathBuf) -> Self`
+- **Components:**
+  - `pub fn insert_component(&mut self, component: BlockComponent) -> Result<(), BlockError>`
+  - `pub fn get_component(&self, id: &Uuid) -> Option<&BlockComponent>`
+  - `pub fn get_component_by_name(&self, name: &str) -> Option<&BlockComponent>`
+  - `pub fn search_components(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult>`
+  - `pub fn update_component(&mut self, id: &Uuid, new_code: Option<&str>, new_description: Option<&str>, new_tags: Option<Vec<String>>) -> Result<BlockComponent, BlockError>` (records old code into `component_versions`, increments `version += 1`, updates `updated_at = Utc::now()`)
+  - `pub fn delete_component(&mut self, id: &Uuid) -> Result<(), BlockError>`
+  - `pub fn get_component_history(&self, id: &Uuid) -> Vec<(u32, String, DateTime<Utc>)>`
+- **Palettes:**
+  - `pub fn insert_palette(&mut self, palette: BlockPalette) -> Result<(), BlockError>`
+  - `pub fn get_palette(&self, id: &Uuid) -> Option<&BlockPalette>`
+  - `pub fn list_palettes(&self) -> Vec<&BlockPalette>`
+  - `pub fn search_palettes(&self, query: &str) -> Vec<&BlockPalette>`
+  - `pub fn delete_palette(&mut self, id: &Uuid) -> Result<(), BlockError>`
+- **Gradients:**
+  - `pub fn insert_gradient(&mut self, gradient: BlockGradient) -> Result<(), BlockError>`
+  - `pub fn get_gradient(&self, id: &Uuid) -> Option<&BlockGradient>`
+  - `pub fn list_gradients(&self) -> Vec<&BlockGradient>`
+  - `pub fn search_gradients(&self, query: &str) -> Vec<&BlockGradient>`
+  - `pub fn delete_gradient(&mut self, id: &Uuid) -> Result<(), BlockError>`
+- **Templates:**
+  - `pub fn insert_template(&mut self, template: BlockTemplate) -> Result<(), BlockError>`
+  - `pub fn get_template(&self, id: &Uuid) -> Option<&BlockTemplate>`
+  - `pub fn list_templates(&self) -> Vec<&BlockTemplate>`
+  - `pub fn delete_template(&mut self, id: &Uuid) -> Result<(), BlockError>`
+- **Stats & Persistence:**
+  - `pub fn stats(&self) -> BlockStats`
+  - `pub fn save_to_disk(&self, path: &Path) -> Result<(), BlockError>`
+  - `pub fn load_from_disk(path: &Path) -> Result<Self, BlockError>`
+  - `pub fn persist_if_configured(&self) -> Result<(), BlockError>`
+
+### 4. Global Singleton Initializer
+```rust
+pub fn get_global_block_store() -> &'static std::sync::RwLock<BlockStore>
+```
+Using `std::sync::OnceLock`. Defaults to `~/.local/share/minicode/miniblocks/store.json`.
+
+## Unit Tests to Implement in `src/blocks/store.rs`
+1. `test_store_crud_and_indexing`:
+   - Insert component, retrieve by id and name.
+   - Search with query, category, and framework filters.
+   - Update component, verify version increases to 2 and history is preserved.
+   - Delete component, verify removal from indexes and store.
+2. `test_palette_and_gradient_search`:
+   - Insert palettes and gradients, search by name/tags, list, delete.
+3. `test_disk_persistence_roundtrip`:
+   - Save store to tempfile, reload, verify all assets intact.
+
+## Deliverables
+1. Run `cargo test -j 1 --lib blocks::store::tests` -> must pass!
+2. Run `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
+3. Commit with: `feat(blocks): implement in-memory BlockStore with inverted indices and persistence`
+4. Write execution report to `docs/superpowers/plans/task-2-report.md`.
