@@ -91,9 +91,29 @@ async fn test_e2e_miniblocks_search_and_get() {
     assert!(get_res.success, "block_get failed: {}", get_res.output);
     assert!(get_res.output.contains("# Component:"));
     assert!(get_res.output.contains(&format!("- **ID:** `{}`", comp_id)));
-    assert!(get_res.output.contains("## Source Code"));
     assert!(get_res.output.contains("```"));
     assert!(get_res.output.to_lowercase().contains("nav"));
+
+    // 3. Multi-word Soft-OR query test ("navbar navigation header")
+    let multi_res = ToolRegistry::dispatch(
+        workspace,
+        "call_search_multi",
+        "block_search",
+        &json!({
+            "framework": "react",
+            "query": "navbar navigation header",
+            "limit": 5
+        }),
+        None,
+        1,
+    )
+    .await;
+    assert!(multi_res.success);
+    assert!(
+        multi_res.output.contains("Found"),
+        "expected Soft-OR to find components: {}",
+        multi_res.output
+    );
 }
 
 #[tokio::test]

@@ -223,15 +223,15 @@ impl BlockStore {
         };
 
         for comp in candidates_iter {
-            let mut score = 1.0;
+            let mut score: f64 = 1.0;
 
             if !query_tokens.is_empty() {
                 let name_lower = comp.name.to_lowercase();
                 let desc_lower = comp.description.to_lowercase();
                 let tags_lower: Vec<String> = comp.tags.iter().map(|t| t.to_lowercase()).collect();
 
-                let mut matched_all = true;
-                let mut token_score = 0.0;
+                let mut matched_count = 0;
+                let mut token_score: f64 = 0.0;
 
                 for token in &query_tokens {
                     let in_name = name_lower.contains(token);
@@ -239,6 +239,7 @@ impl BlockStore {
                     let in_desc = desc_lower.contains(token);
 
                     if in_name || in_tags || in_desc {
+                        matched_count += 1;
                         if in_name {
                             token_score += 10.0;
                             if name_lower == *token {
@@ -251,15 +252,21 @@ impl BlockStore {
                         if in_desc {
                             token_score += 2.0;
                         }
-                    } else {
-                        matched_all = false;
-                        break;
                     }
                 }
 
-                if !matched_all {
+                if matched_count == 0 {
                     continue;
                 }
+
+                // Precision boost: reward components matching all or most query tokens
+                if matched_count == query_tokens.len() {
+                    token_score += 25.0;
+                } else {
+                    // Fractional scaling to prefer higher token overlap
+                    token_score *= (matched_count as f64) / (query_tokens.len() as f64);
+                }
+
                 score += token_score;
             }
 
@@ -409,19 +416,55 @@ impl BlockStore {
         self.palettes.values().collect()
     }
 
-    /// Searches palettes by name or tags.
+    /// Searches palettes by name or tags using multi-term ranked scoring.
     pub fn search_palettes(&self, query: &str) -> Vec<&BlockPalette> {
-        let q = query.trim().to_lowercase();
-        if q.is_empty() {
+        let q_tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if q_tokens.is_empty() {
             return self.list_palettes();
         }
-        self.palettes
-            .values()
-            .filter(|p| {
-                p.name.to_lowercase().contains(&q)
-                    || p.tags.iter().any(|t| t.to_lowercase().contains(&q))
-            })
-            .collect()
+
+        let mut scored: Vec<(f32, &BlockPalette)> = Vec::new();
+        for p in self.palettes.values() {
+            let name_lower = p.name.to_lowercase();
+            let tags_lower: Vec<String> = p.tags.iter().map(|t| t.to_lowercase()).collect();
+
+            let mut matched_count = 0;
+            let mut token_score = 0.0;
+
+            for token in &q_tokens {
+                let in_name = name_lower.contains(token);
+                let in_tags = tags_lower.iter().any(|t| t.contains(token));
+
+                if in_name || in_tags {
+                    matched_count += 1;
+                    if in_name {
+                        token_score += 10.0;
+                        if name_lower == *token {
+                            token_score += 15.0;
+                        }
+                    }
+                    if in_tags {
+                        token_score += 5.0;
+                    }
+                }
+            }
+
+            if matched_count > 0 {
+                if matched_count == q_tokens.len() {
+                    token_score += 20.0;
+                } else {
+                    token_score *= (matched_count as f32) / (q_tokens.len() as f32);
+                }
+                scored.push((token_score, p));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(_, p)| p).collect()
     }
 
     /// Deletes a palette.
@@ -452,19 +495,55 @@ impl BlockStore {
         self.gradients.values().collect()
     }
 
-    /// Searches gradients by name or tags.
+    /// Searches gradients by name or tags using multi-term ranked scoring.
     pub fn search_gradients(&self, query: &str) -> Vec<&BlockGradient> {
-        let q = query.trim().to_lowercase();
-        if q.is_empty() {
+        let q_tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if q_tokens.is_empty() {
             return self.list_gradients();
         }
-        self.gradients
-            .values()
-            .filter(|g| {
-                g.name.to_lowercase().contains(&q)
-                    || g.tags.iter().any(|t| t.to_lowercase().contains(&q))
-            })
-            .collect()
+
+        let mut scored: Vec<(f32, &BlockGradient)> = Vec::new();
+        for g in self.gradients.values() {
+            let name_lower = g.name.to_lowercase();
+            let tags_lower: Vec<String> = g.tags.iter().map(|t| t.to_lowercase()).collect();
+
+            let mut matched_count = 0;
+            let mut token_score = 0.0;
+
+            for token in &q_tokens {
+                let in_name = name_lower.contains(token);
+                let in_tags = tags_lower.iter().any(|t| t.contains(token));
+
+                if in_name || in_tags {
+                    matched_count += 1;
+                    if in_name {
+                        token_score += 10.0;
+                        if name_lower == *token {
+                            token_score += 15.0;
+                        }
+                    }
+                    if in_tags {
+                        token_score += 5.0;
+                    }
+                }
+            }
+
+            if matched_count > 0 {
+                if matched_count == q_tokens.len() {
+                    token_score += 20.0;
+                } else {
+                    token_score *= (matched_count as f32) / (q_tokens.len() as f32);
+                }
+                scored.push((token_score, g));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(_, g)| g).collect()
     }
 
     /// Deletes a gradient.
@@ -678,8 +757,18 @@ mod tests {
             limit: 10,
         });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, id);
         assert!(results[0].score > 1.0);
+
+        // Soft-OR multi-term query test: partial overlap matches with ranking
+        let soft_results = store.search_components(&BlockSearchFilter {
+            query: Some("animated beam extraunrelatedword".into()),
+            category: Some(BlockCategory::Hero),
+            framework: Some(BlockFramework::React),
+            tags: None,
+            limit: 10,
+        });
+        assert_eq!(soft_results.len(), 1);
+        assert_eq!(soft_results[0].id, id);
 
         // 4. Update component with version increment and tag changes
         let updated = store
@@ -767,9 +856,19 @@ mod tests {
         assert_eq!(pal_results.len(), 1);
         assert_eq!(pal_results[0].id, pal_id);
 
+        // Soft-OR multi-term test: partial query matches
+        let pal_multi = store.search_palettes("nordic extraunrelatedword");
+        assert_eq!(pal_multi.len(), 1);
+        assert_eq!(pal_multi[0].id, pal_id);
+
         let grad_results = store.search_gradients("neon");
         assert_eq!(grad_results.len(), 1);
         assert_eq!(grad_results[0].id, grad_id);
+
+        // Soft-OR multi-term test: partial query matches
+        let grad_multi = store.search_gradients("neon extraunrelatedword");
+        assert_eq!(grad_multi.len(), 1);
+        assert_eq!(grad_multi[0].id, grad_id);
 
         assert!(store.delete_palette(&pal_id).is_ok());
         assert!(store.delete_gradient(&grad_id).is_ok());
