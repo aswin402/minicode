@@ -80,6 +80,16 @@ impl BlockStore {
         store
     }
 
+    /// Temporarily takes the persistence path, pausing auto-persistence on mutations.
+    pub fn take_persistence_path(&mut self) -> Option<PathBuf> {
+        self.persistence_path.take()
+    }
+
+    /// Sets or restores the persistence path.
+    pub fn set_persistence_path(&mut self, path: Option<PathBuf>) {
+        self.persistence_path = path;
+    }
+
     // --- Component Operations ---
 
     /// Inserts a component and updates all inverted indices.
@@ -607,7 +617,7 @@ pub fn get_global_block_store() -> &'static RwLock<BlockStore> {
             .map(|d| d.join("minicode").join("miniblocks").join("store.json"))
             .unwrap_or_else(|| PathBuf::from(".minicode/blocks/store.json"));
 
-        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|e| {
+        let mut store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|e| {
             tracing::warn!(
                 "Failed to load global block store from {}: {}, initializing empty store",
                 default_path.display(),
@@ -617,6 +627,12 @@ pub fn get_global_block_store() -> &'static RwLock<BlockStore> {
             s.persistence_path = Some(default_path);
             s
         });
+
+        if store.stats().total_components == 0 {
+            if let Err(e) = crate::blocks::seed::seed_default_blocks(&mut store) {
+                tracing::warn!("Failed to seed default blocks into global store: {}", e);
+            }
+        }
 
         RwLock::new(store)
     })
