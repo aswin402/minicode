@@ -512,7 +512,104 @@ fn test_e2e_minikit_sync_generates_miniblocks_skill() {
     assert!(content.contains("block_palettes"));
     assert!(content.contains("block_gradients"));
     assert!(content.contains("block_scaffold"));
+    assert!(content.contains("block_import"));
     assert!(content.contains("block_stats"));
     assert!(content.contains("F6"));
     assert!(content.contains("/blocks"));
+}
+
+#[tokio::test]
+async fn test_e2e_miniblocks_custom_scaffold_and_auto_import() {
+    let temp_dir = tempdir().unwrap();
+    let workspace = temp_dir.path();
+
+    // Setup dummy project with tsconfig.json and path alias
+    let tsconfig_content = r#"{
+        "compilerOptions": {
+            "baseUrl": ".",
+            "paths": {
+                "@/*": ["src/*"]
+            }
+        }
+    }"#;
+    fs::write(workspace.join("tsconfig.json"), tsconfig_content).unwrap();
+
+    let app_file = workspace.join("src/App.tsx");
+    fs::create_dir_all(app_file.parent().unwrap()).unwrap();
+    fs::write(
+        &app_file,
+        "import React from 'react';\n\nexport default function App() {\n  return <div>App</div>;\n}\n",
+    )
+    .unwrap();
+
+    // 1. Scaffold custom component with wire_to option
+    let scaffold_res = ToolRegistry::dispatch(
+        workspace,
+        "call_custom_scaffold",
+        "block_scaffold",
+        &json!({
+            "component_name": "PricingCard",
+            "category": "pricing",
+            "description": "Subscription tier card with price and CTA",
+            "props": ["tier", "price", "ctaText"],
+            "wire_to": "src/App.tsx"
+        }),
+        None,
+        1,
+    )
+    .await;
+
+    assert!(
+        scaffold_res.success,
+        "block_scaffold custom failed: {}",
+        scaffold_res.output
+    );
+    assert!(scaffold_res
+        .output
+        .contains("Successfully scaffolded custom component 'PricingCard'"));
+    assert!(scaffold_res.output.contains("PricingCard.tsx"));
+    assert!(scaffold_res
+        .output
+        .contains("Auto-Wired into `src/App.tsx`"));
+
+    // Check component file exists
+    let comp_file = workspace.join("src/components/PricingCard.tsx");
+    assert!(comp_file.exists());
+    let comp_code = fs::read_to_string(&comp_file).unwrap();
+    assert!(comp_code.contains("export interface PricingCardProps"));
+    assert!(comp_code.contains("tier?: string;"));
+    assert!(comp_code.contains("price?: string;"));
+
+    // Check App.tsx was auto-wired with path alias @/components/PricingCard
+    let app_code = fs::read_to_string(&app_file).unwrap();
+    assert!(app_code.contains("import { PricingCard } from \"@/components/PricingCard\";"));
+
+    // 2. Test block_import directly
+    let import_res = ToolRegistry::dispatch(
+        workspace,
+        "call_import",
+        "block_import",
+        &json!({
+            "component_name": "PricingCard",
+            "consumer_file": "src/App.tsx",
+            "wire": true
+        }),
+        None,
+        1,
+    )
+    .await;
+
+    assert!(
+        import_res.success,
+        "block_import failed: {}",
+        import_res.output
+    );
+    assert!(import_res
+        .output
+        .contains("Component Auto-Import for `PricingCard`"));
+    assert!(import_res.output.contains("@/components/PricingCard"));
+    assert!(import_res.output.contains("<PricingCard />"));
+    assert!(import_res
+        .output
+        .contains("Already present in `src/App.tsx`"));
 }

@@ -1,8 +1,13 @@
 pub mod models;
+pub mod scaffold;
 pub mod seed;
 pub mod store;
 
 pub use models::*;
+pub use scaffold::{
+    generate_import_statement, resolve_import_path, scaffold_custom_component,
+    wire_import_into_file, ProjectConventions,
+};
 pub use seed::{detect_project_framework, seed_default_blocks, ProjectStackInfo};
 pub use store::*;
 

@@ -243,7 +243,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // MiniBlocks UI Component & Scaffolding Mutations
         "block_insert" | "miniblock_insert" | "block_save" | "miniblock_save" | "block_update"
         | "miniblock_update" | "block_delete" | "miniblock_delete" | "block_scaffold"
-        | "miniblock_scaffold" => ToolSafetyLevel::Mutating,
+        | "miniblock_scaffold" | "block_import" | "miniblock_import" => ToolSafetyLevel::Mutating,
 
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,

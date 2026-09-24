@@ -5,6 +5,10 @@
 
 use crate::agent::provider::ToolSchema;
 use crate::blocks::models::{BlockCategory, BlockComponent, BlockFramework};
+use crate::blocks::scaffold::{
+    generate_import_statement, resolve_import_path, scaffold_custom_component,
+    wire_import_into_file, ProjectConventions,
+};
 use crate::blocks::seed::detect_project_framework;
 use crate::blocks::store::{get_global_block_store, BlockSearchFilter};
 use crate::error::{Result, ToolError};
@@ -13,7 +17,7 @@ use serde_json::json;
 use std::path::Path;
 use uuid::Uuid;
 
-/// Returns the 10 tool schemas for the MiniBlocks UI component & design token warehouse.
+/// Returns the 11 tool schemas for the MiniBlocks UI component & design token warehouse.
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
@@ -212,23 +216,75 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "block_scaffold".to_string(),
-            description: "Scaffold a complete UI layout template (landing page, portfolio, dashboard) with component assembly into the workspace.".to_string(),
+            description: "Scaffold a complete UI layout template (landing page, portfolio, dashboard) OR a project-tailored custom component conforming to workspace conventions (TypeScript, Tailwind, Lucide icons, export styles).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "template_name": {
                         "type": "string",
-                        "description": "Template name or ID (e.g. 'landing', 'portfolio', 'dashboard', or full template name)"
+                        "description": "Template name or ID (e.g. 'landing', 'portfolio', 'dashboard') when scaffolding a full multi-component template"
+                    },
+                    "component_name": {
+                        "type": "string",
+                        "description": "Name of custom component to scaffold (e.g. 'UserCard', 'PricingTable', 'FilterBar')"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Component category (navbar, hero, card, modal, pricing, table, etc.) for custom component"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description of custom component purpose and UI layout"
+                    },
+                    "props": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of prop names for custom component (e.g. ['title', 'avatarUrl', 'onSelect'])"
                     },
                     "target_dir": {
                         "type": "string",
-                        "description": "Target directory in workspace (default: 'src/components')"
+                        "description": "Target directory in workspace (default: auto-detected 'src/components')"
                     },
                     "framework": {
                         "type": "string",
                         "description": "Framework override (react, tailwind, svelte, shadcn, css)"
+                    },
+                    "wire_to": {
+                        "type": "string",
+                        "description": "Optional consumer file (e.g. 'src/App.tsx') to auto-wire the component import into"
                     }
                 }
+            }),
+        },
+        ToolSchema {
+            name: "block_import".to_string(),
+            description: "Analyze project module resolution and path aliases (@/* or relative) to generate matching import statements and JSX tags for a component, optionally auto-wiring them into a target consumer file.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "component_name": {
+                        "type": "string",
+                        "description": "Component name or identifier (e.g. 'Navbar', 'UserCard', or warehouse UUID)"
+                    },
+                    "consumer_file": {
+                        "type": "string",
+                        "description": "Path to the consumer file importing the component (e.g. 'src/App.tsx' or 'src/pages/index.tsx')"
+                    },
+                    "component_path": {
+                        "type": "string",
+                        "description": "Optional explicit path to the component file (e.g. 'src/components/Navbar.tsx'). If omitted, resolved automatically."
+                    },
+                    "export_style": {
+                        "type": "string",
+                        "enum": ["auto", "named", "default"],
+                        "description": "Export style: 'named' (import { X }), 'default' (import X), or 'auto' (detect from file/conventions). Defaults to 'auto'."
+                    },
+                    "wire": {
+                        "type": "boolean",
+                        "description": "If true, automatically injects the import statement into the consumer file without creating duplicates. Defaults to false."
+                    }
+                },
+                "required": ["component_name", "consumer_file"]
             }),
         },
         ToolSchema {
@@ -727,6 +783,80 @@ pub async fn dispatch(
 
         "block_scaffold" | "miniblock_scaffold" => Some(
             async {
+                // 1. Check if user requested a custom component scaffold
+                if let Some(comp_name) =
+                    opt_str(args, "component_name").or_else(|| opt_str(args, "component"))
+                {
+                    let conventions = ProjectConventions::detect(workspace_root);
+                    let target_dir_arg = opt_str(args, "target_dir")
+                        .unwrap_or_else(|| conventions.component_dir.to_str().unwrap_or("src/components"));
+                    let category_str = opt_str(args, "category").unwrap_or("section");
+                    let category = BlockCategory::from_str_loose(category_str);
+                    let description = opt_str(args, "description").unwrap_or("Custom UI component");
+                    let props = opt_string_array(args, "props").unwrap_or_default();
+
+                    let (filename, code) =
+                        scaffold_custom_component(&conventions, comp_name, category, description, &props);
+                    let base_path = crate::sandbox::path::validate_path_in_workspace(
+                        workspace_root,
+                        Path::new(target_dir_arg),
+                    )?;
+                    std::fs::create_dir_all(&base_path).map_err(|e| ToolError::FileOp {
+                        path: base_path.display().to_string(),
+                        source: e,
+                    })?;
+
+                    let comp_file = base_path.join(&filename);
+                    let dest =
+                        crate::sandbox::path::validate_path_in_workspace(workspace_root, &comp_file)?;
+                    std::fs::write(&dest, &code).map_err(|e| ToolError::FileOp {
+                        path: dest.display().to_string(),
+                        source: e,
+                    })?;
+
+                    let rel_dest = dest.strip_prefix(workspace_root).unwrap_or(&dest);
+
+                    let mut out = format!(
+                        "Successfully scaffolded custom component '{}'.\n- File: `{}`\n- Framework: {}\n- TypeScript: {}\n- Export Style: {}\n- Styling: {}\n- Category: {}\n\n```{}\n{}\n```\n",
+                        comp_name,
+                        rel_dest.display(),
+                        conventions.framework,
+                        conventions.is_typescript,
+                        if conventions.is_default_export { "Default" } else { "Named" },
+                        if conventions.has_tailwind { "Tailwind CSS" } else if conventions.has_scss { "SCSS" } else { "CSS" },
+                        category,
+                        conventions.file_extension,
+                        code
+                    );
+
+                    if let Some(wire_target) = opt_str(args, "wire_to") {
+                        let wire_path = crate::sandbox::path::validate_path_in_workspace(
+                            workspace_root,
+                            Path::new(wire_target),
+                        )?;
+                        let import_path =
+                            resolve_import_path(workspace_root, &dest, &wire_path, &conventions);
+                        let stmt = generate_import_statement(
+                            comp_name,
+                            &import_path,
+                            conventions.is_default_export,
+                        );
+                        let wired = wire_import_into_file(&wire_path, &stmt, comp_name)
+                            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                        if wired {
+                            out.push_str(&format!("\n- Auto-Wired into `{}`: `{}`\n", wire_target, stmt));
+                        } else {
+                            out.push_str(&format!(
+                                "\n- Import already present in `{}`: `{}`\n",
+                                wire_target, stmt
+                            ));
+                        }
+                    }
+
+                    return Ok(out);
+                }
+
+                // 2. Otherwise scaffold a complete template layout
                 let template_name_arg = opt_str(args, "template_name")
                     .or_else(|| opt_str(args, "template"))
                     .unwrap_or("landing");
@@ -888,6 +1018,97 @@ pub async fn dispatch(
             .await,
         ),
 
+        "block_import" | "miniblock_import" => Some(
+            async {
+                let comp_name = require_str(args, "component_name", "block_import")?;
+                let consumer_file = require_str(args, "consumer_file", "block_import")?;
+                let explicit_path = opt_str(args, "component_path");
+                let export_style_arg = opt_str(args, "export_style").unwrap_or("auto");
+                let wire = opt_bool(args, "wire", false);
+
+                let conventions = ProjectConventions::detect(workspace_root);
+                let consumer_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(consumer_file),
+                )?;
+
+                // Resolve component file
+                let comp_path = if let Some(p) = explicit_path {
+                    crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(p))?
+                } else {
+                    let candidate1 = workspace_root
+                        .join(&conventions.component_dir)
+                        .join(format!("{}.{}", comp_name, conventions.file_extension));
+                    let candidate2 = workspace_root
+                        .join(&conventions.component_dir)
+                        .join(format!("{}.tsx", comp_name));
+                    let candidate3 = workspace_root
+                        .join(&conventions.component_dir)
+                        .join(format!("{}.jsx", comp_name));
+
+                    if candidate1.is_file() {
+                        candidate1
+                    } else if candidate2.is_file() {
+                        candidate2
+                    } else if candidate3.is_file() {
+                        candidate3
+                    } else {
+                        workspace_root
+                            .join(&conventions.component_dir)
+                            .join(format!("{}.{}", comp_name, conventions.file_extension))
+                    }
+                };
+
+                let is_default = match export_style_arg.to_lowercase().as_str() {
+                    "default" => true,
+                    "named" => false,
+                    _ => {
+                        if comp_path.is_file() {
+                            if let Ok(c) = std::fs::read_to_string(&comp_path) {
+                                c.contains("export default")
+                            } else {
+                                conventions.is_default_export
+                            }
+                        } else {
+                            conventions.is_default_export
+                        }
+                    }
+                };
+
+                let import_path =
+                    resolve_import_path(workspace_root, &comp_path, &consumer_path, &conventions);
+                let import_stmt = generate_import_statement(comp_name, &import_path, is_default);
+                let jsx_tag = format!("<{} />", comp_name);
+
+                let wire_status = if wire {
+                    let wired = wire_import_into_file(&consumer_path, &import_stmt, comp_name)
+                        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                    if wired {
+                        format!("Injected into `{}`", consumer_file)
+                    } else {
+                        format!(
+                            "Already present in `{}` (no duplicate created)",
+                            consumer_file
+                        )
+                    }
+                } else {
+                    "Not injected (dry-run mode, pass `wire: true` to auto-insert)".to_string()
+                };
+
+                Ok(format!(
+                    "### Component Auto-Import for `{}`\n- **Consumer File:** `{}`\n- **Resolved Import Path:** `{}`\n- **Export Style:** {}\n- **Wire Action:** {}\n\n```typescript\n{}\n```\n\n**JSX Usage:**\n```tsx\n{}\n```\n",
+                    comp_name,
+                    consumer_file,
+                    import_path,
+                    if is_default { "Default" } else { "Named" },
+                    wire_status,
+                    import_stmt,
+                    jsx_tag
+                ))
+            }
+            .await,
+        ),
+
         "block_stats" | "miniblock_stats" => Some(
             async {
                 let store = get_global_block_store().read().map_err(|e| {
@@ -954,7 +1175,7 @@ mod tests {
     #[test]
     fn test_block_schemas_count() {
         let schemas = get_schemas();
-        assert_eq!(schemas.len(), 10);
+        assert_eq!(schemas.len(), 11);
         let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"block_search"));
         assert!(names.contains(&"block_get"));
@@ -965,6 +1186,7 @@ mod tests {
         assert!(names.contains(&"block_palettes"));
         assert!(names.contains(&"block_gradients"));
         assert!(names.contains(&"block_scaffold"));
+        assert!(names.contains(&"block_import"));
         assert!(names.contains(&"block_stats"));
     }
 
@@ -983,6 +1205,7 @@ mod tests {
         assert_eq!(classify_tool("block_update"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("block_delete"), ToolSafetyLevel::Mutating);
         assert_eq!(classify_tool("block_scaffold"), ToolSafetyLevel::Mutating);
+        assert_eq!(classify_tool("block_import"), ToolSafetyLevel::Mutating);
     }
 
     #[tokio::test]
@@ -1350,5 +1573,102 @@ mod tests {
         assert!(res_json.contains("```json"));
         assert!(res_json.contains("\"tokens\":"));
         assert!(res_json.contains("\"bg\":"));
+    }
+
+    #[tokio::test]
+    async fn test_block_import_and_custom_scaffold() {
+        let temp = tempdir().unwrap();
+
+        // 1. Scaffold a custom component UserBadge
+        let scaffold_res = dispatch(
+            "block_scaffold",
+            &json!({
+                "component_name": "UserBadge",
+                "category": "card",
+                "description": "User badge showing status and name",
+                "props": ["username", "status"]
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(scaffold_res.contains("Successfully scaffolded custom component 'UserBadge'"));
+        assert!(scaffold_res.contains("UserBadge."));
+
+        // 2. Setup a dummy consumer file
+        let app_file = temp.path().join("src/App.tsx");
+        std::fs::create_dir_all(app_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &app_file,
+            "import React from 'react';\n\nexport default function App() {\n  return <div>App</div>;\n}\n",
+        )
+        .unwrap();
+
+        // 3. Test block_import in dry-run mode
+        let import_res = dispatch(
+            "block_import",
+            &json!({
+                "component_name": "UserBadge",
+                "consumer_file": "src/App.tsx",
+                "wire": false
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(import_res.contains("Component Auto-Import for `UserBadge`"));
+        assert!(import_res.contains("import { UserBadge }"));
+        assert!(import_res.contains("<UserBadge />"));
+        assert!(import_res.contains("Not injected"));
+
+        // Verify App.tsx was NOT modified in dry-run mode
+        let app_content = std::fs::read_to_string(&app_file).unwrap();
+        assert!(!app_content.contains("UserBadge"));
+
+        // 4. Test block_import with wire = true
+        let wire_res = dispatch(
+            "block_import",
+            &json!({
+                "component_name": "UserBadge",
+                "consumer_file": "src/App.tsx",
+                "wire": true
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(wire_res.contains("Injected into `src/App.tsx`"));
+
+        // Verify App.tsx WAS modified and contains import
+        let app_content_after = std::fs::read_to_string(&app_file).unwrap();
+        assert!(app_content_after.contains("import { UserBadge }"));
+
+        // 5. Test idempotency (calling wire again does not duplicate)
+        let wire_again_res = dispatch(
+            "block_import",
+            &json!({
+                "component_name": "UserBadge",
+                "consumer_file": "src/App.tsx",
+                "wire": true
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(wire_again_res.contains("Already present"));
+        let import_line_count = std::fs::read_to_string(&app_file)
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("UserBadge"))
+            .count();
+        assert_eq!(import_line_count, 1);
     }
 }

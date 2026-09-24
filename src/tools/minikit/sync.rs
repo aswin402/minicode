@@ -350,17 +350,18 @@ impl MiniKitSyncEngine {
                 - `form`: Inputs, login/signup forms, contact sheets, validation states.\n\
                 - `table`: Data tables, sortable grids, record lists.\n\
                 - `sidebar`, `banner`, `badge`, `button`, and more.\n\n\
-                ## Warehouse Tools Reference (10 Tools)\n\
+                ## Warehouse Tools Reference (11 Tools)\n\
                 1. `block_search`: Search UI components by keyword, category, framework, or tags with relevance scoring.\n\
                 2. `block_get`: Retrieve complete source code, dependencies, and metadata by component ID or name.\n\
                 3. `block_insert`: Inject a component or raw code into a workspace file (`append`, `prepend`, `create`, `replace`).\n\
                 4. `block_save`: Save a new custom UI component into the warehouse.\n\
                 5. `block_update`: Update component code, description, or tags with automatic version incrementing.\n\
                 6. `block_delete`: Delete a component from the warehouse by UUID.\n\
-                7. `block_palettes`: Query 4-hex curated color palettes with CSS variable tokens.\n\
+                7. `block_palettes`: Query 4-hex curated color palettes with multi-format token export (CSS, Tailwind, SCSS, JSON).\n\
                 8. `block_gradients`: Search curated modern CSS gradients with color stops.\n\
-                9. `block_scaffold`: Scaffold complete layout templates (`landing`, `portfolio`, `dashboard`).\n\
-                10. `block_stats`: Inspect warehouse catalog statistics and category/framework breakdowns.\n\n\
+                9. `block_scaffold`: Scaffold complete layout templates (`landing`, `portfolio`, `dashboard`) or project-tailored custom components.\n\
+                10. `block_import`: Generate exact path-aliased import statements and JSX tags, with optional auto-wiring into consumer files.\n\
+                11. `block_stats`: Inspect warehouse catalog statistics and category/framework breakdowns.\n\n\
                 ## AI Agent Guidelines\n\
                 - **Query First**: Always query `block_search` or `block_palettes` before creating UI components or color palettes from scratch.\n\
                 - **Surgical Insertion**: Use `block_insert` to safely write components to target paths in the project.\n\
