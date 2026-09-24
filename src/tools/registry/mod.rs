@@ -1,4 +1,7 @@
 pub mod agent_tools;
+pub mod block_tools;
+#[allow(unused_imports)]
+pub use block_tools as miniblocks_tools;
 pub mod context_tools;
 pub mod exec_tools;
 pub mod explore_tools;

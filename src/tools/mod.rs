@@ -55,6 +55,7 @@ impl ToolRegistry {
         schemas.extend(registry::minikit_tools::get_schemas());
         schemas.extend(registry::minipower_tools::get_schemas());
         schemas.extend(registry::explore_tools::get_schemas());
+        schemas.extend(registry::block_tools::get_schemas());
         schemas
     }
 
@@ -262,6 +263,11 @@ impl ToolRegistry {
             return res;
         }
 
+        // 11. MiniBlocks UI Component & Design Token Warehouse Tools
+        if let Some(res) = registry::block_tools::dispatch(tool_name, args, workspace_root).await {
+            return res;
+        }
+
         Err(ToolError::NotFound {
             name: tool_name.to_string(),
         }
@@ -336,6 +342,12 @@ mod tests {
         assert!(names.contains(&"git_conflicts"));
         assert!(names.contains(&"create_pr"));
         assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"block_search"));
+        assert!(names.contains(&"block_get"));
+        assert!(names.contains(&"block_insert"));
+        assert!(names.contains(&"block_save"));
+        assert!(names.contains(&"block_scaffold"));
+        assert!(names.contains(&"block_stats"));
     }
 
     #[test]

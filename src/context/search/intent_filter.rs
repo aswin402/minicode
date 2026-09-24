@@ -168,6 +168,24 @@ impl IntentClassifier {
             categories.insert(ToolCategory::MiniPower);
         }
 
+        // 9. MiniBlocks UI Component & Design Warehouse Intent
+        if lower.contains("block")
+            || lower.contains("miniblock")
+            || lower.contains("miniblocks")
+            || lower.contains("component")
+            || lower.contains("components")
+            || lower.contains("palette")
+            || lower.contains("palettes")
+            || lower.contains("gradient")
+            || lower.contains("gradients")
+            || lower.contains("navbar")
+            || lower.contains("hero")
+            || lower.contains("ui design")
+            || lower.contains("design token")
+        {
+            categories.insert(ToolCategory::Blocks);
+        }
+
         categories
     }
 
@@ -301,6 +319,16 @@ mod tests {
         let detected = IntentClassifier::detect("check git diff and search web for docs");
         assert!(detected.contains(&ToolCategory::Git));
         assert!(detected.contains(&ToolCategory::Web));
+    }
+
+    #[test]
+    fn test_intent_detection_blocks() {
+        let detected = IntentClassifier::detect("search for a responsive navbar component");
+        assert!(detected.contains(&ToolCategory::Blocks));
+        let detected2 = IntentClassifier::detect("show me modern color palettes with hex tokens");
+        assert!(detected2.contains(&ToolCategory::Blocks));
+        let detected3 = IntentClassifier::detect("scaffold a hero section from miniblocks");
+        assert!(detected3.contains(&ToolCategory::Blocks));
     }
 
     #[test]

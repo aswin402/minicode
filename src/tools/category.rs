@@ -20,6 +20,8 @@ pub enum ToolCategory {
     Memory,
     #[serde(alias = "power")]
     MiniPower,
+    #[serde(alias = "miniblocks")]
+    Blocks,
 }
 
 impl ToolCategory {
@@ -28,7 +30,7 @@ impl ToolCategory {
     #[allow(non_upper_case_globals, dead_code)]
     pub const Power: ToolCategory = ToolCategory::MiniPower;
 
-    pub const ALL: [ToolCategory; 10] = [
+    pub const ALL: [ToolCategory; 11] = [
         ToolCategory::Files,
         ToolCategory::Exec,
         ToolCategory::Search,
@@ -39,6 +41,7 @@ impl ToolCategory {
         ToolCategory::Agent,
         ToolCategory::Memory,
         ToolCategory::MiniPower,
+        ToolCategory::Blocks,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -53,6 +56,7 @@ impl ToolCategory {
             Self::Agent => "agent",
             Self::Memory => "memory",
             Self::MiniPower => "minipower",
+            Self::Blocks => "blocks",
         }
     }
 
@@ -68,6 +72,7 @@ impl ToolCategory {
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning & skills (create_plan, update_progress, wiki_write)",
             Self::MiniPower => "MiniPower methodology, verification barrier & worktree tasks (power_status, power_brainstorm, power_plan, power_review, power_verify, power_worktree_task)",
+            Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
         }
     }
 
@@ -84,6 +89,7 @@ impl ToolCategory {
             Self::Agent => registry::agent_tools::get_schemas(),
             Self::Memory => registry::context_tools::get_schemas(),
             Self::MiniPower => registry::minipower_tools::get_schemas(),
+            Self::Blocks => registry::block_tools::get_schemas(),
         }
     }
 }
@@ -103,8 +109,9 @@ impl FromStr for ToolCategory {
             "agent" | "agents" | "swarm" | "subagent" => Ok(Self::Agent),
             "memory" | "plan" | "wiki" | "skill" | "skills" => Ok(Self::Memory),
             "power" | "minipower" | "superpower" | "superpowers" | "verify" | "verification" | "review" | "brainstorm" | "worktree" | "tdd" => Ok(Self::MiniPower),
+            "blocks" | "block" | "miniblocks" | "component" | "components" | "palette" | "palettes" => Ok(Self::Blocks),
             other => Err(format!(
-                "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, all",
+                "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, all",
                 other
             )),
         }
@@ -118,7 +125,7 @@ pub fn activate_tools_schema() -> ToolSchema {
 
 /// JSON Schema for the `activate_tools` dynamic meta-tool with connected MCP servers advertised.
 pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSchema {
-    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
+    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'blocks' (MiniBlocks UI warehouse), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
 
     let mut enums = vec![
         "git".to_string(),
@@ -129,6 +136,8 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
         "onpkg".to_string(),
         "power".to_string(),
         "minipower".to_string(),
+        "blocks".to_string(),
+        "miniblocks".to_string(),
         "agent".to_string(),
         "search".to_string(),
         "memory".to_string(),
@@ -160,7 +169,7 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'power', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
+                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
                     "enum": enums
                 },
                 "reason": {
@@ -388,6 +397,14 @@ mod tests {
         assert_eq!(
             "agent".parse::<ToolCategory>().unwrap(),
             ToolCategory::Agent
+        );
+        assert_eq!(
+            "blocks".parse::<ToolCategory>().unwrap(),
+            ToolCategory::Blocks
+        );
+        assert_eq!(
+            "miniblocks".parse::<ToolCategory>().unwrap(),
+            ToolCategory::Blocks
         );
     }
 }

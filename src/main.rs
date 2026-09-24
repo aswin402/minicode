@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+pub mod blocks;
 mod config;
 mod constants;
 mod context;

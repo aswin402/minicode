@@ -228,6 +228,23 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "minipower_worktree_task"
         | "power_task" => ToolSafetyLevel::Mutating,
 
+        // MiniBlocks UI Component & Design Token Warehouse (ReadOnly)
+        "block_search"
+        | "miniblock_search"
+        | "block_get"
+        | "miniblock_get"
+        | "block_palettes"
+        | "miniblock_palettes"
+        | "block_gradients"
+        | "miniblock_gradients"
+        | "block_stats"
+        | "miniblock_stats" => ToolSafetyLevel::ReadOnly,
+
+        // MiniBlocks UI Component & Scaffolding Mutations
+        "block_insert" | "miniblock_insert" | "block_save" | "miniblock_save" | "block_update"
+        | "miniblock_update" | "block_delete" | "miniblock_delete" | "block_scaffold"
+        | "miniblock_scaffold" => ToolSafetyLevel::Mutating,
+
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,
     }
@@ -265,6 +282,8 @@ mod tests {
         assert_eq!(classify_tool("power_verify"), ToolSafetyLevel::ReadOnly);
         assert_eq!(classify_tool("power_review"), ToolSafetyLevel::ReadOnly);
         assert_eq!(classify_tool("power_brainstorm"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("block_search"), ToolSafetyLevel::ReadOnly);
+        assert_eq!(classify_tool("block_palettes"), ToolSafetyLevel::ReadOnly);
         assert!(is_read_only("read_file"));
         assert!(!is_barrier("read_file"));
     }
@@ -283,6 +302,8 @@ mod tests {
             classify_tool("power_worktree_task"),
             ToolSafetyLevel::Mutating
         );
+        assert_eq!(classify_tool("block_insert"), ToolSafetyLevel::Mutating);
+        assert_eq!(classify_tool("block_scaffold"), ToolSafetyLevel::Mutating);
         assert!(!is_read_only("write_file"));
         assert!(is_barrier("write_file"));
     }
