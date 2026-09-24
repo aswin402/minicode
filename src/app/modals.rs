@@ -2035,29 +2035,45 @@ impl<'a> App<'a> {
                 KeyCode::BackTab | KeyCode::Left => {
                     state.prev_tab();
                 }
-                KeyCode::Char('1') => {
+                KeyCode::Char('1')
+                    if state.active_tab != crate::ui::modals::blocks::BlocksTab::Components
+                        || state.search_query.is_empty() =>
+                {
                     state.active_tab = crate::ui::modals::blocks::BlocksTab::Components;
                     state.selected_index = 0;
                     state.preview_scroll_offset = 0;
                     state.status_message = None;
+                    state.refresh_filtered();
                 }
-                KeyCode::Char('2') => {
+                KeyCode::Char('2')
+                    if state.active_tab != crate::ui::modals::blocks::BlocksTab::Components
+                        || state.search_query.is_empty() =>
+                {
                     state.active_tab = crate::ui::modals::blocks::BlocksTab::Palettes;
                     state.selected_index = 0;
                     state.preview_scroll_offset = 0;
                     state.status_message = None;
+                    state.refresh_filtered();
                 }
-                KeyCode::Char('3') => {
+                KeyCode::Char('3')
+                    if state.active_tab != crate::ui::modals::blocks::BlocksTab::Components
+                        || state.search_query.is_empty() =>
+                {
                     state.active_tab = crate::ui::modals::blocks::BlocksTab::Gradients;
                     state.selected_index = 0;
                     state.preview_scroll_offset = 0;
                     state.status_message = None;
+                    state.refresh_filtered();
                 }
-                KeyCode::Char('4') => {
+                KeyCode::Char('4')
+                    if state.active_tab != crate::ui::modals::blocks::BlocksTab::Components
+                        || state.search_query.is_empty() =>
+                {
                     state.active_tab = crate::ui::modals::blocks::BlocksTab::Templates;
                     state.selected_index = 0;
                     state.preview_scroll_offset = 0;
                     state.status_message = None;
+                    state.refresh_filtered();
                 }
                 KeyCode::Up => {
                     state.select_prev();
@@ -2113,11 +2129,19 @@ impl<'a> App<'a> {
                                                 "tsx"
                                             }
                                         };
-                                        let file_name = format!(
-                                            "{}.{}",
-                                            comp.name.trim().replace(' ', "_"),
-                                            ext
-                                        );
+                                        let clean_stem: String = comp
+                                            .name
+                                            .chars()
+                                            .filter(|c| {
+                                                c.is_alphanumeric() || *c == '-' || *c == '_'
+                                            })
+                                            .collect();
+                                        let file_stem = if clean_stem.is_empty() {
+                                            "component".to_string()
+                                        } else {
+                                            clean_stem
+                                        };
+                                        let file_name = format!("{}.{}", file_stem, ext);
                                         let target_dir = if state
                                             .workspace_root
                                             .join("src")
@@ -2133,23 +2157,40 @@ impl<'a> App<'a> {
                                             state.workspace_root.join("components")
                                         };
                                         let _ = std::fs::create_dir_all(&target_dir);
-                                        let target_file = target_dir.join(&file_name);
-                                        match std::fs::write(&target_file, &comp.code) {
-                                            Ok(_) => {
-                                                let rel = target_file
-                                                    .strip_prefix(&state.workspace_root)
-                                                    .unwrap_or(&target_file);
-                                                let msg = format!(
-                                                    "✔ Injected {} into {}",
-                                                    comp.name,
-                                                    rel.display()
-                                                );
-                                                state.status_message = Some(msg.clone());
-                                                self.timeline.add_status(msg);
+                                        let candidate_file = target_dir.join(&file_name);
+                                        let validated_file =
+                                            crate::sandbox::path::validate_path_in_workspace(
+                                                &state.workspace_root,
+                                                &candidate_file,
+                                            );
+                                        match validated_file {
+                                            Ok(target_file) => {
+                                                match std::fs::write(&target_file, &comp.code) {
+                                                    Ok(_) => {
+                                                        let rel = target_file
+                                                            .strip_prefix(&state.workspace_root)
+                                                            .unwrap_or(&target_file);
+                                                        let msg = format!(
+                                                            "✔ Injected {} into {}",
+                                                            comp.name,
+                                                            rel.display()
+                                                        );
+                                                        state.status_message = Some(msg.clone());
+                                                        self.timeline.add_status(msg);
+                                                    }
+                                                    Err(e) => {
+                                                        let msg = format!(
+                                                            "✔ Copied {} to clipboard (File write note: {})",
+                                                            comp.name, e
+                                                        );
+                                                        state.status_message = Some(msg.clone());
+                                                        self.timeline.add_status(msg);
+                                                    }
+                                                }
                                             }
                                             Err(e) => {
                                                 let msg = format!(
-                                                    "✔ Copied {} to clipboard (File write note: {})",
+                                                    "✔ Copied {} to clipboard (Security validation note: {})",
                                                     comp.name, e
                                                 );
                                                 state.status_message = Some(msg.clone());

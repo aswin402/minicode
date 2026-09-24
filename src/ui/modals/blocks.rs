@@ -104,16 +104,20 @@ impl BlocksModalState {
 
     pub fn next_tab(&mut self) {
         self.active_tab = self.active_tab.next();
+        self.search_query.clear();
         self.selected_index = 0;
         self.preview_scroll_offset = 0;
         self.status_message = None;
+        self.refresh_filtered();
     }
 
     pub fn prev_tab(&mut self) {
         self.active_tab = self.active_tab.prev();
+        self.search_query.clear();
         self.selected_index = 0;
         self.preview_scroll_offset = 0;
         self.status_message = None;
+        self.refresh_filtered();
     }
 
     pub fn select_next(&mut self) {
@@ -176,26 +180,40 @@ impl BlocksModalState {
         }
         self.filtered_component_ids = comp_results.into_iter().map(|r| r.id).collect();
 
-        // 2. Palettes
-        let mut pals = store.search_palettes(&self.search_query);
+        // 2. Palettes (only filter by search_query when active_tab is Palettes)
+        let pal_query = if self.active_tab == BlocksTab::Palettes {
+            self.search_query.trim()
+        } else {
+            ""
+        };
+        let mut pals = store.search_palettes(pal_query);
         pals.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         self.filtered_palette_ids = pals.into_iter().map(|p| p.id).collect();
 
-        // 3. Gradients
-        let mut grads = store.search_gradients(&self.search_query);
+        // 3. Gradients (only filter by search_query when active_tab is Gradients)
+        let grad_query = if self.active_tab == BlocksTab::Gradients {
+            self.search_query.trim()
+        } else {
+            ""
+        };
+        let mut grads = store.search_gradients(grad_query);
         grads.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         self.filtered_gradient_ids = grads.into_iter().map(|g| g.id).collect();
 
-        // 4. Templates
-        let q = self.search_query.trim().to_lowercase();
+        // 4. Templates (only filter by search_query when active_tab is Templates)
+        let tmpl_query = if self.active_tab == BlocksTab::Templates {
+            self.search_query.trim().to_lowercase()
+        } else {
+            String::new()
+        };
         let mut tmpls: Vec<_> = store
             .list_templates()
             .into_iter()
             .filter(|t| {
-                q.is_empty()
-                    || t.name.to_lowercase().contains(&q)
-                    || t.description.to_lowercase().contains(&q)
-                    || t.base_layout.to_lowercase().contains(&q)
+                tmpl_query.is_empty()
+                    || t.name.to_lowercase().contains(&tmpl_query)
+                    || t.description.to_lowercase().contains(&tmpl_query)
+                    || t.base_layout.to_lowercase().contains(&tmpl_query)
             })
             .collect();
         tmpls.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -995,6 +1013,9 @@ fn style_code_line<'a>(line: &'a str, theme: &'a Theme) -> Vec<Span<'a>> {
 /// Parses a hex color string into a Ratatui RGB Color.
 fn hex_to_rgb(hex: &str) -> Option<Color> {
     let s = hex.trim().strip_prefix('#')?;
+    if !s.is_ascii() {
+        return None;
+    }
     if s.len() == 6 {
         let r = u8::from_str_radix(&s[0..2], 16).ok()?;
         let g = u8::from_str_radix(&s[2..4], 16).ok()?;

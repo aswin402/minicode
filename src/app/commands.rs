@@ -279,11 +279,13 @@ impl<'a> App<'a> {
             || prompt_lower.starts_with("/miniblocks ")
         {
             let mut blocks_modal = ModalState::new_blocks(&self.workspace_root);
-            let query = prompt_trimmed
-                .strip_prefix("/blocks")
-                .or_else(|| prompt_trimmed.strip_prefix("/miniblocks"))
-                .unwrap_or("")
-                .trim();
+            let query = if prompt_lower.starts_with("/miniblocks") {
+                prompt_trimmed[11..].trim()
+            } else if prompt_lower.starts_with("/blocks") {
+                prompt_trimmed[7..].trim()
+            } else {
+                ""
+            };
             if !query.is_empty() {
                 if let ModalState::Blocks(ref mut state) = blocks_modal {
                     state.search_query = query.to_string();
