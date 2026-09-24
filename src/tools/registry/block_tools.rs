@@ -10,7 +10,7 @@ use crate::blocks::store::{get_global_block_store, BlockSearchFilter};
 use crate::error::{Result, ToolError};
 use crate::tools::param::*;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use uuid::Uuid;
 
 /// Returns the 10 tool schemas for the MiniBlocks UI component & design token warehouse.
@@ -304,12 +304,13 @@ pub async fn dispatch(
                     let tags_str = if r.tags.is_empty() {
                         "-".to_string()
                     } else {
-                        r.tags.join(", ")
+                        r.tags.join(", ").replace('|', "\\|")
                     };
+                    let name_escaped = r.name.replace('|', "\\|");
                     let desc_escaped = r.description.replace('|', "\\|").replace('\n', " ");
                     out.push_str(&format!(
                         "| {} | {} | {} | {} | {} | {:.1} | `{}` | {} |\n",
-                        r.name,
+                        name_escaped,
                         r.category,
                         r.framework,
                         r.version,
@@ -444,11 +445,10 @@ pub async fn dispatch(
                     (code, None, Vec::new())
                 };
 
-                let file_path = if Path::new(target_file).is_absolute() {
-                    PathBuf::from(target_file)
-                } else {
-                    workspace_root.join(target_file)
-                };
+                let file_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(target_file),
+                )?;
 
                 if let Some(parent) = file_path.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
@@ -457,7 +457,8 @@ pub async fn dispatch(
                     })?;
                 }
 
-                let final_content = match mode.to_ascii_lowercase().as_str() {
+                let mode_clean = mode.to_ascii_lowercase();
+                let final_content = match mode_clean.as_str() {
                     "create" | "replace" => code_to_insert.clone(),
                     "prepend" => {
                         if file_path.exists() {
@@ -472,7 +473,7 @@ pub async fn dispatch(
                             code_to_insert.clone()
                         }
                     }
-                    _ /* append */ => {
+                    "append" => {
                         if file_path.exists() {
                             let existing = std::fs::read_to_string(&file_path).map_err(|e| {
                                 ToolError::FileOp {
@@ -488,6 +489,16 @@ pub async fn dispatch(
                         } else {
                             code_to_insert.clone()
                         }
+                    }
+                    other => {
+                        return Err(ToolError::InvalidArguments {
+                            name: "block_insert".to_string(),
+                            reason: format!(
+                                "Invalid mode '{}'. Supported modes are: append, prepend, create, replace",
+                                other
+                            ),
+                        }
+                        .into());
                     }
                 };
 
@@ -731,7 +742,7 @@ pub async fn dispatch(
                 let q = template_name_arg.trim().to_lowercase();
                 let tmpl = if let Ok(uuid) = Uuid::parse_str(&q) {
                     store.get_template(&uuid)
-                } else {
+                } else if !q.is_empty() {
                     templates
                         .iter()
                         .find(|t| t.name.to_lowercase().contains(&q))
@@ -747,21 +758,26 @@ pub async fn dispatch(
                                 })
                                 .copied()
                         })
-                        .or_else(|| templates.first().copied())
+                } else {
+                    templates.first().copied()
                 };
 
                 let tmpl = tmpl.ok_or_else(|| {
                     ToolError::ExecutionFailed(format!(
-                        "Template '{}' not found in warehouse",
-                        template_name_arg
+                        "Template '{}' not found in MiniBlocks warehouse. Available templates: {}",
+                        template_name_arg,
+                        templates
+                            .iter()
+                            .map(|t| t.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ))
                 })?;
 
-                let base_path = if Path::new(target_dir_arg).is_absolute() {
-                    PathBuf::from(target_dir_arg)
-                } else {
-                    workspace_root.join(target_dir_arg)
-                };
+                let base_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(target_dir_arg),
+                )?;
 
                 std::fs::create_dir_all(&base_path).map_err(|e| ToolError::FileOp {
                     path: base_path.display().to_string(),
@@ -782,7 +798,10 @@ pub async fn dispatch(
                         };
                         let file_stem = sanitize_filename(&comp.name);
                         let filename = format!("{}.{}", file_stem, ext);
-                        let dest = base_path.join(&filename);
+                        let dest = crate::sandbox::path::validate_path_in_workspace(
+                            workspace_root,
+                            &base_path.join(&filename),
+                        )?;
                         std::fs::write(&dest, &comp.code).map_err(|e| ToolError::FileOp {
                             path: dest.display().to_string(),
                             source: e,
@@ -824,7 +843,10 @@ pub async fn dispatch(
                     Some(BlockFramework::Svelte) => "App.svelte",
                     _ => "index.html",
                 };
-                let layout_dest = base_path.join(layout_filename);
+                let layout_dest = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    &base_path.join(layout_filename),
+                )?;
                 std::fs::write(&layout_dest, &assembled).map_err(|e| ToolError::FileOp {
                     path: layout_dest.display().to_string(),
                     source: e,
@@ -1182,5 +1204,89 @@ mod tests {
         assert!(scaffold_res.contains("Scaffolding Completed"));
         assert!(scaffold_res.contains("Files Written"));
         assert!(target_dir.join("index.html").exists());
+    }
+
+    #[tokio::test]
+    async fn test_block_insert_rejects_path_traversal() {
+        let temp = tempdir().unwrap();
+
+        // 1. Relative traversal attempting to escape workspace
+        let res1 = dispatch(
+            "block_insert",
+            &json!({
+                "target_file": "../outside.html",
+                "code": "<div>test</div>"
+            }),
+            temp.path(),
+        )
+        .await;
+        assert!(res1.is_some());
+        assert!(res1.unwrap().is_err());
+
+        // 2. Absolute path attempting to escape workspace
+        let res2 = dispatch(
+            "block_insert",
+            &json!({
+                "target_file": "/tmp/arbitrary_file.html",
+                "code": "<div>test</div>"
+            }),
+            temp.path(),
+        )
+        .await;
+        assert!(res2.is_some());
+        assert!(res2.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_block_insert_rejects_invalid_mode() {
+        let temp = tempdir().unwrap();
+        let res = dispatch(
+            "block_insert",
+            &json!({
+                "target_file": "src/App.tsx",
+                "code": "<div>test</div>",
+                "mode": "invalid_mode_overwrite"
+            }),
+            temp.path(),
+        )
+        .await;
+        assert!(res.is_some());
+        let err = res.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Invalid mode"));
+    }
+
+    #[tokio::test]
+    async fn test_block_scaffold_rejects_path_traversal() {
+        let temp = tempdir().unwrap();
+        let res = dispatch(
+            "block_scaffold",
+            &json!({
+                "template_name": "landing",
+                "target_dir": "../../../escaped_components"
+            }),
+            temp.path(),
+        )
+        .await;
+        assert!(res.is_some());
+        assert!(res.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_block_scaffold_rejects_unknown_template() {
+        let temp = tempdir().unwrap();
+        let res = dispatch(
+            "block_scaffold",
+            &json!({
+                "template_name": "non_existent_super_template_12345",
+                "target_dir": "components"
+            }),
+            temp.path(),
+        )
+        .await;
+        assert!(res.is_some());
+        let err = res.unwrap().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("not found in MiniBlocks warehouse"));
     }
 }
