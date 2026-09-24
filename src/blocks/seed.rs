@@ -162,15 +162,22 @@ pub fn detect_project_framework(project_root: &Path) -> Option<BlockFramework> {
 
     // Check if any file in root starts with "tailwind.config." or "svelte.config."
     if let Ok(entries) = std::fs::read_dir(project_root) {
+        let mut has_svelte = false;
+        let mut has_tailwind = false;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("tailwind.config.") {
-                return Some(BlockFramework::Tailwind);
-            }
             if name_str.starts_with("svelte.config.") {
-                return Some(BlockFramework::Svelte);
+                has_svelte = true;
+            } else if name_str.starts_with("tailwind.config.") {
+                has_tailwind = true;
             }
+        }
+        if has_svelte {
+            return Some(BlockFramework::Svelte);
+        }
+        if has_tailwind {
+            return Some(BlockFramework::Tailwind);
         }
     }
 
@@ -340,5 +347,21 @@ mod tests {
         }"#;
         std::fs::write(temp2.path().join("package.json"), pkg).unwrap();
         assert_eq!(detect_project_framework(temp2.path()), None);
+    }
+
+    #[test]
+    fn test_detect_project_framework_scss() {
+        let temp = tempdir().unwrap();
+        let pkg = r#"{
+            "name": "style-service",
+            "dependencies": {
+                "sass": "^1.69.0"
+            }
+        }"#;
+        std::fs::write(temp.path().join("package.json"), pkg).unwrap();
+        assert_eq!(
+            detect_project_framework(temp.path()),
+            Some(BlockFramework::Scss)
+        );
     }
 }
