@@ -158,7 +158,9 @@ impl MiniPowerEngine {
                - **Acceptance Criteria:** Verifiable conditions for completion.\n\
                - **Verification Command:** Concrete test or check (e.g. `cargo test -j 1 --lib ...`).\n\
             3. Follow strict Red/Green TDD: tests are added before or alongside implementation.\n\
-            4. Write the finalized plan into `{}/core/todo.md` and `{}/core/implementation.md`.\n",
+            4. If this implementation involves frontend components, UI, styles, or page layouts:\n\
+               - Search the MiniBlocks warehouse first (`block_search`, `block_palettes`, `block_scaffold`) to reuse verified components and design tokens instead of hallucinating CSS from scratch.\n\
+            5. Write the finalized plan into `{}/core/todo.md` and `{}/core/implementation.md`.\n",
             topic, docs_name, docs_name
         )
     }
@@ -384,5 +386,6 @@ mod tests {
         let plan = MiniPowerEngine::format_plan_prompt(workspace, "OAuth integration");
         assert!(plan.contains("OAuth integration"));
         assert!(plan.contains("Structured Implementation Plan"));
+        assert!(plan.contains("MiniBlocks warehouse first"));
     }
 }

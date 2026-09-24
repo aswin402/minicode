@@ -333,6 +333,43 @@ impl MiniKitSyncEngine {
                 - [ ] Verification and documentation\n";
             fs::write(todo_path, todo).ok();
         }
+
+        // 9. skills/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
+        let miniblocks_path = skills_dir.join("miniblocks.md");
+        if !miniblocks_path.exists() {
+            let miniblocks_content = "# MiniBlocks Native UI Component & Design Warehouse 🎨\n\n\
+                ## Overview\n\
+                MiniBlocks is a native, local-first UI component and design token warehouse embedded directly inside minicode. It provides instant access to **1,082+ verified components**, **105 curated palettes**, **212 gradients**, and **3 layout templates** without external network dependencies.\n\n\
+                ## Available Component Categories\n\
+                - `navbar`: Navigation headers, responsive menus, brand bars.\n\
+                - `hero`: Above-the-fold banners, CTAs, conversion hero sections.\n\
+                - `footer`: Site footers, link matrices, copyright bars.\n\
+                - `card`: Feature cards, pricing cards, profile displays, interactive cards.\n\
+                - `modal`: Dialogs, overlays, confirmation sheets, alerts.\n\
+                - `pricing`: Subscription tiers, comparison tables, billing switches.\n\
+                - `form`: Inputs, login/signup forms, contact sheets, validation states.\n\
+                - `table`: Data tables, sortable grids, record lists.\n\
+                - `sidebar`, `banner`, `badge`, `button`, and more.\n\n\
+                ## Warehouse Tools Reference (10 Tools)\n\
+                1. `block_search`: Search UI components by keyword, category, framework, or tags with relevance scoring.\n\
+                2. `block_get`: Retrieve complete source code, dependencies, and metadata by component ID or name.\n\
+                3. `block_insert`: Inject a component or raw code into a workspace file (`append`, `prepend`, `create`, `replace`).\n\
+                4. `block_save`: Save a new custom UI component into the warehouse.\n\
+                5. `block_update`: Update component code, description, or tags with automatic version incrementing.\n\
+                6. `block_delete`: Delete a component from the warehouse by UUID.\n\
+                7. `block_palettes`: Query 4-hex curated color palettes with CSS variable tokens.\n\
+                8. `block_gradients`: Search curated modern CSS gradients with color stops.\n\
+                9. `block_scaffold`: Scaffold complete layout templates (`landing`, `portfolio`, `dashboard`).\n\
+                10. `block_stats`: Inspect warehouse catalog statistics and category/framework breakdowns.\n\n\
+                ## AI Agent Guidelines\n\
+                - **Query First**: Always query `block_search` or `block_palettes` before creating UI components or color palettes from scratch.\n\
+                - **Surgical Insertion**: Use `block_insert` to safely write components to target paths in the project.\n\
+                - **Path Sandboxing**: All file insertions are confined within the workspace.\n\n\
+                ## User Shortcuts & Commands\n\
+                - **Keyboard Shortcut**: Press `F6` in the TUI to open the interactive MiniBlocks browser modal.\n\
+                - **Slash Command**: Type `/blocks` in chat to browse components and palettes.\n";
+            fs::write(miniblocks_path, miniblocks_content).ok();
+        }
     }
 
     /// Performs native spec-driven synchronization.
@@ -553,5 +590,8 @@ mod tests {
                 core_file
             );
         }
+
+        // Verify skills/miniblocks.md was generated
+        assert!(docs.join("skills").join("miniblocks.md").exists());
     }
 }

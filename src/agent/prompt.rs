@@ -56,6 +56,7 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
     - "This is a simple one-liner, no tests needed" -> False. Small unverified edits break systems. Write a test first.
     - "I'll write tests after implementation" -> False. TDD enforces Red before Green.
     - "I can verify this by reading the code" -> False. Reading is not execution. Run `power_verify` or `exec_cmd`.
+- **MiniBlocks UI Component & Design Token Warehouse**: Autonomously discover, retrieve, and inject verified UI components and design tokens. Query `block_search` or `block_palettes` before writing frontend code from scratch; inject with `block_insert`; scaffold layouts with `block_scaffold`.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -179,6 +180,15 @@ impl PromptBuilder {
             prompt.push_str(custom);
             prompt.push('\n');
         }
+
+        // MiniBlocks Native UI Component & Design Warehouse Blueprint
+        prompt.push_str(
+            "\n  <miniblocks_warehouse>\n\
+    Native UI warehouse: 1,080+ components, 105 palettes, 212 gradients, 3 templates.\n\
+    Tools: `block_search`, `block_get`, `block_insert`, `block_palettes`, `block_gradients`, `block_scaffold`.\n\
+    Rule: Query MiniBlocks before creating UI components or color palettes from scratch.\n\
+  </miniblocks_warehouse>\n",
+        );
 
         prompt
     }
@@ -476,6 +486,8 @@ mod tests {
         let prompt = PromptBuilder::build_system_prompt(&temp_dir, None);
         assert!(prompt.contains("You are minicode"));
         assert!(prompt.contains(&temp_dir.display().to_string()));
+        assert!(prompt.contains("<miniblocks_warehouse>"));
+        assert!(prompt.contains("Native UI warehouse: 1,080+ components"));
     }
 
     #[test]
