@@ -339,6 +339,56 @@ impl BlockPalette {
             tags,
         })
     }
+
+    /// Formats the palette tokens as CSS custom properties (`:root { ... }`).
+    pub fn to_css_variables(&self) -> String {
+        format!(
+            "/* CSS Variables Export */\n:root {{\n  --bg: {};\n  --surface: {};\n  --accent: {};\n  --text: {};\n}}",
+            self.colors[0], self.colors[1], self.colors[2], self.colors[3]
+        )
+    }
+
+    /// Formats the palette tokens as a Tailwind CSS theme color configuration object.
+    pub fn to_tailwind_config(&self) -> String {
+        format!(
+            "// Tailwind CSS Theme Colors\ncolors: {{\n  bg: '{}',\n  surface: '{}',\n  accent: '{}',\n  text: '{}',\n}}",
+            self.colors[0], self.colors[1], self.colors[2], self.colors[3]
+        )
+    }
+
+    /// Formats the palette tokens as SCSS variables.
+    pub fn to_scss_variables(&self) -> String {
+        format!(
+            "// SCSS Variables Export\n$color-bg: {};\n$color-surface: {};\n$color-accent: {};\n$color-text: {};",
+            self.colors[0], self.colors[1], self.colors[2], self.colors[3]
+        )
+    }
+
+    /// Formats the palette tokens as a structured JSON object.
+    pub fn to_json_tokens(&self) -> String {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": self.name,
+            "tokens": {
+                "bg": self.colors[0],
+                "surface": self.colors[1],
+                "accent": self.colors[2],
+                "text": self.colors[3]
+            }
+        }))
+        .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Exports palette tokens in the requested format (`css`, `tailwind`, `scss`, `json`).
+    /// Returns a tuple of `(code_content, language_fence_tag)`.
+    pub fn format_tokens(&self, format: &str) -> (String, String) {
+        let fmt_clean = format.trim().to_lowercase();
+        match fmt_clean.as_str() {
+            "tailwind" | "tw" => (self.to_tailwind_config(), "javascript".to_string()),
+            "scss" | "sass" => (self.to_scss_variables(), "scss".to_string()),
+            "json" | "tokens" => (self.to_json_tokens(), "json".to_string()),
+            _ => (self.to_css_variables(), "css".to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,5 +643,86 @@ mod tests {
         let deserialized: BlockComponent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.id, comp.id);
         assert_eq!(deserialized.name, comp.name);
+    }
+
+    #[test]
+    fn test_palette_token_formatting() {
+        let pal = BlockPalette::new(
+            "Cyber Neon",
+            [
+                "#0D0E15".into(),
+                "#1A1C29".into(),
+                "#00FFCC".into(),
+                "#FFFFFF".into(),
+            ],
+            vec!["cyberpunk".into(), "neon".into()],
+        )
+        .unwrap();
+
+        // 1. CSS Variables
+        let css = pal.to_css_variables();
+        assert!(css.contains("/* CSS Variables Export */"));
+        assert!(css.contains("--bg: #0D0E15;"));
+        assert!(css.contains("--surface: #1A1C29;"));
+        assert!(css.contains("--accent: #00FFCC;"));
+        assert!(css.contains("--text: #FFFFFF;"));
+
+        // 2. Tailwind Config
+        let tw = pal.to_tailwind_config();
+        assert!(tw.contains("// Tailwind CSS Theme Colors"));
+        assert!(tw.contains("bg: '#0D0E15'"));
+        assert!(tw.contains("surface: '#1A1C29'"));
+        assert!(tw.contains("accent: '#00FFCC'"));
+        assert!(tw.contains("text: '#FFFFFF'"));
+
+        // 3. SCSS Variables
+        let scss = pal.to_scss_variables();
+        assert!(scss.contains("// SCSS Variables Export"));
+        assert!(scss.contains("$color-bg: #0D0E15;"));
+        assert!(scss.contains("$color-surface: #1A1C29;"));
+        assert!(scss.contains("$color-accent: #00FFCC;"));
+        assert!(scss.contains("$color-text: #FFFFFF;"));
+
+        // 4. JSON Tokens
+        let json_tokens = pal.to_json_tokens();
+        assert!(json_tokens.contains("\"name\": \"Cyber Neon\""));
+        assert!(json_tokens.contains("\"bg\": \"#0D0E15\""));
+        assert!(json_tokens.contains("\"surface\": \"#1A1C29\""));
+        assert!(json_tokens.contains("\"accent\": \"#00FFCC\""));
+        assert!(json_tokens.contains("\"text\": \"#FFFFFF\""));
+
+        // 5. format_tokens dispatcher
+        let (code, lang) = pal.format_tokens("tailwind");
+        assert_eq!(lang, "javascript");
+        assert!(code.contains("colors:"));
+
+        let (code, lang) = pal.format_tokens("tw");
+        assert_eq!(lang, "javascript");
+        assert!(code.contains("colors:"));
+
+        let (code, lang) = pal.format_tokens("scss");
+        assert_eq!(lang, "scss");
+        assert!(code.contains("$color-bg:"));
+
+        let (code, lang) = pal.format_tokens("sass");
+        assert_eq!(lang, "scss");
+        assert!(code.contains("$color-bg:"));
+
+        let (code, lang) = pal.format_tokens("json");
+        assert_eq!(lang, "json");
+        assert!(code.contains("\"Cyber Neon\""));
+
+        let (code, lang) = pal.format_tokens("tokens");
+        assert_eq!(lang, "json");
+        assert!(code.contains("\"Cyber Neon\""));
+
+        let (code, lang) = pal.format_tokens("css");
+        assert_eq!(lang, "css");
+        assert!(code.contains(":root"));
+
+        // Unknown defaults to CSS
+        let (code, lang) = pal.format_tokens("unknown_fmt");
+        assert_eq!(lang, "css");
+        assert!(code.contains(":root"));
     }
 }

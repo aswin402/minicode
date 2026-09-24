@@ -173,7 +173,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "block_palettes".to_string(),
-            description: "Search and list 4-hex curated color palettes with background, surface, accent, text tokens, and CSS variable export suggestions.".to_string(),
+            description: "Search and list 4-hex curated color palettes with background, surface, accent, text tokens, and export suggestions in CSS, Tailwind, SCSS, or JSON format.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -184,6 +184,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of palettes to return (default: 10)"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["css", "tailwind", "scss", "json"],
+                        "description": "Export format for color tokens: 'css' (CSS variables), 'tailwind' (theme.extend.colors config), 'scss' ($color variables), or 'json' (design token dictionary). Defaults to 'css'."
                     }
                 }
             }),
@@ -647,6 +652,7 @@ pub async fn dispatch(
             async {
                 let query = opt_str(args, "query").unwrap_or("");
                 let limit = opt_limit(args, 10).clamp(1, 50);
+                let format_arg = opt_str(args, "format").unwrap_or("css");
 
                 let store = get_global_block_store().read().map_err(|e| {
                     ToolError::ExecutionFailed(format!("BlockStore lock error: {}", e))
@@ -664,8 +670,9 @@ pub async fn dispatch(
                     } else {
                         pal.tags.join(", ")
                     };
+                    let (tokens_code, lang) = pal.format_tokens(format_arg);
                     out.push_str(&format!(
-                        "### {}\n- **ID:** `{}`\n- **Tags:** {}\n- **Tokens:**\n  - Background: `{}`\n  - Surface: `{}`\n  - Accent: `{}`\n  - Text: `{}`\n\n```css\n/* CSS Variables Export */\n:root {{\n  --bg: {};\n  --surface: {};\n  --accent: {};\n  --text: {};\n}}\n```\n\n",
+                        "### {}\n- **ID:** `{}`\n- **Tags:** {}\n- **Tokens:**\n  - Background: `{}`\n  - Surface: `{}`\n  - Accent: `{}`\n  - Text: `{}`\n\n```{}\n{}\n```\n\n",
                         pal.name,
                         pal.id,
                         tags_str,
@@ -673,10 +680,8 @@ pub async fn dispatch(
                         pal.colors[1],
                         pal.colors[2],
                         pal.colors[3],
-                        pal.colors[0],
-                        pal.colors[1],
-                        pal.colors[2],
-                        pal.colors[3]
+                        lang,
+                        tokens_code
                     ));
                 }
                 Ok(out)
@@ -1288,5 +1293,62 @@ mod tests {
         assert!(err
             .to_string()
             .contains("not found in MiniBlocks warehouse"));
+    }
+
+    #[tokio::test]
+    async fn test_block_palettes_multi_format_export() {
+        let temp = tempdir().unwrap();
+
+        // 1. Default (CSS)
+        let res_css = dispatch(
+            "block_palettes",
+            &json!({ "query": "dark", "limit": 1 }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(res_css.contains("```css"));
+        assert!(res_css.contains("/* CSS Variables Export */"));
+        assert!(res_css.contains("--bg:"));
+
+        // 2. Tailwind
+        let res_tw = dispatch(
+            "block_palettes",
+            &json!({ "query": "dark", "limit": 1, "format": "tailwind" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(res_tw.contains("```javascript"));
+        assert!(res_tw.contains("// Tailwind CSS Theme Colors"));
+        assert!(res_tw.contains("bg:"));
+
+        // 3. SCSS
+        let res_scss = dispatch(
+            "block_palettes",
+            &json!({ "query": "dark", "limit": 1, "format": "scss" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(res_scss.contains("```scss"));
+        assert!(res_scss.contains("// SCSS Variables Export"));
+        assert!(res_scss.contains("$color-bg:"));
+
+        // 4. JSON
+        let res_json = dispatch(
+            "block_palettes",
+            &json!({ "query": "dark", "limit": 1, "format": "json" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(res_json.contains("```json"));
+        assert!(res_json.contains("\"tokens\":"));
+        assert!(res_json.contains("\"bg\":"));
     }
 }

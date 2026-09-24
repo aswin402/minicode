@@ -241,12 +241,7 @@ impl BlocksModalState {
             }
             BlocksTab::Palettes => {
                 let id = self.filtered_palette_ids.get(self.selected_index)?;
-                store.get_palette(id).map(|p| {
-                    format!(
-                        "/* Palette: {} */\n:root {{\n  --color-background: {};\n  --color-surface: {};\n  --color-accent: {};\n  --color-text: {};\n}}",
-                        p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
-                    )
-                })
+                store.get_palette(id).map(|p| p.to_css_variables())
             }
             BlocksTab::Gradients => {
                 let id = self.filtered_gradient_ids.get(self.selected_index)?;

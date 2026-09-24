@@ -144,6 +144,44 @@ async fn test_e2e_miniblocks_palettes_and_gradients() {
     assert!(pal_res.output.contains("--accent:"));
     assert!(pal_res.output.contains("--text:"));
 
+    // 1b. Query color palettes with Tailwind format
+    let pal_tw_res = ToolRegistry::dispatch(
+        workspace,
+        "call_palettes_tw",
+        "block_palettes",
+        &json!({
+            "query": "nordic",
+            "limit": 2,
+            "format": "tailwind"
+        }),
+        None,
+        1,
+    )
+    .await;
+    assert!(pal_tw_res.success);
+    assert!(pal_tw_res.output.contains("```javascript"));
+    assert!(pal_tw_res.output.contains("// Tailwind CSS Theme Colors"));
+    assert!(pal_tw_res.output.contains("bg:"));
+
+    // 1c. Query color palettes with SCSS format
+    let pal_scss_res = ToolRegistry::dispatch(
+        workspace,
+        "call_palettes_scss",
+        "block_palettes",
+        &json!({
+            "query": "nordic",
+            "limit": 2,
+            "format": "scss"
+        }),
+        None,
+        1,
+    )
+    .await;
+    assert!(pal_scss_res.success);
+    assert!(pal_scss_res.output.contains("```scss"));
+    assert!(pal_scss_res.output.contains("// SCSS Variables Export"));
+    assert!(pal_scss_res.output.contains("$color-bg:"));
+
     // 2. Query gradients
     let grad_res = ToolRegistry::dispatch(
         workspace,
