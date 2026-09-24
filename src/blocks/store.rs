@@ -83,8 +83,34 @@ impl BlockStore {
     // --- Component Operations ---
 
     /// Inserts a component and updates all inverted indices.
+    /// Handles ID collisions by safely removing old inverted index entries first.
     pub fn insert_component(&mut self, component: BlockComponent) -> Result<(), BlockError> {
         let id = component.id;
+
+        // Clean up old index entries if this ID already exists
+        if let Some(old) = self.components.get(&id) {
+            if let Some(ids) = self.category_index.get_mut(&old.category) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.category_index.remove(&old.category);
+                }
+            }
+            if let Some(ids) = self.framework_index.get_mut(&old.framework) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.framework_index.remove(&old.framework);
+                }
+            }
+            for tag in &old.tags {
+                let norm = tag.trim().to_lowercase();
+                if let Some(ids) = self.tag_index.get_mut(&norm) {
+                    ids.remove(&id);
+                    if ids.is_empty() {
+                        self.tag_index.remove(&norm);
+                    }
+                }
+            }
+        }
 
         // Update category index
         self.category_index
@@ -107,7 +133,7 @@ impl BlockStore {
         }
 
         self.components.insert(id, component);
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -287,6 +313,9 @@ impl BlockStore {
                 let norm = old_tag.trim().to_lowercase();
                 if let Some(ids) = self.tag_index.get_mut(&norm) {
                     ids.remove(id);
+                    if ids.is_empty() {
+                        self.tag_index.remove(&norm);
+                    }
                 }
             }
             // Add new tags to index
@@ -303,7 +332,7 @@ impl BlockStore {
         component.updated_at = now;
 
         let updated_copy = component.clone();
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(updated_copy)
     }
 
@@ -317,11 +346,17 @@ impl BlockStore {
         // Remove from category index
         if let Some(ids) = self.category_index.get_mut(&component.category) {
             ids.remove(id);
+            if ids.is_empty() {
+                self.category_index.remove(&component.category);
+            }
         }
 
         // Remove from framework index
         if let Some(ids) = self.framework_index.get_mut(&component.framework) {
             ids.remove(id);
+            if ids.is_empty() {
+                self.framework_index.remove(&component.framework);
+            }
         }
 
         // Remove from tag index
@@ -329,11 +364,14 @@ impl BlockStore {
             let norm = tag.trim().to_lowercase();
             if let Some(ids) = self.tag_index.get_mut(&norm) {
                 ids.remove(id);
+                if ids.is_empty() {
+                    self.tag_index.remove(&norm);
+                }
             }
         }
 
         self.component_versions.remove(id);
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -347,7 +385,7 @@ impl BlockStore {
     /// Inserts a 4-hex color palette.
     pub fn insert_palette(&mut self, palette: BlockPalette) -> Result<(), BlockError> {
         self.palettes.insert(palette.id, palette);
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -381,7 +419,7 @@ impl BlockStore {
         self.palettes
             .remove(id)
             .ok_or_else(|| BlockError::PaletteNotFound(id.to_string()))?;
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -390,7 +428,7 @@ impl BlockStore {
     /// Inserts a CSS gradient.
     pub fn insert_gradient(&mut self, gradient: BlockGradient) -> Result<(), BlockError> {
         self.gradients.insert(gradient.id, gradient);
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -424,7 +462,7 @@ impl BlockStore {
         self.gradients
             .remove(id)
             .ok_or_else(|| BlockError::GradientNotFound(id.to_string()))?;
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -433,7 +471,7 @@ impl BlockStore {
     /// Inserts a layout template.
     pub fn insert_template(&mut self, template: BlockTemplate) -> Result<(), BlockError> {
         self.templates.insert(template.id, template);
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -452,7 +490,7 @@ impl BlockStore {
         self.templates
             .remove(id)
             .ok_or_else(|| BlockError::TemplateNotFound(id.to_string()))?;
-        let _ = self.persist_if_configured();
+        self.persist_if_configured()?;
         Ok(())
     }
 
@@ -486,7 +524,8 @@ impl BlockStore {
 
     // --- Disk Persistence ---
 
-    /// Saves all components, version history, palettes, gradients, and templates to a JSON file.
+    /// Atomically saves all components, version history, palettes, gradients, and templates to disk.
+    /// Writes to a temporary `.tmp` file first and atomically renames to target path.
     pub fn save_to_disk(&self, path: &Path) -> Result<(), BlockError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -501,11 +540,15 @@ impl BlockStore {
         };
 
         let json = serde_json::to_string_pretty(&data)?;
-        std::fs::write(path, json)?;
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 
     /// Loads store data from a JSON file and populates all in-memory inverted indices.
+    /// Critical invariant: `persistence_path` is assigned ONLY at the end so `persist_if_configured()`
+    /// is not triggered repeatedly during load.
     pub fn load_from_disk(path: &Path) -> Result<Self, BlockError> {
         if !path.exists() {
             let mut store = Self::new();
@@ -517,7 +560,7 @@ impl BlockStore {
         let data: StoreData = serde_json::from_str(&content)?;
 
         let mut store = Self::new();
-        store.persistence_path = Some(path.to_path_buf());
+        // Do NOT set persistence_path here, so insertions during load do not cascade disk writes!
 
         for comp in data.components {
             let _ = store.insert_component(comp);
@@ -534,6 +577,8 @@ impl BlockStore {
             let _ = store.insert_template(tmpl);
         }
 
+        // Assign persistence path at the very end
+        store.persistence_path = Some(path.to_path_buf());
         Ok(store)
     }
 
@@ -562,7 +607,12 @@ pub fn get_global_block_store() -> &'static RwLock<BlockStore> {
             .map(|d| d.join("minicode").join("miniblocks").join("store.json"))
             .unwrap_or_else(|| PathBuf::from(".minicode/blocks/store.json"));
 
-        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|_| {
+        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|e| {
+            tracing::warn!(
+                "Failed to load global block store from {}: {}, initializing empty store",
+                default_path.display(),
+                e
+            );
             let mut s = BlockStore::new();
             s.persistence_path = Some(default_path);
             s
@@ -615,9 +665,14 @@ mod tests {
         assert_eq!(results[0].id, id);
         assert!(results[0].score > 1.0);
 
-        // 4. Update component with version increment
+        // 4. Update component with version increment and tag changes
         let updated = store
-            .update_component(&id, Some("New Hero Code"), None, None)
+            .update_component(
+                &id,
+                Some("New Hero Code"),
+                Some("Updated description"),
+                Some(vec!["hero".into(), "light".into()]),
+            )
             .unwrap();
         assert_eq!(updated.version, 2);
         assert_eq!(store.get_component(&id).unwrap().code, "New Hero Code");
@@ -627,10 +682,39 @@ mod tests {
         assert_eq!(history[0].0, 1);
         assert!(history[0].1.contains("<div>Hero</div>"));
 
-        // 5. Delete component
+        // Verify old tag "dark" no longer returns component, but "light" does
+        let search_old_tag = store.search_components(&BlockSearchFilter {
+            query: None,
+            category: None,
+            framework: None,
+            tags: Some(vec!["dark".into()]),
+            limit: 10,
+        });
+        assert_eq!(search_old_tag.len(), 0);
+
+        let search_new_tag = store.search_components(&BlockSearchFilter {
+            query: None,
+            category: None,
+            framework: None,
+            tags: Some(vec!["light".into()]),
+            limit: 10,
+        });
+        assert_eq!(search_new_tag.len(), 1);
+
+        // 5. Delete component and verify index cleanup
         assert!(store.delete_component(&id).is_ok());
         assert!(store.get_component(&id).is_none());
         assert!(store.get_component_by_name("modern-hero").is_none());
+
+        // Verify index is purged
+        let search_after_delete = store.search_components(&BlockSearchFilter {
+            query: Some("modern-hero".into()),
+            category: Some(BlockCategory::Hero),
+            framework: None,
+            tags: None,
+            limit: 10,
+        });
+        assert_eq!(search_after_delete.len(), 0);
     }
 
     #[test]
@@ -678,30 +762,116 @@ mod tests {
     }
 
     #[test]
-    fn test_disk_persistence_roundtrip() {
+    fn test_template_crud() {
+        let mut store = BlockStore::new();
+        let tmpl_id = Uuid::new_v4();
+        let template = BlockTemplate {
+            id: tmpl_id,
+            name: "SaaS Landing".into(),
+            description: "Full SaaS landing page template".into(),
+            component_ids: vec![Uuid::new_v4(), Uuid::new_v4()],
+            base_layout: "<html><body>{{ sections }}</body></html>".into(),
+            default_variables: serde_json::json!({"title": "My SaaS"}),
+        };
+
+        store.insert_template(template).unwrap();
+        assert_eq!(store.list_templates().len(), 1);
+
+        let fetched = store.get_template(&tmpl_id).unwrap();
+        assert_eq!(fetched.name, "SaaS Landing");
+
+        assert!(store.delete_template(&tmpl_id).is_ok());
+        assert_eq!(store.list_templates().len(), 0);
+        assert!(store.get_template(&tmpl_id).is_none());
+    }
+
+    #[test]
+    fn test_disk_persistence_full_roundtrip() {
         let temp = tempdir().unwrap();
         let store_file = temp.path().join("miniblocks").join("store.json");
 
         let mut store = BlockStore::new_isolated(store_file.clone());
+
+        // 1. Add Component & update to create version history
         let comp = BlockComponent::new(
             "Test Card",
             "A test card component",
             BlockCategory::Card,
             BlockFramework::Tailwind,
-            "<div className=\"card\">Test</div>",
-            vec![],
+            "<div className=\"card\">v1</div>",
+            vec!["dep1".into()],
             vec!["test".into(), "card".into()],
         );
-        let id = comp.id;
+        let comp_id = comp.id;
         store.insert_component(comp).unwrap();
+        store
+            .update_component(
+                &comp_id,
+                Some("<div className=\"card\">v2</div>"),
+                None,
+                None,
+            )
+            .unwrap();
 
-        // Ensure file exists
+        // 2. Add Palette
+        let pal = BlockPalette::new(
+            "Solar",
+            [
+                "#000000".into(),
+                "#111111".into(),
+                "#E0E0E0".into(),
+                "#FFFFFF".into(),
+            ],
+            vec!["solar".into()],
+        )
+        .unwrap();
+        let pal_id = pal.id;
+        store.insert_palette(pal).unwrap();
+
+        // 3. Add Gradient
+        let grad = BlockGradient::new(
+            "Sunset",
+            "linear-gradient(45deg, #FF512F, #DD2476)",
+            vec!["#FF512F".into(), "#DD2476".into()],
+            vec!["sunset".into()],
+        );
+        let grad_id = grad.id;
+        store.insert_gradient(grad).unwrap();
+
+        // 4. Add Template
+        let tmpl_id = Uuid::new_v4();
+        let tmpl = BlockTemplate {
+            id: tmpl_id,
+            name: "Portfolio".into(),
+            description: "Developer portfolio".into(),
+            component_ids: vec![comp_id],
+            base_layout: "<html>{{ sections }}</html>".into(),
+            default_variables: serde_json::json!({}),
+        };
+        store.insert_template(tmpl).unwrap();
+
+        // File must exist
         assert!(store_file.exists());
 
         // Reload from disk
         let loaded = BlockStore::load_from_disk(&store_file).unwrap();
-        assert_eq!(loaded.stats().total_components, 1);
-        let loaded_comp = loaded.get_component(&id).unwrap();
-        assert_eq!(loaded_comp.name, "Test Card");
+        let stats = loaded.stats();
+        assert_eq!(stats.total_components, 1);
+        assert_eq!(stats.total_palettes, 1);
+        assert_eq!(stats.total_gradients, 1);
+        assert_eq!(stats.total_templates, 1);
+
+        // Verify component and versions
+        let loaded_comp = loaded.get_component(&comp_id).unwrap();
+        assert_eq!(loaded_comp.code, "<div className=\"card\">v2</div>");
+        assert_eq!(loaded_comp.version, 2);
+        let history = loaded.get_component_history(&comp_id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].1, "<div className=\"card\">v1</div>");
+
+        // Verify palette, gradient, and template
+        assert!(loaded.get_palette(&pal_id).is_some());
+        assert!(loaded.get_gradient(&grad_id).is_some());
+        assert!(loaded.get_template(&tmpl_id).is_some());
     }
 }
