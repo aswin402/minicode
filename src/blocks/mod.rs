@@ -3,7 +3,7 @@ pub mod seed;
 pub mod store;
 
 pub use models::*;
-pub use seed::{detect_project_framework, seed_default_blocks};
+pub use seed::{detect_project_framework, seed_default_blocks, ProjectStackInfo};
 pub use store::*;
 
 #[derive(Debug, thiserror::Error)]

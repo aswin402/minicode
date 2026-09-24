@@ -184,6 +184,129 @@ pub fn detect_project_framework(project_root: &Path) -> Option<BlockFramework> {
     None
 }
 
+/// Comprehensive project stack analysis for component framework and styling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectStackInfo {
+    pub framework: Option<BlockFramework>,
+    pub has_tailwind: bool,
+    pub has_scss: bool,
+}
+
+impl ProjectStackInfo {
+    /// Detects the stack information from a given project root.
+    pub fn detect(project_root: &Path) -> Self {
+        if !project_root.exists() {
+            return Self {
+                framework: None,
+                has_tailwind: false,
+                has_scss: false,
+            };
+        }
+
+        let mut has_tailwind = false;
+        let mut has_scss = false;
+
+        // Check package.json for tailwind or sass/scss
+        let pkg_json_path = project_root.join("package.json");
+        if pkg_json_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&pkg_json_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let mut dep_keys = Vec::new();
+                    if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
+                        dep_keys.extend(deps.keys().map(|k| k.to_lowercase()));
+                    }
+                    if let Some(dev_deps) = json.get("devDependencies").and_then(|d| d.as_object())
+                    {
+                        dep_keys.extend(dev_deps.keys().map(|k| k.to_lowercase()));
+                    }
+                    if let Some(peer_deps) =
+                        json.get("peerDependencies").and_then(|d| d.as_object())
+                    {
+                        dep_keys.extend(peer_deps.keys().map(|k| k.to_lowercase()));
+                    }
+
+                    if dep_keys
+                        .iter()
+                        .any(|k| k == "tailwindcss" || k.contains("tailwindcss"))
+                    {
+                        has_tailwind = true;
+                    }
+                    if dep_keys.iter().any(|k| {
+                        k == "sass" || k == "scss" || k.contains("sass") || k.contains("scss")
+                    }) {
+                        has_scss = true;
+                    }
+                }
+            }
+        }
+
+        // Check root directory files for tailwind config
+        if project_root.join("tailwind.config.js").is_file()
+            || project_root.join("tailwind.config.ts").is_file()
+            || project_root.join("tailwind.config.cjs").is_file()
+            || project_root.join("tailwind.config.mjs").is_file()
+        {
+            has_tailwind = true;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(project_root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("tailwind.config.") {
+                    has_tailwind = true;
+                }
+            }
+        }
+
+        let framework = detect_project_framework(project_root);
+
+        Self {
+            framework,
+            has_tailwind,
+            has_scss,
+        }
+    }
+
+    /// Formats the prompt directive string to guide the AI agent.
+    pub fn format_prompt_directive(&self) -> String {
+        match self.framework {
+            Some(BlockFramework::Shadcn) => {
+                "Detected Project Stack: Shadcn UI + React (Tailwind CSS).\n    Guideline: Default `block_search` queries with framework=\"shadcn\" or framework=\"react\".".to_string()
+            }
+            Some(BlockFramework::React) => {
+                if self.has_tailwind {
+                    "Detected Project Stack: React with Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"react\" or framework=\"tailwind\".".to_string()
+                } else if self.has_scss {
+                    "Detected Project Stack: React with SCSS.\n    Guideline: Default `block_search` queries with framework=\"react\" or framework=\"scss\".".to_string()
+                } else {
+                    "Detected Project Stack: React.\n    Guideline: Default `block_search` queries with framework=\"react\".".to_string()
+                }
+            }
+            Some(BlockFramework::Svelte) => {
+                if self.has_tailwind {
+                    "Detected Project Stack: Svelte with Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"svelte\" or framework=\"tailwind\".".to_string()
+                } else {
+                    "Detected Project Stack: Svelte.\n    Guideline: Default `block_search` queries with framework=\"svelte\".".to_string()
+                }
+            }
+            Some(BlockFramework::Tailwind) => {
+                "Detected Project Stack: Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"tailwind\".".to_string()
+            }
+            Some(BlockFramework::Scss) => {
+                "Detected Project Stack: SCSS / SASS.\n    Guideline: Default `block_search` queries with framework=\"scss\".".to_string()
+            }
+            Some(BlockFramework::Css) | None => {
+                if self.has_tailwind {
+                    "Detected Project Stack: Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"tailwind\".".to_string()
+                } else {
+                    "Detected Project Stack: Standard Web (HTML/CSS).\n    Guideline: Default `block_search` queries with framework=\"html\" or framework=\"css\".".to_string()
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +486,38 @@ mod tests {
             detect_project_framework(temp.path()),
             Some(BlockFramework::Scss)
         );
+    }
+
+    #[test]
+    fn test_project_stack_info_detect_and_directives() {
+        let temp = tempdir().unwrap();
+
+        // 1. React + Tailwind
+        let pkg = r#"{
+            "name": "full-stack-web",
+            "dependencies": {
+                "react": "^18.2.0",
+                "tailwindcss": "^3.4.0"
+            }
+        }"#;
+        std::fs::write(temp.path().join("package.json"), pkg).unwrap();
+
+        let info = ProjectStackInfo::detect(temp.path());
+        assert_eq!(info.framework, Some(BlockFramework::React));
+        assert!(info.has_tailwind);
+        assert!(!info.has_scss);
+
+        let directive = info.format_prompt_directive();
+        assert!(directive.contains("React with Tailwind CSS"));
+        assert!(directive.contains("framework=\"react\" or framework=\"tailwind\""));
+
+        // 2. Empty directory fallback
+        let temp_empty = tempdir().unwrap();
+        let empty_info = ProjectStackInfo::detect(temp_empty.path());
+        assert_eq!(empty_info.framework, None);
+        assert!(!empty_info.has_tailwind);
+        let empty_directive = empty_info.format_prompt_directive();
+        assert!(empty_directive.contains("Standard Web (HTML/CSS)"));
+        assert!(empty_directive.contains("framework=\"html\" or framework=\"css\""));
     }
 }

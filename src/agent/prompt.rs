@@ -182,13 +182,18 @@ impl PromptBuilder {
         }
 
         // MiniBlocks Native UI Component & Design Warehouse Blueprint
-        prompt.push_str(
+        let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_dir);
+        let stack_directive = stack_info.format_prompt_directive();
+
+        prompt.push_str(&format!(
             "\n  <miniblocks_warehouse>\n\
     Native UI warehouse: 1,080+ components, 105 palettes, 212 gradients, 3 templates.\n\
     Tools: `block_search`, `block_get`, `block_insert`, `block_palettes`, `block_gradients`, `block_scaffold`.\n\
+    {}\n\
     Rule: Query MiniBlocks before creating UI components or color palettes from scratch.\n\
   </miniblocks_warehouse>\n",
-        );
+            stack_directive.trim()
+        ));
 
         prompt
     }
@@ -488,6 +493,31 @@ mod tests {
         assert!(prompt.contains(&temp_dir.display().to_string()));
         assert!(prompt.contains("<miniblocks_warehouse>"));
         assert!(prompt.contains("Native UI warehouse: 1,080+ components"));
+        assert!(prompt.contains("Detected Project Stack:"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_detected_stack_react_tailwind() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_stack_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let pkg = r#"{
+            "name": "portal",
+            "dependencies": {
+                "react": "^18.2.0",
+                "tailwindcss": "^3.4.0"
+            }
+        }"#;
+        std::fs::write(temp_dir.join("package.json"), pkg).unwrap();
+
+        let prompt = PromptBuilder::build_system_prompt(&temp_dir, None);
+        assert!(prompt.contains("<miniblocks_warehouse>"));
+        assert!(prompt.contains("Detected Project Stack: React with Tailwind CSS."));
+        assert!(prompt.contains("framework=\"react\" or framework=\"tailwind\""));
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 
     #[test]
