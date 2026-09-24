@@ -1,114 +1,77 @@
-# Task 3 Execution Report: Dedicated `agent_config` Tool Suite (Tools 136 – 139)
+# Task 3 Execution Report: Seed Catalog Ingestion & CodeGraph Stack Detection
 
-## Status: DONE
-
-- **Commit Hash:** `4d1e891bab8e54ac6355215955b059caf435093a`
-- **Target Components:**
-  - `src/constants.rs`
-  - `src/tools/registry/agent_tools/mod.rs`
-  - `src/tools/registry/agent_tools/config_tools.rs`
-- **Phase:** Autonomous Configuration & Workspace Memory (Task 3)
+**Status:** DONE  
+**Commit Hash:** `071665228f9edce6a8f335522d482e1ac0521fbc`  
 
 ---
 
-## 1. Summary of Changes
+## 1. Summary of Deliverables
 
-1. **Tool Count Constant Synchronization (`src/constants.rs`):**
-   - Updated `TOTAL_TOOL_COUNT` from `135` to `139`:
-     ```rust
-     pub const TOTAL_TOOL_COUNT: usize = 139;
-     ```
-   - Added `constants::tests::test_total_tool_count` unit test verifying that live registry schemas match `TOTAL_TOOL_COUNT`.
+1. **Embedded Starter Catalog Ingestion (`src/blocks/seed.rs`):**
+   - Implemented `seed_default_blocks(store: &mut BlockStore) -> Result<usize, BlockError>`.
+   - Embeds `src/blocks/seed_catalog.json` (1,082 components, 105 palettes, 212 gradients, 3 layout templates) directly into the compiled binary with zero external runtime network dependency.
+   - Skips components, palettes, gradients, and templates that already exist by UUID in `store` to protect user modifications.
+   - Utilizes `store.take_persistence_path()` and `store.set_persistence_path(...)` to pause disk persistence during batch inserts, preventing 1,400+ disk writes and performing full catalog seeding in under 80 milliseconds.
+   - Returns number of newly seeded components (`usize`).
 
-2. **Agent Tools Submodule Registration (`src/tools/registry/agent_tools/mod.rs`):**
-   - Declared `pub mod config_tools;`.
-   - Increased `schemas` capacity to `38` and registered `config_tools::get_schemas()`.
-   - Added `config_tools::dispatch` delegation to `agent_tools::dispatch`.
+2. **Project Stack / Framework Detection (`src/blocks/seed.rs`):**
+   - Implemented `detect_project_framework(project_root: &Path) -> Option<BlockFramework>`.
+   - Inspects `components.json` at root first (priority 1 -> `Some(BlockFramework::Shadcn)`).
+   - Inspects `package.json` `dependencies`, `devDependencies`, and `peerDependencies`:
+     - Keys matching `"shadcn"`, `"@shadcn/"`, or `"@radix-ui/"` -> `Some(BlockFramework::Shadcn)`.
+     - Keys matching `"react"`, `"react-dom"`, `"next"`, or prefixes -> `Some(BlockFramework::React)`.
+     - Keys matching `"svelte"`, `"@sveltejs/"` -> `Some(BlockFramework::Svelte)`.
+     - Keys matching `"tailwindcss"` -> `Some(BlockFramework::Tailwind)`.
+     - Keys matching `"sass"`, `"scss"` -> `Some(BlockFramework::Scss)`.
+   - Fallback inspection of root config files (`svelte.config.*` -> Svelte, `tailwind.config.*` -> Tailwind).
+   - Returns `None` if no frontend framework is detected or directory is empty.
 
-3. **Implementation of the 4 `agent_config` Tools (`src/tools/registry/agent_tools/config_tools.rs`):**
-   - **Tool 136: `get_agent_config`**
-     - Inspects active configuration (`active_provider`, `active_model`, `workspace_scope`, `auto_approve`, `approval_policy`, `thinking_budget`, `theme`).
-     - Scans for configured cloud and local providers into a deduplicated list `configured_providers`.
-     - Builds `masked_keys` mapping with `crate::config::mask_api_key`. Plaintext credentials are NEVER exposed.
-   - **Tool 137: `update_agent_config`**
-     - Validates that at least one field (`provider`, `model`, `auto_approve`, `thinking_budget`, `theme`) is provided and that `scope` is valid (`"workspace"` or `"global"`).
-     - Constructs a typed `ConfigChangeProposal`.
-     - Provides `apply_proposal(proposal: &ConfigChangeProposal, workspace_root: &Path) -> Result<()>` supporting persistence to workspace `.minicode/config.toml` (and `workspaces.toml`) or global config.
-     - Returns structured JSON with `status: "proposal_generated"`, `requires_confirmation: true`.
-   - **Tool 138: `test_provider_connection`**
-     - Accepts `provider` parameter (individual provider or `"all"`).
-     - Measures elapsed latency in milliseconds.
-     - Pings endpoints via `ModelFetcher::new().fetch_models(...)`.
-     - Classifies `key_source` (`"environment (<VAR_NAME>)"`, `"config.toml ([provider.api_keys])"`, `"none (local endpoint)"`, or `"none (unconfigured)"`).
-     - Enforces the **Zero-Leak Invariant**: plaintext API keys are sanitized from any error messages using `replace(&key, &key_masked)`.
-     - Returns `ProviderConnectionReport` with `status` (`connected`, `disconnected`, `unconfigured`), `latency_ms`, `http_status`, `key_source`, `key_masked`, `model_count`, `error`.
-   - **Tool 139: `list_available_models`**
-     - Queries live models via `ModelFetcher::new().fetch_models(...)`.
-     - When live queries succeed, extracts model items with context length heuristics and reasoning capabilities (`supports_reasoning`).
-     - Gracefully falls back to known catalog defaults per provider if live queries fail or endpoints are offline.
+3. **Module Exports (`src/blocks/mod.rs`):**
+   - Declared `pub mod seed;`.
+   - Re-exported `seed_default_blocks` and `detect_project_framework`.
 
-4. **Error Handling & Code Conventions:**
-   - Zero `.unwrap()` or `.expect()` calls in non-test code.
-   - All errors mapped into `ToolError` and `crate::error::Result<T>`.
-   - Passed `cargo fmt --check` cleanly.
-   - Passed `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
+4. **Global Block Store Automatic Seeding (`src/blocks/store.rs`):**
+   - Added `take_persistence_path(&mut self) -> Option<PathBuf>` and `set_persistence_path(&mut self, path: Option<PathBuf>)` to `BlockStore`.
+   - Updated `get_global_block_store()` to call `seed_default_blocks(&mut store)` if `store.stats().total_components == 0`.
+
+5. **Error Handling & Code Hygiene:**
+   - Exactly zero `.unwrap()` or `.expect()` calls in non-test code.
+   - Passes `cargo fmt` without changes.
+   - Passes `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
 
 ---
 
-## 2. Test Verification Output
+## 2. Targeted Test Output
 
-### Targeted Test Suite:
-
-```bash
-cargo test -j 1 --lib constants::tests::test_total_tool_count
 ```
-```text
-   Compiling minicode v0.3.38 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.47s
-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
+$ cargo test -j 1 --lib blocks::seed::tests
+   Compiling minicode v0.3.39 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.93s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
 
-running 1 test
-test constants::tests::test_total_tool_count ... ok
+running 6 tests
+test blocks::seed::tests::test_detect_project_framework_react ... ok
+test blocks::seed::tests::test_detect_project_framework_none ... ok
+test blocks::seed::tests::test_detect_project_framework_svelte ... ok
+test blocks::seed::tests::test_detect_project_framework_shadcn ... ok
+test blocks::seed::tests::test_detect_project_framework_tailwind ... ok
+test blocks::seed::tests::test_seed_catalog_population ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 542 filtered out; finished in 0.00s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 612 filtered out; finished in 0.08s
 ```
-
-```bash
-cargo test -j 1 --lib tools::registry::agent_tools::config_tools::tests
-```
-```text
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
-
-running 5 tests
-test tools::registry::agent_tools::config_tools::tests::test_config_tools_schemas ... ok
-test tools::registry::agent_tools::config_tools::tests::test_get_agent_config_masked_keys ... ok
-test tools::registry::agent_tools::config_tools::tests::test_update_agent_config_proposal ... ok
-test tools::registry::agent_tools::config_tools::tests::test_list_available_models_fallback ... ok
-test tools::registry::agent_tools::config_tools::tests::test_test_provider_connection_zero_leak ... ok
-
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 538 filtered out; finished in 1.19s
-```
-
-```bash
-cargo test -j 1 --lib tools::tests::test_total_tool_count
-```
-```text
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
-
-running 1 test
-test tools::tests::test_total_tool_count ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 542 filtered out; finished in 0.01s
-```
-
-### Quality Gates:
-- `cargo fmt --check`: Clean formatting.
-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Clean build with zero warnings.
 
 ---
 
-## 3. Concerns & Follow-ups
-- **Concerns:** None. All critical constraints (concurrency `-j 1`, zero unwrap/expect in production code, zero-leak invariant, tool count 139) are fully satisfied and verified.
-- **Ready for Review:** Task 3 is complete and ready for reviewer inspection.
+## 3. Clippy Verification Output
+
+```
+$ cargo clippy -j 1 --bin minicode -- -D warnings
+    Checking minicode v0.3.39 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 34.39s
+```
+
+---
+
+## 4. Concerns & Notes
+
+- **Concerns:** None. All technical invariants, constraints, and tests are satisfied cleanly.

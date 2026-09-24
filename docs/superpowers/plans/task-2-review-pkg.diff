@@ -1,10 +1,12 @@
+ad86c64 fix(blocks): resolve cascading disk rewrites during load, propagate persistence errors, and add template tests
 6127c58 feat(blocks): implement in-memory BlockStore with inverted indices and persistence
 ---
- docs/superpowers/plans/task-2-brief.md  | 156 +++++--
- docs/superpowers/plans/task-2-report.md | 118 ++----
- src/blocks/mod.rs                       |   2 +
- src/blocks/store.rs                     | 707 ++++++++++++++++++++++++++++++++
- 4 files changed, 871 insertions(+), 112 deletions(-)
+ docs/superpowers/plans/task-2-brief.md        |  156 ++-
+ docs/superpowers/plans/task-2-report.md       |  118 +-
+ docs/superpowers/plans/task-2-review-pkg.diff | 1548 ++++++++++++++++---------
+ src/blocks/mod.rs                             |    2 +
+ src/blocks/store.rs                           |  877 ++++++++++++++
+ 5 files changed, 2023 insertions(+), 678 deletions(-)
 ---
 diff --git a/docs/superpowers/plans/task-2-brief.md b/docs/superpowers/plans/task-2-brief.md
 index e097d4b..925ee82 100644
@@ -313,6 +315,1625 @@ index 2b8511d..2dbb2f1 100644
 -- **Concerns:** None. All requirements and constraints were strictly satisfied with zero warnings and 100% targeted test passage.
 -- **Ready for Next Task:** Task 3: Dedicated `agent_config` Tool Category (Tools 136–139).
 +- **Concerns:** None. Ready for Task 3 (Starter Catalog Ingestion & CodeGraph Stack Detection).
+diff --git a/docs/superpowers/plans/task-2-review-pkg.diff b/docs/superpowers/plans/task-2-review-pkg.diff
+index 5f36edb..bb13172 100644
+--- a/docs/superpowers/plans/task-2-review-pkg.diff
++++ b/docs/superpowers/plans/task-2-review-pkg.diff
+@@ -1,632 +1,1048 @@
+-b7efc89 feat(config): eliminate hardcoded defaults with 6-tier dynamic provider resolution
+---- STATS ---
+- src/app/commands.rs |   9 ++
+- src/app/modals.rs   |   8 +-
+- src/config.rs       | 294 ++++++++++++++++++++++++++++++++++++++++++++++++----
+- 3 files changed, 286 insertions(+), 25 deletions(-)
+---- DIFF ---
+-diff --git a/src/app/commands.rs b/src/app/commands.rs
+-index 8c5c479..66abc7a 100644
+---- a/src/app/commands.rs
+-+++ b/src/app/commands.rs
+-@@ -1655,20 +1655,29 @@ impl<'a> App<'a> {
+-             prompt.to_string()
+-         };
+- 
+-         let message_to_display = display_prompt.unwrap_or(&prompt_to_run);
+- 
+-         // ====================================================================
+-         // GATE 1: JIT Provider & Model Authentication Gate
+-         // If the user hasn't configured a key or selected an active provider,
+-         // intercept the prompt, preserve it, and display the Setup modal.
+-         // ====================================================================
+-+        if self.config.provider.default.is_empty() {
+-+            self.pending_submission = Some(crate::app::PendingSubmission {
+-+                prompt: prompt_to_run.clone(),
+-+                display: message_to_display.to_string(),
+-+            });
+-+            self.modal = ModalState::new_provider_setup_required("", &prompt_to_run);
+-+            return Ok(CommandAction::Continue);
+-+        }
++6127c58 feat(blocks): implement in-memory BlockStore with inverted indices and persistence
++---
++ docs/superpowers/plans/task-2-brief.md  | 156 +++++--
++ docs/superpowers/plans/task-2-report.md | 118 ++----
++ src/blocks/mod.rs                       |   2 +
++ src/blocks/store.rs                     | 707 ++++++++++++++++++++++++++++++++
++ 4 files changed, 871 insertions(+), 112 deletions(-)
++---
++diff --git a/docs/superpowers/plans/task-2-brief.md b/docs/superpowers/plans/task-2-brief.md
++index e097d4b..925ee82 100644
++--- a/docs/superpowers/plans/task-2-brief.md
+++++ b/docs/superpowers/plans/task-2-brief.md
++@@ -1,38 +1,118 @@
++-# Task 2 Brief: Dynamic 6-Tier Provider Resolution & Default Models Map
++-
++-## Requirements
++-1. In `src/config.rs`:
++-   - Add `default_models: std::collections::HashMap<String, String>` to `ProviderConfig` (with `#[serde(default)]`) and `RawProviderConfig`.
++-   - Update `ProviderConfig::default()` so it does NOT hardcode "gemini" or "gemini-2.5-pro":
++-     ```rust
++-     default: String::new(),
++-     model: String::new(),
++-     default_models: std::collections::HashMap::new(),
++-     ```
++-   - Update `RawConfig::merge_raw` to merge `default_models`.
++-2. Implement 6-Tier Resolution on `Config`:
++-   - `pub fn find_first_configured_provider(&self) -> Option<(&str, &str)>`
++-     Checks known providers in order: `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`, and local providers (`ollama`, `lmstudio`). If any has a valid key (or is local), returns `(provider_name, default_model)`.
++-   - `pub fn resolve_active_provider_and_model(&self, workspace_root: Option<&Path>) -> (String, String)`:
++-     1. If `!self.provider.default.is_empty() && !self.provider.model.is_empty()` (e.g. from CLI flag or env var override): return `(self.provider.default.clone(), self.provider.model.clone())`.
++-     2. Check workspace preference: if `workspace_root` has a saved preference in `load_workspace_preference(ws)`: return that provider and model!
++-     3. Check `find_first_configured_provider()`: if found, return it!
++-     4. If none found, return `(String::new(), String::new())` (empty fallback, triggering Gate 1 deferred setup when prompt arrives).
++-   - Implement `resolve_active_provider_and_model_with_registry(workspace_root: Option<&Path>, registry_path: Option<&Path>) -> (String, String)` for deterministic testing.
++-   - Update `get_default_model_for_provider(&self, provider_name: &str) -> String`:
++-     First checks `self.provider.default_models.get(provider_name)`; if present and not empty, returns it! Otherwise calls `Config::get_default_model_for_provider(provider_name)`.
++-3. In `src/app/commands.rs`:
++-   - In Gate 1 check:
++-     If `self.config.provider.default.is_empty()`: automatically trigger Gate 1 `ModalState::new_provider_setup_required("", &prompt_to_run)`.
++-4. In `Config::load`:
++-   - After merging raw configs, call `resolve_active_provider_and_model(workspace_dir)`:
++-     If `config.provider.default.is_empty()` or `config.provider.model.is_empty()`:
++-     fill them in with the resolved provider and model!
++-5. Follow TDD:
++-   - Add unit test `test_dynamic_provider_resolution_hierarchy` and `test_default_models_override` in `src/config.rs`.
++-   - Targeted tests:
++-     `cargo test -j 1 --lib config::tests::test_dynamic_provider_resolution_hierarchy`
++-     `cargo test -j 1 --lib config::tests::test_default_models_override`
++-   - Run formatting: `cargo fmt`
++-   - Run clippy: `cargo clippy -j 1 --bin minicode -- -D warnings`
++-6. Commit with message: `feat(config): eliminate hardcoded defaults with 6-tier dynamic provider resolution`
+++# Task 2 Brief: Fast In-Memory BlockStore & Inverted Index Engine
+ +
+-         let is_provider_configured = if self.config.is_local_provider(&self.config.provider.default)
+-         {
+-             true
+-         } else {
+-             match self.config.get_api_key(&self.config.provider.default) {
+-                 Ok(key) => !key.trim().is_empty(),
+-                 Err(_) => false,
+-             }
+-         };
+- 
+-diff --git a/src/app/modals.rs b/src/app/modals.rs
+-index 0182384..90140a7 100644
+---- a/src/app/modals.rs
+-+++ b/src/app/modals.rs
+-@@ -101,23 +101,21 @@ impl<'a> App<'a> {
+-                         .await;
+-                     let models = match models_res {
+-                         Ok(m) => m,
+-                         Err(e) => {
+-                             tracing::warn!(error = %e, provider = %prov_name, "Failed to fetch live model list");
+-                             Vec::new()
+-                         }
+-                     };
+- 
+-                     if models.is_empty() {
+--                        let default_model =
+--                            crate::config::Config::get_default_model_for_provider(&prov_name)
+--                                .to_string();
+-+                        let default_model = self.config.get_default_model_for_provider(&prov_name);
+-                         self.config.provider.default = prov_name.clone();
+-                         self.config.provider.model = default_model.clone();
+- 
+-                         let key_res = self.config.get_api_key(&prov_name);
+-                         let (new_prov, prov_err) =
+-                             crate::agent::provider::create_provider_or_fallback(
+-                                 &prov_name,
+-                                 key_res,
+-                                 custom_url.as_deref(),
+-                             );
+-@@ -214,23 +212,21 @@ impl<'a> App<'a> {
+-                         .await;
+-                     let models = match models_res {
+-                         Ok(m) => m,
+-                         Err(e) => {
+-                             tracing::warn!(error = %e, provider = %provider, "Failed to fetch live model list");
+-                             Vec::new()
+-                         }
+-                     };
+- 
+-                     if models.is_empty() {
+--                        let default_model =
+--                            crate::config::Config::get_default_model_for_provider(&provider)
+--                                .to_string();
+-+                        let default_model = self.config.get_default_model_for_provider(&provider);
+-                         self.config.provider.default = provider.clone();
+-                         self.config.provider.model = default_model.clone();
+- 
+-                         let key_res = self.config.get_api_key(&provider);
+-                         let (new_prov, prov_err) =
+-                             crate::agent::provider::create_provider_or_fallback(
+-                                 &provider,
+-                                 key_res,
+-                                 custom_url.as_deref(),
+-                             );
+-diff --git a/src/config.rs b/src/config.rs
+-index c4a6abc..8d994f4 100644
+---- a/src/config.rs
+-+++ b/src/config.rs
+-@@ -1,11 +1,11 @@
+--use crate::constants::{env_vars, DEFAULT_MODEL_GEMINI, DEFAULT_PROVIDER};
+-+use crate::constants::env_vars;
+- use crate::error::{ConfigError, Result};
+- use serde::{Deserialize, Serialize};
+- use std::path::{Path, PathBuf};
+- #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+- pub struct Config {
+-     #[serde(default)]
+-     pub provider: ProviderConfig,
+- 
+-     #[serde(default)]
+-     pub agent: AgentConfig,
+-@@ -18,24 +18,24 @@ pub struct Config {
+- 
+-     #[serde(default)]
+-     pub mcp: McpConfig,
+- 
+-     #[serde(default)]
+-     pub git: GitConfig,
+- }
+- 
+- #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+- pub struct ProviderConfig {
+--    #[serde(default = "default_provider_name")]
+-+    #[serde(default)]
+-     pub default: String,
+- 
+--    #[serde(default = "default_model_name")]
+-+    #[serde(default)]
+-     pub model: String,
+- 
+-     #[serde(default)]
+-     pub ollama: OllamaConfig,
+++## Goal
+++Implement the thread-safe in-memory `BlockStore` engine with inverted indices, multi-token fuzzy search, full CRUD operations across all 4 asset domains (components, palettes, gradients, templates), version history, JSON disk persistence, and global singleton store initializer.
+++
+++## Target Files
+++- Create: `src/blocks/store.rs`
+++- Modify: `src/blocks/mod.rs` (expose `pub mod store;`, re-export `BlockStore`, `BlockSearchFilter`, `BlockSearchResult`, `get_global_block_store`)
+++- Tests: Inline in `src/blocks/store.rs`
+++
+++## Global Constraints
+++1. **Targeted Tests ONLY:** Run ONLY `cargo test -j 1 --lib blocks::store::tests`. Never run the full test suite.
+++2. **Error Handling:** Zero `.unwrap()` or `.expect()` in non-test code. Return `Result<T, BlockError>`.
+++3. **Concurrency:** Always use `-j 1` for `cargo check` and `cargo test`.
+++4. **Pure Rust:** No external C libraries or Python scripts.
+++5. **No `cd` commands.**
+++
+++## Interfaces & Types to Produce
+++
+++### 1. `BlockSearchFilter` (`src/blocks/store.rs`)
+++```rust
+++#[derive(Debug, Clone, Default)]
+++pub struct BlockSearchFilter {
+++    pub query: Option<String>,
+++    pub category: Option<BlockCategory>,
+++    pub framework: Option<BlockFramework>,
+++    pub tags: Option<Vec<String>>,
+++    pub limit: usize,
+++}
+++```
+++
+++### 2. `BlockSearchResult` (`src/blocks/store.rs`)
+++```rust
+++#[derive(Debug, Clone, Serialize, Deserialize)]
+++pub struct BlockSearchResult {
+++    pub id: uuid::Uuid,
+++    pub name: String,
+++    pub description: String,
+++    pub category: BlockCategory,
+++    pub framework: BlockFramework,
+++    pub tags: Vec<String>,
+++    pub version: u32,
+++    pub score: f64,
+++}
+++```
+++
+++### 3. `BlockStore` (`src/blocks/store.rs`)
+++```rust
+++pub struct BlockStore {
+++    components: HashMap<Uuid, BlockComponent>,
+++    component_versions: HashMap<Uuid, Vec<(u32, String, DateTime<Utc>)>>,
+++    palettes: HashMap<Uuid, BlockPalette>,
+++    gradients: HashMap<Uuid, BlockGradient>,
+++    templates: HashMap<Uuid, BlockTemplate>,
+++    // Inverted indices for O(1) filtering
+++    category_index: HashMap<BlockCategory, HashSet<Uuid>>,
+++    framework_index: HashMap<BlockFramework, HashSet<Uuid>>,
+++    tag_index: HashMap<String, HashSet<Uuid>>,
+++    // Persistence path
+++    persistence_path: Option<PathBuf>,
+++}
+++```
+++
+++Implement the following methods on `BlockStore`:
+++- `pub fn new() -> Self` and `pub fn new_isolated(persistence_path: PathBuf) -> Self`
+++- **Components:**
+++  - `pub fn insert_component(&mut self, component: BlockComponent) -> Result<(), BlockError>`
+++  - `pub fn get_component(&self, id: &Uuid) -> Option<&BlockComponent>`
+++  - `pub fn get_component_by_name(&self, name: &str) -> Option<&BlockComponent>`
+++  - `pub fn search_components(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult>`
+++  - `pub fn update_component(&mut self, id: &Uuid, new_code: Option<&str>, new_description: Option<&str>, new_tags: Option<Vec<String>>) -> Result<BlockComponent, BlockError>` (records old code into `component_versions`, increments `version += 1`, updates `updated_at = Utc::now()`)
+++  - `pub fn delete_component(&mut self, id: &Uuid) -> Result<(), BlockError>`
+++  - `pub fn get_component_history(&self, id: &Uuid) -> Vec<(u32, String, DateTime<Utc>)>`
+++- **Palettes:**
+++  - `pub fn insert_palette(&mut self, palette: BlockPalette) -> Result<(), BlockError>`
+++  - `pub fn get_palette(&self, id: &Uuid) -> Option<&BlockPalette>`
+++  - `pub fn list_palettes(&self) -> Vec<&BlockPalette>`
+++  - `pub fn search_palettes(&self, query: &str) -> Vec<&BlockPalette>`
+++  - `pub fn delete_palette(&mut self, id: &Uuid) -> Result<(), BlockError>`
+++- **Gradients:**
+++  - `pub fn insert_gradient(&mut self, gradient: BlockGradient) -> Result<(), BlockError>`
+++  - `pub fn get_gradient(&self, id: &Uuid) -> Option<&BlockGradient>`
+++  - `pub fn list_gradients(&self) -> Vec<&BlockGradient>`
+++  - `pub fn search_gradients(&self, query: &str) -> Vec<&BlockGradient>`
+++  - `pub fn delete_gradient(&mut self, id: &Uuid) -> Result<(), BlockError>`
+++- **Templates:**
+++  - `pub fn insert_template(&mut self, template: BlockTemplate) -> Result<(), BlockError>`
+++  - `pub fn get_template(&self, id: &Uuid) -> Option<&BlockTemplate>`
+++  - `pub fn list_templates(&self) -> Vec<&BlockTemplate>`
+++  - `pub fn delete_template(&mut self, id: &Uuid) -> Result<(), BlockError>`
+++- **Stats & Persistence:**
+++  - `pub fn stats(&self) -> BlockStats`
+++  - `pub fn save_to_disk(&self, path: &Path) -> Result<(), BlockError>`
+++  - `pub fn load_from_disk(path: &Path) -> Result<Self, BlockError>`
+++  - `pub fn persist_if_configured(&self) -> Result<(), BlockError>`
+++
+++### 4. Global Singleton Initializer
+++```rust
+++pub fn get_global_block_store() -> &'static std::sync::RwLock<BlockStore>
+++```
+++Using `std::sync::OnceLock`. Defaults to `~/.local/share/minicode/miniblocks/store.json`.
+++
+++## Unit Tests to Implement in `src/blocks/store.rs`
+++1. `test_store_crud_and_indexing`:
+++   - Insert component, retrieve by id and name.
+++   - Search with query, category, and framework filters.
+++   - Update component, verify version increases to 2 and history is preserved.
+++   - Delete component, verify removal from indexes and store.
+++2. `test_palette_and_gradient_search`:
+++   - Insert palettes and gradients, search by name/tags, list, delete.
+++3. `test_disk_persistence_roundtrip`:
+++   - Save store to tempfile, reload, verify all assets intact.
+++
+++## Deliverables
+++1. Run `cargo test -j 1 --lib blocks::store::tests` -> must pass!
+++2. Run `cargo fmt` and `cargo clippy -j 1 --bin minicode -- -D warnings`.
+++3. Commit with: `feat(blocks): implement in-memory BlockStore with inverted indices and persistence`
+++4. Write execution report to `docs/superpowers/plans/task-2-report.md`.
++diff --git a/docs/superpowers/plans/task-2-report.md b/docs/superpowers/plans/task-2-report.md
++index 2b8511d..2dbb2f1 100644
++--- a/docs/superpowers/plans/task-2-report.md
+++++ b/docs/superpowers/plans/task-2-report.md
++@@ -1,97 +1,67 @@
++-# Task 2 Execution Report: Dynamic 6-Tier Provider Resolution & Default Models Map
+++# Task 2 Execution Report: Fast In-Memory BlockStore & Inverted Index Engine
+  
+-     #[serde(default = "default_temperature")]
+-     pub temperature: f32,
++ ## Status: DONE
+  
+-     #[serde(default = "default_max_tokens")]
+-     pub max_tokens: usize,
+-@@ -56,27 +56,31 @@ pub struct ProviderConfig {
+-     #[serde(default)]
+-     pub context_window: Option<usize>,
++-- **Commit Hash:** `b7efc89e2f9eaa6182fb3ffb3f3f207f62ddc67a`
++-- **Target Components:**
++-  - `src/config.rs`
++-  - `src/app/commands.rs`
++-  - `src/app/modals.rs`
++-- **Phase:** Autonomous Configuration & Workspace Memory (Task 2)
+++- **Target Files:**
+++  - `src/blocks/store.rs`
+++  - `src/blocks/mod.rs`
+++- **Phase:** MiniBlocks Native UI Component & Design Warehouse (Task 2)
+  
+-     /// Custom prompt rate per 1,000,000 tokens in USD
+-     #[serde(default)]
+-     pub prompt_cost_per_m: Option<f64>,
++ ---
+  
+-     /// Custom completion rate per 1,000,000 tokens in USD
+-     #[serde(default)]
+-     pub completion_cost_per_m: Option<f64>,
++-## 1. Summary of Changes
++-
++-1. **Elimination of Hardcoded Provider Defaults (`src/config.rs`):**
++-   - Added `pub default_models: std::collections::HashMap<String, String>` to `ProviderConfig` (with `#[serde(default)]`) and `RawProviderConfig`.
++-   - Updated `ProviderConfig::default()` to not hardcode `"gemini"` or `"gemini-2.5-pro"`:
++-     - `default: String::new()`
++-     - `model: String::new()`
++-     - `default_models: std::collections::HashMap::new()`
++-   - Removed obsolete `default_provider_name()` and `default_model_name()` functions.
++-
++-2. **Raw Config Merging (`src/config.rs`):**
++-   - Updated `RawConfig::merge_raw` to merge entries from `other.provider.default_models` into `self.provider.default_models`.
++-
++-3. **Configurable Default Models Lookup (`src/config.rs`):**
++-   - Added `Config::get_default_model_for_provider(&self, provider_name: &str) -> String`:
++-     - Inspects `self.provider.default_models` first (case-insensitive); returns override if present and non-empty.
++-     - Otherwise falls back to static catalog default via `Config::static_default_model_for_provider`.
++-   - Preserved `default_model_for_provider` and `static_default_model_for_provider` helper functions.
++-
++-4. **6-Tier Dynamic Resolution Hierarchy (`src/config.rs`):**
++-   - Implemented `is_local_provider_configured(&self, provider_name: &str) -> bool`:
++-     - Checks whether local provider (`ollama`, `lmstudio`) has been explicitly configured via `custom_endpoints`, `api_keys`, `default_models`, host override, or environment variables.
++-   - Implemented `find_first_configured_provider(&self) -> Option<(&str, &str)>`:
++-     - Scans cloud providers in deterministic order: `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`.
++-     - Scans local providers: `ollama`, `lmstudio`.
++-     - Returns `(provider_name, default_model)` if any has a valid key (or is local and configured).
++-   - Implemented `resolve_active_provider_and_model_with_registry(&self, workspace_root: Option<&Path>, registry_path: Option<&Path>) -> (String, String)`:
++-     1. Explicit CLI flag / env var override (`!self.provider.default.is_empty() && !self.provider.model.is_empty()`).
++-     2. Workspace preference from `workspaces.toml` (or `.minicode/config.toml`).
++-     3. Configured provider auto-discovery via `find_first_configured_provider()`.
++-     4. Deferred empty fallback `("", "")` if no credentials or preferences are found.
++-   - Implemented `resolve_active_provider_and_model(&self, workspace_root: Option<&Path>) -> (String, String)` delegating to the global registry path.
++-
++-5. **Startup & Gate 1 Integration (`src/config.rs`, `src/app/commands.rs`, `src/app/modals.rs`):**
++-   - In `Config::load`: After applying raw configs and env overrides, calls `resolve_active_provider_and_model(workspace_dir)` to populate unconfigured provider and model.
++-   - In `src/app/commands.rs`: In Gate 1 JIT provider check, if `self.config.provider.default.is_empty()`, immediately preserves the pending submission and presents `ModalState::new_provider_setup_required("", &prompt_to_run)`.
++-   - In `src/app/modals.rs`: Updated modal default model resolution to call `self.config.get_default_model_for_provider(...)`.
++-
++-6. **Error Handling & Code Quality:**
++-   - Zero `.unwrap()` or `.expect()` calls in non-test code.
++-   - Passed `cargo fmt --check` with clean formatting.
++-   - Passed `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
+++## 1. Summary of Completed Changes
+++
+++1. **`BlockSearchFilter` & `BlockSearchResult` (`src/blocks/store.rs`):**
+++   - Implemented `BlockSearchFilter` for multi-parameter querying (query, category, framework, tags, limit).
+++   - Implemented `BlockSearchResult` carrying component metadata, version, and match score.
+ +
+-+    #[serde(default)]
+-+    pub default_models: std::collections::HashMap<String, String>,
+- }
+++2. **Inverted Index Engine & `BlockStore` (`src/blocks/store.rs`):**
+++   - Core tables: `components`, `component_versions`, `palettes`, `gradients`, `templates`.
+++   - Inverted indices:
+++     - `category_index: HashMap<BlockCategory, HashSet<Uuid>>`
+++     - `framework_index: HashMap<BlockFramework, HashSet<Uuid>>`
+++     - `tag_index: HashMap<String, HashSet<Uuid>>`
+++   - O(1) set operations for filtering candidates before fuzzy/substring scoring.
+++   - Component CRUD:
+++     - `insert_component`: Inserts and updates all 3 inverted indices.
+++     - `get_component`: Look up by ID.
+++     - `get_component_by_name`: Case-insensitive name lookup.
+++     - `search_components`: Category/framework/tag index intersection + multi-token weighted scoring.
+++     - `update_component`: Archives prior code into `component_versions`, increments version, updates `updated_at`.
+++     - `delete_component`: Removes component, versions, and all inverted index entries.
+++     - `get_component_history`: Returns version audit log.
+++
+++3. **Palette, Gradient & Template Subsystems:**
+++   - Full CRUD and search for palettes (`search_palettes`), gradients (`search_gradients`), and templates (`list_templates`, `delete_template`).
+++   - `stats()`: Aggregates counts across components, palettes, gradients, templates, and provides category & framework breakdown.
+++
+++4. **Persistence & Global Singleton:**
+++   - `save_to_disk` & `load_from_disk`: Reconstructs store and all inverted indices from formatted JSON.
+++   - `get_global_block_store()`: Thread-safe `RwLock<BlockStore>` initialized via `OnceLock`.
+  
+- impl Default for ProviderConfig {
+-     fn default() -> Self {
+-         Self {
+--            default: default_provider_name(),
+--            model: default_model_name(),
+-+            default: String::new(),
+-+            model: String::new(),
+-+            default_models: std::collections::HashMap::new(),
+-             ollama: OllamaConfig::default(),
+-             temperature: default_temperature(),
+-             max_tokens: default_max_tokens(),
+-             api_keys: std::collections::HashMap::new(),
+-             custom_endpoints: std::collections::HashMap::new(),
+-             thinking_budget: None,
+-             reasoning_effort: None,
+-             context_window: None,
+-             prompt_cost_per_m: None,
+-             completion_cost_per_m: None,
+-@@ -93,28 +97,20 @@ impl ProviderConfig {
+-             .unwrap_or(false)
+-     }
++ ---
+  
+-     /// Returns the effective thinking budget in tokens
+-     pub fn effective_thinking_budget(&self) -> Option<usize> {
+-         self.thinking_budget
+-             .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS)
+-     }
+- }
++ ## 2. Test Verification Output
+  
+--fn default_provider_name() -> String {
+--    DEFAULT_PROVIDER.to_string()
+--}
++ ### Targeted Test Suite:
++ ```bash
++-cargo test -j 1 --lib config::tests::test_dynamic_provider_resolution_hierarchy
++-```
++-```text
++-   Compiling minicode v0.3.38 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
++-    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.38s
++-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
++-
++-running 1 test
++-test config::tests::test_dynamic_provider_resolution_hierarchy ... ok
+ -
+--fn default_model_name() -> String {
+--    DEFAULT_MODEL_GEMINI.to_string()
+--}
++-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.00s
++-```
+ -
+- fn default_temperature() -> f32 {
+-     0.2
+- }
++-```bash
++-cargo test -j 1 --lib config::tests::test_default_models_override
+++cargo test -j 1 --lib blocks::store::tests
++ ```
++ ```text
++-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.30s
++-     Running unittests src/lib.rs (target/debug/deps/minicode-bb23ffd60c70dcbf)
++-
++-running 1 test
++-test config::tests::test_default_models_override ... ok
+++running 3 tests
+++test blocks::store::tests::test_palette_and_gradient_search ... ok
+++test blocks::store::tests::test_disk_persistence_roundtrip ... ok
+++test blocks::store::tests::test_store_crud_and_indexing ... ok
+  
+- fn default_max_tokens() -> usize {
+-     8192
+- }
++-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 536 filtered out; finished in 0.00s
+++test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 608 filtered out; finished in 0.01s
++ ```
+  
+- #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+- pub struct OllamaConfig {
+-@@ -520,20 +516,21 @@ pub struct RawProviderConfig {
+-     pub default: Option<String>,
+-     pub model: Option<String>,
+-     pub temperature: Option<f32>,
+-     pub max_tokens: Option<usize>,
+-     pub ollama: Option<OllamaConfig>,
+-     pub api_keys: Option<std::collections::HashMap<String, String>>,
+-     pub custom_endpoints: Option<std::collections::HashMap<String, String>>,
+-     pub context_window: Option<usize>,
+-     pub prompt_cost_per_m: Option<f64>,
+-     pub completion_cost_per_m: Option<f64>,
+-+    pub default_models: Option<std::collections::HashMap<String, String>>,
+- }
++ ### Quality Gates:
++-- `cargo fmt --check`: Clean formatting applied.
++-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Clean build with zero warnings.
+++- `cargo fmt`: Compliant.
+++- `cargo clippy -j 1 --bin minicode -- -D warnings`: Passed cleanly with zero warnings.
+++- Pure Rust, zero `.unwrap()` or `.expect()` in non-test production code.
+  
+- #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+- pub struct RawAgentConfig {
+-     pub auto_approve: Option<bool>,
+-     pub approval_policy: Option<String>,
+-     pub timeout: Option<u64>,
+-     pub map_tokens: Option<usize>,
+-     pub warning_threshold: Option<f32>,
+-     pub auto_heal: Option<bool>,
+-@@ -664,20 +661,30 @@ impl Config {
+-             config.load_mcp_json_if_exists(
+-                 &dir.join(crate::constants::WORKSPACE_DIR_NAME)
+-                     .join(crate::constants::MCP_CONFIG_FILE),
+-             );
+-             config.load_mcp_json_if_exists(&dir.join(crate::constants::MCP_CONFIG_FILE));
+-         }
++ ---
+  
+-         // 5. Apply environment variable overrides
+-         config.apply_env_overrides();
++ ## 3. Concerns & Follow-ups
++-- **Concerns:** None. All requirements and constraints were strictly satisfied with zero warnings and 100% targeted test passage.
++-- **Ready for Next Task:** Task 3: Dedicated `agent_config` Tool Category (Tools 136–139).
+++- **Concerns:** None. Ready for Task 3 (Starter Catalog Ingestion & CodeGraph Stack Detection).
++diff --git a/src/blocks/mod.rs b/src/blocks/mod.rs
++index 1a7cbe3..eb7c28f 100644
++--- a/src/blocks/mod.rs
+++++ b/src/blocks/mod.rs
++@@ -1,13 +1,15 @@
++ pub mod models;
+++pub mod store;
+  
+-+        // 6. Dynamic 6-tier provider resolution
+-+        let (resolved_provider, resolved_model) =
+-+            config.resolve_active_provider_and_model(workspace_dir);
+-+        if config.provider.default.is_empty() {
+-+            config.provider.default = resolved_provider;
+-+        }
+-+        if config.provider.model.is_empty() {
+-+            config.provider.model = resolved_model;
+-+        }
+-+
+-         Ok(config)
+-     }
++ pub use models::*;
+++pub use store::*;
+  
+-     /// Saves the current configuration to disk:
+-     /// If project-local `.minicode/config.toml` exists, updates it.
+-     /// Otherwise writes to global `~/.config/minicode/config.toml`.
+-     pub fn save(&self, workspace_root: Option<&Path>) -> Result<()> {
+-         let path = if let Some(ws) = workspace_root {
+-             let ws_minicode_dir = ws.join(crate::constants::WORKSPACE_DIR_NAME);
+-             let local_path = ws_minicode_dir.join(crate::constants::CONFIG_FILE_NAME);
+-@@ -873,20 +880,27 @@ impl Config {
+-                 }
+-             }
+-         }
+-         if let Some(endpoints) = other.provider.custom_endpoints {
+-             for (k, v) in endpoints {
+-                 if !v.trim().is_empty() {
+-                     self.provider.custom_endpoints.insert(k.to_lowercase(), v);
+-                 }
+-             }
+-         }
+-+        if let Some(models) = other.provider.default_models {
+-+            for (k, v) in models {
+-+                if !v.trim().is_empty() {
+-+                    self.provider.default_models.insert(k.to_lowercase(), v);
+-+                }
+-+            }
++ #[derive(Debug, thiserror::Error)]
++ pub enum BlockError {
++     #[error("Component not found: {0}")]
++     ComponentNotFound(String),
++     #[error("Palette not found: {0}")]
++     PaletteNotFound(String),
++     #[error("Gradient not found: {0}")]
++     GradientNotFound(String),
++     #[error("Template not found: {0}")]
++diff --git a/src/blocks/store.rs b/src/blocks/store.rs
++new file mode 100644
++index 0000000..a33d561
++--- /dev/null
+++++ b/src/blocks/store.rs
++@@ -0,0 +1,707 @@
+++use crate::blocks::models::{
+++    BlockCategory, BlockComponent, BlockGradient, BlockPalette, BlockStats, BlockTemplate,
+++};
+++use crate::blocks::BlockError;
+++use chrono::{DateTime, Utc};
+++use serde::{Deserialize, Serialize};
+++use std::collections::{HashMap, HashSet};
+++use std::path::{Path, PathBuf};
+++use std::sync::{OnceLock, RwLock};
+++use uuid::Uuid;
+++
+++/// Search filter parameters for querying components.
+++#[derive(Debug, Clone, Default)]
+++pub struct BlockSearchFilter {
+++    pub query: Option<String>,
+++    pub category: Option<BlockCategory>,
+++    pub framework: Option<crate::blocks::models::BlockFramework>,
+++    pub tags: Option<Vec<String>>,
+++    pub limit: usize,
+++}
+++
+++/// Search result item containing component metadata and match score.
+++#[derive(Debug, Clone, Serialize, Deserialize)]
+++pub struct BlockSearchResult {
+++    pub id: Uuid,
+++    pub name: String,
+++    pub description: String,
+++    pub category: BlockCategory,
+++    pub framework: crate::blocks::models::BlockFramework,
+++    pub tags: Vec<String>,
+++    pub version: u32,
+++    pub score: f64,
+++}
+++
+++/// Internal serialization schema for disk persistence.
+++#[derive(Debug, Clone, Serialize, Deserialize)]
+++struct StoreData {
+++    components: Vec<BlockComponent>,
+++    component_versions: HashMap<Uuid, Vec<(u32, String, DateTime<Utc>)>>,
+++    palettes: Vec<BlockPalette>,
+++    gradients: Vec<BlockGradient>,
+++    templates: Vec<BlockTemplate>,
+++}
+++
+++/// Fast in-memory component and design token warehouse with inverted indices.
+++pub struct BlockStore {
+++    components: HashMap<Uuid, BlockComponent>,
+++    component_versions: HashMap<Uuid, Vec<(u32, String, DateTime<Utc>)>>,
+++    palettes: HashMap<Uuid, BlockPalette>,
+++    gradients: HashMap<Uuid, BlockGradient>,
+++    templates: HashMap<Uuid, BlockTemplate>,
+++    // Inverted indices for O(1) filtering
+++    category_index: HashMap<BlockCategory, HashSet<Uuid>>,
+++    framework_index: HashMap<crate::blocks::models::BlockFramework, HashSet<Uuid>>,
+++    tag_index: HashMap<String, HashSet<Uuid>>,
+++    // Persistence path
+++    persistence_path: Option<PathBuf>,
+++}
+++
+++impl BlockStore {
+++    /// Creates a new empty `BlockStore` without default persistence.
+++    pub fn new() -> Self {
+++        Self {
+++            components: HashMap::new(),
+++            component_versions: HashMap::new(),
+++            palettes: HashMap::new(),
+++            gradients: HashMap::new(),
+++            templates: HashMap::new(),
+++            category_index: HashMap::new(),
+++            framework_index: HashMap::new(),
+++            tag_index: HashMap::new(),
+++            persistence_path: None,
+ +        }
+-         if let Some(policy) = other.mcp.approval_policy {
+-             self.mcp.approval_policy = Some(policy);
+-         }
+-         for (name, srv) in other.mcp.servers {
+-             self.mcp.servers.insert(name, srv);
+-         }
+-     }
+- 
+-     fn apply_env_overrides(&mut self) {
+-         if let Ok(model) = std::env::var(env_vars::MINICODE_MODEL) {
+-@@ -1009,39 +1023,219 @@ impl Config {
+-                 Some(crate::constants::LMSTUDIO_DEFAULT_BASE_URL.to_string())
+-             }
+-             "vllm" => Some(crate::constants::VLLM_DEFAULT_BASE_URL.to_string()),
+-             "local" | "localhost" | "localai" | "llama.cpp" | "llamacpp" | "jan" => {
+-                 Some(crate::constants::LOCALAI_DEFAULT_BASE_URL.to_string())
+-             }
+-             _ => None,
+-         }
+-     }
+- 
+--    /// Returns default fallback model for a provider
+--    pub fn get_default_model_for_provider(provider_name: &str) -> &'static str {
+-+    /// Returns default fallback model for a provider from the static catalog
+-+    #[allow(dead_code)]
+-+    pub fn static_default_model_for_provider(provider_name: &str) -> &'static str {
+-         match provider_name.to_lowercase().as_str() {
+-             "gemini" | "google" => "gemini-2.5-pro",
+-             "anthropic" | "claude" => "claude-3-7-sonnet-20250219",
+-             "openrouter" => "anthropic/claude-3.7-sonnet",
+-             "openai" => "gpt-4o",
+-             "deepseek" => "deepseek-chat",
+-             "groq" => "llama-3.3-70b-versatile",
+-             "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+-             "minimax" => "MiniMax-Text-01",
+-             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-plus",
+-             "mistral" => "codestral-latest",
+-             "ollama" => "qwen2.5-coder",
+-             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
+-             _ => "default-model",
+-         }
+-     }
+- 
+-+    /// Associated function returning default fallback model from the static catalog
+-+    #[allow(dead_code)]
+-+    pub fn default_model_for_provider(provider_name: &str) -> &'static str {
+-+        Self::static_default_model_for_provider(provider_name)
+ +    }
+ +
+-+    /// Returns the effective default model for a provider:
+-+    /// First checks `self.provider.default_models.get(provider_name)`;
+-+    /// if present and non-empty, returns it. Otherwise returns static catalog default.
+-+    pub fn get_default_model_for_provider(&self, provider_name: &str) -> String {
+-+        let norm = provider_name.to_lowercase();
+-+        if let Some(model) = self
+-+            .provider
+-+            .default_models
+-+            .get(&norm)
+-+            .or_else(|| self.provider.default_models.get(provider_name))
+-+        {
+-+            let trimmed = model.trim();
+-+            if !trimmed.is_empty() {
+-+                return trimmed.to_string();
+++    /// Creates an isolated `BlockStore` with a dedicated persistence file path.
+++    pub fn new_isolated(persistence_path: PathBuf) -> Self {
+++        let mut store = Self::new();
+++        store.persistence_path = Some(persistence_path);
+++        store
+++    }
+++
+++    // --- Component Operations ---
+++
+++    /// Inserts a component and updates all inverted indices.
+++    pub fn insert_component(&mut self, component: BlockComponent) -> Result<(), BlockError> {
+++        let id = component.id;
+++
+++        // Update category index
+++        self.category_index
+++            .entry(component.category)
+++            .or_default()
+++            .insert(id);
+++
+++        // Update framework index
+++        self.framework_index
+++            .entry(component.framework)
+++            .or_default()
+++            .insert(id);
+++
+++        // Update tag index (normalized lowercase)
+++        for tag in &component.tags {
+++            let norm = tag.trim().to_lowercase();
+++            if !norm.is_empty() {
+++                self.tag_index.entry(norm).or_default().insert(id);
+ +            }
+ +        }
+-+        Self::static_default_model_for_provider(provider_name).to_string()
+++
+++        self.components.insert(id, component);
+++        let _ = self.persist_if_configured();
+++        Ok(())
+ +    }
+ +
+-+    /// Returns true if a local provider has been explicitly configured by the user
+-+    /// (via custom_endpoints, api_keys, default_models, host override, or env vars).
+-+    pub fn is_local_provider_configured(&self, provider_name: &str) -> bool {
+-+        let norm = provider_name.to_lowercase();
+-+        if self.provider.custom_endpoints.contains_key(&norm)
+-+            || self.provider.api_keys.contains_key(&norm)
+-+            || self.provider.default_models.contains_key(&norm)
+-+        {
+-+            return true;
+-+        }
+++    /// Retrieves a component reference by its UUID.
+++    pub fn get_component(&self, id: &Uuid) -> Option<&BlockComponent> {
+++        self.components.get(id)
+++    }
+ +
+-+        match norm.as_str() {
+-+            "ollama" => {
+-+                std::env::var("OLLAMA_HOST").is_ok()
+-+                    || std::env::var("OLLAMA_API_KEY").is_ok()
+-+                    || self.provider.ollama.host != crate::constants::DEFAULT_OLLAMA_HOST
+++    /// Retrieves a component by case-insensitive name.
+++    pub fn get_component_by_name(&self, name: &str) -> Option<&BlockComponent> {
+++        let target = name.trim().to_lowercase();
+++        self.components
+++            .values()
+++            .find(|c| c.name.trim().to_lowercase() == target)
+++    }
+++
+++    /// Searches components using inverted indices and multi-token fuzzy/substring scoring.
+++    pub fn search_components(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult> {
+++        let mut candidate_ids: Option<HashSet<Uuid>> = None;
+++
+++        // 1. Filter by category index
+++        if let Some(cat) = filter.category {
+++            if let Some(ids) = self.category_index.get(&cat) {
+++                candidate_ids = Some(ids.clone());
+++            } else {
+++                return Vec::new();
+ +            }
+-+            "lmstudio" | "lm-studio" => {
+-+                std::env::var("LMSTUDIO_BASE_URL").is_ok()
+-+                    || std::env::var("LMSTUDIO_API_KEY").is_ok()
+++        }
+++
+++        // 2. Filter by framework index
+++        if let Some(fw) = filter.framework {
+++            if let Some(ids) = self.framework_index.get(&fw) {
+++                candidate_ids = match candidate_ids {
+++                    Some(existing) => Some(existing.intersection(ids).copied().collect()),
+++                    None => Some(ids.clone()),
+++                };
+++            } else {
+++                return Vec::new();
+ +            }
+-+            _ => false,
+ +        }
+-+    }
+ +
+-+    /// Scans known providers in deterministic priority order:
+-+    /// `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`,
+-+    /// followed by local providers (`ollama`, `lmstudio`).
+-+    /// If any has a valid key (or is local and configured), returns `(provider_name, default_model)`.
+-+    pub fn find_first_configured_provider(&self) -> Option<(&str, &str)> {
+-+        const CLOUD_PROVIDERS: [&str; 10] = [
+-+            "anthropic",
+-+            "gemini",
+-+            "openai",
+-+            "openrouter",
+-+            "deepseek",
+-+            "groq",
+-+            "mistral",
+-+            "together",
+-+            "minimax",
+-+            "z.ai",
+-+        ];
+-+
+-+        for &provider in &CLOUD_PROVIDERS {
+-+            if let Ok(key) = self.get_api_key(provider) {
+-+                if !key.trim().is_empty() {
+-+                    let norm = provider.to_lowercase();
+-+                    let model = if let Some(custom) = self
+-+                        .provider
+-+                        .default_models
+-+                        .get(&norm)
+-+                        .or_else(|| self.provider.default_models.get(provider))
+-+                    {
+-+                        let trimmed = custom.trim();
+-+                        if !trimmed.is_empty() {
+-+                            trimmed
+-+                        } else {
+-+                            Self::static_default_model_for_provider(provider)
+-+                        }
+-+                    } else {
+-+                        Self::static_default_model_for_provider(provider)
+++        // 3. Filter by required tags
+++        if let Some(ref req_tags) = filter.tags {
+++            for tag in req_tags {
+++                let norm = tag.trim().to_lowercase();
+++                if norm.is_empty() {
+++                    continue;
+++                }
+++                if let Some(ids) = self.tag_index.get(&norm) {
+++                    candidate_ids = match candidate_ids {
+++                        Some(existing) => Some(existing.intersection(ids).copied().collect()),
+++                        None => Some(ids.clone()),
+ +                    };
+-+                    return Some((provider, model));
+++                } else {
+++                    return Vec::new();
+ +                }
+ +            }
+ +        }
+ +
+-+        const LOCAL_PROVIDERS: [&str; 2] = ["ollama", "lmstudio"];
+-+        for &provider in &LOCAL_PROVIDERS {
+-+            if self.is_local_provider_configured(provider) {
+-+                let norm = provider.to_lowercase();
+-+                let model = if let Some(custom) = self
+-+                    .provider
+-+                    .default_models
+-+                    .get(&norm)
+-+                    .or_else(|| self.provider.default_models.get(provider))
+-+                {
+-+                    let trimmed = custom.trim();
+-+                    if !trimmed.is_empty() {
+-+                        trimmed
+++        // 4. Score matching components against query tokens
+++        let query_tokens: Vec<String> = filter
+++            .query
+++            .as_deref()
+++            .map(|q| {
+++                q.split_whitespace()
+++                    .map(|s| s.trim().to_lowercase())
+++                    .filter(|s| !s.is_empty())
+++                    .collect()
+++            })
+++            .unwrap_or_default();
+++
+++        let mut scored_results: Vec<BlockSearchResult> = Vec::new();
+++
+++        let candidates_iter: Box<dyn Iterator<Item = &BlockComponent>> = match candidate_ids {
+++            Some(ref ids) => Box::new(ids.iter().filter_map(|id| self.components.get(id))),
+++            None => Box::new(self.components.values()),
+++        };
+++
+++        for comp in candidates_iter {
+++            let mut score = 1.0;
+++
+++            if !query_tokens.is_empty() {
+++                let name_lower = comp.name.to_lowercase();
+++                let desc_lower = comp.description.to_lowercase();
+++                let tags_lower: Vec<String> = comp.tags.iter().map(|t| t.to_lowercase()).collect();
+++
+++                let mut matched_all = true;
+++                let mut token_score = 0.0;
+++
+++                for token in &query_tokens {
+++                    let in_name = name_lower.contains(token);
+++                    let in_tags = tags_lower.iter().any(|t| t.contains(token));
+++                    let in_desc = desc_lower.contains(token);
+++
+++                    if in_name || in_tags || in_desc {
+++                        if in_name {
+++                            token_score += 10.0;
+++                            if name_lower == *token {
+++                                token_score += 15.0;
+++                            }
+++                        }
+++                        if in_tags {
+++                            token_score += 5.0;
+++                        }
+++                        if in_desc {
+++                            token_score += 2.0;
+++                        }
+ +                    } else {
+-+                        Self::static_default_model_for_provider(provider)
+++                        matched_all = false;
+++                        break;
+ +                    }
+-+                } else {
+-+                    Self::static_default_model_for_provider(provider)
+-+                };
+-+                return Some((provider, model));
+++                }
+++
+++                if !matched_all {
+++                    continue;
+++                }
+++                score += token_score;
+ +            }
+++
+++            scored_results.push(BlockSearchResult {
+++                id: comp.id,
+++                name: comp.name.clone(),
+++                description: comp.description.clone(),
+++                category: comp.category,
+++                framework: comp.framework,
+++                tags: comp.tags.clone(),
+++                version: comp.version,
+++                score,
+++            });
+ +        }
+ +
+-+        None
+++        // Sort descending by score
+++        scored_results.sort_by(|a, b| {
+++            b.score
+++                .partial_cmp(&a.score)
+++                .unwrap_or(std::cmp::Ordering::Equal)
+++        });
+++
+++        let limit = if filter.limit > 0 { filter.limit } else { 20 };
+++        scored_results.truncate(limit);
+++        scored_results
+ +    }
+ +
+-+    /// Resolves active provider and model using the 6-tier resolution hierarchy:
+-+    /// 1. CLI flag / env var override (`provider.default` and `provider.model` already set)
+-+    /// 2. Workspace preference from `workspaces.toml` (or `.minicode/config.toml` merged earlier)
+-+    /// 3. Auto-discovery of first configured provider
+-+    /// 4. Empty fallback `("", "")` for deferred onboarding Gate 1 setup
+-+    pub fn resolve_active_provider_and_model(
+-+        &self,
+-+        workspace_root: Option<&Path>,
+-+    ) -> (String, String) {
+-+        self.resolve_active_provider_and_model_with_registry(
+-+            workspace_root,
+-+            Self::get_workspace_registry_path().as_deref(),
+-+        )
+++    /// Updates component code, description, and/or tags.
+++    /// Appends old code to version history and increments version counter.
+++    pub fn update_component(
+++        &mut self,
+++        id: &Uuid,
+++        new_code: Option<&str>,
+++        new_description: Option<&str>,
+++        new_tags: Option<Vec<String>>,
+++    ) -> Result<BlockComponent, BlockError> {
+++        let component = self
+++            .components
+++            .get_mut(id)
+++            .ok_or_else(|| BlockError::ComponentNotFound(id.to_string()))?;
+++
+++        // Archive previous code version
+++        let current_version = component.version;
+++        let current_code = component.code.clone();
+++        let now = Utc::now();
+++
+++        self.component_versions
+++            .entry(*id)
+++            .or_default()
+++            .push((current_version, current_code, now));
+++
+++        if let Some(code) = new_code {
+++            component.code = code.to_string();
+++        }
+++        if let Some(desc) = new_description {
+++            component.description = desc.to_string();
+++        }
+++        if let Some(tags) = new_tags {
+++            // Remove old tags from index
+++            for old_tag in &component.tags {
+++                let norm = old_tag.trim().to_lowercase();
+++                if let Some(ids) = self.tag_index.get_mut(&norm) {
+++                    ids.remove(id);
+++                }
+++            }
+++            // Add new tags to index
+++            for new_tag in &tags {
+++                let norm = new_tag.trim().to_lowercase();
+++                if !norm.is_empty() {
+++                    self.tag_index.entry(norm).or_default().insert(*id);
+++                }
+++            }
+++            component.tags = tags;
+++        }
+++
+++        component.version += 1;
+++        component.updated_at = now;
+++
+++        let updated_copy = component.clone();
+++        let _ = self.persist_if_configured();
+++        Ok(updated_copy)
+ +    }
+ +
+-+    /// Version of `resolve_active_provider_and_model` with customizable registry file path for deterministic testing.
+-+    pub fn resolve_active_provider_and_model_with_registry(
+-+        &self,
+-+        workspace_root: Option<&Path>,
+-+        registry_path: Option<&Path>,
+-+    ) -> (String, String) {
+-+        // 1. Explicit override (e.g. from CLI flag or env var override):
+-+        if !self.provider.default.is_empty() && !self.provider.model.is_empty() {
+-+            return (self.provider.default.clone(), self.provider.model.clone());
+++    /// Deletes a component from storage and cleans up all inverted indices.
+++    pub fn delete_component(&mut self, id: &Uuid) -> Result<(), BlockError> {
+++        let component = self
+++            .components
+++            .remove(id)
+++            .ok_or_else(|| BlockError::ComponentNotFound(id.to_string()))?;
+++
+++        // Remove from category index
+++        if let Some(ids) = self.category_index.get_mut(&component.category) {
+++            ids.remove(id);
+ +        }
+ +
+-+        // 2. Check workspace preference in workspaces.toml
+-+        if let Some(ws) = workspace_root {
+-+            let pref = if let Some(reg) = registry_path {
+-+                load_workspace_preference_from_file(ws, reg)
+-+            } else {
+-+                Self::load_workspace_preference(ws)
+-+            };
+++        // Remove from framework index
+++        if let Some(ids) = self.framework_index.get_mut(&component.framework) {
+++            ids.remove(id);
+++        }
+ +
+-+            if let Some(pref) = pref {
+-+                if !pref.provider.trim().is_empty() && !pref.model.trim().is_empty() {
+-+                    return (pref.provider, pref.model);
+-+                }
+++        // Remove from tag index
+++        for tag in &component.tags {
+++            let norm = tag.trim().to_lowercase();
+++            if let Some(ids) = self.tag_index.get_mut(&norm) {
+++                ids.remove(id);
+ +            }
+ +        }
+ +
+-+        // If provider was explicitly set but model was not, resolve default model for provider:
+-+        if !self.provider.default.is_empty() {
+-+            let model = self.get_default_model_for_provider(&self.provider.default);
+-+            return (self.provider.default.clone(), model);
+++        self.component_versions.remove(id);
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    /// Retrieves the version history for a given component.
+++    pub fn get_component_history(&self, id: &Uuid) -> Vec<(u32, String, DateTime<Utc>)> {
+++        self.component_versions.get(id).cloned().unwrap_or_default()
+++    }
+++
+++    // --- Palette Operations ---
+++
+++    /// Inserts a 4-hex color palette.
+++    pub fn insert_palette(&mut self, palette: BlockPalette) -> Result<(), BlockError> {
+++        self.palettes.insert(palette.id, palette);
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    /// Retrieves a palette by UUID.
+++    pub fn get_palette(&self, id: &Uuid) -> Option<&BlockPalette> {
+++        self.palettes.get(id)
+++    }
+++
+++    /// Lists all palettes.
+++    pub fn list_palettes(&self) -> Vec<&BlockPalette> {
+++        self.palettes.values().collect()
+++    }
+++
+++    /// Searches palettes by name or tags.
+++    pub fn search_palettes(&self, query: &str) -> Vec<&BlockPalette> {
+++        let q = query.trim().to_lowercase();
+++        if q.is_empty() {
+++            return self.list_palettes();
+ +        }
+++        self.palettes
+++            .values()
+++            .filter(|p| {
+++                p.name.to_lowercase().contains(&q)
+++                    || p.tags.iter().any(|t| t.to_lowercase().contains(&q))
+++            })
+++            .collect()
+++    }
+ +
+-+        // 3. Check find_first_configured_provider()
+-+        if let Some((prov, default_m)) = self.find_first_configured_provider() {
+-+            let model = if !self.provider.model.is_empty() {
+-+                self.provider.model.clone()
+-+            } else {
+-+                default_m.to_string()
+-+            };
+-+            return (prov.to_string(), model);
+++    /// Deletes a palette.
+++    pub fn delete_palette(&mut self, id: &Uuid) -> Result<(), BlockError> {
+++        self.palettes
+++            .remove(id)
+++            .ok_or_else(|| BlockError::PaletteNotFound(id.to_string()))?;
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    // --- Gradient Operations ---
+++
+++    /// Inserts a CSS gradient.
+++    pub fn insert_gradient(&mut self, gradient: BlockGradient) -> Result<(), BlockError> {
+++        self.gradients.insert(gradient.id, gradient);
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    /// Retrieves a gradient by UUID.
+++    pub fn get_gradient(&self, id: &Uuid) -> Option<&BlockGradient> {
+++        self.gradients.get(id)
+++    }
+++
+++    /// Lists all gradients.
+++    pub fn list_gradients(&self) -> Vec<&BlockGradient> {
+++        self.gradients.values().collect()
+++    }
+++
+++    /// Searches gradients by name or tags.
+++    pub fn search_gradients(&self, query: &str) -> Vec<&BlockGradient> {
+++        let q = query.trim().to_lowercase();
+++        if q.is_empty() {
+++            return self.list_gradients();
+ +        }
+++        self.gradients
+++            .values()
+++            .filter(|g| {
+++                g.name.to_lowercase().contains(&q)
+++                    || g.tags.iter().any(|t| t.to_lowercase().contains(&q))
+++            })
+++            .collect()
+++    }
+ +
+-+        // 4. Empty fallback (triggering Gate 1 deferred setup when prompt arrives)
+-+        (String::new(), String::new())
+++    /// Deletes a gradient.
+++    pub fn delete_gradient(&mut self, id: &Uuid) -> Result<(), BlockError> {
+++        self.gradients
+++            .remove(id)
+++            .ok_or_else(|| BlockError::GradientNotFound(id.to_string()))?;
+++        let _ = self.persist_if_configured();
+++        Ok(())
+ +    }
+ +
+-     /// Resolves the API key for a specific provider.
+-     /// Checks environment variables first, then persistent `[provider.api_keys]` in config.toml.
+-     /// For local models (Ollama, LM Studio, vLLM, localhost endpoints), API keys are strictly optional.
+-     pub fn get_api_key(&self, provider_name: &str) -> Result<String> {
+-         let env_trimmed = |key: &str| std::env::var(key).map(|v| v.trim().to_string());
+-         let norm = provider_name.to_lowercase();
+- 
+-         // 1. Check environment variables
+-         let env_val = match norm.as_str() {
+-             "gemini" | "google" => {
+-@@ -1286,22 +1480,22 @@ pub fn save_workspace_preference_to_file(
+-     Ok(())
+- }
+- 
+- #[cfg(test)]
+- mod tests {
+-     use super::*;
+- 
+-     #[test]
+-     fn test_default_config() {
+-         let config = Config::default();
+--        assert_eq!(config.provider.default, "gemini");
+--        assert_eq!(config.provider.model, "gemini-2.5-pro");
+-+        assert_eq!(config.provider.default, "");
+-+        assert_eq!(config.provider.model, "");
+-         assert_eq!(config.agent.timeout, 30);
+-         assert_eq!(config.agent.map_tokens, 1024);
+-         assert_eq!(config.agent.max_tool_iterations, 0);
+-         assert!(config.agent.auto_continue);
+-         assert_eq!(config.agent.max_auto_continues, 5);
+-         assert!(!config.ui.plain);
+-     }
+- 
+-     #[test]
+-     fn test_agent_iteration_config_merge() {
+-@@ -1492,25 +1686,25 @@ mod tests {
+-             config.get_provider_base_url("vllm").unwrap(),
+-             "http://localhost:8000/v1"
+-         );
+-         assert_eq!(
+-             config.get_provider_base_url("my-local-server").unwrap(),
+-             "http://127.0.0.1:9090/v1"
+-         );
+- 
+-         // Default models
+-         assert_eq!(
+--            Config::get_default_model_for_provider("ollama"),
+-+            config.get_default_model_for_provider("ollama"),
+-             "qwen2.5-coder"
+-         );
+-         assert_eq!(
+--            Config::get_default_model_for_provider("lmstudio"),
+-+            config.get_default_model_for_provider("lmstudio"),
+-             "local-model"
+-         );
+-     }
+- 
+-     #[test]
+-     fn test_mask_api_key_variations() {
+-         assert_eq!(mask_api_key(""), "");
+-         assert_eq!(mask_api_key("   "), "");
+-         assert_eq!(mask_api_key("short"), "••••••••");
+-         assert_eq!(mask_api_key("12345678"), "••••••••");
+-@@ -1536,11 +1730,73 @@ mod tests {
+-             "claude-3-7-sonnet-20250219",
+-             &ws_path.join("workspaces.toml"),
+-         )
+-         .unwrap();
+- 
+-         let pref =
+-             load_workspace_preference_from_file(ws_path, &ws_path.join("workspaces.toml")).unwrap();
+-         assert_eq!(pref.provider, "anthropic");
+-         assert_eq!(pref.model, "claude-3-7-sonnet-20250219");
+-     }
+++    // --- Template Operations ---
+++
+++    /// Inserts a layout template.
+++    pub fn insert_template(&mut self, template: BlockTemplate) -> Result<(), BlockError> {
+++        self.templates.insert(template.id, template);
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    /// Retrieves a template by UUID.
+++    pub fn get_template(&self, id: &Uuid) -> Option<&BlockTemplate> {
+++        self.templates.get(id)
+++    }
+++
+++    /// Lists all templates.
+++    pub fn list_templates(&self) -> Vec<&BlockTemplate> {
+++        self.templates.values().collect()
+++    }
+++
+++    /// Deletes a template.
+++    pub fn delete_template(&mut self, id: &Uuid) -> Result<(), BlockError> {
+++        self.templates
+++            .remove(id)
+++            .ok_or_else(|| BlockError::TemplateNotFound(id.to_string()))?;
+++        let _ = self.persist_if_configured();
+++        Ok(())
+++    }
+++
+++    // --- Library Stats ---
+++
+++    /// Returns aggregate counts and breakdown by category and framework.
+++    pub fn stats(&self) -> BlockStats {
+++        let mut category_counts = HashMap::new();
+++        for (cat, ids) in &self.category_index {
+++            if !ids.is_empty() {
+++                category_counts.insert(*cat, ids.len());
+++            }
+++        }
+++
+++        let mut framework_counts = HashMap::new();
+++        for (fw, ids) in &self.framework_index {
+++            if !ids.is_empty() {
+++                framework_counts.insert(*fw, ids.len());
+++            }
+++        }
+++
+++        BlockStats {
+++            total_components: self.components.len(),
+++            total_palettes: self.palettes.len(),
+++            total_gradients: self.gradients.len(),
+++            total_templates: self.templates.len(),
+++            category_counts,
+++            framework_counts,
+++        }
+++    }
+++
+++    // --- Disk Persistence ---
+++
+++    /// Saves all components, version history, palettes, gradients, and templates to a JSON file.
+++    pub fn save_to_disk(&self, path: &Path) -> Result<(), BlockError> {
+++        if let Some(parent) = path.parent() {
+++            std::fs::create_dir_all(parent)?;
+++        }
+++
+++        let data = StoreData {
+++            components: self.components.values().cloned().collect(),
+++            component_versions: self.component_versions.clone(),
+++            palettes: self.palettes.values().cloned().collect(),
+++            gradients: self.gradients.values().cloned().collect(),
+++            templates: self.templates.values().cloned().collect(),
+++        };
+++
+++        let json = serde_json::to_string_pretty(&data)?;
+++        std::fs::write(path, json)?;
+++        Ok(())
+++    }
+++
+++    /// Loads store data from a JSON file and populates all in-memory inverted indices.
+++    pub fn load_from_disk(path: &Path) -> Result<Self, BlockError> {
+++        if !path.exists() {
+++            let mut store = Self::new();
+++            store.persistence_path = Some(path.to_path_buf());
+++            return Ok(store);
+++        }
+++
+++        let content = std::fs::read_to_string(path)?;
+++        let data: StoreData = serde_json::from_str(&content)?;
+++
+++        let mut store = Self::new();
+++        store.persistence_path = Some(path.to_path_buf());
+++
+++        for comp in data.components {
+++            let _ = store.insert_component(comp);
+++        }
+++        store.component_versions = data.component_versions;
+++
+++        for pal in data.palettes {
+++            let _ = store.insert_palette(pal);
+++        }
+++        for grad in data.gradients {
+++            let _ = store.insert_gradient(grad);
+++        }
+++        for tmpl in data.templates {
+++            let _ = store.insert_template(tmpl);
+++        }
+++
+++        Ok(store)
+++    }
+++
+++    /// Helper to auto-persist if a persistence path is configured.
+++    pub fn persist_if_configured(&self) -> Result<(), BlockError> {
+++        if let Some(ref path) = self.persistence_path {
+++            self.save_to_disk(path)?;
+++        }
+++        Ok(())
+++    }
+++}
+++
+++impl Default for BlockStore {
+++    fn default() -> Self {
+++        Self::new()
+++    }
+++}
+++
+++/// Global singleton store instance for the active minicode session.
+++static GLOBAL_BLOCK_STORE: OnceLock<RwLock<BlockStore>> = OnceLock::new();
+++
+++/// Returns a reference to the global thread-safe `BlockStore`.
+++pub fn get_global_block_store() -> &'static RwLock<BlockStore> {
+++    GLOBAL_BLOCK_STORE.get_or_init(|| {
+++        let default_path = dirs::data_local_dir()
+++            .map(|d| d.join("minicode").join("miniblocks").join("store.json"))
+++            .unwrap_or_else(|| PathBuf::from(".minicode/blocks/store.json"));
+++
+++        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|_| {
+++            let mut s = BlockStore::new();
+++            s.persistence_path = Some(default_path);
+++            s
+++        });
+++
+++        RwLock::new(store)
+++    })
+++}
+++
+++#[cfg(test)]
+++mod tests {
+++    use super::*;
+++    use crate::blocks::models::{BlockCategory, BlockFramework};
+++    use tempfile::tempdir;
+ +
+ +    #[test]
+-+    fn test_dynamic_provider_resolution_hierarchy() {
+-+        let temp_dir = tempfile::tempdir().unwrap();
+-+        let ws_path = temp_dir.path();
+-+        let reg_path = ws_path.join("workspaces.toml");
+-+
+-+        let mut config = Config::default();
+-+        config.provider.default = String::new();
+-+        config.provider.model = String::new();
+-+
+-+        // 1. With workspace preference saved
+-+        save_workspace_preference_to_file(
+-+            ws_path,
+-+            "anthropic",
+-+            "claude-3-7-sonnet-20250219",
+-+            &reg_path,
+++    fn test_store_crud_and_indexing() {
+++        let temp = tempdir().unwrap();
+++        let mut store = BlockStore::new_isolated(temp.path().join("blocks.json"));
+++
+++        let comp = BlockComponent::new(
+++            "modern-hero",
+++            "Modern SaaS hero with animated beam",
+++            BlockCategory::Hero,
+++            BlockFramework::React,
+++            "export function Hero() { return <div>Hero</div>; }",
+++            vec!["framer-motion".into()],
+++            vec!["hero".into(), "dark".into(), "saas".into()],
+++        );
+++        let id = comp.id;
+++        store.insert_component(comp).unwrap();
+++
+++        // 1. Query by id
+++        let fetched = store.get_component(&id).unwrap();
+++        assert_eq!(fetched.name, "modern-hero");
+++
+++        // 2. Query by name
+++        let by_name = store.get_component_by_name("modern-hero").unwrap();
+++        assert_eq!(by_name.id, id);
+++
+++        // 3. Search with query and filters
+++        let results = store.search_components(&BlockSearchFilter {
+++            query: Some("animated beam".into()),
+++            category: Some(BlockCategory::Hero),
+++            framework: Some(BlockFramework::React),
+++            tags: Some(vec!["dark".into()]),
+++            limit: 10,
+++        });
+++        assert_eq!(results.len(), 1);
+++        assert_eq!(results[0].id, id);
+++        assert!(results[0].score > 1.0);
+++
+++        // 4. Update component with version increment
+++        let updated = store
+++            .update_component(&id, Some("New Hero Code"), None, None)
+++            .unwrap();
+++        assert_eq!(updated.version, 2);
+++        assert_eq!(store.get_component(&id).unwrap().code, "New Hero Code");
+++
+++        let history = store.get_component_history(&id);
+++        assert_eq!(history.len(), 1);
+++        assert_eq!(history[0].0, 1);
+++        assert!(history[0].1.contains("<div>Hero</div>"));
+++
+++        // 5. Delete component
+++        assert!(store.delete_component(&id).is_ok());
+++        assert!(store.get_component(&id).is_none());
+++        assert!(store.get_component_by_name("modern-hero").is_none());
+++    }
+++
+++    #[test]
+++    fn test_palette_and_gradient_search() {
+++        let mut store = BlockStore::new();
+++
+++        let palette = BlockPalette::new(
+++            "Nordic Frost",
+++            [
+++                "#2E3440".into(),
+++                "#3B4252".into(),
+++                "#88C0D0".into(),
+++                "#ECEFF4".into(),
+++            ],
+++            vec!["nordic".into(), "frost".into()],
+ +        )
+ +        .unwrap();
+++        let pal_id = palette.id;
+++        store.insert_palette(palette).unwrap();
+++
+++        let gradient = BlockGradient::new(
+++            "Neon Glow",
+++            "linear-gradient(90deg, #FF007F 0%, #7F00FF 100%)",
+++            vec!["#FF007F".into(), "#7F00FF".into()],
+++            vec!["neon".into(), "vibrant".into()],
+++        );
+++        let grad_id = gradient.id;
+++        store.insert_gradient(gradient).unwrap();
+++
+++        assert_eq!(store.list_palettes().len(), 1);
+++        assert_eq!(store.list_gradients().len(), 1);
+++
+++        let pal_results = store.search_palettes("frost");
+++        assert_eq!(pal_results.len(), 1);
+++        assert_eq!(pal_results[0].id, pal_id);
+ +
+-+        let (prov, model) =
+-+            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+-+        assert_eq!(prov, "anthropic");
+-+        assert_eq!(model, "claude-3-7-sonnet-20250219");
+-+
+-+        // 2. CLI / explicit override takes highest precedence over workspace preference
+-+        config.provider.default = "deepseek".to_string();
+-+        config.provider.model = "deepseek-chat".to_string();
+-+        let (prov, model) =
+-+            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+-+        assert_eq!(prov, "deepseek");
+-+        assert_eq!(model, "deepseek-chat");
+++        let grad_results = store.search_gradients("neon");
+++        assert_eq!(grad_results.len(), 1);
+++        assert_eq!(grad_results[0].id, grad_id);
+++
+++        assert!(store.delete_palette(&pal_id).is_ok());
+++        assert!(store.delete_gradient(&grad_id).is_ok());
+++        assert_eq!(store.list_palettes().len(), 0);
+++        assert_eq!(store.list_gradients().len(), 0);
+ +    }
+ +
+ +    #[test]
+-+    fn test_default_models_override() {
+-+        let mut config = Config::default();
+-+        assert_eq!(
+-+            config.get_default_model_for_provider("anthropic"),
+-+            "claude-3-7-sonnet-20250219"
+-+        );
+-+        assert_eq!(config.get_default_model_for_provider("openai"), "gpt-4o");
+++    fn test_disk_persistence_roundtrip() {
+++        let temp = tempdir().unwrap();
+++        let store_file = temp.path().join("miniblocks").join("store.json");
+ +
+-+        config.provider.default_models.insert(
+-+            "anthropic".to_string(),
+-+            "claude-3-5-haiku-20241022".to_string(),
+-+        );
+-+        config
+-+            .provider
+-+            .default_models
+-+            .insert("openai".to_string(), "o3-mini".to_string());
+-+
+-+        assert_eq!(
+-+            config.get_default_model_for_provider("anthropic"),
+-+            "claude-3-5-haiku-20241022"
+-+        );
+-+        assert_eq!(config.get_default_model_for_provider("openai"), "o3-mini");
+-+        assert_eq!(
+-+            config.get_default_model_for_provider("gemini"),
+-+            "gemini-2.5-pro"
+++        let mut store = BlockStore::new_isolated(store_file.clone());
+++        let comp = BlockComponent::new(
+++            "Test Card",
+++            "A test card component",
+++            BlockCategory::Card,
+++            BlockFramework::Tailwind,
+++            "<div className=\"card\">Test</div>",
+++            vec![],
+++            vec!["test".into(), "card".into()],
+ +        );
+++        let id = comp.id;
+++        store.insert_component(comp).unwrap();
+++
+++        // Ensure file exists
+++        assert!(store_file.exists());
+++
+++        // Reload from disk
+++        let loaded = BlockStore::load_from_disk(&store_file).unwrap();
+++        assert_eq!(loaded.stats().total_components, 1);
+++        let loaded_comp = loaded.get_component(&id).unwrap();
+++        assert_eq!(loaded_comp.name, "Test Card");
+ +    }
+- }
+++}
 diff --git a/src/blocks/mod.rs b/src/blocks/mod.rs
 index 1a7cbe3..eb7c28f 100644
 --- a/src/blocks/mod.rs
@@ -335,10 +1956,10 @@ index 1a7cbe3..eb7c28f 100644
      #[error("Template not found: {0}")]
 diff --git a/src/blocks/store.rs b/src/blocks/store.rs
 new file mode 100644
-index 0000000..a33d561
+index 0000000..fcc1b1a
 --- /dev/null
 +++ b/src/blocks/store.rs
-@@ -0,0 +1,707 @@
+@@ -0,0 +1,877 @@
 +use crate::blocks::models::{
 +    BlockCategory, BlockComponent, BlockGradient, BlockPalette, BlockStats, BlockTemplate,
 +};
@@ -424,8 +2045,34 @@ index 0000000..a33d561
 +    // --- Component Operations ---
 +
 +    /// Inserts a component and updates all inverted indices.
++    /// Handles ID collisions by safely removing old inverted index entries first.
 +    pub fn insert_component(&mut self, component: BlockComponent) -> Result<(), BlockError> {
 +        let id = component.id;
++
++        // Clean up old index entries if this ID already exists
++        if let Some(old) = self.components.get(&id) {
++            if let Some(ids) = self.category_index.get_mut(&old.category) {
++                ids.remove(&id);
++                if ids.is_empty() {
++                    self.category_index.remove(&old.category);
++                }
++            }
++            if let Some(ids) = self.framework_index.get_mut(&old.framework) {
++                ids.remove(&id);
++                if ids.is_empty() {
++                    self.framework_index.remove(&old.framework);
++                }
++            }
++            for tag in &old.tags {
++                let norm = tag.trim().to_lowercase();
++                if let Some(ids) = self.tag_index.get_mut(&norm) {
++                    ids.remove(&id);
++                    if ids.is_empty() {
++                        self.tag_index.remove(&norm);
++                    }
++                }
++            }
++        }
 +
 +        // Update category index
 +        self.category_index
@@ -448,7 +2095,7 @@ index 0000000..a33d561
 +        }
 +
 +        self.components.insert(id, component);
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -628,6 +2275,9 @@ index 0000000..a33d561
 +                let norm = old_tag.trim().to_lowercase();
 +                if let Some(ids) = self.tag_index.get_mut(&norm) {
 +                    ids.remove(id);
++                    if ids.is_empty() {
++                        self.tag_index.remove(&norm);
++                    }
 +                }
 +            }
 +            // Add new tags to index
@@ -644,7 +2294,7 @@ index 0000000..a33d561
 +        component.updated_at = now;
 +
 +        let updated_copy = component.clone();
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(updated_copy)
 +    }
 +
@@ -658,11 +2308,17 @@ index 0000000..a33d561
 +        // Remove from category index
 +        if let Some(ids) = self.category_index.get_mut(&component.category) {
 +            ids.remove(id);
++            if ids.is_empty() {
++                self.category_index.remove(&component.category);
++            }
 +        }
 +
 +        // Remove from framework index
 +        if let Some(ids) = self.framework_index.get_mut(&component.framework) {
 +            ids.remove(id);
++            if ids.is_empty() {
++                self.framework_index.remove(&component.framework);
++            }
 +        }
 +
 +        // Remove from tag index
@@ -670,11 +2326,14 @@ index 0000000..a33d561
 +            let norm = tag.trim().to_lowercase();
 +            if let Some(ids) = self.tag_index.get_mut(&norm) {
 +                ids.remove(id);
++                if ids.is_empty() {
++                    self.tag_index.remove(&norm);
++                }
 +            }
 +        }
 +
 +        self.component_versions.remove(id);
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -688,7 +2347,7 @@ index 0000000..a33d561
 +    /// Inserts a 4-hex color palette.
 +    pub fn insert_palette(&mut self, palette: BlockPalette) -> Result<(), BlockError> {
 +        self.palettes.insert(palette.id, palette);
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -722,7 +2381,7 @@ index 0000000..a33d561
 +        self.palettes
 +            .remove(id)
 +            .ok_or_else(|| BlockError::PaletteNotFound(id.to_string()))?;
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -731,7 +2390,7 @@ index 0000000..a33d561
 +    /// Inserts a CSS gradient.
 +    pub fn insert_gradient(&mut self, gradient: BlockGradient) -> Result<(), BlockError> {
 +        self.gradients.insert(gradient.id, gradient);
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -765,7 +2424,7 @@ index 0000000..a33d561
 +        self.gradients
 +            .remove(id)
 +            .ok_or_else(|| BlockError::GradientNotFound(id.to_string()))?;
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -774,7 +2433,7 @@ index 0000000..a33d561
 +    /// Inserts a layout template.
 +    pub fn insert_template(&mut self, template: BlockTemplate) -> Result<(), BlockError> {
 +        self.templates.insert(template.id, template);
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -793,7 +2452,7 @@ index 0000000..a33d561
 +        self.templates
 +            .remove(id)
 +            .ok_or_else(|| BlockError::TemplateNotFound(id.to_string()))?;
-+        let _ = self.persist_if_configured();
++        self.persist_if_configured()?;
 +        Ok(())
 +    }
 +
@@ -827,7 +2486,8 @@ index 0000000..a33d561
 +
 +    // --- Disk Persistence ---
 +
-+    /// Saves all components, version history, palettes, gradients, and templates to a JSON file.
++    /// Atomically saves all components, version history, palettes, gradients, and templates to disk.
++    /// Writes to a temporary `.tmp` file first and atomically renames to target path.
 +    pub fn save_to_disk(&self, path: &Path) -> Result<(), BlockError> {
 +        if let Some(parent) = path.parent() {
 +            std::fs::create_dir_all(parent)?;
@@ -842,11 +2502,15 @@ index 0000000..a33d561
 +        };
 +
 +        let json = serde_json::to_string_pretty(&data)?;
-+        std::fs::write(path, json)?;
++        let tmp_path = path.with_extension("tmp");
++        std::fs::write(&tmp_path, json)?;
++        std::fs::rename(&tmp_path, path)?;
 +        Ok(())
 +    }
 +
 +    /// Loads store data from a JSON file and populates all in-memory inverted indices.
++    /// Critical invariant: `persistence_path` is assigned ONLY at the end so `persist_if_configured()`
++    /// is not triggered repeatedly during load.
 +    pub fn load_from_disk(path: &Path) -> Result<Self, BlockError> {
 +        if !path.exists() {
 +            let mut store = Self::new();
@@ -858,7 +2522,7 @@ index 0000000..a33d561
 +        let data: StoreData = serde_json::from_str(&content)?;
 +
 +        let mut store = Self::new();
-+        store.persistence_path = Some(path.to_path_buf());
++        // Do NOT set persistence_path here, so insertions during load do not cascade disk writes!
 +
 +        for comp in data.components {
 +            let _ = store.insert_component(comp);
@@ -875,6 +2539,8 @@ index 0000000..a33d561
 +            let _ = store.insert_template(tmpl);
 +        }
 +
++        // Assign persistence path at the very end
++        store.persistence_path = Some(path.to_path_buf());
 +        Ok(store)
 +    }
 +
@@ -903,7 +2569,12 @@ index 0000000..a33d561
 +            .map(|d| d.join("minicode").join("miniblocks").join("store.json"))
 +            .unwrap_or_else(|| PathBuf::from(".minicode/blocks/store.json"));
 +
-+        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|_| {
++        let store = BlockStore::load_from_disk(&default_path).unwrap_or_else(|e| {
++            tracing::warn!(
++                "Failed to load global block store from {}: {}, initializing empty store",
++                default_path.display(),
++                e
++            );
 +            let mut s = BlockStore::new();
 +            s.persistence_path = Some(default_path);
 +            s
@@ -956,9 +2627,14 @@ index 0000000..a33d561
 +        assert_eq!(results[0].id, id);
 +        assert!(results[0].score > 1.0);
 +
-+        // 4. Update component with version increment
++        // 4. Update component with version increment and tag changes
 +        let updated = store
-+            .update_component(&id, Some("New Hero Code"), None, None)
++            .update_component(
++                &id,
++                Some("New Hero Code"),
++                Some("Updated description"),
++                Some(vec!["hero".into(), "light".into()]),
++            )
 +            .unwrap();
 +        assert_eq!(updated.version, 2);
 +        assert_eq!(store.get_component(&id).unwrap().code, "New Hero Code");
@@ -968,10 +2644,39 @@ index 0000000..a33d561
 +        assert_eq!(history[0].0, 1);
 +        assert!(history[0].1.contains("<div>Hero</div>"));
 +
-+        // 5. Delete component
++        // Verify old tag "dark" no longer returns component, but "light" does
++        let search_old_tag = store.search_components(&BlockSearchFilter {
++            query: None,
++            category: None,
++            framework: None,
++            tags: Some(vec!["dark".into()]),
++            limit: 10,
++        });
++        assert_eq!(search_old_tag.len(), 0);
++
++        let search_new_tag = store.search_components(&BlockSearchFilter {
++            query: None,
++            category: None,
++            framework: None,
++            tags: Some(vec!["light".into()]),
++            limit: 10,
++        });
++        assert_eq!(search_new_tag.len(), 1);
++
++        // 5. Delete component and verify index cleanup
 +        assert!(store.delete_component(&id).is_ok());
 +        assert!(store.get_component(&id).is_none());
 +        assert!(store.get_component_by_name("modern-hero").is_none());
++
++        // Verify index is purged
++        let search_after_delete = store.search_components(&BlockSearchFilter {
++            query: Some("modern-hero".into()),
++            category: Some(BlockCategory::Hero),
++            framework: None,
++            tags: None,
++            limit: 10,
++        });
++        assert_eq!(search_after_delete.len(), 0);
 +    }
 +
 +    #[test]
@@ -1019,30 +2724,116 @@ index 0000000..a33d561
 +    }
 +
 +    #[test]
-+    fn test_disk_persistence_roundtrip() {
++    fn test_template_crud() {
++        let mut store = BlockStore::new();
++        let tmpl_id = Uuid::new_v4();
++        let template = BlockTemplate {
++            id: tmpl_id,
++            name: "SaaS Landing".into(),
++            description: "Full SaaS landing page template".into(),
++            component_ids: vec![Uuid::new_v4(), Uuid::new_v4()],
++            base_layout: "<html><body>{{ sections }}</body></html>".into(),
++            default_variables: serde_json::json!({"title": "My SaaS"}),
++        };
++
++        store.insert_template(template).unwrap();
++        assert_eq!(store.list_templates().len(), 1);
++
++        let fetched = store.get_template(&tmpl_id).unwrap();
++        assert_eq!(fetched.name, "SaaS Landing");
++
++        assert!(store.delete_template(&tmpl_id).is_ok());
++        assert_eq!(store.list_templates().len(), 0);
++        assert!(store.get_template(&tmpl_id).is_none());
++    }
++
++    #[test]
++    fn test_disk_persistence_full_roundtrip() {
 +        let temp = tempdir().unwrap();
 +        let store_file = temp.path().join("miniblocks").join("store.json");
 +
 +        let mut store = BlockStore::new_isolated(store_file.clone());
++
++        // 1. Add Component & update to create version history
 +        let comp = BlockComponent::new(
 +            "Test Card",
 +            "A test card component",
 +            BlockCategory::Card,
 +            BlockFramework::Tailwind,
-+            "<div className=\"card\">Test</div>",
-+            vec![],
++            "<div className=\"card\">v1</div>",
++            vec!["dep1".into()],
 +            vec!["test".into(), "card".into()],
 +        );
-+        let id = comp.id;
++        let comp_id = comp.id;
 +        store.insert_component(comp).unwrap();
++        store
++            .update_component(
++                &comp_id,
++                Some("<div className=\"card\">v2</div>"),
++                None,
++                None,
++            )
++            .unwrap();
 +
-+        // Ensure file exists
++        // 2. Add Palette
++        let pal = BlockPalette::new(
++            "Solar",
++            [
++                "#000000".into(),
++                "#111111".into(),
++                "#E0E0E0".into(),
++                "#FFFFFF".into(),
++            ],
++            vec!["solar".into()],
++        )
++        .unwrap();
++        let pal_id = pal.id;
++        store.insert_palette(pal).unwrap();
++
++        // 3. Add Gradient
++        let grad = BlockGradient::new(
++            "Sunset",
++            "linear-gradient(45deg, #FF512F, #DD2476)",
++            vec!["#FF512F".into(), "#DD2476".into()],
++            vec!["sunset".into()],
++        );
++        let grad_id = grad.id;
++        store.insert_gradient(grad).unwrap();
++
++        // 4. Add Template
++        let tmpl_id = Uuid::new_v4();
++        let tmpl = BlockTemplate {
++            id: tmpl_id,
++            name: "Portfolio".into(),
++            description: "Developer portfolio".into(),
++            component_ids: vec![comp_id],
++            base_layout: "<html>{{ sections }}</html>".into(),
++            default_variables: serde_json::json!({}),
++        };
++        store.insert_template(tmpl).unwrap();
++
++        // File must exist
 +        assert!(store_file.exists());
 +
 +        // Reload from disk
 +        let loaded = BlockStore::load_from_disk(&store_file).unwrap();
-+        assert_eq!(loaded.stats().total_components, 1);
-+        let loaded_comp = loaded.get_component(&id).unwrap();
-+        assert_eq!(loaded_comp.name, "Test Card");
++        let stats = loaded.stats();
++        assert_eq!(stats.total_components, 1);
++        assert_eq!(stats.total_palettes, 1);
++        assert_eq!(stats.total_gradients, 1);
++        assert_eq!(stats.total_templates, 1);
++
++        // Verify component and versions
++        let loaded_comp = loaded.get_component(&comp_id).unwrap();
++        assert_eq!(loaded_comp.code, "<div className=\"card\">v2</div>");
++        assert_eq!(loaded_comp.version, 2);
++        let history = loaded.get_component_history(&comp_id);
++        assert_eq!(history.len(), 1);
++        assert_eq!(history[0].1, "<div className=\"card\">v1</div>");
++
++        // Verify palette, gradient, and template
++        assert!(loaded.get_palette(&pal_id).is_some());
++        assert!(loaded.get_gradient(&grad_id).is_some());
++        assert!(loaded.get_template(&tmpl_id).is_some());
 +    }
 +}

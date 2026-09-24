@@ -1,29 +1,84 @@
-# Task 5 Execution Report: End-to-End Integration Test Suite & Release Verification
+# Task 5 Execution Report: Interactive TUI Warehouse Modal (`/blocks` & `F6`)
 
-- **Status:** DONE
-- **Date/Time:** 2026-09-21T03:07:00+05:30
-- **Target Release:** v0.3.39 (Phase 137)
+**Status:** DONE  
+**Commit Hash:** `bea570215769d6f78ce80bb3a1c042a20195c9da`  
 
 ---
 
-## 1. Summary of Work Delivered
+## 1. Summary of Deliverables
 
-1. **End-to-End Integration Test Suite (`tests/integration_agent_config.rs`):**
-   - Implemented 5 comprehensive async integration tests covering every requirement of Phase 137:
-     1. `test_per_directory_model_memory`: Validates dual-layer per-directory workspace memory. Writes different provider/model preferences for Workspace A (`anthropic` / `claude-3-7-sonnet-20250219`) and Workspace B (`ollama` / `qwen2.5-coder:latest`) into `workspaces.toml`, then verifies `Config::load` correctly resolves each workspace's active provider and model independently.
-     2. `test_settings_command_modal_and_subcommands`: Verifies the `/settings` slash command handler, subcommands (`/settings help`, `/config`, `/preferences`), and checks tab cycling (`Tab`, `BackTab`), provider navigation (`Down`, `Up`), default model selection (`Enter`), and exit (`Esc`).
-     3. `test_agent_config_tools_and_masking`: Exercises `get_agent_config` tool primitive. Verifies that all provider API keys (Anthropic, OpenAI, DeepSeek, Google, etc.) are masked (`sk-a...cdef`) and never emitted in plaintext into the tool result.
-     4. `test_update_agent_config_permission_gate_and_persistence`: Tests `update_agent_config` generating a structured `ConfigChangeProposal` requiring user approval, validates empty proposals are rejected, simulates user approval via `apply_proposal`, and verifies persistence to `.minicode/config.toml` (including `thinking_budget` and `auto_approve`).
-     5. `test_connection_probe_diagnostic_format_and_zero_leak`: Invokes `test_provider_connection` and `list_available_models` tool primitives, asserts structured JSON output (`status`, `latency_ms`, `diagnostic_details`), validates that zero plaintext keys leak, and executes `test_all_provider_connections` across all 12 providers.
+1. **Native Warehouse Modal Module (`src/ui/modals/blocks.rs`):**
+   - **`BlocksTab`**: Implemented 4-tab enum (`Components`, `Palettes`, `Gradients`, `Templates`) with `all()`, `title()`, `next()`, and `prev()`.
+   - **`BlocksModalState`**: Full state lifecycle with `new()`, `next_tab()`, `prev_tab()`, `select_next()`, `select_prev()`, `scroll_preview_up()`, `scroll_preview_down()`, `handle_char()`, `handle_backspace()`, `refresh_filtered()`, and `get_selected_code()`.
+   - **`render_blocks_modal`**:
+     - Layout: 90% width, 85% height centered dialog on elevated background.
+     - Top: Tab bar showing real counts (`[1] Components (1082+)`, `[2] Palettes (105)`, `[3] Gradients (212)`, `[4] Templates (3)`) with bold inverted styling for active tab.
+     - Tab 1 (Components): Split 35% / 65%. Left pane contains interactive search input box with live cursor indicator + scrollable list with category & framework badges and selection indicator. Right pane displays metadata header (version, category, framework, tags, dependencies) + line-numbered, syntax-highlighted code preview with smooth PageUp/PageDown scrolling.
+     - Tab 2 (Palettes): Visual cards with 4-color ANSI swatches (BG, Surface, Accent, Text) parsed from hex tokens via `hex_to_rgb`, name, and tags.
+     - Tab 3 (Gradients): Visual cards with gradient CSS definition and color stop swatches with transition arrows (`████ #667EEA ─> ████ #764BA2`).
+     - Tab 4 (Templates): Scaffolding assistant cards with constituent component counts, descriptions, and base layout previews.
+     - Bottom: Hotkey bar (`[Tab] Next Tab  [↑/↓] Select  [PgUp/PgDn] Scroll  [Enter] Insert  [c] Copy  [Esc] Close`) with dynamic status message feedback (`✔ Copied code to clipboard!`, `✔ Injected ... into ...`).
+   - Pure-Rust syntax highlighter (`style_code_line`) for keywords, string literals, HTML/JSX tags, comments, attributes, and line numbers.
 
-2. **Bug Fixes & Hardening:**
-   - Fixed `Config::load` fallback `dotenvy::dotenv()` running unconditionally and overriding workspace preferences from repo root `.env`; now restricted to `workspace_dir.is_none()`.
-   - Added `pub thinking_budget: Option<usize>` to `RawProviderConfig` and merged it in `RawConfig::merge_raw` in `src/config.rs`.
-   - Removed `.env` provider and model writes in `src/ui/configure.rs` to eliminate environment variable pollution over `workspaces.toml` and `.minicode/config.toml`.
+2. **Modal State & Render Dispatch (`src/ui/modals/mod.rs`):**
+   - Declared `pub mod blocks;`.
+   - Added `ModalState::Blocks(blocks::BlocksModalState)` enum variant.
+   - Added `ModalState::new_blocks(workspace_root: &std::path::Path) -> Self`.
+   - Dispatched `ModalState::Blocks(state) => blocks::render_blocks_modal(frame, state, area, theme)` in `ModalState::render`.
 
-3. **Quality Gates & Invariants:**
-   - 5/5 integration tests pass in `tests/integration_agent_config.rs`.
-   - All unit tests pass across `config::tests`, `tools::registry::agent_tools::config_tools::tests`, `tools::tests::test_total_tool_count`, `agent::subagent::orchestrator::tests::test_total_tool_count_matches`, and `ui::modals::settings::tests`.
-   - Zero clippy warnings with `cargo clippy -j 1 --bin minicode -- -D warnings` and `cargo clippy -j 1 --test integration_agent_config -- -D warnings`.
-   - Code formatting verified with `cargo fmt --check`.
-   - Total tool count strictly maintained at `TOTAL_TOOL_COUNT = 139`.
+3. **Slash Commands (`src/app/commands.rs`):**
+   - Added `/blocks` and `/miniblocks` slash commands (with optional inline query parameter support, e.g. `/blocks navbar`).
+   - Cleanly decoupled `/blocks` from MiniKit architecture block commands while preserving `/kit blocks`.
+
+4. **Dedicated F6 Hotkey Binding (`src/app/mod.rs`):**
+   - Bound `KeyCode::F(6)` to toggle `ModalState::Blocks` (opens modal if closed, closes modal if open).
+
+5. **Modal Keyboard Event Handling (`src/app/modals.rs`):**
+   - Implemented complete key navigation for `ModalState::Blocks`:
+     - `Tab` / `Right` -> `next_tab()`
+     - `BackTab` / `Left` -> `prev_tab()`
+     - `1`..`4` -> switch to specific tab (`Components`, `Palettes`, `Gradients`, `Templates`)
+     - `Up` / `Down` -> `select_prev()` / `select_next()`
+     - `PageUp` / `PageDown` -> `scroll_preview_up()` / `scroll_preview_down()`
+     - `Enter` -> inject component into workspace target file (e.g. `src/components/{ComponentName}.tsx`) or copy CSS tokens / layout to system clipboard, setting status feedback.
+     - `c` / `Ctrl+C` -> copy selected component/palette/gradient/template code to system clipboard.
+     - `Esc` / `F(6)` -> close modal.
+     - Typing characters / `Backspace` -> updates `search_query` and refreshes filtered IDs.
+   - Handled `/blocks` selection from Command Catalog modal to open the warehouse.
+
+6. **Catalog & Help Discovery (`src/ui/modals/command_catalog.rs` & `src/ui/modals/help.rs`):**
+   - Added `/blocks` entry under "Workflows & Scaffolding" with `F6` shortcut to `COMMAND_CATALOG_ITEMS`.
+   - Added `/blocks` slash command and `F6` keyboard shortcut to `help.rs`.
+
+7. **Error Handling & Code Quality:**
+   - Zero `.unwrap()` or `.expect()` calls in non-test code.
+   - Passed `cargo fmt --check` with 100% compliance.
+   - Passed `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
+   - Passed `cargo check -j 1` with zero errors.
+
+---
+
+## 2. Targeted Test Output
+
+```
+$ cargo test -j 1 --lib ui::modals::blocks::tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
+
+running 6 tests
+test ui::modals::blocks::tests::test_blocks_tab_methods ... ok
+test ui::modals::blocks::tests::test_blocks_modal_preview_scrolling ... ok
+test ui::modals::blocks::tests::test_get_selected_code ... ok
+test ui::modals::blocks::tests::test_blocks_modal_navigation_and_tabs ... ok
+test ui::modals::blocks::tests::test_blocks_modal_render ... ok
+test ui::modals::blocks::tests::test_blocks_modal_filtering ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 632 filtered out; finished in 0.28s
+```
+
+---
+
+## 3. Potential Concerns & Observations
+
+- **Terminal Height Sensitivity:** On compact terminal displays (< 24 rows), preview code lines are truncated to fit visible area, which is standard Ratatui behavior. Scrolling with `PageUp`/`PageDown` ensures access to entire component source listings regardless of terminal height.
+- **Clipboard Availability:** In headless or SSH environments lacking a system clipboard daemon (`xclip`, `wl-copy`), clipboard operations gracefully fall back without panics or errors, and file injection remains fully functional.

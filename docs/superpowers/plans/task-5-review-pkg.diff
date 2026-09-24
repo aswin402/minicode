@@ -1,643 +1,1551 @@
-commit 3f93565db10192834ef02ba723c9e2b9f61bfdd9
-Author: aswin402 <aswinvishal402@gmail.com>
-Date:   Fri Sep 18 19:05:15 2026 +0530
-
-    feat(ui): add interactive /goal and /intent commands with real-time checklist management
-
 diff --git a/src/app/commands.rs b/src/app/commands.rs
-index 42f05dd..3f541c2 100644
+index ede3a91..7461628 100644
 --- a/src/app/commands.rs
 +++ b/src/app/commands.rs
-@@ -16,6 +16,104 @@ pub enum CommandAction {
-     Exit,
- }
- 
-+/// Parsed goal or intent slash command action.
-+#[derive(Debug, Clone, PartialEq, Eq)]
-+pub enum GoalSubcommand {
-+    /// Inspect the active goal and living execution ledger (/goal or /intent).
-+    Show,
-+    /// Add a new requirement item to the ledger (/goal add <task>).
-+    Add(String),
-+    /// Mark a requirement item completed by 1-based index or ID (/goal done <id>).
-+    Done(String),
-+    /// Reset the active goal anchor and execution ledger (/goal reset).
-+    Reset,
-+    /// Execute autonomously with freeform or explicit goal prompt (/goal run <prompt> or /goal <prompt>).
-+    Run(String),
-+}
-+
-+/// Parses a user input prompt into a `GoalSubcommand` if it begins with `/goal` or `/intent`.
-+pub fn parse_goal_command(input: &str) -> Option<GoalSubcommand> {
-+    let trimmed = input.trim();
-+    let remainder = if trimmed == "/goal" {
-+        ""
-+    } else if let Some(rest) = trimmed.strip_prefix("/goal ") {
-+        rest.trim()
-+    } else if trimmed == "/intent" {
-+        ""
-+    } else if let Some(rest) = trimmed.strip_prefix("/intent ") {
-+        rest.trim()
-+    } else {
-+        return None;
-+    };
-+
-+    if remainder.is_empty() {
-+        return Some(GoalSubcommand::Show);
-+    }
-+
-+    if remainder == "reset" {
-+        return Some(GoalSubcommand::Reset);
-+    }
-+
-+    if remainder == "add" {
-+        return Some(GoalSubcommand::Add(String::new()));
-+    }
-+    if let Some(rest) = remainder.strip_prefix("add ") {
-+        return Some(GoalSubcommand::Add(rest.trim().to_string()));
-+    }
-+
-+    if remainder == "done" {
-+        return Some(GoalSubcommand::Done(String::new()));
-+    }
-+    if let Some(rest) = remainder.strip_prefix("done ") {
-+        return Some(GoalSubcommand::Done(rest.trim().to_string()));
-+    }
-+
-+    if remainder == "run" {
-+        return Some(GoalSubcommand::Run(String::new()));
-+    }
-+    if let Some(rest) = remainder.strip_prefix("run ") {
-+        return Some(GoalSubcommand::Run(rest.trim().to_string()));
-+    }
-+
-+    Some(GoalSubcommand::Run(remainder.to_string()))
-+}
-+
-+/// Formats an `IntentLedger` into a user-friendly timeline status message.
-+pub fn format_ledger_timeline(ledger: &crate::context::memory::intent::IntentLedger) -> String {
-+    let mut out = format!("🎯 Active Goal: {}\n", ledger.root_objective);
-+    out.push_str(&format!(
-+        "📋 Living Execution Ledger ({}/{} completed):\n",
-+        ledger.completed_count(),
-+        ledger.total_count()
-+    ));
-+
-+    if ledger.items.is_empty() {
-+        out.push_str("   (No tracked requirement items)\n");
-+    } else {
-+        for (idx, item) in ledger.items.iter().enumerate() {
-+            let marker = match item.status {
-+                crate::context::memory::intent::RequirementStatus::Completed => "[x]",
-+                crate::context::memory::intent::RequirementStatus::InProgress => "[-]",
-+                crate::context::memory::intent::RequirementStatus::Blocked => "[!]",
-+                crate::context::memory::intent::RequirementStatus::Skipped => "[s]",
-+                crate::context::memory::intent::RequirementStatus::Pending => "[ ]",
-+            };
-+            let title_line = match &item.description {
-+                Some(desc) if !desc.trim().is_empty() => {
-+                    format!("{}. {} ({})", idx + 1, item.title.trim(), desc.trim())
-+                }
-+                _ => format!("{}. {}", idx + 1, item.title.trim()),
-+            };
-+            out.push_str(&format!("   {} {}\n", marker, title_line));
-+        }
-+    }
-+
-+    out.push_str(
-+        "💡 Commands: /goal add <task> | /goal done <index> | /goal reset | /goal run <prompt>",
-+    );
-+    out
-+}
-+
- impl<'a> App<'a> {
-     /// Handles user submitted text, routing to slash commands or background agent execution
-     pub async fn handle_command_or_prompt(
-@@ -147,21 +245,221 @@ impl<'a> App<'a> {
+@@ -273,12 +273,32 @@ impl<'a> App<'a> {
              return Ok(CommandAction::Continue);
          }
  
--        if prompt == "/goal" || prompt.starts_with("/goal ") {
--            let query = prompt.trim_start_matches("/goal").trim();
--            let goal_prompt = if query.is_empty() {
--                "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
--            } else {
--                format!("<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.", query)
--            };
--            self.timeline.add_user_message(prompt.to_string());
--            self.is_working = true;
--            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
--            self.work_start = Some(Instant::now());
--            let cancel = tokio_util::sync::CancellationToken::new();
--            self.cancel_token = Some(cancel.clone());
--            let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
--            return Ok(CommandAction::Continue);
-+        if let Some(cmd) = parse_goal_command(prompt) {
-+            match cmd {
-+                GoalSubcommand::Show => {
-+                    let persistence_path = self
-+                        .workspace_root
-+                        .join(&self.config.agent.intent.persistence_file);
-+                    if persistence_path.exists() {
-+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
-+                            &persistence_path,
-+                        ) {
-+                            Ok(ledger) => {
-+                                self.timeline.add_status(format_ledger_timeline(&ledger));
-+                            }
-+                            Err(e) => {
-+                                self.timeline
-+                                    .add_status(format!("✗ Failed to load goal anchor: {}", e));
-+                            }
-+                        }
-+                    } else {
-+                        self.timeline.add_status(
-+                            "ℹ No active goal anchor found. Start a task or use /goal add <task>"
-+                                .to_string(),
-+                        );
-+                    }
-+                    return Ok(CommandAction::Continue);
-+                }
-+                GoalSubcommand::Add(text) => {
-+                    let trimmed = text.trim();
-+                    if trimmed.is_empty() {
-+                        self.timeline
-+                            .add_status("⚠️ Usage: /goal add <task description>".to_string());
-+                        return Ok(CommandAction::Continue);
-+                    }
-+                    let persistence_path = self
-+                        .workspace_root
-+                        .join(&self.config.agent.intent.persistence_file);
-+                    let mut ledger = if persistence_path.exists() {
-+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
-+                            &persistence_path,
-+                        ) {
-+                            Ok(l) => l,
-+                            Err(e) => {
-+                                tracing::warn!(
-+                                    error = %e,
-+                                    "Failed to load existing intent ledger, initializing new one"
-+                                );
-+                                crate::context::memory::intent::IntentLedger::new(trimmed)
-+                            }
-+                        }
-+                    } else {
-+                        crate::context::memory::intent::IntentLedger::new(trimmed)
-+                    };
-+                    if ledger.root_objective.trim().is_empty() {
-+                        ledger.root_objective = trimmed.to_string();
-+                    }
-+                    let item_id = ledger.add_item(trimmed, None, vec![]);
-+                    match ledger.save_to_disk(&persistence_path) {
-+                        Ok(_) => {
-+                            self.timeline.add_status(format!(
-+                                "✔ Added requirement #{}: \"{}\" (id: {})",
-+                                ledger.items.len(),
-+                                trimmed,
-+                                item_id
-+                            ));
-+                        }
-+                        Err(e) => {
-+                            self.timeline
-+                                .add_status(format!("✗ Failed to save updated ledger: {}", e));
-+                        }
-+                    }
-+                    return Ok(CommandAction::Continue);
-+                }
-+                GoalSubcommand::Done(target) => {
-+                    let trimmed = target.trim();
-+                    if trimmed.is_empty() {
-+                        self.timeline.add_status(
-+                            "⚠️ Usage: /goal done <index_or_id> (e.g. /goal done 1)".to_string(),
-+                        );
-+                        return Ok(CommandAction::Continue);
-+                    }
-+                    let persistence_path = self
-+                        .workspace_root
-+                        .join(&self.config.agent.intent.persistence_file);
-+                    if !persistence_path.exists() {
-+                        self.timeline.add_status(
-+                            "ℹ No active goal anchor found. Start a task or use /goal add <task>"
-+                                .to_string(),
-+                        );
-+                        return Ok(CommandAction::Continue);
-+                    }
-+                    let mut ledger =
-+                        match crate::context::memory::intent::IntentLedger::load_from_disk(
-+                            &persistence_path,
-+                        ) {
-+                            Ok(l) => l,
-+                            Err(e) => {
-+                                self.timeline
-+                                    .add_status(format!("✗ Failed to load intent ledger: {}", e));
-+                                return Ok(CommandAction::Continue);
-+                            }
-+                        };
-+                    let resolved = if let Ok(idx) = trimmed.parse::<usize>() {
-+                        if idx >= 1 && idx <= ledger.items.len() {
-+                            Some((
-+                                ledger.items[idx - 1].id.clone(),
-+                                ledger.items[idx - 1].title.clone(),
-+                            ))
-+                        } else {
-+                            self.timeline.add_status(format!(
-+                                "⚠️ Invalid requirement index {}. Ledger currently has {} item(s).",
-+                                idx,
-+                                ledger.items.len()
-+                            ));
-+                            return Ok(CommandAction::Continue);
-+                        }
-+                    } else {
-+                        ledger
-+                            .items
-+                            .iter()
-+                            .find(|item| item.id == trimmed || item.id.starts_with(trimmed))
-+                            .map(|item| (item.id.clone(), item.title.clone()))
-+                    };
-+                    match resolved {
-+                        Some((id, title)) => {
-+                            ledger.set_status(
-+                                &id,
-+                                crate::context::memory::intent::RequirementStatus::Completed,
-+                            );
-+                            match ledger.save_to_disk(&persistence_path) {
-+                                Ok(_) => {
-+                                    self.timeline.add_status(format!(
-+                                        "✔ Marked requirement \"{}\" as completed ({}/{} completed)",
-+                                        title,
-+                                        ledger.completed_count(),
-+                                        ledger.total_count()
-+                                    ));
-+                                }
-+                                Err(e) => {
-+                                    self.timeline.add_status(format!(
-+                                        "✗ Failed to save updated ledger: {}",
-+                                        e
-+                                    ));
-+                                }
-+                            }
-+                        }
-+                        None => {
-+                            self.timeline.add_status(format!(
-+                                "⚠️ No requirement found matching '{}'. Use /goal to inspect active items.",
-+                                trimmed
-+                            ));
-+                        }
-+                    }
-+                    return Ok(CommandAction::Continue);
-+                }
-+                GoalSubcommand::Reset => {
-+                    let persistence_path = self
-+                        .workspace_root
-+                        .join(&self.config.agent.intent.persistence_file);
-+                    if persistence_path.exists() {
-+                        match std::fs::remove_file(&persistence_path) {
-+                            Ok(_) => {
-+                                self.timeline.add_status(
-+                                    "✔ Reset goal anchor and execution ledger.".to_string(),
-+                                );
-+                            }
-+                            Err(e) => {
-+                                self.timeline
-+                                    .add_status(format!("✗ Failed to remove intent anchor: {}", e));
-+                            }
-+                        }
-+                    } else {
-+                        self.timeline.add_status(
-+                            "ℹ No active goal anchor or execution ledger found to reset."
-+                                .to_string(),
-+                        );
-+                    }
-+                    return Ok(CommandAction::Continue);
-+                }
-+                GoalSubcommand::Run(query) => {
-+                    let trimmed = query.trim();
-+                    let persistence_path = self
-+                        .workspace_root
-+                        .join(&self.config.agent.intent.persistence_file);
-+                    if !trimmed.is_empty() {
-+                        let max_items = self.config.agent.intent.max_ledger_items;
-+                        let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
-+                            trimmed, max_items,
-+                        );
-+                        if let Err(e) = ledger.save_to_disk(&persistence_path) {
-+                            tracing::warn!(
-+                                error = %e,
-+                                path = %persistence_path.display(),
-+                                "Failed to persist goal intent ledger"
-+                            );
-+                        }
-+                    }
-+                    let goal_prompt = if trimmed.is_empty() {
-+                        "<!-- GOAL --> Execute all pending tasks in onpkg_docs/todo.md autonomously. Run verifications after each step and continue until all tasks are marked [x].".to_string()
-+                    } else {
-+                        format!(
-+                            "<!-- GOAL --> Execute the following goal autonomously to completion: {}\nUpdate onpkg_docs/todo.md, execute step-by-step, verify with tests, and do not stop until fully achieved.",
-+                            trimmed
-+                        )
-+                    };
-+                    self.timeline.add_user_message(prompt.to_string());
-+                    self.last_user_prompt = Some(prompt.to_string());
-+                    self.is_working = true;
-+                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-+                    self.work_start = Some(Instant::now());
-+                    let cancel = tokio_util::sync::CancellationToken::new();
-+                    self.cancel_token = Some(cancel.clone());
-+                    let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
-+                    return Ok(CommandAction::Continue);
+-        // MiniKit Slash Commands (/kit, /stacks, /skills, /blocks, /drift, /heal, /sync, /doctor)
++        if prompt_lower == "/blocks"
++            || prompt_lower == "/miniblocks"
++            || prompt_lower.starts_with("/blocks ")
++            || prompt_lower.starts_with("/miniblocks ")
++        {
++            let mut blocks_modal = ModalState::new_blocks(&self.workspace_root);
++            let query = prompt_trimmed
++                .strip_prefix("/blocks")
++                .or_else(|| prompt_trimmed.strip_prefix("/miniblocks"))
++                .unwrap_or("")
++                .trim();
++            if !query.is_empty() {
++                if let ModalState::Blocks(ref mut state) = blocks_modal {
++                    state.search_query = query.to_string();
++                    state.refresh_filtered();
 +                }
 +            }
-         }
++            self.modal = blocks_modal;
++            return Ok(CommandAction::Continue);
++        }
++
++        // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
+         if prompt_lower == "/kit"
+             || prompt_lower.starts_with("/kit ")
+             || prompt_lower.starts_with("/stack ")
+             || prompt_lower == "/block"
+-            || prompt_lower == "/blocks"
+             || prompt_lower.starts_with("/block ")
+             || prompt_lower == "/drift"
+             || prompt_lower == "/heal"
+@@ -298,7 +318,7 @@ impl<'a> App<'a> {
+             } else if prompt_lower.starts_with("/block ") {
+                 let rest = prompt_trimmed.strip_prefix("/block").unwrap_or("").trim();
+                 format!("block {}", rest)
+-            } else if prompt_lower == "/block" || prompt_lower == "/blocks" {
++            } else if prompt_lower == "/block" {
+                 "blocks".to_string()
+             } else if prompt_lower == "/drift" {
+                 "diff".to_string()
+diff --git a/src/app/mod.rs b/src/app/mod.rs
+index bdb59bb..e018634 100644
+--- a/src/app/mod.rs
++++ b/src/app/mod.rs
+@@ -865,6 +865,16 @@ impl<'a> App<'a> {
+                                     continue;
+                                 }
  
-         if prompt == "/diff" || prompt == "/diffs" {
-@@ -1325,3 +1623,247 @@ impl<'a> App<'a> {
-         Ok(CommandAction::Continue)
++                                // F6 toggles interactive MiniBlocks Warehouse modal
++                                if key_event.code == KeyCode::F(6) {
++                                    if matches!(self.modal, ModalState::Blocks(_)) {
++                                        self.modal = ModalState::None;
++                                    } else {
++                                        self.modal = ModalState::new_blocks(&self.workspace_root);
++                                    }
++                                    continue;
++                                }
++
+                                 // When PTY drawer is open, route keystrokes into drawer
+                                 if self.pty_drawer.is_open {
+                                     match key_event.code {
+diff --git a/src/app/modals.rs b/src/app/modals.rs
+index 3e99523..81f4613 100644
+--- a/src/app/modals.rs
++++ b/src/app/modals.rs
+@@ -764,6 +764,9 @@ impl<'a> App<'a> {
+                         self.modal = ModalState::None;
+ 
+                         match selected_cmd {
++                            "/blocks" | "/miniblocks" => {
++                                self.modal = ModalState::new_blocks(&self.workspace_root);
++                            }
+                             "/stack" => {
+                                 self.modal = ModalState::new_stack_select();
+                             }
+@@ -2025,6 +2028,166 @@ impl<'a> App<'a> {
+                 }
+                 _ => {}
+             },
++            ModalState::Blocks(state) => match key.code {
++                KeyCode::Tab | KeyCode::Right => {
++                    state.next_tab();
++                }
++                KeyCode::BackTab | KeyCode::Left => {
++                    state.prev_tab();
++                }
++                KeyCode::Char('1') => {
++                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Components;
++                    state.selected_index = 0;
++                    state.preview_scroll_offset = 0;
++                    state.status_message = None;
++                }
++                KeyCode::Char('2') => {
++                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Palettes;
++                    state.selected_index = 0;
++                    state.preview_scroll_offset = 0;
++                    state.status_message = None;
++                }
++                KeyCode::Char('3') => {
++                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Gradients;
++                    state.selected_index = 0;
++                    state.preview_scroll_offset = 0;
++                    state.status_message = None;
++                }
++                KeyCode::Char('4') => {
++                    state.active_tab = crate::ui::modals::blocks::BlocksTab::Templates;
++                    state.selected_index = 0;
++                    state.preview_scroll_offset = 0;
++                    state.status_message = None;
++                }
++                KeyCode::Up => {
++                    state.select_prev();
++                }
++                KeyCode::Down => {
++                    state.select_next();
++                }
++                KeyCode::PageUp => {
++                    state.scroll_preview_up();
++                }
++                KeyCode::PageDown => {
++                    state.scroll_preview_down();
++                }
++                KeyCode::Char('c')
++                    if key.modifiers.contains(KeyModifiers::CONTROL)
++                        || state.active_tab != crate::ui::modals::blocks::BlocksTab::Components =>
++                {
++                    if let Some(code) = state.get_selected_code() {
++                        let ok = crate::ui::clipboard::copy_to_clipboard(&code);
++                        let msg = if ok {
++                            "✔ Copied to clipboard!".to_string()
++                        } else {
++                            "✗ Failed to copy to clipboard".to_string()
++                        };
++                        state.status_message = Some(msg.clone());
++                        self.timeline.add_status(msg);
++                    }
++                }
++                KeyCode::Enter => {
++                    if let Some(code) = state.get_selected_code() {
++                        let _ = crate::ui::clipboard::copy_to_clipboard(&code);
++                        match state.active_tab {
++                            crate::ui::modals::blocks::BlocksTab::Components => {
++                                if let Some(id) =
++                                    state.filtered_component_ids.get(state.selected_index)
++                                {
++                                    let store = match crate::blocks::store::get_global_block_store()
++                                        .read()
++                                    {
++                                        Ok(s) => s,
++                                        Err(p) => p.into_inner(),
++                                    };
++                                    if let Some(comp) = store.get_component(id) {
++                                        let ext = match comp.framework {
++                                            crate::blocks::models::BlockFramework::React => "tsx",
++                                            crate::blocks::models::BlockFramework::Svelte => {
++                                                "svelte"
++                                            }
++                                            crate::blocks::models::BlockFramework::Css => "css",
++                                            crate::blocks::models::BlockFramework::Scss => "scss",
++                                            crate::blocks::models::BlockFramework::Tailwind
++                                            | crate::blocks::models::BlockFramework::Shadcn => {
++                                                "tsx"
++                                            }
++                                        };
++                                        let file_name = format!(
++                                            "{}.{}",
++                                            comp.name.trim().replace(' ', "_"),
++                                            ext
++                                        );
++                                        let target_dir = if state
++                                            .workspace_root
++                                            .join("src")
++                                            .join("components")
++                                            .exists()
++                                        {
++                                            state.workspace_root.join("src").join("components")
++                                        } else if state.workspace_root.join("components").exists() {
++                                            state.workspace_root.join("components")
++                                        } else if state.workspace_root.join("src").exists() {
++                                            state.workspace_root.join("src").join("components")
++                                        } else {
++                                            state.workspace_root.join("components")
++                                        };
++                                        let _ = std::fs::create_dir_all(&target_dir);
++                                        let target_file = target_dir.join(&file_name);
++                                        match std::fs::write(&target_file, &comp.code) {
++                                            Ok(_) => {
++                                                let rel = target_file
++                                                    .strip_prefix(&state.workspace_root)
++                                                    .unwrap_or(&target_file);
++                                                let msg = format!(
++                                                    "✔ Injected {} into {}",
++                                                    comp.name,
++                                                    rel.display()
++                                                );
++                                                state.status_message = Some(msg.clone());
++                                                self.timeline.add_status(msg);
++                                            }
++                                            Err(e) => {
++                                                let msg = format!(
++                                                    "✔ Copied {} to clipboard (File write note: {})",
++                                                    comp.name, e
++                                                );
++                                                state.status_message = Some(msg.clone());
++                                                self.timeline.add_status(msg);
++                                            }
++                                        }
++                                    }
++                                }
++                            }
++                            crate::ui::modals::blocks::BlocksTab::Palettes => {
++                                let msg = "✔ Copied palette CSS to clipboard!".to_string();
++                                state.status_message = Some(msg.clone());
++                                self.timeline.add_status(msg);
++                            }
++                            crate::ui::modals::blocks::BlocksTab::Gradients => {
++                                let msg = "✔ Copied CSS gradient to clipboard!".to_string();
++                                state.status_message = Some(msg.clone());
++                                self.timeline.add_status(msg);
++                            }
++                            crate::ui::modals::blocks::BlocksTab::Templates => {
++                                let msg = "✔ Copied template layout to clipboard!".to_string();
++                                state.status_message = Some(msg.clone());
++                                self.timeline.add_status(msg);
++                            }
++                        }
++                    }
++                }
++                KeyCode::Esc | KeyCode::F(6) => {
++                    self.modal = ModalState::None;
++                }
++                KeyCode::Backspace => {
++                    state.handle_backspace();
++                }
++                KeyCode::Char(c) => {
++                    state.handle_char(c);
++                }
++                _ => {}
++            },
+         }
      }
- }
+ 
+diff --git a/src/ui/modals/blocks.rs b/src/ui/modals/blocks.rs
+new file mode 100644
+index 0000000..70c0010
+--- /dev/null
++++ b/src/ui/modals/blocks.rs
+@@ -0,0 +1,1204 @@
++//! In-TUI MiniBlocks Native UI Component & Design Token Warehouse Modal.
 +
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+    use crate::config::Config;
-+    use crate::context::memory::intent::{IntentLedger, RequirementStatus};
-+    use tempfile::tempdir;
++use crate::blocks::store::get_global_block_store;
++use crate::ui::layout_utils::centered_rect;
++use crate::ui::modals::common::compute_scroll_offset;
++use crate::ui::theme::Theme;
++use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
++use ratatui::style::{Color, Modifier, Style};
++use ratatui::text::{Line, Span};
++use ratatui::widgets::{Block, Borders, Clear, Paragraph};
++use ratatui::Frame;
++use std::path::{Path, PathBuf};
++use uuid::Uuid;
 +
-+    #[test]
-+    fn test_parse_goal_command_show() {
-+        assert_eq!(parse_goal_command("/goal"), Some(GoalSubcommand::Show));
-+        assert_eq!(parse_goal_command("/intent"), Some(GoalSubcommand::Show));
-+        assert_eq!(parse_goal_command("/goal   "), Some(GoalSubcommand::Show));
-+        assert_eq!(parse_goal_command("/intent   "), Some(GoalSubcommand::Show));
++/// Active tab within the `/blocks` MiniBlocks warehouse modal dialog.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum BlocksTab {
++    Components,
++    Palettes,
++    Gradients,
++    Templates,
++}
++
++#[allow(dead_code)]
++impl BlocksTab {
++    pub fn all() -> &'static [BlocksTab] {
++        &[
++            BlocksTab::Components,
++            BlocksTab::Palettes,
++            BlocksTab::Gradients,
++            BlocksTab::Templates,
++        ]
 +    }
 +
-+    #[test]
-+    fn test_parse_goal_command_add() {
-+        assert_eq!(
-+            parse_goal_command("/goal add Build authentication"),
-+            Some(GoalSubcommand::Add("Build authentication".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent add Build authentication"),
-+            Some(GoalSubcommand::Add("Build authentication".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/goal add"),
-+            Some(GoalSubcommand::Add(String::new()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent add"),
-+            Some(GoalSubcommand::Add(String::new()))
-+        );
++    pub fn title(&self) -> &'static str {
++        match self {
++            BlocksTab::Components => "Components",
++            BlocksTab::Palettes => "Palettes",
++            BlocksTab::Gradients => "Gradients",
++            BlocksTab::Templates => "Templates",
++        }
 +    }
 +
-+    #[test]
-+    fn test_parse_goal_command_done() {
-+        assert_eq!(
-+            parse_goal_command("/goal done 1"),
-+            Some(GoalSubcommand::Done("1".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent done 2"),
-+            Some(GoalSubcommand::Done("2".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/goal done req-1234"),
-+            Some(GoalSubcommand::Done("req-1234".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/goal done"),
-+            Some(GoalSubcommand::Done(String::new()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent done"),
-+            Some(GoalSubcommand::Done(String::new()))
-+        );
++    pub fn next(&self) -> Self {
++        match self {
++            BlocksTab::Components => BlocksTab::Palettes,
++            BlocksTab::Palettes => BlocksTab::Gradients,
++            BlocksTab::Gradients => BlocksTab::Templates,
++            BlocksTab::Templates => BlocksTab::Components,
++        }
 +    }
 +
-+    #[test]
-+    fn test_parse_goal_command_reset() {
-+        assert_eq!(
-+            parse_goal_command("/goal reset"),
-+            Some(GoalSubcommand::Reset)
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent reset"),
-+            Some(GoalSubcommand::Reset)
-+        );
-+        assert_eq!(
-+            parse_goal_command("/goal reset   "),
-+            Some(GoalSubcommand::Reset)
-+        );
++    pub fn prev(&self) -> Self {
++        match self {
++            BlocksTab::Components => BlocksTab::Templates,
++            BlocksTab::Palettes => BlocksTab::Components,
++            BlocksTab::Gradients => BlocksTab::Palettes,
++            BlocksTab::Templates => BlocksTab::Gradients,
++        }
++    }
++}
++
++/// State for the interactive `/blocks` modal dialog.
++#[derive(Debug, Clone)]
++pub struct BlocksModalState {
++    pub workspace_root: PathBuf,
++    pub active_tab: BlocksTab,
++    pub search_query: String,
++    pub selected_index: usize,
++    pub preview_scroll_offset: usize,
++    pub filtered_component_ids: Vec<Uuid>,
++    pub filtered_palette_ids: Vec<Uuid>,
++    pub filtered_gradient_ids: Vec<Uuid>,
++    pub filtered_template_ids: Vec<Uuid>,
++    pub status_message: Option<String>,
++}
++
++impl BlocksModalState {
++    pub fn new(workspace: &Path) -> Self {
++        let mut state = Self {
++            workspace_root: workspace.to_path_buf(),
++            active_tab: BlocksTab::Components,
++            search_query: String::new(),
++            selected_index: 0,
++            preview_scroll_offset: 0,
++            filtered_component_ids: Vec::new(),
++            filtered_palette_ids: Vec::new(),
++            filtered_gradient_ids: Vec::new(),
++            filtered_template_ids: Vec::new(),
++            status_message: None,
++        };
++        state.refresh_filtered();
++        state
 +    }
 +
-+    #[test]
-+    fn test_parse_goal_command_run() {
-+        assert_eq!(
-+            parse_goal_command("/goal run Ship release"),
-+            Some(GoalSubcommand::Run("Ship release".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent run Ship release"),
-+            Some(GoalSubcommand::Run("Ship release".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/goal run"),
-+            Some(GoalSubcommand::Run(String::new()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent run"),
-+            Some(GoalSubcommand::Run(String::new()))
-+        );
-+        // Freeform prompt
-+        assert_eq!(
-+            parse_goal_command("/goal Ship release"),
-+            Some(GoalSubcommand::Run("Ship release".to_string()))
-+        );
-+        assert_eq!(
-+            parse_goal_command("/intent Ship release"),
-+            Some(GoalSubcommand::Run("Ship release".to_string()))
-+        );
++    pub fn current_tab_len(&self) -> usize {
++        match self.active_tab {
++            BlocksTab::Components => self.filtered_component_ids.len(),
++            BlocksTab::Palettes => self.filtered_palette_ids.len(),
++            BlocksTab::Gradients => self.filtered_gradient_ids.len(),
++            BlocksTab::Templates => self.filtered_template_ids.len(),
++        }
 +    }
 +
-+    #[test]
-+    fn test_parse_goal_command_non_goal() {
-+        assert_eq!(parse_goal_command("/help"), None);
-+        assert_eq!(parse_goal_command("/plan"), None);
-+        assert_eq!(parse_goal_command("/new"), None);
-+        assert_eq!(parse_goal_command("hello minicode"), None);
++    pub fn next_tab(&mut self) {
++        self.active_tab = self.active_tab.next();
++        self.selected_index = 0;
++        self.preview_scroll_offset = 0;
++        self.status_message = None;
 +    }
 +
-+    #[test]
-+    fn test_format_ledger_timeline() {
-+        let mut ledger = IntentLedger::new("E-Commerce Store");
-+        let id1 = ledger.add_item("Dashboard", Some("metrics cards"), vec![]);
-+        let id2 = ledger.add_item("Customers Page", Some("search, filter"), vec![]);
-+        let _id3 = ledger.add_item("Support Tickets", None, vec![]);
++    pub fn prev_tab(&mut self) {
++        self.active_tab = self.active_tab.prev();
++        self.selected_index = 0;
++        self.preview_scroll_offset = 0;
++        self.status_message = None;
++    }
 +
-+        ledger.set_status(&id1, RequirementStatus::Completed);
-+        ledger.set_status(&id2, RequirementStatus::InProgress);
++    pub fn select_next(&mut self) {
++        let len = self.current_tab_len();
++        if len > 0 && self.selected_index + 1 < len {
++            self.selected_index += 1;
++            self.preview_scroll_offset = 0;
++        }
++    }
 +
-+        let formatted = format_ledger_timeline(&ledger);
-+        assert!(formatted.contains("🎯 Active Goal: E-Commerce Store"));
-+        assert!(formatted.contains("📋 Living Execution Ledger (1/3 completed):"));
-+        assert!(formatted.contains("[x] 1. Dashboard (metrics cards)"));
-+        assert!(formatted.contains("[-] 2. Customers Page (search, filter)"));
-+        assert!(formatted.contains("[ ] 3. Support Tickets"));
-+        assert!(formatted.contains(
-+            "💡 Commands: /goal add <task> | /goal done <index> | /goal reset | /goal run <prompt>"
++    pub fn select_prev(&mut self) {
++        if self.selected_index > 0 {
++            self.selected_index -= 1;
++            self.preview_scroll_offset = 0;
++        }
++    }
++
++    pub fn scroll_preview_up(&mut self) {
++        self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(3);
++    }
++
++    pub fn scroll_preview_down(&mut self) {
++        self.preview_scroll_offset = self.preview_scroll_offset.saturating_add(3);
++    }
++
++    pub fn handle_char(&mut self, c: char) {
++        self.search_query.push(c);
++        self.selected_index = 0;
++        self.preview_scroll_offset = 0;
++        self.refresh_filtered();
++    }
++
++    pub fn handle_backspace(&mut self) {
++        if self.search_query.pop().is_some() {
++            self.selected_index = 0;
++            self.preview_scroll_offset = 0;
++            self.refresh_filtered();
++        }
++    }
++
++    pub fn refresh_filtered(&mut self) {
++        let store = match get_global_block_store().read() {
++            Ok(s) => s,
++            Err(poisoned) => poisoned.into_inner(),
++        };
++
++        // 1. Components
++        let filter = crate::blocks::store::BlockSearchFilter {
++            query: if self.search_query.trim().is_empty() {
++                None
++            } else {
++                Some(self.search_query.clone())
++            },
++            limit: 5000,
++            ..Default::default()
++        };
++        let mut comp_results = store.search_components(&filter);
++        if self.search_query.trim().is_empty() {
++            comp_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
++        }
++        self.filtered_component_ids = comp_results.into_iter().map(|r| r.id).collect();
++
++        // 2. Palettes
++        let mut pals = store.search_palettes(&self.search_query);
++        pals.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
++        self.filtered_palette_ids = pals.into_iter().map(|p| p.id).collect();
++
++        // 3. Gradients
++        let mut grads = store.search_gradients(&self.search_query);
++        grads.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
++        self.filtered_gradient_ids = grads.into_iter().map(|g| g.id).collect();
++
++        // 4. Templates
++        let q = self.search_query.trim().to_lowercase();
++        let mut tmpls: Vec<_> = store
++            .list_templates()
++            .into_iter()
++            .filter(|t| {
++                q.is_empty()
++                    || t.name.to_lowercase().contains(&q)
++                    || t.description.to_lowercase().contains(&q)
++                    || t.base_layout.to_lowercase().contains(&q)
++            })
++            .collect();
++        tmpls.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
++        self.filtered_template_ids = tmpls.into_iter().map(|t| t.id).collect();
++
++        // Clamp selected index to boundary
++        let len = self.current_tab_len();
++        if len == 0 {
++            self.selected_index = 0;
++        } else if self.selected_index >= len {
++            self.selected_index = len.saturating_sub(1);
++        }
++    }
++
++    pub fn get_selected_code(&self) -> Option<String> {
++        let store = match get_global_block_store().read() {
++            Ok(s) => s,
++            Err(poisoned) => poisoned.into_inner(),
++        };
++
++        match self.active_tab {
++            BlocksTab::Components => {
++                let id = self.filtered_component_ids.get(self.selected_index)?;
++                store.get_component(id).map(|c| c.code.clone())
++            }
++            BlocksTab::Palettes => {
++                let id = self.filtered_palette_ids.get(self.selected_index)?;
++                store.get_palette(id).map(|p| {
++                    format!(
++                        "/* Palette: {} */\n:root {{\n  --color-background: {};\n  --color-surface: {};\n  --color-accent: {};\n  --color-text: {};\n}}",
++                        p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
++                    )
++                })
++            }
++            BlocksTab::Gradients => {
++                let id = self.filtered_gradient_ids.get(self.selected_index)?;
++                store.get_gradient(id).map(|g| g.css.clone())
++            }
++            BlocksTab::Templates => {
++                let id = self.filtered_template_ids.get(self.selected_index)?;
++                store.get_template(id).map(|t| t.base_layout.clone())
++            }
++        }
++    }
++}
++
++/// Renders the complete `/blocks` warehouse modal dialog in Ratatui.
++pub fn render_blocks_modal(frame: &mut Frame, state: &BlocksModalState, area: Rect, theme: &Theme) {
++    let popup_area = centered_rect(90, 85, area);
++    frame.render_widget(Clear, popup_area);
++
++    let store = match get_global_block_store().read() {
++        Ok(s) => s,
++        Err(poisoned) => poisoned.into_inner(),
++    };
++    let stats = store.stats();
++
++    let block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.brand_accent))
++        .title(" 🧱 MiniBlocks Native UI Component & Design Warehouse ")
++        .title_alignment(Alignment::Center)
++        .style(Style::default().bg(theme.bg_elevated));
++    let inner_area = block.inner(popup_area);
++    frame.render_widget(block, popup_area);
++
++    let chunks = Layout::default()
++        .direction(Direction::Vertical)
++        .constraints([
++            Constraint::Length(3), // Tab navigation
++            Constraint::Min(5),    // Content area
++            Constraint::Length(1), // Hotkey / status footer
++        ])
++        .split(inner_area);
++
++    // 1. Tab Bar
++    render_tab_bar(frame, chunks[0], state, &stats, theme);
++
++    // 2. Tab Content Pane
++    match state.active_tab {
++        BlocksTab::Components => {
++            render_components_tab(frame, chunks[1], state, &store, theme);
++        }
++        BlocksTab::Palettes => {
++            render_palettes_tab(frame, chunks[1], state, &store, theme);
++        }
++        BlocksTab::Gradients => {
++            render_gradients_tab(frame, chunks[1], state, &store, theme);
++        }
++        BlocksTab::Templates => {
++            render_templates_tab(frame, chunks[1], state, &store, theme);
++        }
++    }
++
++    // 3. Hotkey & Status Bar
++    render_footer(frame, chunks[2], state, theme);
++}
++
++fn render_tab_bar(
++    frame: &mut Frame,
++    area: Rect,
++    state: &BlocksModalState,
++    stats: &crate::blocks::models::BlockStats,
++    theme: &Theme,
++) {
++    let mut tab_spans = Vec::new();
++    for (i, tab) in BlocksTab::all().iter().enumerate() {
++        let count = match tab {
++            BlocksTab::Components => stats.total_components,
++            BlocksTab::Palettes => stats.total_palettes,
++            BlocksTab::Gradients => stats.total_gradients,
++            BlocksTab::Templates => stats.total_templates,
++        };
++        let is_active = *tab == state.active_tab;
++        let style = if is_active {
++            Style::default()
++                .fg(Color::Black)
++                .bg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD)
++        } else {
++            Style::default().fg(theme.muted)
++        };
++        tab_spans.push(Span::styled(
++            format!(" [{}] {} ({}) ", i + 1, tab.title(), count),
++            style,
++        ));
++        tab_spans.push(Span::raw(" "));
++    }
++
++    let tab_block = Block::default()
++        .borders(Borders::BOTTOM)
++        .border_style(Style::default().fg(theme.border));
++    let tab_p = Paragraph::new(Line::from(tab_spans)).block(tab_block);
++    frame.render_widget(tab_p, area);
++}
++
++fn render_components_tab(
++    frame: &mut Frame,
++    area: Rect,
++    state: &BlocksModalState,
++    store: &crate::blocks::store::BlockStore,
++    theme: &Theme,
++) {
++    let content_cols = Layout::default()
++        .direction(Direction::Horizontal)
++        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
++        .split(area);
++
++    // Left column: Search input + list
++    let left_chunks = Layout::default()
++        .direction(Direction::Vertical)
++        .constraints([Constraint::Length(3), Constraint::Min(4)])
++        .split(content_cols[0]);
++
++    // Search input box
++    let search_block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.brand_accent))
++        .title(" Search Components ")
++        .style(Style::default().bg(theme.bg_elevated));
++    let query_display = if state.search_query.is_empty() {
++        Span::styled(" Type to filter...", Style::default().fg(theme.muted))
++    } else {
++        Span::styled(
++            format!(" {}▌", state.search_query),
++            Style::default()
++                .fg(theme.text_primary)
++                .add_modifier(Modifier::BOLD),
++        )
++    };
++    let search_p = Paragraph::new(Line::from(vec![
++        Span::styled(" 🔍", Style::default().fg(theme.brand_accent)),
++        query_display,
++    ]))
++    .block(search_block);
++    frame.render_widget(search_p, left_chunks[0]);
++
++    // Component List
++    let list_block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.border))
++        .title(format!(
++            " Components ({}) ",
++            state.filtered_component_ids.len()
++        ));
++    let list_inner = list_block.inner(left_chunks[1]);
++    frame.render_widget(list_block, left_chunks[1]);
++
++    let visible_rows = list_inner.height as usize;
++    let scroll_offset = compute_scroll_offset(state.selected_index, visible_rows);
++
++    let mut list_lines = Vec::new();
++    if state.filtered_component_ids.is_empty() {
++        list_lines.push(Line::from(vec![Span::styled(
++            "  (No components found)",
++            Style::default().fg(theme.muted),
++        )]));
++    } else {
++        let end_idx = (scroll_offset + visible_rows).min(state.filtered_component_ids.len());
++        for (i, id) in state.filtered_component_ids[scroll_offset..end_idx]
++            .iter()
++            .enumerate()
++        {
++            let actual_idx = scroll_offset + i;
++            let is_selected = actual_idx == state.selected_index;
++
++            if let Some(comp) = store.get_component(id) {
++                let marker = if is_selected { "▸ " } else { "  " };
++                let cat_badge = format!("[{}]", comp.category);
++                let fw_badge = format!("[{}]", comp.framework);
++
++                let line_style = if is_selected {
++                    Style::default()
++                        .fg(theme.highlight)
++                        .bg(theme.border)
++                        .add_modifier(Modifier::BOLD)
++                } else {
++                    Style::default().fg(theme.text_primary)
++                };
++
++                let name_truncated = if comp.name.len() > 18 {
++                    format!("{}…", &comp.name[..17])
++                } else {
++                    comp.name.clone()
++                };
++
++                let spans = vec![
++                    Span::styled(marker, line_style),
++                    Span::styled(format!("{:<19} ", name_truncated), line_style),
++                    Span::styled(
++                        format!("{:<9} ", cat_badge),
++                        Style::default().fg(theme.info),
++                    ),
++                    Span::styled(fw_badge, Style::default().fg(theme.success)),
++                ];
++                list_lines.push(Line::from(spans));
++            }
++        }
++    }
++    let list_p = Paragraph::new(list_lines);
++    frame.render_widget(list_p, list_inner);
++
++    // Right column: Component Details & Code Preview
++    let right_block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.border))
++        .title(" Component Details & Preview ");
++    let right_inner = right_block.inner(content_cols[1]);
++    frame.render_widget(right_block, content_cols[1]);
++
++    if let Some(id) = state.filtered_component_ids.get(state.selected_index) {
++        if let Some(comp) = store.get_component(id) {
++            let right_chunks = Layout::default()
++                .direction(Direction::Vertical)
++                .constraints([Constraint::Length(5), Constraint::Min(4)])
++                .split(right_inner);
++
++            // Metadata Header
++            let deps_str = if comp.dependencies.is_empty() {
++                "none".to_string()
++            } else {
++                comp.dependencies.join(", ")
++            };
++            let tags_str = if comp.tags.is_empty() {
++                "none".to_string()
++            } else {
++                comp.tags.join(", ")
++            };
++
++            let meta_lines = vec![
++                Line::from(vec![
++                    Span::styled(
++                        format!("{} ", comp.name),
++                        Style::default()
++                            .fg(theme.brand_accent)
++                            .add_modifier(Modifier::BOLD),
++                    ),
++                    Span::styled(
++                        format!("(v{}) ", comp.version),
++                        Style::default().fg(theme.muted),
++                    ),
++                    Span::styled(
++                        format!("• Category: {} ", comp.category),
++                        Style::default().fg(theme.info),
++                    ),
++                    Span::styled(
++                        format!("• Framework: {}", comp.framework),
++                        Style::default().fg(theme.success),
++                    ),
++                ]),
++                Line::from(vec![
++                    Span::styled("Description: ", Style::default().fg(theme.muted)),
++                    Span::styled(&comp.description, Style::default().fg(theme.text_primary)),
++                ]),
++                Line::from(vec![
++                    Span::styled("Dependencies: ", Style::default().fg(theme.muted)),
++                    Span::styled(deps_str, Style::default().fg(theme.warning)),
++                    Span::styled("   Tags: ", Style::default().fg(theme.muted)),
++                    Span::styled(tags_str, Style::default().fg(theme.highlight)),
++                ]),
++            ];
++            let meta_p = Paragraph::new(meta_lines);
++            frame.render_widget(meta_p, right_chunks[0]);
++
++            // Code Preview Block
++            let preview_box = Block::default()
++                .borders(Borders::TOP)
++                .border_style(Style::default().fg(theme.border))
++                .title(format!(
++                    " Code Preview (lines {}+) ",
++                    state.preview_scroll_offset + 1
++                ));
++            let preview_inner = preview_box.inner(right_chunks[1]);
++            frame.render_widget(preview_box, right_chunks[1]);
++
++            let code_lines: Vec<&str> = comp.code.lines().collect();
++            let visible_preview_height = preview_inner.height as usize;
++            let offset = state
++                .preview_scroll_offset
++                .min(code_lines.len().saturating_sub(1));
++
++            let mut styled_code_lines = Vec::new();
++            for (line_idx, line) in code_lines[offset..].iter().enumerate() {
++                if line_idx >= visible_preview_height {
++                    break;
++                }
++                let abs_line_no = offset + line_idx + 1;
++                let mut spans = vec![Span::styled(
++                    format!("{:3} │ ", abs_line_no),
++                    Style::default().fg(theme.muted),
++                )];
++                spans.extend(style_code_line(line, theme));
++                styled_code_lines.push(Line::from(spans));
++            }
++            let code_p = Paragraph::new(styled_code_lines);
++            frame.render_widget(code_p, preview_inner);
++        }
++    } else {
++        let empty_p =
++            Paragraph::new(" No component selected.").style(Style::default().fg(theme.muted));
++        frame.render_widget(empty_p, right_inner);
++    }
++}
++
++fn render_palettes_tab(
++    frame: &mut Frame,
++    area: Rect,
++    state: &BlocksModalState,
++    store: &crate::blocks::store::BlockStore,
++    theme: &Theme,
++) {
++    let block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.border))
++        .title(format!(
++            " Design Token Palettes ({}) ",
++            state.filtered_palette_ids.len()
++        ));
++    let inner = block.inner(area);
++    frame.render_widget(block, area);
++
++    if state.filtered_palette_ids.is_empty() {
++        let empty_p =
++            Paragraph::new(" (No color palettes found)").style(Style::default().fg(theme.muted));
++        frame.render_widget(empty_p, inner);
++        return;
++    }
++
++    let card_height = 4;
++    let visible_cards = (inner.height as usize / card_height).max(1);
++    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
++
++    let end_idx = (scroll_offset + visible_cards).min(state.filtered_palette_ids.len());
++    let mut card_lines = Vec::new();
++
++    for (i, id) in state.filtered_palette_ids[scroll_offset..end_idx]
++        .iter()
++        .enumerate()
++    {
++        let actual_idx = scroll_offset + i;
++        let is_selected = actual_idx == state.selected_index;
++
++        if let Some(pal) = store.get_palette(id) {
++            let cursor = if is_selected { "▸ " } else { "  " };
++            let title_style = if is_selected {
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD)
++            } else {
++                Style::default().fg(theme.text_primary)
++            };
++
++            let tags_str = if pal.tags.is_empty() {
++                String::new()
++            } else {
++                format!(" [{}]", pal.tags.join(", "))
++            };
++
++            // Header line
++            card_lines.push(Line::from(vec![
++                Span::styled(cursor, title_style),
++                Span::styled(&pal.name, title_style),
++                Span::styled(tags_str, Style::default().fg(theme.muted)),
++            ]));
++
++            // Swatches line with colors
++            let labels = ["BG", "Surface", "Accent", "Text"];
++            let mut swatch_spans = vec![Span::raw("    ")];
++            for (idx, color_hex) in pal.colors.iter().enumerate() {
++                let rgb = hex_to_rgb(color_hex).unwrap_or(theme.border);
++                let lbl = labels.get(idx).copied().unwrap_or("Color");
++                swatch_spans.push(Span::styled(
++                    format!("{}: ", lbl),
++                    Style::default().fg(theme.muted),
++                ));
++                swatch_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
++                swatch_spans.push(Span::styled(
++                    format!("{}   ", color_hex),
++                    Style::default().fg(theme.text_primary),
++                ));
++            }
++            card_lines.push(Line::from(swatch_spans));
++
++            // Blank separator line
++            card_lines.push(Line::from(""));
++        }
++    }
++
++    let p = Paragraph::new(card_lines);
++    frame.render_widget(p, inner);
++}
++
++fn render_gradients_tab(
++    frame: &mut Frame,
++    area: Rect,
++    state: &BlocksModalState,
++    store: &crate::blocks::store::BlockStore,
++    theme: &Theme,
++) {
++    let block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.border))
++        .title(format!(
++            " CSS Gradients ({}) ",
++            state.filtered_gradient_ids.len()
++        ));
++    let inner = block.inner(area);
++    frame.render_widget(block, area);
++
++    if state.filtered_gradient_ids.is_empty() {
++        let empty_p =
++            Paragraph::new(" (No gradients found)").style(Style::default().fg(theme.muted));
++        frame.render_widget(empty_p, inner);
++        return;
++    }
++
++    let card_height = 4;
++    let visible_cards = (inner.height as usize / card_height).max(1);
++    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
++
++    let end_idx = (scroll_offset + visible_cards).min(state.filtered_gradient_ids.len());
++    let mut card_lines = Vec::new();
++
++    for (i, id) in state.filtered_gradient_ids[scroll_offset..end_idx]
++        .iter()
++        .enumerate()
++    {
++        let actual_idx = scroll_offset + i;
++        let is_selected = actual_idx == state.selected_index;
++
++        if let Some(grad) = store.get_gradient(id) {
++            let cursor = if is_selected { "▸ " } else { "  " };
++            let title_style = if is_selected {
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD)
++            } else {
++                Style::default().fg(theme.text_primary)
++            };
++
++            let tags_str = if grad.tags.is_empty() {
++                String::new()
++            } else {
++                format!(" [{}]", grad.tags.join(", "))
++            };
++
++            // Title & Swatches header
++            let mut top_spans = vec![
++                Span::styled(cursor, title_style),
++                Span::styled(&grad.name, title_style),
++                Span::styled(tags_str, Style::default().fg(theme.muted)),
++                Span::raw("    "),
++            ];
++            for (c_idx, col) in grad.colors.iter().enumerate() {
++                let rgb = hex_to_rgb(col).unwrap_or(theme.border);
++                if c_idx > 0 {
++                    top_spans.push(Span::styled(" ─> ", Style::default().fg(theme.muted)));
++                }
++                top_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
++                top_spans.push(Span::styled(col.clone(), Style::default().fg(theme.info)));
++            }
++            card_lines.push(Line::from(top_spans));
++
++            // CSS Definition
++            card_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled("CSS: ", Style::default().fg(theme.muted)),
++                Span::styled(&grad.css, Style::default().fg(theme.success)),
++            ]));
++
++            // Separator
++            card_lines.push(Line::from(""));
++        }
++    }
++
++    let p = Paragraph::new(card_lines);
++    frame.render_widget(p, inner);
++}
++
++fn render_templates_tab(
++    frame: &mut Frame,
++    area: Rect,
++    state: &BlocksModalState,
++    store: &crate::blocks::store::BlockStore,
++    theme: &Theme,
++) {
++    let block = Block::default()
++        .borders(Borders::ALL)
++        .border_style(Style::default().fg(theme.border))
++        .title(format!(
++            " Page Layout Templates ({}) ",
++            state.filtered_template_ids.len()
++        ));
++    let inner = block.inner(area);
++    frame.render_widget(block, area);
++
++    if state.filtered_template_ids.is_empty() {
++        let empty_p =
++            Paragraph::new(" (No templates found)").style(Style::default().fg(theme.muted));
++        frame.render_widget(empty_p, inner);
++        return;
++    }
++
++    let card_height = 5;
++    let visible_cards = (inner.height as usize / card_height).max(1);
++    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
++
++    let end_idx = (scroll_offset + visible_cards).min(state.filtered_template_ids.len());
++    let mut card_lines = Vec::new();
++
++    for (i, id) in state.filtered_template_ids[scroll_offset..end_idx]
++        .iter()
++        .enumerate()
++    {
++        let actual_idx = scroll_offset + i;
++        let is_selected = actual_idx == state.selected_index;
++
++        if let Some(tmpl) = store.get_template(id) {
++            let cursor = if is_selected { "▸ " } else { "  " };
++            let title_style = if is_selected {
++                Style::default()
++                    .fg(theme.brand_accent)
++                    .add_modifier(Modifier::BOLD)
++            } else {
++                Style::default().fg(theme.text_primary)
++            };
++
++            // Title line
++            card_lines.push(Line::from(vec![
++                Span::styled(cursor, title_style),
++                Span::styled(&tmpl.name, title_style),
++                Span::styled(
++                    format!(" ({} linked components)", tmpl.component_ids.len()),
++                    Style::default().fg(theme.info),
++                ),
++            ]));
++
++            // Description
++            card_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled(&tmpl.description, Style::default().fg(theme.muted)),
++            ]));
++
++            // Base Layout
++            let layout_preview = tmpl.base_layout.lines().next().unwrap_or("");
++            card_lines.push(Line::from(vec![
++                Span::raw("    "),
++                Span::styled("Layout: ", Style::default().fg(theme.muted)),
++                Span::styled(layout_preview, Style::default().fg(theme.success)),
++            ]));
++
++            // Separator
++            card_lines.push(Line::from(""));
++        }
++    }
++
++    let p = Paragraph::new(card_lines);
++    frame.render_widget(p, inner);
++}
++
++fn render_footer(frame: &mut Frame, area: Rect, state: &BlocksModalState, theme: &Theme) {
++    let mut footer_spans = vec![
++        Span::styled(
++            " [Tab] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Next Tab  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            " [↑/↓] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Select  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            " [PgUp/PgDn] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Scroll  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            " [Enter] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Insert  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            " [c] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Copy  ", Style::default().fg(theme.text_primary)),
++        Span::styled(
++            " [Esc] ",
++            Style::default()
++                .fg(theme.brand_accent)
++                .add_modifier(Modifier::BOLD),
++        ),
++        Span::styled("Close", Style::default().fg(theme.text_primary)),
++    ];
++
++    if let Some(ref msg) = state.status_message {
++        footer_spans.push(Span::raw("   "));
++        footer_spans.push(Span::styled(
++            msg.clone(),
++            Style::default()
++                .fg(theme.success)
++                .add_modifier(Modifier::BOLD),
 +        ));
 +    }
 +
-+    #[tokio::test]
-+    async fn test_goal_commands_end_to_end() {
-+        let dir = tempdir().unwrap();
-+        let config = Config::default();
-+        let mut app = App::new(dir.path(), config);
-+        let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
++    let p = Paragraph::new(Line::from(footer_spans));
++    frame.render_widget(p, area);
++}
 +
-+        // 1. /goal when no ledger exists
-+        let action = app
-+            .handle_command_or_prompt("/goal", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        let last_status = app.timeline.entries.last().unwrap();
-+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-+            assert!(msg.contains("No active goal anchor found"));
-+        } else {
-+            panic!("Expected SystemStatus timeline entry");
++/// Helper that parses a code line into syntax-highlighted Ratatui Spans.
++fn style_code_line<'a>(line: &'a str, theme: &'a Theme) -> Vec<Span<'a>> {
++    let trimmed = line.trim_start();
++    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
++        return vec![Span::styled(line, Style::default().fg(theme.muted))];
++    }
++
++    let mut spans = Vec::new();
++    let indent_len = line.len() - trimmed.len();
++    if indent_len > 0 {
++        spans.push(Span::raw(&line[..indent_len]));
++    }
++
++    let mut remaining = trimmed;
++    while !remaining.is_empty() {
++        if remaining.starts_with("//") {
++            spans.push(Span::styled(remaining, Style::default().fg(theme.muted)));
++            break;
 +        }
 +
-+        // 2. /goal add
-+        let action = app
-+            .handle_command_or_prompt("/goal add First Task", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        let persistence_file = dir.path().join(".minicode/intent_anchor.json");
-+        assert!(persistence_file.exists());
-+
-+        // 3. /intent add
-+        let action = app
-+            .handle_command_or_prompt("/intent add Second Task", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+
-+        // 4. /goal (display active ledger)
-+        let action = app
-+            .handle_command_or_prompt("/goal", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        let last_status = app.timeline.entries.last().unwrap();
-+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-+            assert!(msg.contains("Living Execution Ledger (0/2 completed)"));
-+            assert!(msg.contains("[ ] 1. First Task"));
-+            assert!(msg.contains("[ ] 2. Second Task"));
-+        } else {
-+            panic!("Expected SystemStatus timeline entry");
++        // String literals
++        if remaining.starts_with('"') || remaining.starts_with('\'') || remaining.starts_with('`') {
++            let quote = remaining.chars().next().unwrap_or('"');
++            if let Some(end_idx) = remaining[1..].find(quote) {
++                let str_token = &remaining[..=end_idx + 1];
++                spans.push(Span::styled(str_token, Style::default().fg(theme.success)));
++                remaining = &remaining[end_idx + 2..];
++            } else {
++                spans.push(Span::styled(remaining, Style::default().fg(theme.success)));
++                break;
++            }
++            continue;
 +        }
 +
-+        // 5. /goal done 1
-+        let action = app
-+            .handle_command_or_prompt("/goal done 1", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+
-+        // Verify done in loaded file
-+        let ledger = IntentLedger::load_from_disk(&persistence_file).unwrap();
-+        assert_eq!(ledger.completed_count(), 1);
-+        assert_eq!(ledger.items[0].status, RequirementStatus::Completed);
-+
-+        // 6. /intent done 2
-+        let action = app
-+            .handle_command_or_prompt("/intent done 2", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        let ledger = IntentLedger::load_from_disk(&persistence_file).unwrap();
-+        assert_eq!(ledger.completed_count(), 2);
-+
-+        // 7. /goal done invalid index
-+        let action = app
-+            .handle_command_or_prompt("/goal done 99", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        let last_status = app.timeline.entries.last().unwrap();
-+        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-+            assert!(msg.contains("Invalid requirement index 99"));
-+        } else {
-+            panic!("Expected SystemStatus timeline entry");
++        // HTML/JSX tag delimiters
++        if remaining.starts_with("</")
++            || remaining.starts_with("/>")
++            || remaining.starts_with('<')
++            || remaining.starts_with('>')
++        {
++            let tag_len = if remaining.starts_with("</") || remaining.starts_with("/>") {
++                2
++            } else {
++                1
++            };
++            spans.push(Span::styled(
++                &remaining[..tag_len],
++                Style::default().fg(theme.info),
++            ));
++            remaining = &remaining[tag_len..];
++            continue;
 +        }
 +
-+        // 8. /intent reset
-+        let action = app
-+            .handle_command_or_prompt("/intent reset", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        assert!(!persistence_file.exists());
++        // Identifiers and keywords
++        let word_end = remaining
++            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
++            .unwrap_or(remaining.len());
++        if word_end > 0 {
++            let word = &remaining[..word_end];
++            let is_keyword = matches!(
++                word,
++                "import"
++                    | "export"
++                    | "from"
++                    | "default"
++                    | "function"
++                    | "const"
++                    | "let"
++                    | "var"
++                    | "return"
++                    | "class"
++                    | "interface"
++                    | "type"
++                    | "extends"
++                    | "implements"
++                    | "async"
++                    | "await"
++                    | "if"
++                    | "else"
++                    | "match"
++                    | "switch"
++                    | "case"
++                    | "break"
++                    | "continue"
++                    | "for"
++                    | "while"
++                    | "new"
++                    | "this"
++                    | "true"
++                    | "false"
++                    | "null"
++                    | "undefined"
++                    | "pub"
++                    | "fn"
++                    | "struct"
++                    | "enum"
++                    | "impl"
++                    | "mut"
++                    | "use"
++                    | "mod"
++            );
 +
-+        // 9. /goal run Launch new site
-+        let action = app
-+            .handle_command_or_prompt("/goal run Launch new site", None, &control_tx)
-+            .await
-+            .unwrap();
-+        assert_eq!(action, CommandAction::Continue);
-+        assert!(persistence_file.exists());
-+
-+        let cmd = control_rx.try_recv().unwrap();
-+        if let AgentCommand::Prompt(prompt_text, _) = cmd {
-+            assert!(prompt_text.contains("<!-- GOAL -->"));
-+            assert!(prompt_text.contains("Launch new site"));
++            if is_keyword {
++                spans.push(Span::styled(
++                    word,
++                    Style::default()
++                        .fg(theme.brand_accent)
++                        .add_modifier(Modifier::BOLD),
++                ));
++            } else if word.starts_with(|c: char| c.is_ascii_digit()) {
++                spans.push(Span::styled(word, Style::default().fg(theme.warning)));
++            } else if word == "className"
++                || word == "class"
++                || word == "style"
++                || word == "id"
++                || word == "onClick"
++                || word == "onChange"
++            {
++                spans.push(Span::styled(word, Style::default().fg(theme.highlight)));
++            } else {
++                spans.push(Span::styled(word, Style::default().fg(theme.text_primary)));
++            }
++            remaining = &remaining[word_end..];
 +        } else {
-+            panic!("Expected AgentCommand::Prompt");
++            let char_len = remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
++            spans.push(Span::styled(
++                &remaining[..char_len],
++                Style::default().fg(theme.muted),
++            ));
++            remaining = &remaining[char_len..];
++        }
++    }
++
++    spans
++}
++
++/// Parses a hex color string into a Ratatui RGB Color.
++fn hex_to_rgb(hex: &str) -> Option<Color> {
++    let s = hex.trim().strip_prefix('#')?;
++    if s.len() == 6 {
++        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
++        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
++        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
++        Some(Color::Rgb(r, g, b))
++    } else if s.len() == 3 {
++        let r = u8::from_str_radix(&s[0..1], 16).ok()? * 17;
++        let g = u8::from_str_radix(&s[1..2], 16).ok()? * 17;
++        let b = u8::from_str_radix(&s[2..3], 16).ok()? * 17;
++        Some(Color::Rgb(r, g, b))
++    } else {
++        None
++    }
++}
++
++#[cfg(test)]
++pub mod tests {
++    use super::*;
++    use ratatui::backend::TestBackend;
++    use ratatui::Terminal;
++    use tempfile::tempdir;
++
++    #[test]
++    fn test_blocks_modal_navigation_and_tabs() {
++        let temp = tempdir().unwrap();
++        let mut state = BlocksModalState::new(temp.path());
++
++        // Initial state
++        assert_eq!(state.active_tab, BlocksTab::Components);
++        assert_eq!(state.active_tab.title(), "Components");
++
++        // Tab cycling forwards
++        state.next_tab();
++        assert_eq!(state.active_tab, BlocksTab::Palettes);
++        assert_eq!(state.active_tab.title(), "Palettes");
++
++        state.next_tab();
++        assert_eq!(state.active_tab, BlocksTab::Gradients);
++        assert_eq!(state.active_tab.title(), "Gradients");
++
++        state.next_tab();
++        assert_eq!(state.active_tab, BlocksTab::Templates);
++        assert_eq!(state.active_tab.title(), "Templates");
++
++        state.next_tab();
++        assert_eq!(state.active_tab, BlocksTab::Components);
++
++        // Tab cycling backwards
++        state.prev_tab();
++        assert_eq!(state.active_tab, BlocksTab::Templates);
++
++        state.prev_tab();
++        assert_eq!(state.active_tab, BlocksTab::Gradients);
++
++        state.prev_tab();
++        assert_eq!(state.active_tab, BlocksTab::Palettes);
++
++        state.prev_tab();
++        assert_eq!(state.active_tab, BlocksTab::Components);
++
++        // Boundary clamping on item selection
++        assert_eq!(state.selected_index, 0);
++        state.select_prev();
++        assert_eq!(state.selected_index, 0);
++
++        let count = state.current_tab_len();
++        if count > 1 {
++            state.select_next();
++            assert_eq!(state.selected_index, 1);
++            state.select_prev();
++            assert_eq!(state.selected_index, 0);
++        }
++    }
++
++    #[test]
++    fn test_blocks_modal_filtering() {
++        let temp = tempdir().unwrap();
++        let mut state = BlocksModalState::new(temp.path());
++
++        let initial_comp_count = state.filtered_component_ids.len();
++
++        // Type query 'navbar'
++        for c in "navbar".chars() {
++            state.handle_char(c);
++        }
++        assert_eq!(state.search_query, "navbar");
++        // Filtered count should be non-empty and at most total count
++        assert!(state.filtered_component_ids.len() <= initial_comp_count);
++
++        // Backspace
++        state.handle_backspace();
++        assert_eq!(state.search_query, "navba");
++
++        // Non-existent search query
++        for c in "xyz999nonexistentfilter".chars() {
++            state.handle_char(c);
++        }
++        assert_eq!(state.filtered_component_ids.len(), 0);
++        assert_eq!(state.selected_index, 0);
++    }
++
++    #[test]
++    fn test_blocks_modal_preview_scrolling() {
++        let temp = tempdir().unwrap();
++        let mut state = BlocksModalState::new(temp.path());
++
++        assert_eq!(state.preview_scroll_offset, 0);
++
++        state.scroll_preview_down();
++        assert_eq!(state.preview_scroll_offset, 3);
++
++        state.scroll_preview_down();
++        assert_eq!(state.preview_scroll_offset, 6);
++
++        state.scroll_preview_up();
++        assert_eq!(state.preview_scroll_offset, 3);
++
++        state.scroll_preview_up();
++        assert_eq!(state.preview_scroll_offset, 0);
++
++        // Saturating at 0
++        state.scroll_preview_up();
++        assert_eq!(state.preview_scroll_offset, 0);
++    }
++
++    #[test]
++    fn test_blocks_tab_methods() {
++        let tabs = BlocksTab::all();
++        assert_eq!(tabs.len(), 4);
++        assert_eq!(BlocksTab::Components.next(), BlocksTab::Palettes);
++        assert_eq!(BlocksTab::Palettes.next(), BlocksTab::Gradients);
++        assert_eq!(BlocksTab::Gradients.next(), BlocksTab::Templates);
++        assert_eq!(BlocksTab::Templates.next(), BlocksTab::Components);
++
++        assert_eq!(BlocksTab::Components.prev(), BlocksTab::Templates);
++        assert_eq!(BlocksTab::Palettes.prev(), BlocksTab::Components);
++        assert_eq!(BlocksTab::Gradients.prev(), BlocksTab::Palettes);
++        assert_eq!(BlocksTab::Templates.prev(), BlocksTab::Gradients);
++    }
++
++    #[test]
++    fn test_blocks_modal_render() {
++        let temp = tempdir().unwrap();
++        let state = BlocksModalState::new(temp.path());
++        let theme = Theme::aura_dark();
++
++        let backend = TestBackend::new(120, 40);
++        let mut terminal = Terminal::new(backend).unwrap();
++
++        terminal
++            .draw(|f| {
++                let area = f.area();
++                render_blocks_modal(f, &state, area, &theme);
++            })
++            .unwrap();
++
++        // Also test rendering for the other tabs
++        for tab in [
++            BlocksTab::Palettes,
++            BlocksTab::Gradients,
++            BlocksTab::Templates,
++        ] {
++            let mut tab_state = state.clone();
++            tab_state.active_tab = tab;
++            terminal
++                .draw(|f| {
++                    let area = f.area();
++                    render_blocks_modal(f, &tab_state, area, &theme);
++                })
++                .unwrap();
++        }
++    }
++
++    #[test]
++    fn test_get_selected_code() {
++        let temp = tempdir().unwrap();
++        let mut state = BlocksModalState::new(temp.path());
++
++        // In Components tab
++        let code = state.get_selected_code();
++        if !state.filtered_component_ids.is_empty() {
++            assert!(code.is_some());
++        }
++
++        // In Palettes tab
++        state.next_tab();
++        let pal_code = state.get_selected_code();
++        if !state.filtered_palette_ids.is_empty() {
++            assert!(pal_code.is_some());
++            assert!(pal_code.unwrap().contains(":root"));
++        }
++
++        // In Gradients tab
++        state.next_tab();
++        let grad_code = state.get_selected_code();
++        if !state.filtered_gradient_ids.is_empty() {
++            assert!(grad_code.is_some());
++        }
++
++        // In Templates tab
++        state.next_tab();
++        let tmpl_code = state.get_selected_code();
++        if !state.filtered_template_ids.is_empty() {
++            assert!(tmpl_code.is_some());
 +        }
 +    }
 +}
 diff --git a/src/ui/modals/command_catalog.rs b/src/ui/modals/command_catalog.rs
-index 04c6297..96a53b5 100644
+index 9cabe14..322cde8 100644
 --- a/src/ui/modals/command_catalog.rs
 +++ b/src/ui/modals/command_catalog.rs
-@@ -72,6 +72,20 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
+@@ -60,6 +60,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
          description: "Generate structured implementation plan without modifying files",
          example: "/plan add auth middleware",
      },
 +    CommandCatalogItem {
-+        name: "/goal",
-+        category: "Agent & Automation",
-+        shortcut: "",
-+        description: "Inspect, manage, or execute the active Goal Anchor and Living Execution Ledger",
-+        example: "/goal | /goal add <item> | /goal done <id> | /goal reset | /goal run <prompt>",
-+    },
-+    CommandCatalogItem {
-+        name: "/intent",
-+        category: "Agent & Automation",
-+        shortcut: "",
-+        description: "Inspect, manage, or execute the active Goal Anchor and Living Execution Ledger",
-+        example: "/intent | /intent add <item> | /intent done <id> | /intent reset | /intent run <prompt>",
++        name: "/blocks",
++        category: "Workflows & Scaffolding",
++        shortcut: "F6",
++        description: "Browse, preview, and inject UI components, palettes, gradients & templates",
++        example: "/blocks | /miniblocks",
 +    },
      CommandCatalogItem {
-         name: "/explore",
+         name: "/review",
          category: "Code & Inspection",
 diff --git a/src/ui/modals/help.rs b/src/ui/modals/help.rs
-index c3d0e58..6e127e2 100644
+index 0859ff8..2802569 100644
 --- a/src/ui/modals/help.rs
 +++ b/src/ui/modals/help.rs
-@@ -21,6 +21,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
-                 .add_modifier(Modifier::BOLD),
-         )]),
-         Line::from(""),
+@@ -49,6 +49,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
+                 Style::default().fg(theme.text_primary),
+             ),
+         ]),
 +        Line::from(vec![
-+            Span::styled("  /goal, /intent", Style::default().fg(theme.success)),
++            Span::styled("  /blocks    ", Style::default().fg(theme.success)),
 +            Span::styled(
-+                "Inspect, manage, or execute Goal Anchor and Execution Ledger",
++                "MiniBlocks UI component & design token warehouse (F6)",
 +                Style::default().fg(theme.text_primary),
 +            ),
 +        ]),
          Line::from(vec![
-             Span::styled("  /model     ", Style::default().fg(theme.success)),
+             Span::styled("  /settings  ", Style::default().fg(theme.success)),
              Span::styled(
+@@ -176,6 +183,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
+                 Style::default().fg(theme.text_primary),
+             ),
+         ]),
++        Line::from(vec![
++            Span::styled("  F6         ", Style::default().fg(theme.warning)),
++            Span::styled(
++                "Toggle MiniBlocks design warehouse modal (/blocks)",
++                Style::default().fg(theme.text_primary),
++            ),
++        ]),
+         Line::from(vec![
+             Span::styled("  Esc        ", Style::default().fg(theme.warning)),
+             Span::styled(
+diff --git a/src/ui/modals/mod.rs b/src/ui/modals/mod.rs
+index d4acfe5..1458832 100644
+--- a/src/ui/modals/mod.rs
++++ b/src/ui/modals/mod.rs
+@@ -2,6 +2,7 @@
+ 
+ pub mod api_key;
+ pub mod architecture;
++pub mod blocks;
+ pub mod code_explorer;
+ pub mod command_catalog;
+ pub mod common;
+@@ -146,6 +147,7 @@ pub enum ModalState {
+         selected_index: usize,
+     },
+     MiniPower(minipower::MiniPowerModalState),
++    Blocks(blocks::BlocksModalState),
+ }
+ 
+ impl ModalState {
+@@ -153,6 +155,10 @@ impl ModalState {
+         !matches!(self, ModalState::None)
+     }
+ 
++    pub fn new_blocks(workspace_root: &std::path::Path) -> Self {
++        Self::Blocks(blocks::BlocksModalState::new(workspace_root))
++    }
++
+     pub fn new_minipower(workspace_root: &std::path::Path) -> Self {
+         Self::MiniPower(minipower::MiniPowerModalState::new(workspace_root))
+     }
+@@ -854,6 +860,9 @@ impl ModalState {
+             ModalState::MiniPower(state) => {
+                 minipower::render_minipower(frame, state, area, theme);
+             }
++            ModalState::Blocks(state) => {
++                blocks::render_blocks_modal(frame, state, area, theme);
++            }
+         }
+     }
+ }

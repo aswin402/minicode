@@ -1,127 +1,132 @@
-# Task 4 Execution Report: Interactive In-TUI `/settings` Modal & Permission Confirmation Card
+# Task 4 Execution Report: MiniBlocks Tool Suite Implementation (10 Tools)
 
-## Status: DONE
-
-- **Commit Hash:** `63975302fd48193bb9a50647e05f1ee8bad1512c`
-- **Commit Message:** `feat(ui): implement interactive in-TUI /settings modal and config permission card`
-- **Target Components:**
-  - `src/ui/modals/settings.rs`
-  - `src/ui/modals/mod.rs`
-  - `src/app/commands.rs`
-  - `src/app/modals.rs`
-  - `src/tools/registry/agent_tools/config_tools.rs`
-- **Phase:** Autonomous Configuration & Workspace Memory (Task 4)
-- **Concerns:** None. All targeted tests pass, strict error handling (zero non-test `.unwrap()`/`.expect()`) maintained, clean Ratatui rendering with proper bounds clamping, and clippy passes with zero warnings.
+**Status:** DONE  
+**Commit Hash:** `bc9fc773f53742b378d2ec39e25c09bd268c1267`  
 
 ---
 
-## 1. Summary of Implementation
+## 1. Summary of Deliverables
 
-1. **Interactive Settings Modal (`src/ui/modals/settings.rs`):**
-   - Implemented `SettingsTab` enum with:
-     - `Providers`: Displays supported providers (`SUPPORTED_PROVIDERS`), default models, and `[Active ✔]` indicator.
-     - `Workspace`: Displays workspace root path, assigned provider & model, and scope toggle (`[●] Workspace only (.minicode/config.toml)` vs `[○] Globally (~/.config/minicode/config.toml)`).
-     - `Autonomy`: Configures `auto_approve` toggle, `thinking_budget` cycle (0, 4096, 8192, 16384, 32768), and `approval_policy` cycle.
-     - `Probes`: Provider connection probes displaying connection latency, status (`✔ Connected`, `✗ Disconnected`, `⚠️ Unconfigured`), credential source, and error details.
-   - Implemented `SettingsModalState` struct with:
-     - `active_tab`, `selected_index`, `active_provider`, `active_model`, `workspace_path`, `save_to_workspace`, `auto_approve`, `thinking_budget`, `approval_policy`, `probe_results`, `probing`.
-     - `from_config(config: &Config, workspace_root: &Path) -> Self`.
-     - Tab & item navigation helpers with proper bounds clamping (`next_tab`, `prev_tab`, `next_item`, `prev_item`).
-   - Implemented `render_settings`:
-     - Centered rounded dialog with title `⚙️ minicode settings`.
-     - Pill-styled tab bar at top.
-     - Divider line.
-     - Scrollable content area for providers, workspace details, autonomy settings, and probe cards.
-     - Keyboard shortcut footer: `[Tab] Next Tab  [↑/↓] Navigate  [Enter] Select/Toggle  [Esc] Save & Close`.
-   - Implemented `render_config_approval`:
-     - Clean confirmation card with title `⚙️ Permission Required`.
-     - Structured summary showing proposed changes:
-       ```text
-       ⚙️ minicode requests permission to modify configuration:
-          • Active Provider : ollama → anthropic
-          • Active Model    : qwen2.5-coder → claude-3-7-sonnet-20250219
-          • Scope           : Workspace (.minicode/config.toml)
-       [1] Allow Change   [2] Deny Change
-       ```
+1. **10-Tool MiniBlocks Registry (`src/tools/registry/block_tools.rs`):**
+   - Implemented `get_schemas() -> Vec<ToolSchema>` exposing 10 tools:
+     - `block_search` (ReadOnly): Filter components by keyword query, category, framework (with workspace detection fallback), tags, and limit with relevance scoring.
+     - `block_get` (ReadOnly): Retrieve full component details, dependencies, metadata, and syntax-highlighted source code by UUID or slug/name.
+     - `block_insert` (Mutating): Inject component source code or raw snippet into a workspace target file supporting `append`, `prepend`, `create`, and `replace` modes with automatic parent directory creation.
+     - `block_save` (Mutating): Save new custom UI components to the local warehouse with framework detection fallback and tag indexing.
+     - `block_update` (Mutating): Update component code, description, and tags while incrementing version counter and archiving version history.
+     - `block_delete` (Mutating): Delete components and cleanly purge inverted index entries.
+     - `block_palettes` (ReadOnly): Search 4-hex palettes with [Background, Surface, Accent, Text] tokens, tags, and CSS variable export blocks.
+     - `block_gradients` (ReadOnly): Search modern CSS gradients with CSS rules, hex color stops, and tags.
+     - `block_scaffold` (Mutating): Scaffold layout templates ("landing", "portfolio", "dashboard") with component layout assembly into workspace target directories.
+     - `block_stats` (ReadOnly): Formatted markdown overview of total components, palettes, gradients, templates, category distribution, and framework distribution.
+   - Implemented `dispatch(...) -> Option<Result<String>>` supporting both `block_*` and `miniblock_*` tool call aliases.
 
-2. **Modal Hierarchy Integration (`src/ui/modals/mod.rs`):**
-   - Declared `pub mod settings;`.
-   - Added variants to `ModalState`:
-     - `Settings(settings::SettingsModalState)`
-     - `ConfigApproval { proposal, selected_index }`
-   - Added constructor helper methods:
-     - `ModalState::new_settings(config: &Config, workspace_root: &Path) -> Self`
-     - `ModalState::new_config_approval(proposal: ConfigChangeProposal) -> Self`
-   - Dispatched rendering for `ModalState::Settings` and `ModalState::ConfigApproval`.
+2. **Module Integration (`src/tools/registry/mod.rs` & `src/tools/mod.rs`):**
+   - Declared `pub mod block_tools;` and alias `pub use block_tools as miniblocks_tools;`.
+   - Included `registry::block_tools::get_schemas()` in `ToolRegistry::get_tool_schemas()`.
+   - Dispatched `registry::block_tools::dispatch` in `ToolRegistry::dispatch_tool()`.
+   - Added `pub mod blocks;` to `src/main.rs`.
 
-3. **Key Navigation & Action Dispatch (`src/app/modals.rs`):**
-   - Handled `ModalState::Settings`:
-     - `Tab` / `BackTab`: Cycle through tabs (`Providers` -> `Workspace` -> `Autonomy` -> `Probes`), resetting `selected_index = 0`.
-     - `Up` / `Down` / `k` / `j`: Move selection within active tab.
-     - `Enter` / `Space`:
-       - On `Providers`: Set active provider and update default model.
-       - On `Workspace`: Toggle `save_to_workspace`.
-       - On `Autonomy`: Toggle `auto_approve` or cycle `thinking_budget` (0 -> 4096 -> 8192 -> 16384 -> 32768 -> 0) / `approval_policy`.
-       - On `Probes`: Asynchronously probe all configured providers via `test_all_provider_connections`.
-     - `Esc` / `q`: Apply pending settings modifications to `self.config`, call `self.config.save(...)` (workspace or global), update workspace preference if changed, propagate `AgentCommand::UpdateConfig` to actor, and close modal.
-   - Handled `ModalState::ConfigApproval`:
-     - `Left` / `Right` / `Tab` / `BackTab`: Toggle `selected_index` (0 vs 1).
-     - `1` or `Enter` (when `selected_index == 0`):
-       - Applies proposal using `crate::tools::registry::agent_tools::config_tools::apply_proposal(&proposal, &self.workspace_root)`.
-       - Updates `self.config` and `self.theme` in-memory.
-       - Propagates `AgentCommand::UpdateConfig` to agent actor.
-       - Adds success status to `self.timeline` and closes modal.
-     - `2` or `Esc` or `Enter` (when `selected_index == 1`):
-       - Declines proposal.
-       - Logs `"Config change proposal declined."` to `self.timeline` and closes modal.
+3. **Tool Category Routing (`src/tools/category.rs`):**
+   - Added `ToolCategory::Blocks` (with alias `miniblocks`) to `ToolCategory::ALL` (length expanded from 10 to 11).
+   - Added `name()` (`"blocks"`), `description()`, and schema routing (`registry::block_tools::get_schemas()`).
+   - Extended `FromStr` parsing for `"blocks"`, `"block"`, `"miniblocks"`, `"component"`, `"components"`, `"palette"`, `"palettes"`.
+   - Added `"blocks"` and `"miniblocks"` to `activate_tools` dynamic schema enums.
 
-4. **Interactive & Parametric Slash Commands (`src/app/commands.rs`):**
-   - Added command handling for `/settings`, `/config`, and `/preferences`:
-     - `/settings model <provider> <model>`: Inserts into `self.config.provider.default_models`, saves config, and adds confirmation to timeline.
-     - `/settings auto_approve <on|off|true|false>`: Updates `self.config.agent.auto_approve`, saves config, and adds confirmation to timeline.
-     - `/settings thinking <tokens>`: Parses tokens (supporting `off`, `none`, `4k`, `8k`, `16k`, `32k`, or numeric token count), updates `self.config.provider.thinking_budget`, saves config, and adds confirmation to timeline.
-     - Plain `/settings`, `/config`, `/preferences`: Opens `ModalState::new_settings(&self.config, &self.workspace_root)`.
+4. **Concurrency Safety Classification (`src/tools/concurrency.rs`):**
+   - Classified `block_search`, `block_get`, `block_palettes`, `block_gradients`, `block_stats` (and `miniblock_*` aliases) as `ToolSafetyLevel::ReadOnly`.
+   - Classified `block_insert`, `block_save`, `block_update`, `block_delete`, `block_scaffold` (and `miniblock_*` aliases) as `ToolSafetyLevel::Mutating`.
 
-5. **Tool & Probe Exporters (`src/tools/registry/agent_tools/config_tools.rs`):**
-   - Added `pub type ConnectionTestResult = ProviderConnectionReport;` alias.
-   - Exported `pub async fn test_single_provider`, `pub async fn test_provider_connection`, and `pub async fn test_all_provider_connections`.
+5. **Dynamic Intent Classifier (`src/context/search/intent_filter.rs`):**
+   - Updated `IntentClassifier::detect` to trigger `ToolCategory::Blocks` for prompts containing keywords: `"block"`, `"miniblock"`, `"miniblocks"`, `"component"`, `"components"`, `"palette"`, `"palettes"`, `"gradient"`, `"gradients"`, `"navbar"`, `"hero"`, `"ui design"`, `"design token"`.
+
+6. **Tool Count Invariant (`src/constants.rs`):**
+   - Incremented `TOTAL_TOOL_COUNT` from 156 to 166.
+   - Verified that `TOTAL_TOOL_COUNT == ToolRegistry::get_tool_schemas().len()`.
+
+7. **Error Handling & Code Quality:**
+   - Exactly zero `.unwrap()` or `.expect()` calls in non-test code.
+   - Passed `cargo fmt --check` with 100% compliance.
+   - Passed `cargo clippy -j 1 --bin minicode -- -D warnings` with zero warnings.
 
 ---
 
-## 2. Test Verification Output
+## 2. Targeted Test Output
 
-### Targeted Test 1: `cargo test -j 1 --lib ui::modals::settings::tests`
-```text
-running 5 tests
-test ui::modals::settings::tests::test_settings_modal_state_initialization_and_tab_switching ... ok
-test ui::modals::settings::tests::test_settings_modal_navigation_bounds ... ok
-test ui::modals::settings::tests::test_render_settings_probes_with_results ... ok
-test ui::modals::settings::tests::test_render_config_approval_dialog ... ok
-test ui::modals::settings::tests::test_render_settings_all_tabs ... ok
+```
+$ cargo test -j 1 --lib tools::registry::block_tools::tests
+   Compiling minicode v0.3.39 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.06s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 544 filtered out; finished in 0.02s
+running 8 tests
+test tools::registry::block_tools::tests::test_concurrency_classification ... ok
+test tools::registry::block_tools::tests::test_block_schemas_count ... ok
+test tools::registry::block_tools::tests::test_block_insert_modes ... ok
+test tools::registry::block_tools::tests::test_block_scaffold ... ok
+test tools::registry::block_tools::tests::test_block_stats_dispatch ... ok
+test tools::registry::block_tools::tests::test_block_palettes_and_gradients ... ok
+test tools::registry::block_tools::tests::test_block_search_and_get ... ok
+test tools::registry::block_tools::tests::test_block_save_update_delete_lifecycle ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 620 filtered out; finished in 0.65s
 ```
 
-### Targeted Test 2: `cargo test -j 1 --lib ui::modals::tests`
-```text
-running 12 tests
-test ui::modals::tests::test_new_workspace_analysis_unindexed ... ok
-test ui::modals::tests::test_provider_select_render ... ok
-test ui::modals::tests::test_workspace_analysis_render_without_panic ... ok
-test ui::modals::tests::test_session_browser_render ... ok
-test ui::modals::tests::test_model_select_render ... ok
-test ui::modals::tests::test_provider_setup_required_initial_state_and_render ... ok
-test ui::modals::tests::test_workspace_drift_initial_state_and_render ... ok
-test ui::modals::tests::test_new_config_approval_initial_state_and_render ... ok
-test ui::modals::tests::test_new_settings_initial_state_and_render ... ok
-test ui::modals::tests::test_exit_confirm_initial_state_and_render ... ok
-test ui::modals::tests::test_architecture_audit_render ... ok
-test ui::modals::tests::test_streaming_select_render ... ok
+```
+$ cargo test -j 1 --lib tools::tests::test_total_tool_count
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 537 filtered out; finished in 0.02s
+running 1 test
+test tools::tests::test_total_tool_count ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 627 filtered out; finished in 0.00s
 ```
 
-### Quality & Linter Checks:
-- `cargo fmt --check`: Clean (0 differences).
-- `cargo clippy -j 1 --bin minicode -- -D warnings`: Clean (0 warnings, 0 errors).
-- Non-test unwrap count: 0 (verified with `git diff`).
+```
+$ cargo test -j 1 --lib constants::tool_count_validation::total_tool_count_matches_registry
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src/lib.rs (target/debug/deps/minicode-6dd6f5498a07367b)
+
+running 1 test
+test constants::tool_count_validation::total_tool_count_matches_registry ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 627 filtered out; finished in 0.00s
+```
+
+Additional subsystem tests verified:
+```
+$ cargo test -j 1 --lib tools::category::tests
+running 2 tests
+test tools::category::tests::test_category_parsing ... ok
+test tools::category::tests::test_core_schemas_count ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 626 filtered out; finished in 0.00s
+
+$ cargo test -j 1 --lib context::search::intent_filter::tests
+running 9 tests
+test context::search::intent_filter::tests::test_intent_detection_blocks ... ok
+...
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 619 filtered out; finished in 0.00s
+
+$ cargo test -j 1 --lib tools::concurrency::tests
+running 6 tests
+test tools::concurrency::tests::test_all_registered_schemas_have_classification ... ok
+...
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 622 filtered out; finished in 0.00s
+```
+
+---
+
+## 3. Clippy Verification Output
+
+```
+$ cargo clippy -j 1 --bin minicode -- -D warnings
+    Checking minicode v0.3.39 (/home/aswin/programming/vscode/myProjects/ai_agent_tools/minicode)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 46.51s
+```
+
+---
+
+## 4. Concerns & Notes
+
+- **Concerns:** None. All 10 tools, schema registrations, concurrency classifications, category routing, intent filtering, and tool count validation invariants pass cleanly with zero warnings and zero unwraps in non-test code.

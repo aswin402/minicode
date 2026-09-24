@@ -1,100 +1,62 @@
-# Task 3 Brief: Dedicated `agent_config` Tool Category (Tools 136 – 139)
+# Task 3 Brief: Seed Catalog Ingestion & CodeGraph Stack Detection
 
-## Requirements
-1. In `src/constants.rs`:
-   - Update `TOTAL_TOOL_COUNT` from 135 to 139:
-     ```rust
-     pub const TOTAL_TOOL_COUNT: usize = 139;
-     ```
+## Goal
+Implement offline embedded starter catalog ingestion and automated project stack/framework detection in `src/blocks/seed.rs`. This provides minicode with 1,082 components, 105 palettes, 212 gradients, and 3 starter templates embedded directly into the binary with zero network dependency, and stack detection prioritizing components matching the active workspace (React, Tailwind, Svelte, Shadcn, etc.).
 
-2. Create `src/tools/registry/agent_tools/config_tools.rs`:
-   Implement the 4 tools with ToolSchema, parameter parsing, execution, and zero plaintext credential leakage:
+## Target Files
+- Create: `src/blocks/seed.rs`
+- Modify: `src/blocks/mod.rs` (expose `pub mod seed;`, re-export `seed_default_blocks`, `detect_project_framework`)
+- Modify: `src/blocks/store.rs` (call `seed_default_blocks` during `get_global_block_store()` when store has 0 components)
+- Tests: Inline in `src/blocks/seed.rs`
 
-   - **Tool 136: `get_agent_config`**
-     - Description: "Inspect current agent configuration, active provider/model, workspace scope, execution preferences, and masked provider API keys."
-     - Parameters: empty object.
-     - Execution: Loads `Config::load(Some(workspace_root))` (or fallback to `Config::default()`).
-     - Returns JSON with:
-       - `active_provider`: `config.provider.default`
-       - `active_model`: `config.provider.model`
-       - `workspace_scope`: `workspace_root.display().to_string()`
-       - `auto_approve`: `config.agent.auto_approve`
-       - `approval_policy`: `config.agent.approval_policy`
-       - `thinking_budget`: `config.agent.thinking_budget`
-       - `theme`: `config.theme`
-       - `configured_providers`: list of configured cloud and local providers
-       - `masked_keys`: map of `{ provider: crate::config::mask_api_key(&key) }` across env vars and `config.provider.api_keys`. NEVER expose raw keys!
+## Global Constraints
+1. **Targeted Tests ONLY:** Run ONLY `cargo test -j 1 --lib blocks::seed::tests`. Never run the full test suite.
+2. **Error Handling:** Zero `.unwrap()` or `.expect()` in non-test code. Return `Result<T, BlockError>`.
+3. **Concurrency:** Always use `-j 1` for `cargo check` and `cargo test`.
+4. **Pure Rust:** No external C libraries or Python scripts.
+5. **No `cd` commands.**
 
-   - **Tool 137: `update_agent_config`**
-     - Description: "Request an update to the agent configuration (active provider, model, auto_approve, thinking budget, theme). Proposes structured modifications requiring explicit user approval."
-     - Parameters:
-       - `provider`: optional string
-       - `model`: optional string
-       - `auto_approve`: optional boolean
-       - `thinking_budget`: optional integer
-       - `theme`: optional string
-       - `scope`: optional string enum `["workspace", "global"]`, defaults to `"workspace"`
-     - Execution:
-       - Validates that at least one field to change is provided.
-       - Constructs `ConfigChangeProposal`.
-       - Provides helper `apply_proposal(proposal: &ConfigChangeProposal, workspace_root: &Path) -> Result<()>` that can persist to workspace `.minicode/config.toml` (and `workspaces.toml`) or global config.
-       - Returns structured proposal JSON with status `proposal_generated`, `requires_confirmation: true`.
+## Interfaces & Functions to Produce
 
-   - **Tool 138: `test_provider_connection`**
-     - Description: "Test connectivity, latency, and credential validity for an AI model provider endpoint without exposing raw API keys."
-     - Parameters:
-       - `provider`: required string (e.g. `"anthropic"`, `"openai"`, `"gemini"`, `"openrouter"`, `"deepseek"`, `"groq"`, `"mistral"`, `"ollama"`, `"lmstudio"`, or `"all"`)
-     - Execution:
-       - For specified provider (or each provider if `"all"`):
-         - Resolves API key via `config.get_api_key(p)` and custom base URL if any.
-         - Measures elapsed latency in milliseconds.
-         - Pings endpoint via `ModelFetcher::new().fetch_models(p, &key, custom_url).await`.
-         - Determines key source: `"environment (<VAR_NAME>)"` or `"config.toml ([provider.api_keys])"` or `"none (local endpoint)"`.
-         - Returns:
-           ```json
-           {
-             "provider": "...",
-             "status": "connected" / "disconnected" / "unconfigured",
-             "latency_ms": 123,
-             "http_status": 200,
-             "key_source": "...",
-             "key_masked": "sk-a...3456",
-             "model_count": 8,
-             "error": null
-           }
-           ```
-         - Zero plaintext credential leakage!
+### 1. `seed_default_blocks` (`src/blocks/seed.rs`)
+```rust
+pub fn seed_default_blocks(store: &mut BlockStore) -> Result<usize, BlockError>
+```
+- Ingests embedded catalog (`include_str!("seed_catalog.json")`).
+- Safely populates components, palettes, gradients, and templates into `store`.
+- If a component/palette/gradient/template already exists by ID, it skips it to protect user modifications.
+- Returns the number of new components seeded (usize).
 
-   - **Tool 139: `list_available_models`**
-     - Description: "List available AI models from a provider with context window lengths and capabilities."
-     - Parameters:
-       - `provider`: required string
-     - Execution:
-       - Resolves API key and custom base URL.
-       - Fetches live models using `ModelFetcher::new().fetch_models(&provider, &key, custom_url).await`.
-       - If live fetch fails or empty, falls back gracefully to known model catalog defaults for that provider.
-       - Returns JSON array of models with `id`, `name`, `context_length`, `supports_reasoning`.
+### 2. `detect_project_framework` (`src/blocks/seed.rs`)
+```rust
+pub fn detect_project_framework(project_root: &Path) -> Option<BlockFramework>
+```
+- Inspects `project_root`:
+  1. `package.json`:
+     - Checks `dependencies` and `devDependencies` for keys:
+       - `"shadcn"` or `"@shadcn/"` or `"@radix-ui/"` or root `components.json` exists -> `Some(BlockFramework::Shadcn)`
+       - `"react"` or `"next"` -> `Some(BlockFramework::React)`
+       - `"svelte"` or `"@sveltejs/"` or root `svelte.config.js` exists -> `Some(BlockFramework::Svelte)`
+       - `"tailwindcss"` or root `tailwind.config.*` exists -> `Some(BlockFramework::Tailwind)`
+       - `"sass"` or `"scss"` -> `Some(BlockFramework::Scss)`
+  2. Root config files:
+     - `components.json` -> `Some(BlockFramework::Shadcn)`
+     - `svelte.config.js` / `svelte.config.ts` -> `Some(BlockFramework::Svelte)`
+     - `tailwind.config.js` / `tailwind.config.ts` / `tailwind.config.cjs` / `tailwind.config.mjs` -> `Some(BlockFramework::Tailwind)`
+  3. Returns `None` if no frontend framework is detected.
 
-3. Register Tools:
-   - In `src/tools/registry/agent_tools/mod.rs`:
-     - Add `pub mod config_tools;`
-     - Include `config_tools::get_schemas()` in `get_schemas()` (increase capacity to 38)
-     - Include `config_tools::dispatch` in `dispatch()`
-   - Note: Category is automatically `ToolCategory::Agent`.
+### 3. Automatic Seeding in `get_global_block_store()` (`src/blocks/store.rs`)
+When `get_global_block_store()` initializes the global store, if `store.stats().total_components == 0`, call:
+```rust
+if let Err(e) = crate::blocks::seed::seed_default_blocks(&mut store) {
+    tracing::warn!("Failed to seed default blocks into global store: {}", e);
+}
+```
 
-4. Follow TDD:
-   - Add unit tests in `src/tools/registry/agent_tools/config_tools.rs`:
-     - `test_config_tools_schemas` (verifies 4 schemas present with required fields)
-     - `test_get_agent_config_masked_keys` (verifies raw keys are NEVER present, only masked)
-     - `test_update_agent_config_proposal` (verifies proposal structure and validation)
-     - `test_test_provider_connection_zero_leak` (verifies test connection output schema and masking)
-   - Targeted test runs:
-     `cargo test -j 1 --lib tools::tests::test_total_tool_count`
-     `cargo test -j 1 --lib tools::registry::agent_tools::config_tools::tests`
-     `cargo test -j 1 --lib constants::tests::test_total_tool_count`
-   - Quality checks:
-     `cargo fmt --check`
-     `cargo clippy -j 1 --bin minicode -- -D warnings`
-
-5. Commit message:
-   `feat(tools): implement agent_config tool suite (Tools 136-139)`
+### 4. Tests to Implement (`src/blocks/seed.rs`)
+- `test_seed_catalog_population`: ensures `seed_default_blocks` populates >1000 components, >=100 palettes, >=200 gradients, and >=3 templates.
+- `test_detect_project_framework_react`: asserts `detect_project_framework` returns `Some(BlockFramework::React)`.
+- `test_detect_project_framework_tailwind`: asserts `Some(BlockFramework::Tailwind)`.
+- `test_detect_project_framework_svelte`: asserts `Some(BlockFramework::Svelte)`.
+- `test_detect_project_framework_shadcn`: asserts `Some(BlockFramework::Shadcn)`.
+- `test_detect_project_framework_none`: asserts `None` on empty directory.
