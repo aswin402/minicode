@@ -51,15 +51,97 @@ pub fn resolve_context_window(workspace_root: &Path) -> usize {
     0
 }
 
-/// Determines the optimal execution timeout based on command characteristics.
-/// Extends default timeout to 120s for package managers, heavy builds, and test suites.
+/// Determines the optimal execution timeout dynamically based on command characteristics,
+/// environment configurations, and command workload intensity.
+///
+/// Prevents premature timeout when an LLM echoes schema defaults (e.g. 30s) on heavy build or install tasks,
+/// while dynamically scaling time based on environment settings and hardware concurrency.
 pub fn resolve_smart_exec_timeout(command_str: &str, explicit_timeout: Option<u64>) -> Duration {
-    if let Some(s) = explicit_timeout {
-        return Duration::from_secs(s);
+    // 1. Dynamic base timeout from environment or default
+    let env_timeout = std::env::var("MINICODE_CMD_TIMEOUT")
+        .or_else(|_| std::env::var("MINICODE_TIMEOUT"))
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok());
+
+    let base_timeout_secs = env_timeout.unwrap_or(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS);
+
+    // 2. Classify command intensity and compute dynamic duration
+    let cmd = command_str.trim().to_lowercase();
+    let (dynamic_floor_secs, is_heavy) = compute_dynamic_command_floor(&cmd, base_timeout_secs);
+
+    // 3. Resolve with explicit timeout (if provided by LLM or caller)
+    if let Some(explicit) = explicit_timeout {
+        if is_heavy {
+            // If heavy task and caller passed a low explicit timeout (e.g. schema default 30s or lower),
+            // dynamically elevate to dynamic_floor_secs.
+            // If caller explicitly asked for more time (e.g. 300s), respect their choice.
+            Duration::from_secs(std::cmp::max(explicit, dynamic_floor_secs))
+        } else {
+            // For standard lightweight commands, respect whatever explicit timeout the caller requested
+            Duration::from_secs(explicit)
+        }
+    } else {
+        Duration::from_secs(dynamic_floor_secs)
+    }
+}
+
+/// Dynamically calculates the minimum execution timeout based on command semantics,
+/// package manager flags, and environment hardware concurrency.
+/// Returns (computed_timeout_seconds, is_heavy_operation).
+fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
+    // Check for build-specific environment overrides
+    if let Ok(val) = std::env::var("MINICODE_BUILD_TIMEOUT_SECS") {
+        if let Ok(custom) = val.parse::<u64>() {
+            return (custom, true);
+        }
     }
 
-    let cmd = command_str.trim().to_lowercase();
-    let is_package_mgr_or_build = cmd.starts_with("npm ")
+    // Detect system concurrency (low core counts need more time for compilation & extraction)
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let concurrency_multiplier = if cores <= 2 { 1.5 } else { 1.0 };
+
+    // Heavy initial downloads & package resolution
+    let is_heavy_install = cmd.contains("npm install")
+        || cmd.contains("npm i ")
+        || cmd == "npm i"
+        || cmd.contains("npm ci")
+        || cmd.contains("pnpm install")
+        || cmd.contains("pnpm i ")
+        || cmd == "pnpm i"
+        || cmd.contains("yarn install")
+        || cmd.contains("bun install")
+        || cmd.contains("cargo fetch")
+        || cmd.contains("pip install")
+        || cmd.contains("uv sync")
+        || cmd.contains("poetry install");
+
+    // Compilation & multi-step builds
+    let is_heavy_build = cmd.contains("cargo build")
+        || cmd.contains("cargo test")
+        || cmd.contains("cargo check")
+        || cmd.contains("go build")
+        || cmd.contains("go test")
+        || cmd.contains("mvn ")
+        || cmd.contains("gradle ")
+        || cmd.contains("vite build")
+        || cmd.contains("next build")
+        || cmd.contains("tsc ");
+
+    if is_heavy_install {
+        // Fresh installs: 4x base scaled by hardware concurrency (e.g. 30s * 4 * 1.0 = 120s, or 180s on low-core machines)
+        (
+            ((base_secs as f64 * 4.0 * concurrency_multiplier) as u64).max(120),
+            true,
+        )
+    } else if is_heavy_build {
+        // Builds & tests: 3x base scaled by hardware concurrency (e.g. 30s * 3 = 90s)
+        (
+            ((base_secs as f64 * 3.0 * concurrency_multiplier) as u64).max(90),
+            true,
+        )
+    } else if cmd.starts_with("npm ")
         || cmd.starts_with("pnpm ")
         || cmd.starts_with("yarn ")
         || cmd.starts_with("bun ")
@@ -67,23 +149,14 @@ pub fn resolve_smart_exec_timeout(command_str: &str, explicit_timeout: Option<u6
         || cmd.starts_with("uv ")
         || cmd.starts_with("pip ")
         || cmd.starts_with("pip3 ")
-        || cmd.starts_with("poetry ")
-        || cmd.starts_with("go build")
-        || cmd.starts_with("go test")
-        || cmd.starts_with("mvn ")
-        || cmd.starts_with("gradle ")
-        || cmd.contains("npm install")
-        || cmd.contains("npm i")
-        || cmd.contains("pnpm install")
-        || cmd.contains("pnpm i")
-        || cmd.contains("cargo build")
-        || cmd.contains("cargo test")
-        || cmd.contains("cargo check");
-
-    if is_package_mgr_or_build {
-        Duration::from_secs(crate::constants::EXEC_PACKAGE_MANAGER_TIMEOUT_SECS)
+    {
+        // General package manager commands
+        (
+            ((base_secs as f64 * 2.0 * concurrency_multiplier) as u64).max(60),
+            true,
+        )
     } else {
-        Duration::from_secs(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS)
+        (base_secs, false)
     }
 }
 
@@ -352,31 +425,28 @@ mod tests {
 
     #[test]
     fn test_resolve_smart_exec_timeout() {
-        // Explicit timeout overrides everything
+        // Explicit timeout for lightweight commands is honored
         assert_eq!(
-            resolve_smart_exec_timeout("npm install", Some(10)),
+            resolve_smart_exec_timeout("ls -la", Some(10)),
             Duration::from_secs(10)
         );
 
-        // Package managers scale to 120s
+        // Package managers dynamically scale up even if caller passed schema default 30s
+        assert!(resolve_smart_exec_timeout("npm install lucide-react", Some(30)).as_secs() >= 120);
+
+        // Heavy install operations dynamically scale to at least 120s
+        assert!(resolve_smart_exec_timeout("npm install lucide-react", None).as_secs() >= 120);
+        assert!(resolve_smart_exec_timeout("pnpm add react", None).as_secs() >= 60);
+        assert!(resolve_smart_exec_timeout("cargo test -j 1", None).as_secs() >= 90);
+        assert!(resolve_smart_exec_timeout("uv sync", None).as_secs() >= 120);
+
+        // Explicit large timeout is honored
         assert_eq!(
-            resolve_smart_exec_timeout("npm install lucide-react", None),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            resolve_smart_exec_timeout("pnpm add react", None),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            resolve_smart_exec_timeout("cargo test -j 1", None),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            resolve_smart_exec_timeout("uv sync", None),
-            Duration::from_secs(120)
+            resolve_smart_exec_timeout("npm install lucide-react", Some(300)),
+            Duration::from_secs(300)
         );
 
-        // Regular commands stay at default 30s
+        // Regular commands stay at default 30s (or dynamic base)
         assert_eq!(
             resolve_smart_exec_timeout("ls -la", None),
             Duration::from_secs(30)

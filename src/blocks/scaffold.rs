@@ -82,6 +82,27 @@ impl ProjectConventions {
             }
         }
 
+        // Read package.json dependencies to detect TypeScript and icon libraries
+        let pkg_path = workspace_root.join("package.json");
+        let mut pkg_dep_keys = Vec::new();
+        if pkg_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&pkg_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
+                        pkg_dep_keys.extend(deps.keys().map(|k| k.to_lowercase()));
+                    }
+                    if let Some(dev_deps) = json.get("devDependencies").and_then(|d| d.as_object())
+                    {
+                        pkg_dep_keys.extend(dev_deps.keys().map(|k| k.to_lowercase()));
+                    }
+                }
+            }
+        }
+
+        if !is_typescript && pkg_dep_keys.iter().any(|k| k == "typescript") {
+            is_typescript = true;
+        }
+
         // Determine file extension
         let file_extension = match framework {
             BlockFramework::Svelte => "svelte".to_string(),
@@ -94,30 +115,14 @@ impl ProjectConventions {
             }
         };
 
-        // 2. Detect icon library & dependencies from package.json
+        // 2. Detect icon library from package.json
         let mut icon_library = None;
-        let pkg_path = workspace_root.join("package.json");
-        if pkg_path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&pkg_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let mut dep_keys = Vec::new();
-                    if let Some(deps) = json.get("dependencies").and_then(|d| d.as_object()) {
-                        dep_keys.extend(deps.keys().map(|k| k.to_lowercase()));
-                    }
-                    if let Some(dev_deps) = json.get("devDependencies").and_then(|d| d.as_object())
-                    {
-                        dep_keys.extend(dev_deps.keys().map(|k| k.to_lowercase()));
-                    }
-
-                    if dep_keys.iter().any(|k| k == "lucide-react") {
-                        icon_library = Some("lucide-react".to_string());
-                    } else if dep_keys.iter().any(|k| k == "react-icons") {
-                        icon_library = Some("react-icons/lu".to_string());
-                    } else if dep_keys.iter().any(|k| k.contains("heroicons")) {
-                        icon_library = Some("@heroicons/react/24/outline".to_string());
-                    }
-                }
-            }
+        if pkg_dep_keys.iter().any(|k| k == "lucide-react") {
+            icon_library = Some("lucide-react".to_string());
+        } else if pkg_dep_keys.iter().any(|k| k == "react-icons") {
+            icon_library = Some("react-icons/lu".to_string());
+        } else if pkg_dep_keys.iter().any(|k| k.contains("heroicons")) {
+            icon_library = Some("@heroicons/react/24/outline".to_string());
         }
 
         // 3. Resolve preferred component directory
@@ -814,6 +819,23 @@ mod tests {
         assert!(code.contains("border-[#FF007F]/30"));
         assert!(code.contains("text-[#00F0FF]"));
         assert!(code.contains("bg-[#FF007F] text-white"));
+    }
+
+    #[test]
+    fn test_detect_typescript_from_package_json() {
+        let temp = tempfile::tempdir().unwrap();
+        // Create a package.json with typescript in devDependencies without any tsconfig
+        let pkg = r#"{
+            "name": "fresh-project",
+            "devDependencies": {
+                "typescript": "^5.3.3"
+            }
+        }"#;
+        std::fs::write(temp.path().join("package.json"), pkg).unwrap();
+
+        let conventions = ProjectConventions::detect(temp.path());
+        assert!(conventions.is_typescript);
+        assert_eq!(conventions.file_extension, "tsx");
     }
 
     #[test]

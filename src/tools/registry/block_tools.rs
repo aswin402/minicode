@@ -1109,27 +1109,36 @@ pub async fn dispatch(
                 let comp_path = if let Some(p) = explicit_path {
                     crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(p))?
                 } else {
-                    let candidate1 = workspace_root
-                        .join(&conventions.component_dir)
-                        .join(format!("{}.{}", comp_name, conventions.file_extension));
-                    let candidate2 = workspace_root
-                        .join(&conventions.component_dir)
-                        .join(format!("{}.tsx", comp_name));
-                    let candidate3 = workspace_root
-                        .join(&conventions.component_dir)
-                        .join(format!("{}.jsx", comp_name));
+                    let search_dirs = [
+                        conventions.component_dir.clone(),
+                        std::path::PathBuf::from("src/components"),
+                        std::path::PathBuf::from("src"),
+                        std::path::PathBuf::from("components"),
+                        std::path::PathBuf::from("app/components"),
+                    ];
+                    let extensions = [conventions.file_extension.as_str(), "tsx", "jsx", "svelte", "vue"];
 
-                    if candidate1.is_file() {
-                        candidate1
-                    } else if candidate2.is_file() {
-                        candidate2
-                    } else if candidate3.is_file() {
-                        candidate3
-                    } else {
+                    let mut found = None;
+                    'search_loop: for dir in &search_dirs {
+                        for ext in &extensions {
+                            let candidate = workspace_root.join(dir).join(format!("{}.{}", comp_name, ext));
+                            if candidate.is_file() {
+                                found = Some(candidate);
+                                break 'search_loop;
+                            }
+                            let index_candidate = workspace_root.join(dir).join(comp_name).join(format!("index.{}", ext));
+                            if index_candidate.is_file() {
+                                found = Some(index_candidate);
+                                break 'search_loop;
+                            }
+                        }
+                    }
+
+                    found.unwrap_or_else(|| {
                         workspace_root
                             .join(&conventions.component_dir)
                             .join(format!("{}.{}", comp_name, conventions.file_extension))
-                    }
+                    })
                 };
 
                 let is_default = match export_style_arg.to_lowercase().as_str() {

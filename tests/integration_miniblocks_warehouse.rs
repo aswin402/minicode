@@ -612,4 +612,43 @@ async fn test_e2e_miniblocks_custom_scaffold_and_auto_import() {
     assert!(import_res
         .output
         .contains("Already present in `src/App.tsx`"));
+
+    // 3. Test block_import fallback directory resolution (component directly in src/ instead of src/components/)
+    let hero_file = workspace.join("src/Hero.tsx");
+    fs::write(
+        &hero_file,
+        "export function Hero() {\n  return <header>Hero Section</header>;\n}\n",
+    )
+    .unwrap();
+
+    let hero_import_res = ToolRegistry::dispatch(
+        workspace,
+        "call_import_fallback",
+        "block_import",
+        &json!({
+            "component_name": "Hero",
+            "consumer_file": "src/App.tsx",
+            "wire": true
+        }),
+        None,
+        1,
+    )
+    .await;
+
+    assert!(
+        hero_import_res.success,
+        "block_import fallback failed: {}",
+        hero_import_res.output
+    );
+    assert!(hero_import_res
+        .output
+        .contains("Component Auto-Import for `Hero`"));
+    assert!(hero_import_res
+        .output
+        .contains("Injected into `src/App.tsx`"));
+    let app_updated = fs::read_to_string(&app_file).unwrap();
+    assert!(
+        app_updated.contains("import { Hero } from \"@/Hero\";")
+            || app_updated.contains("import { Hero } from \"./Hero\";")
+    );
 }

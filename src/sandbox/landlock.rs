@@ -149,12 +149,18 @@ pub fn apply_landlock_sandbox_with_opts(
 
     let home_dir = std::env::var("HOME").ok();
 
-    // Allow read/write access to package manager caches (~/.npm, ~/.cache) for builds, dependency downloads, and locks
+    // Allow read/write access to package manager caches (~/.npm, ~/.cache, ~/.cargo, ~/.pnpm-store, ~/.bun) for builds, dependency downloads, and locks
     if let Some(ref h) = home_dir {
         let npm_home = format!("{}/.npm", h);
         let user_cache = format!("{}/.cache", h);
+        let cargo_home = format!("{}/.cargo", h);
+        let pnpm_store = format!("{}/.pnpm-store", h);
+        let bun_home = format!("{}/.bun", h);
+        let pnpm_local = format!("{}/.local/share/pnpm", h);
 
-        for rw_home_str in [npm_home, user_cache] {
+        for rw_home_str in [
+            npm_home, user_cache, cargo_home, pnpm_store, bun_home, pnpm_local,
+        ] {
             let p = Path::new(&rw_home_str);
             if !p.exists() {
                 let _ = std::fs::create_dir_all(p);
@@ -179,23 +185,15 @@ pub fn apply_landlock_sandbox_with_opts(
         }
     }
 
-    let cargo_home = home_dir.as_ref().map(|h| format!("{}/.cargo", h));
     let rustup_home = home_dir.as_ref().map(|h| format!("{}/.rustup", h));
     let nvm_home = home_dir.as_ref().map(|h| format!("{}/.nvm", h));
     let local_home = home_dir.as_ref().map(|h| format!("{}/.local", h));
     let config_home = home_dir.as_ref().map(|h| format!("{}/.config", h));
     let gitconfig = home_dir.as_ref().map(|h| format!("{}/.gitconfig", h));
 
-    for p_str in [
-        cargo_home,
-        rustup_home,
-        nvm_home,
-        local_home,
-        config_home,
-        gitconfig,
-    ]
-    .into_iter()
-    .flatten()
+    for p_str in [rustup_home, nvm_home, local_home, config_home, gitconfig]
+        .into_iter()
+        .flatten()
     {
         let p = Path::new(&p_str);
         if p.exists() {
