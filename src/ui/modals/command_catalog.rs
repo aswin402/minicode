@@ -68,6 +68,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/blocks | /miniblocks",
     },
     CommandCatalogItem {
+        name: "/processes",
+        category: "Agent & Automation",
+        shortcut: "F7",
+        description: "Inspect, manage, and supervise running dev servers, workers, ports & live logs",
+        example: "/processes | /dev | /dev ps | /dev stop <id>",
+    },
+    CommandCatalogItem {
         name: "/review",
         category: "Code & Inspection",
         shortcut: "Ctrl+R",

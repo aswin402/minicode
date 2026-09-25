@@ -875,6 +875,31 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
+                                // F7 toggles interactive MiniDev Process Monitor modal
+                                if key_event.code == KeyCode::F(7) {
+                                    if matches!(self.modal, ModalState::Processes(_)) {
+                                        self.modal = ModalState::None;
+                                    } else {
+                                        let registry = crate::dev::registry::get_global_dev_registry();
+                                        let list = registry.list().await;
+                                        let res = registry.resources().await;
+                                        let logs = if let Some(first) = list.first() {
+                                            registry.logs(&first.id, 100, None).await.unwrap_or_default()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        self.modal = ModalState::Processes(
+                                            crate::ui::modals::processes::ProcessesModalState::with_data(
+                                                &self.workspace_root,
+                                                list,
+                                                Some(res),
+                                                logs,
+                                            ),
+                                        );
+                                    }
+                                    continue;
+                                }
+
                                 // When PTY drawer is open, route keystrokes into drawer
                                 if self.pty_drawer.is_open {
                                     match key_event.code {

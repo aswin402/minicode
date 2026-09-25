@@ -57,6 +57,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /processes ", Style::default().fg(theme.success)),
+            Span::styled(
+                "Process monitor, live logs & watchdog dashboard (F7)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /settings  ", Style::default().fg(theme.success)),
             Span::styled(
                 "Configure providers, models, autonomy & probes (F3)",
@@ -187,6 +194,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             Span::styled("  F6         ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Toggle MiniBlocks design warehouse modal (/blocks)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  F7         ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Toggle Process Monitor & Watchdog Supervisor (/processes)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),

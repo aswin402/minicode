@@ -12,6 +12,7 @@ pub mod git_diff;
 pub mod help;
 pub mod minipower;
 pub mod model_select;
+pub mod processes;
 pub mod provider_select;
 pub mod session_browser;
 pub mod settings;
@@ -148,11 +149,17 @@ pub enum ModalState {
     },
     MiniPower(minipower::MiniPowerModalState),
     Blocks(blocks::BlocksModalState),
+    Processes(processes::ProcessesModalState),
 }
 
 impl ModalState {
     pub fn is_active(&self) -> bool {
         !matches!(self, ModalState::None)
+    }
+
+    #[allow(dead_code)]
+    pub fn new_processes(workspace_root: &std::path::Path) -> Self {
+        Self::Processes(processes::ProcessesModalState::new(workspace_root))
     }
 
     pub fn new_blocks(workspace_root: &std::path::Path) -> Self {
@@ -863,6 +870,9 @@ impl ModalState {
             ModalState::Blocks(state) => {
                 blocks::render_blocks_modal(frame, state, area, theme);
             }
+            ModalState::Processes(state) => {
+                processes::render_processes_modal(frame, state, area, theme);
+            }
         }
     }
 }
@@ -1203,6 +1213,24 @@ mod tests {
 
         let theme = Theme::default();
         let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_new_processes_initial_state_and_render() {
+        let temp = tempfile::tempdir().unwrap();
+        let modal = ModalState::new_processes(temp.path());
+        assert!(modal.is_active());
+        assert!(matches!(modal, ModalState::Processes(_)));
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(120, 35);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {

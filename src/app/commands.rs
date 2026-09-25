@@ -316,7 +316,27 @@ impl<'a> App<'a> {
 
             let registry = crate::dev::registry::get_global_dev_registry();
             match sub {
-                "" | "list" => {
+                "" | "modal" | "ui" => {
+                    let list = registry.list().await;
+                    let res = registry.resources().await;
+                    let logs = if let Some(first) = list.first() {
+                        registry
+                            .logs(&first.id, 100, None)
+                            .await
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    self.modal = ModalState::Processes(
+                        crate::ui::modals::processes::ProcessesModalState::with_data(
+                            &self.workspace_root,
+                            list,
+                            Some(res),
+                            logs,
+                        ),
+                    );
+                }
+                "list" | "ps" => {
                     let list = registry.list().await;
                     if list.is_empty() {
                         self.timeline.add_status("ℹ No active development processes running. Use 'mini_dev start' to launch one.".to_string());

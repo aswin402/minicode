@@ -223,6 +223,20 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         category: CommandCategory::Tools,
         shortcut: Some("Ctrl+Y"),
     },
+    PaletteCommand {
+        slash_name: "/processes",
+        title: "Process Monitor",
+        description: "Interactive process monitor, ring-buffer logs & watchdog dashboard",
+        category: CommandCategory::Tools,
+        shortcut: Some("F7"),
+    },
+    PaletteCommand {
+        slash_name: "/dev",
+        title: "Dev Orchestrator",
+        description: "Supervise dev servers, workers, ports & runtime supervisors",
+        category: CommandCategory::Tools,
+        shortcut: Some("F7"),
+    },
 ];
 
 /// A collapsed block representing a multiline paste (> 5 lines).

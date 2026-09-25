@@ -2229,6 +2229,218 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::Processes(state) => match key.code {
+                KeyCode::Tab | KeyCode::Right if !state.is_searching => {
+                    state.next_tab();
+                }
+                KeyCode::BackTab | KeyCode::Left if !state.is_searching => {
+                    state.prev_tab();
+                }
+                KeyCode::Char('1') if !state.is_searching => {
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
+                }
+                KeyCode::Char('2') if !state.is_searching => {
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::Servers);
+                }
+                KeyCode::Char('3') if !state.is_searching => {
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::Workers);
+                }
+                KeyCode::Char('4') if !state.is_searching => {
+                    if let Some(p) = state.selected_process() {
+                        let pid = p.id.clone();
+                        let registry = crate::dev::registry::get_global_dev_registry();
+                        if let Ok(logs) = registry.logs(&pid, 500, None).await {
+                            state.set_logs(logs);
+                        }
+                    }
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
+                }
+                KeyCode::Char('5') if !state.is_searching => {
+                    let registry = crate::dev::registry::get_global_dev_registry();
+                    let res = registry.resources().await;
+                    state.resources = Some(res);
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::Telemetry);
+                }
+                KeyCode::Up => {
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs {
+                        state.scroll_logs_up(1);
+                    } else {
+                        state.select_prev();
+                        if let Some(p) = state.selected_process() {
+                            let pid = p.id.clone();
+                            let registry = crate::dev::registry::get_global_dev_registry();
+                            if let Ok(logs) = registry.logs(&pid, 50, None).await {
+                                state.set_logs(logs);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Down => {
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs {
+                        state.scroll_logs_down(1);
+                    } else {
+                        state.select_next();
+                        if let Some(p) = state.selected_process() {
+                            let pid = p.id.clone();
+                            let registry = crate::dev::registry::get_global_dev_registry();
+                            if let Ok(logs) = registry.logs(&pid, 50, None).await {
+                                state.set_logs(logs);
+                            }
+                        }
+                    }
+                }
+                KeyCode::PageUp => {
+                    state.scroll_logs_up(15);
+                }
+                KeyCode::PageDown => {
+                    state.scroll_logs_down(15);
+                }
+                KeyCode::Char('a')
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs =>
+                {
+                    state.auto_scroll_logs = !state.auto_scroll_logs;
+                    let msg = if state.auto_scroll_logs {
+                        "Auto-scroll: ON".to_string()
+                    } else {
+                        "Auto-scroll: OFF".to_string()
+                    };
+                    state.status_message = Some(msg);
+                }
+                KeyCode::Char('k') | KeyCode::Char('x') if !state.is_searching => {
+                    if let Some(p) = state.selected_process() {
+                        let target_id = p.id.clone();
+                        let registry = crate::dev::registry::get_global_dev_registry();
+                        match registry.stop(&target_id).await {
+                            Ok(_) => {
+                                let msg = format!("✔ Stopped process '{}'", target_id);
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                                let list = registry.list().await;
+                                let res = registry.resources().await;
+                                state.update_data(list, Some(res));
+                            }
+                            Err(e) => {
+                                let msg =
+                                    format!("✗ Failed to stop process '{}': {}", target_id, e);
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('r') if !state.is_searching => {
+                    if let Some(p) = state.selected_process() {
+                        let target_id = p.id.clone();
+                        let registry = crate::dev::registry::get_global_dev_registry();
+                        match registry.restart(&self.workspace_root, &target_id).await {
+                            Ok(summary) => {
+                                let msg = format!(
+                                    "✔ Restarted process '{}' (PID: {:?})",
+                                    summary.id, summary.pid
+                                );
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                                let list = registry.list().await;
+                                let res = registry.resources().await;
+                                state.update_data(list, Some(res));
+                            }
+                            Err(e) => {
+                                let msg =
+                                    format!("✗ Failed to restart process '{}': {}", target_id, e);
+                                state.status_message = Some(msg.clone());
+                                self.timeline.add_status(msg);
+                            }
+                        }
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Enter if !state.is_searching => {
+                    if let Some(p) = state.selected_process() {
+                        let pid = p.id.clone();
+                        let registry = crate::dev::registry::get_global_dev_registry();
+                        if let Ok(logs) = registry.logs(&pid, 500, None).await {
+                            state.set_logs(logs);
+                        }
+                        state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
+                    }
+                }
+                KeyCode::Char('s') if !state.is_searching => {
+                    if let Some(p) = state.selected_process() {
+                        if let Some(ref url) = p.url {
+                            let url_str = url.clone();
+                            self.timeline.add_status(format!(
+                                "📸 Capturing screenshot for '{}'...",
+                                url_str
+                            ));
+                            let ws = self.workspace_root.clone();
+                            match crate::tools::browser::BrowserController::navigate_and_snapshot(
+                                &url_str,
+                                crate::tools::browser::BrowserMode::Headless,
+                                &ws,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    match crate::tools::browser::BrowserController::take_screenshot(
+                                        crate::tools::browser::BrowserMode::Headless,
+                                        &ws,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(res_msg) => {
+                                            let msg = format!("✔ Screenshot saved: {}", res_msg);
+                                            state.status_message = Some(msg.clone());
+                                            self.timeline.add_status(msg);
+                                        }
+                                        Err(e) => {
+                                            let msg = format!("✗ Screenshot failed: {}", e);
+                                            state.status_message = Some(msg.clone());
+                                            self.timeline.add_status(msg);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("✗ Browser navigation failed: {}", e);
+                                    state.status_message = Some(msg.clone());
+                                    self.timeline.add_status(msg);
+                                }
+                            }
+                        } else {
+                            state.status_message = Some(
+                                "⚠️ Selected process has no listening URL for screenshot."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+                KeyCode::Char('/') if !state.is_searching => {
+                    state.is_searching = true;
+                }
+                KeyCode::Esc => {
+                    if state.is_searching {
+                        state.is_searching = false;
+                        state.search_query.clear();
+                        state.refresh_filtered();
+                    } else if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs
+                        || state.active_tab == crate::ui::modals::processes::ProcessesTab::Telemetry
+                    {
+                        state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
+                    } else {
+                        self.modal = ModalState::None;
+                    }
+                }
+                KeyCode::F(7) => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Backspace => {
+                    state.handle_backspace();
+                }
+                KeyCode::Char(c) => {
+                    state.handle_char(c);
+                }
+                _ => {}
+            },
         }
     }
 
