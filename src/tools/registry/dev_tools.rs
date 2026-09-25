@@ -23,8 +23,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes)"
+                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL)"
                 },
                 "command": {
                     "type": "string",
@@ -41,7 +41,20 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Process ID (required for 'status', 'logs', 'stop', 'restart', e.g. 'dev_frontend_3000')"
+                    "description": "Process ID (required for 'status', 'logs', 'stop', 'restart', or target for 'screenshot')"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Target URL to capture for 'screenshot' action (optional, defaults to primary URL of running process)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Target file path relative to workspace to save screenshot PNG (optional, defaults to .minicode/screenshots/...)"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["headless", "gui"],
+                    "description": "Browser execution mode for 'screenshot' ('headless' or 'gui', default: 'headless')"
                 },
                 "working_dir": {
                     "type": "string",
@@ -85,7 +98,10 @@ pub async fn dispatch(
                 let name = opt_str(args, "name").map(|s| s.to_string());
                 let p_type_str = opt_str(args, "process_type").unwrap_or("frontend");
                 let process_type: DevProcessType = p_type_str.parse().unwrap_or(DevProcessType::Frontend);
-                let working_dir = opt_str(args, "working_dir").map(std::path::PathBuf::from);
+                let working_dir = opt_str(args, "working_dir")
+                    .or_else(|| opt_str(args, "dir"))
+                    .or_else(|| opt_str(args, "path"))
+                    .map(std::path::PathBuf::from);
                 let port_hint = opt_u64(args, "port_hint").map(|p| p as u16);
 
                 let req = SpawnDevRequest {
@@ -240,9 +256,67 @@ pub async fn dispatch(
                 let count = registry.kill_all().await?;
                 Ok(format!("✔ Terminated {} active development processes.", count))
             }
+            "screenshot" => {
+                let explicit_url = opt_str(args, "url");
+                let id_opt = opt_str(args, "id").map(DevProcessId::from);
+                let custom_path = opt_str(args, "path");
+                let mode_str = opt_str(args, "mode").unwrap_or("headless");
+                let mode = match mode_str {
+                    "gui" => crate::tools::browser::BrowserMode::Gui,
+                    _ => crate::tools::browser::BrowserMode::Headless,
+                };
+
+                let target_url = if let Some(u) = explicit_url {
+                    u.to_string()
+                } else if let Some(ref id) = id_opt {
+                    let summary = registry.get(id).await.ok_or_else(|| {
+                        DevError::NotFound(format!("Process '{}' not found for screenshot", id))
+                    })?;
+                    summary.url.ok_or_else(|| {
+                        DevError::InvalidRequest(format!(
+                            "Process '{}' has not reported any listening port/URL yet",
+                            id
+                        ))
+                    })?
+                } else {
+                    let list = registry.list().await;
+                    list.into_iter()
+                        .find_map(|p| p.url)
+                        .ok_or_else(|| {
+                            ToolError::InvalidArguments {
+                                name: "mini_dev".to_string(),
+                                reason: "Action 'screenshot' requires either 'url', 'id' of a running process, or an active dev server with an open port.".to_string(),
+                            }
+                        })?
+                };
+
+                // Navigate and snapshot DOM
+                let _ = crate::tools::browser::BrowserController::navigate_and_snapshot(
+                    &target_url,
+                    mode,
+                    workspace_root,
+                )
+                .await?;
+
+                // Brief pause for client hydration / animation
+                tokio::time::sleep(Duration::from_millis(600)).await;
+
+                // Take screenshot
+                let result_msg = crate::tools::browser::BrowserController::take_screenshot(
+                    mode,
+                    workspace_root,
+                    custom_path,
+                )
+                .await?;
+
+                Ok(format!(
+                    "📸 Screenshot captured successfully for '{}':\n• {}",
+                    target_url, result_msg
+                ))
+            }
             unknown => Err(ToolError::InvalidArguments {
                 name: "mini_dev".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all, screenshot", unknown),
             }.into()),
         }
     }.await)

@@ -388,9 +388,53 @@ impl<'a> App<'a> {
                             .add_status(format!("❌ Error fetching logs: {}", e)),
                     }
                 }
+                other if other == "screenshot" || other.starts_with("screenshot ") => {
+                    let target_id = other.strip_prefix("screenshot").unwrap_or("").trim();
+                    let target_url = if !target_id.is_empty() {
+                        let id = crate::dev::models::DevProcessId::from(target_id);
+                        registry.get(&id).await.and_then(|p| p.url)
+                    } else {
+                        let list = registry.list().await;
+                        list.into_iter().find_map(|p| p.url)
+                    };
+
+                    if let Some(url) = target_url {
+                        let mode = crate::tools::browser::BrowserMode::Headless;
+                        self.timeline
+                            .add_status(format!("📸 Capturing screenshot for '{}'...", url));
+                        let res = async {
+                            let _ =
+                                crate::tools::browser::BrowserController::navigate_and_snapshot(
+                                    &url,
+                                    mode,
+                                    &self.workspace_root,
+                                )
+                                .await?;
+                            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                            crate::tools::browser::BrowserController::take_screenshot(
+                                mode,
+                                &self.workspace_root,
+                                None,
+                            )
+                            .await
+                        }
+                        .await;
+
+                        match res {
+                            Ok(msg) => self
+                                .timeline
+                                .add_status(format!("✔ Screenshot saved: {}", msg)),
+                            Err(e) => self
+                                .timeline
+                                .add_status(format!("❌ Screenshot failed: {}", e)),
+                        }
+                    } else {
+                        self.timeline.add_status("ℹ No active server URL found. Start a server with 'mini_dev start' first.".to_string());
+                    }
+                }
                 unknown => {
                     self.timeline.add_status(format!(
-                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | resources | logs <id> | stop <id> | kill]",
+                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | resources | logs <id> | stop <id> | kill | screenshot]",
                         unknown
                     ));
                 }

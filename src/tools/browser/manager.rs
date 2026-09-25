@@ -23,6 +23,13 @@ pub struct EngineProcess {
 impl EngineProcess {
     /// Kill process and all descendants
     pub async fn shutdown(&mut self) -> Result<()> {
+        if let Some(pid) = self.child.id() {
+            #[cfg(unix)]
+            unsafe {
+                let _ = libc::kill(-(pid as i32), libc::SIGTERM);
+                let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
         let _ = self.child.kill().await;
         Ok(())
     }
@@ -267,6 +274,10 @@ user_pref("remote.active-protocols", 3);
                 e
             ))
         })?;
+
+        if let Some(pid) = child.id() {
+            crate::dev::registry::get_global_dev_registry().register_external_pid(pid);
+        }
 
         let cdp_http_url = format!("{}{}", crate::constants::CDP_HOST_PREFIX, config.cdp_port);
 
