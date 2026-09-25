@@ -366,6 +366,7 @@ impl MiniKitSyncEngine {
                 - **Query First**: Always query `block_search` or `block_palettes` before creating UI components or color palettes from scratch.\n\
                 - **Themed Scaffolding & Wiring**: Pass `palette=\"<palette_name>\"` to `block_scaffold` to automatically apply background, surface, and accent tokens, and `wire_to=\"src/App.tsx\"` to auto-wire the component.\n\
                 - **Surgical Insertion & Imports**: Use `block_insert` to safely write components, and `block_import` with `wire=true` to inject imports into existing files without rewriting them.\n\
+                - **Vite & TypeScript Setup**: When creating a Vite + React TypeScript project, always include `src/vite-env.d.ts` (`/// <reference types=\"vite/client\" />`) or add `\"types\": [\"vite/client\"]` to `tsconfig.json` so CSS imports (`import './index.css'`) and assets resolve cleanly without type errors.\n\
                 - **Path Sandboxing**: All file insertions are confined within the workspace.\n\n\
                 ## User Shortcuts & Commands\n\
                 - **Keyboard Shortcut**: Press `F6` in the TUI to open the interactive MiniBlocks browser modal.\n\

@@ -56,6 +56,14 @@ impl ProjectConventions {
             }
         }
 
+        // Check for root .ts configs (e.g. vite.config.ts, tailwind.config.ts)
+        if !is_typescript
+            && (workspace_root.join("vite.config.ts").is_file()
+                || workspace_root.join("tailwind.config.ts").is_file())
+        {
+            is_typescript = true;
+        }
+
         // Check for any .tsx or .ts files if tsconfig was not found
         if !is_typescript {
             let src_dir = workspace_root.join("src");
@@ -126,7 +134,7 @@ impl ProjectConventions {
         // 4. Detect export style convention (check existing component if present)
         let is_default_export = detect_export_style(workspace_root, &component_dir);
 
-        Self {
+        let conventions = Self {
             framework,
             is_typescript,
             file_extension,
@@ -137,6 +145,35 @@ impl ProjectConventions {
             icon_library,
             has_tailwind: stack.has_tailwind,
             has_scss: stack.has_scss,
+        };
+
+        // If this workspace uses Vite + TypeScript, ensure src/vite-env.d.ts exists
+        conventions.ensure_vite_env(workspace_root);
+
+        conventions
+    }
+
+    /// Ensures that `src/vite-env.d.ts` exists in Vite + TypeScript projects
+    /// to guarantee clean resolution of CSS side-effect imports and asset types.
+    pub fn ensure_vite_env(&self, workspace_root: &Path) {
+        let pkg_has_vite = workspace_root.join("package.json").is_file()
+            && std::fs::read_to_string(workspace_root.join("package.json"))
+                .map(|content| content.contains("\"vite\""))
+                .unwrap_or(false);
+
+        let is_vite = workspace_root.join("vite.config.ts").is_file()
+            || workspace_root.join("vite.config.js").is_file()
+            || workspace_root.join("vite.config.mjs").is_file()
+            || pkg_has_vite;
+
+        if self.is_typescript && is_vite {
+            let src_dir = workspace_root.join("src");
+            if let Ok(()) = std::fs::create_dir_all(&src_dir) {
+                let vite_env = src_dir.join("vite-env.d.ts");
+                if !vite_env.exists() {
+                    let _ = std::fs::write(&vite_env, "/// <reference types=\"vite/client\" />\n");
+                }
+            }
         }
     }
 }
@@ -777,5 +814,19 @@ mod tests {
         assert!(code.contains("border-[#FF007F]/30"));
         assert!(code.contains("text-[#00F0FF]"));
         assert!(code.contains("bg-[#FF007F] text-white"));
+    }
+
+    #[test]
+    fn test_ensure_vite_env_scaffolded() {
+        let temp = tempfile::tempdir().unwrap();
+        // Create a mock vite.config.ts in workspace root
+        std::fs::write(temp.path().join("vite.config.ts"), "export default {}").unwrap();
+
+        let conventions = ProjectConventions::detect(temp.path());
+        assert!(conventions.is_typescript);
+        let vite_env = temp.path().join("src/vite-env.d.ts");
+        assert!(vite_env.is_file());
+        let content = std::fs::read_to_string(&vite_env).unwrap();
+        assert!(content.contains("/// <reference types=\"vite/client\" />"));
     }
 }

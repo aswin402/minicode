@@ -148,14 +148,54 @@ pub fn apply_landlock_sandbox_with_opts(
     ];
 
     let home_dir = std::env::var("HOME").ok();
+
+    // Allow read/write access to package manager caches (~/.npm, ~/.cache) for builds, dependency downloads, and locks
+    if let Some(ref h) = home_dir {
+        let npm_home = format!("{}/.npm", h);
+        let user_cache = format!("{}/.cache", h);
+
+        for rw_home_str in [npm_home, user_cache] {
+            let p = Path::new(&rw_home_str);
+            if !p.exists() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            if p.exists() {
+                if let Ok(fd) = PathFd::new(p) {
+                    let access = if read_only {
+                        AccessFs::from_read(ABI::V1)
+                    } else {
+                        AccessFs::from_all(ABI::V1)
+                    };
+                    ruleset_created = ruleset_created
+                        .add_rule(PathBeneath::new(fd, access))
+                        .map_err(|e| {
+                            SecurityError::Landlock(format!(
+                                "Failed to add rw home path rule {}: {}",
+                                rw_home_str, e
+                            ))
+                        })?;
+                }
+            }
+        }
+    }
+
     let cargo_home = home_dir.as_ref().map(|h| format!("{}/.cargo", h));
     let rustup_home = home_dir.as_ref().map(|h| format!("{}/.rustup", h));
     let nvm_home = home_dir.as_ref().map(|h| format!("{}/.nvm", h));
     let local_home = home_dir.as_ref().map(|h| format!("{}/.local", h));
+    let config_home = home_dir.as_ref().map(|h| format!("{}/.config", h));
+    let gitconfig = home_dir.as_ref().map(|h| format!("{}/.gitconfig", h));
 
-    for p_str in [cargo_home, rustup_home, nvm_home, local_home]
-        .into_iter()
-        .flatten()
+    for p_str in [
+        cargo_home,
+        rustup_home,
+        nvm_home,
+        local_home,
+        config_home,
+        gitconfig,
+    ]
+    .into_iter()
+    .flatten()
     {
         let p = Path::new(&p_str);
         if p.exists() {
@@ -285,5 +325,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_landlock_npm_and_cache_whitelisted() {
+        if !is_landlock_supported() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        // Test that apply_landlock_sandbox_with_opts runs cleanly with the whitelisted paths
+        let res = apply_landlock_sandbox_with_opts(temp.path(), true, false);
+        // Note: restrict_self affects the current thread, so in test we expect either Ok or unsupported
+        assert!(res.is_ok());
     }
 }

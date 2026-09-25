@@ -194,6 +194,7 @@ impl PromptBuilder {
     1. Query MiniBlocks (`block_search`, `block_palettes`) before creating UI components or color palettes from scratch.\n\
     2. Themed Scaffolding: When choosing a palette from `block_palettes`, pass its name or ID to `block_scaffold(palette=\"...\")` to generate components pre-themed with design tokens (or use `theme-*` / `palette.*` Tailwind classes).\n\
     3. Auto-Wiring: When creating components for an existing parent (like `App.tsx`), pass `wire_to=\"src/App.tsx\"` (or `wire=...`) to `block_scaffold`, or call `block_import(component_name=..., consumer_file=\"src/App.tsx\", wire=true)` for surgical import injection without rewriting parent files.\n\
+    4. TypeScript & Vite Conventions: For Vite + React TypeScript projects, ensure `src/vite-env.d.ts` (`/// <reference types=\"vite/client\" />`) and `types: [\"vite/client\"]` in `tsconfig.json` so CSS (`import './index.css'`) and asset imports type-check cleanly.\n\
   </miniblocks_warehouse>\n",
             stack_directive.trim()
         ));
