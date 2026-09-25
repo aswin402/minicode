@@ -23,8 +23,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot", "workers"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks)"
+                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot", "workers", "probe_port", "check_port"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
                 },
                 "command": {
                     "type": "string",
@@ -42,6 +42,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "id": {
                     "type": "string",
                     "description": "Process ID (required for 'status', 'logs', 'stop', 'restart', or target for 'screenshot')"
+                },
+                "port": {
+                    "type": "integer",
+                    "description": "Target port number to probe (required for 'probe_port'/'check_port')"
+                },
+                "port_policy": {
+                    "type": "string",
+                    "enum": ["fallback", "error", "kill", "ignore"],
+                    "description": "Port conflict strategy: 'fallback' (auto-assign next available port and inject PORT=...), 'error' (fail immediately), 'kill' (terminate conflicting process), 'ignore' (proceed anyway). Default: 'fallback'"
+                },
+                "restart_policy": {
+                    "type": "string",
+                    "enum": ["never", "on_failure", "always"],
+                    "description": "Auto-restart watchdog supervision: 'never' (default), 'on_failure' (restart if exit code is non-zero), 'always' (restart on any exit)"
+                },
+                "auto_restart": {
+                    "type": "boolean",
+                    "description": "Convenience toggle for auto-restart on failure with 3 retries (default: false)"
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Maximum number of watchdog restart attempts (default: 3)"
+                },
+                "backoff_ms": {
+                    "type": "integer",
+                    "description": "Base backoff in milliseconds between watchdog restarts (default: 1000)"
                 },
                 "url": {
                     "type": "string",
@@ -93,6 +119,58 @@ pub async fn dispatch(
         let registry = get_global_dev_registry();
 
         match action {
+            "probe_port" | "check_port" => {
+                let port = require_u64(args, "port", "mini_dev")? as u16;
+                let is_listening = crate::dev::ports::is_port_listening(port);
+                let (conflicting_pid, process_name, command_line) = if is_listening {
+                    let pid = crate::dev::ports::find_pid_by_port(port);
+                    let (comm, cmd) = if let Some(p) = pid {
+                        crate::dev::ports::get_process_info(p)
+                    } else {
+                        (None, None)
+                    };
+                    (pid, comm, cmd)
+                } else {
+                    (None, None, None)
+                };
+                let suggested = if is_listening {
+                    crate::dev::ports::find_next_available_port(port + 1, 100)
+                } else {
+                    Some(port)
+                };
+
+                let status_str = if is_listening { "OCCUPIED" } else { "AVAILABLE" };
+                let pid_str = conflicting_pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let proc_str = process_name.as_deref().unwrap_or("unknown");
+                let cmd_str = command_line.as_deref().unwrap_or("-");
+                let sugg_str = suggested
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+
+                let result_json = serde_json::json!({
+                    "port": port,
+                    "status": status_str,
+                    "is_listening": is_listening,
+                    "conflicting_pid": conflicting_pid,
+                    "process_name": process_name,
+                    "command_line": command_line,
+                    "suggested_available_port": suggested,
+                });
+
+                if is_listening {
+                    Ok(format!(
+                        "⚠️ Port {} is OCCUPIED:\n• Conflicting PID: {}\n• Process: {}\n• Command: {}\n• Next Available Port: {}\n\nJSON:\n{}",
+                        port, pid_str, proc_str, cmd_str, sugg_str, result_json
+                    ))
+                } else {
+                    Ok(format!(
+                        "✔ Port {} is AVAILABLE (ready for binding)\n\nJSON:\n{}",
+                        port, result_json
+                    ))
+                }
+            }
             "start" => {
                 let command = require_str(args, "command", "mini_dev")?.to_string();
                 let name = opt_str(args, "name").map(|s| s.to_string());
@@ -104,6 +182,26 @@ pub async fn dispatch(
                     .map(std::path::PathBuf::from);
                 let port_hint = opt_u64(args, "port_hint").map(|p| p as u16);
 
+                let port_policy_str = opt_str(args, "port_policy").unwrap_or("fallback");
+                let port_policy = crate::dev::models::PortConflictPolicy::from_str_loose(port_policy_str);
+
+                let auto_restart = opt_bool(args, "auto_restart", false);
+                let restart_policy = if auto_restart {
+                    Some(crate::dev::models::RestartPolicy::on_failure_default())
+                } else if let Some(rp_str) = opt_str(args, "restart_policy") {
+                    let max_retries = opt_u64(args, "max_retries").unwrap_or(3) as u32;
+                    let backoff_ms = opt_u64(args, "backoff_ms").unwrap_or(1000);
+                    match rp_str.trim().to_lowercase().as_str() {
+                        "on_failure" | "on-failure" | "failure" => {
+                            Some(crate::dev::models::RestartPolicy::OnFailure { max_retries, backoff_ms })
+                        }
+                        "always" => Some(crate::dev::models::RestartPolicy::Always { max_retries, backoff_ms }),
+                        _ => Some(crate::dev::models::RestartPolicy::Never),
+                    }
+                } else {
+                    Some(crate::dev::models::RestartPolicy::Never)
+                };
+
                 let req = SpawnDevRequest {
                     command,
                     name,
@@ -112,6 +210,8 @@ pub async fn dispatch(
                     extra_env: HashMap::new(),
                     port_hint,
                     max_memory_mb: None,
+                    port_policy: Some(port_policy),
+                    restart_policy,
                 };
 
                 let summary = registry.spawn(workspace_root, req).await?;
@@ -127,7 +227,7 @@ pub async fn dispatch(
                     .as_deref()
                     .unwrap_or("(port scanning in progress...)");
 
-                Ok(format!(
+                let mut msg = format!(
                     "🚀 Development process launched successfully:\n• ID: {}\n• Name: {}\n• Type: {:?}\n• PID: {}\n• Status: {:?}\n• Primary URL: {}\n• Active Ports: {:?}",
                     live_summary.id,
                     live_summary.name,
@@ -136,7 +236,25 @@ pub async fn dispatch(
                     live_summary.status,
                     url_str,
                     live_summary.ports,
-                ))
+                );
+
+                if let Some(crate::dev::models::PortResolution::Shifted { requested, resolved, conflict }) = &live_summary.port_resolution {
+                    let p_str = conflict.conflicting_pid.map(|p| format!("PID {}", p)).unwrap_or_else(|| "PID unknown".to_string());
+                    let c_str = conflict.process_name.as_deref().unwrap_or("process");
+                    msg.push_str(&format!(
+                        "\n• ⚡ Port Conflict Resolved: {} occupied by {} ({}) ➔ auto-shifted to {} (injected PORT={})",
+                        requested, p_str, c_str, resolved, resolved
+                    ));
+                }
+
+                if live_summary.restart_policy != crate::dev::models::RestartPolicy::Never {
+                    msg.push_str(&format!(
+                        "\n• 🛡 Watchdog Supervision: {:?}",
+                        live_summary.restart_policy
+                    ));
+                }
+
+                Ok(msg)
             }
             "workers" => {
                 let list = registry.list_workers().await;
@@ -471,5 +589,66 @@ mod tests {
             .unwrap();
         assert!(stop_res.contains("stopped successfully"));
         assert!(cancel_flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_mini_dev_probe_port_dispatch() {
+        let temp = tempdir().unwrap();
+
+        // 1. Probe a high free port
+        let free_port = 48877;
+        let probe_args = json!({
+            "action": "probe_port",
+            "port": free_port
+        });
+
+        let probe_res = dispatch("mini_dev", &probe_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(probe_res.contains("AVAILABLE"));
+
+        // 2. Bind a socket and probe it
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound_port = listener.local_addr().unwrap().port();
+
+        let occ_args = json!({
+            "action": "probe_port",
+            "port": bound_port
+        });
+        let occ_res = dispatch("mini_dev", &occ_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(occ_res.contains("OCCUPIED"));
+        assert!(occ_res.contains("Next Available Port:"));
+    }
+
+    #[tokio::test]
+    async fn test_mini_dev_port_conflict_fallback_dispatch() {
+        let temp = tempdir().unwrap();
+
+        // Bind port to force conflict
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound_port = listener.local_addr().unwrap().port();
+
+        let start_args = json!({
+            "action": "start",
+            "command": format!("echo 'Server on port'; sleep 30"),
+            "name": "auto-shift-service",
+            "port_hint": bound_port,
+            "port_policy": "fallback"
+        });
+
+        let start_res = dispatch("mini_dev", &start_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(start_res.contains("Port Conflict Resolved"));
+        assert!(start_res.contains(&format!("{} occupied", bound_port)));
+
+        // Clean up
+        let kill_args = json!({ "action": "kill_all" });
+        let _ = dispatch("mini_dev", &kill_args, temp.path()).await;
     }
 }

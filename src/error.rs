@@ -295,6 +295,21 @@ pub enum DevError {
     #[error("Port error: {0}")]
     Port(String),
 
+    #[error("Port conflict on port {port}: occupied by PID {conflicting_pid:?} ({process_name:?}). Suggested port: {suggested:?}")]
+    PortConflict {
+        port: u16,
+        conflicting_pid: Option<u32>,
+        process_name: Option<String>,
+        suggested: Option<u16>,
+    },
+
+    #[error("Crash loop detected for process '{id}': {crashes} rapid crashes. {message}")]
+    CrashLoopDetected {
+        id: String,
+        crashes: u32,
+        message: String,
+    },
+
     #[error("Resource limit exceeded: {0}")]
     ResourceExceeded(String),
 

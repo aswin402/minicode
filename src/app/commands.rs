@@ -459,9 +459,101 @@ impl<'a> App<'a> {
                         self.timeline.add_status(msg);
                     }
                 }
+                other if other.starts_with("port ") || other.starts_with("probe ") => {
+                    let port_str = other
+                        .strip_prefix("port ")
+                        .or_else(|| other.strip_prefix("probe "))
+                        .unwrap_or("")
+                        .trim();
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        let is_listening = crate::dev::ports::is_port_listening(port);
+                        if is_listening {
+                            let pid = crate::dev::ports::find_pid_by_port(port);
+                            let (comm, cmd) = if let Some(p) = pid {
+                                crate::dev::ports::get_process_info(p)
+                            } else {
+                                (None, None)
+                            };
+                            let suggested =
+                                crate::dev::ports::find_next_available_port(port + 1, 100);
+                            let pid_str = pid
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let proc_str = comm.as_deref().unwrap_or("unknown");
+                            let cmd_str = cmd.as_deref().unwrap_or("-");
+                            let sugg_str = suggested
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "none".to_string());
+
+                            self.timeline.add_status(format!(
+                                "⚠️ Port {} is OCCUPIED:\n• Conflicting PID: {}\n• Process: {}\n• Command: {}\n• Next Available Port: {}",
+                                port, pid_str, proc_str, cmd_str, sugg_str
+                            ));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Port {} is AVAILABLE (ready for binding)",
+                                port
+                            ));
+                        }
+                    } else {
+                        self.timeline
+                            .add_status(format!("❌ Invalid port number '{}'.", port_str));
+                    }
+                }
+                "watchdog" => {
+                    let list = registry.list().await;
+                    if list.is_empty() {
+                        self.timeline.add_status(
+                            "ℹ No active development processes running under watchdog.".to_string(),
+                        );
+                    } else {
+                        let mut msg = format!(
+                            "🛡 Watchdog Process Supervision ({} processes):\n\n",
+                            list.len()
+                        );
+                        for p in list {
+                            let pol_str = match &p.restart_policy {
+                                crate::dev::models::RestartPolicy::Never => "Never".to_string(),
+                                crate::dev::models::RestartPolicy::OnFailure {
+                                    max_retries,
+                                    backoff_ms,
+                                } => {
+                                    format!(
+                                        "OnFailure (max: {}, backoff: {}ms)",
+                                        max_retries, backoff_ms
+                                    )
+                                }
+                                crate::dev::models::RestartPolicy::Always {
+                                    max_retries,
+                                    backoff_ms,
+                                } => {
+                                    format!(
+                                        "Always (max: {}, backoff: {}ms)",
+                                        max_retries, backoff_ms
+                                    )
+                                }
+                            };
+                            let shift_str = match &p.port_resolution {
+                                Some(crate::dev::models::PortResolution::Shifted {
+                                    requested,
+                                    resolved,
+                                    ..
+                                }) => {
+                                    format!(" | Port shifted: {} -> {}", requested, resolved)
+                                }
+                                _ => String::new(),
+                            };
+                            msg.push_str(&format!(
+                                "• [{}] {} (PID {:?}) | Status: {:?} | Restarts: {} | Policy: {}{}\n",
+                                p.id, p.name, p.pid, p.status, p.restart_count, pol_str, shift_str
+                            ));
+                        }
+                        self.timeline.add_status(msg);
+                    }
+                }
                 unknown => {
                     self.timeline.add_status(format!(
-                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | workers | resources | logs <id> | stop <id> | kill | screenshot]",
+                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | workers | resources | port <number> | watchdog | logs <id> | stop <id> | kill | screenshot]",
                         unknown
                     ));
                 }

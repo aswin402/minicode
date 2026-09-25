@@ -183,6 +183,128 @@ pub struct SpawnDevRequest {
     pub port_hint: Option<u16>,
     /// Optional virtual memory ceiling in MB
     pub max_memory_mb: Option<u64>,
+    /// Port collision handling strategy (default: Fallback)
+    pub port_policy: Option<PortConflictPolicy>,
+    /// Auto-restart watchdog policy (default: Never)
+    pub restart_policy: Option<RestartPolicy>,
+}
+
+/// Policy for handling port collisions when spawning dev processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PortConflictPolicy {
+    /// Automatically find the next available port and inject PORT=... into environment
+    #[default]
+    Fallback,
+    /// Abort with PortConflict error if target port is occupied
+    Error,
+    /// Terminate conflicting process if possible (SIGTERM/SIGKILL)
+    Kill,
+    /// Ignore the conflict and proceed with spawn
+    Ignore,
+}
+
+impl PortConflictPolicy {
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "error" | "strict" | "fail" => Self::Error,
+            "kill" | "force" | "override" => Self::Kill,
+            "ignore" | "skip" => Self::Ignore,
+            _ => Self::Fallback,
+        }
+    }
+}
+
+/// Details of a port conflict detected during socket probing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortConflict {
+    pub port: u16,
+    pub conflicting_pid: Option<u32>,
+    pub process_name: Option<String>,
+    pub command_line: Option<String>,
+    pub suggested_fallback: Option<u16>,
+}
+
+/// Result of arbitrating a port conflict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PortResolution {
+    /// Port was available and assigned without conflict
+    Unchanged { port: u16 },
+    /// Port conflict detected and resolved to a fallback port
+    Shifted {
+        requested: u16,
+        resolved: u16,
+        conflict: PortConflict,
+    },
+    /// Conflicting process was killed and original port claimed
+    Reclaimed { port: u16, killed_pid: Option<u32> },
+    /// Conflict was ignored as requested
+    Ignored { port: u16 },
+}
+
+impl PortResolution {
+    pub fn resolved_port(&self) -> u16 {
+        match self {
+            Self::Unchanged { port } => *port,
+            Self::Shifted { resolved, .. } => *resolved,
+            Self::Reclaimed { port, .. } => *port,
+            Self::Ignored { port } => *port,
+        }
+    }
+}
+
+/// Restart policy for managed processes supervised by the auto-restart watchdog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "policy", rename_all = "snake_case")]
+pub enum RestartPolicy {
+    /// Never restart automatically
+    #[default]
+    Never,
+    /// Automatically restart if process exits with non-zero exit code
+    OnFailure { max_retries: u32, backoff_ms: u64 },
+    /// Always restart when process exits, unless explicitly stopped
+    Always { max_retries: u32, backoff_ms: u64 },
+}
+
+impl RestartPolicy {
+    pub fn on_failure_default() -> Self {
+        Self::OnFailure {
+            max_retries: 3,
+            backoff_ms: 1000,
+        }
+    }
+
+    pub fn should_restart(&self, exit_code: Option<i32>) -> bool {
+        match self {
+            Self::Never => false,
+            Self::OnFailure { .. } => !matches!(exit_code, Some(0)),
+            Self::Always { .. } => true,
+        }
+    }
+
+    pub fn max_retries(&self) -> u32 {
+        match self {
+            Self::Never => 0,
+            Self::OnFailure { max_retries, .. } | Self::Always { max_retries, .. } => *max_retries,
+        }
+    }
+
+    pub fn backoff_ms(&self) -> u64 {
+        match self {
+            Self::Never => 0,
+            Self::OnFailure { backoff_ms, .. } | Self::Always { backoff_ms, .. } => *backoff_ms,
+        }
+    }
+}
+
+/// Dynamic metrics tracked by the auto-restart watchdog supervisor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RestartStats {
+    pub restart_count: u32,
+    pub consecutive_fast_crashes: u32,
+    pub last_restart_at_secs: Option<u64>,
+    pub last_crash_reason: Option<String>,
 }
 
 /// High-level summary of a managed process for tables and status views.
@@ -198,6 +320,9 @@ pub struct DevProcessSummary {
     pub cpu_percent: f32,
     pub memory_rss_mb: f32,
     pub uptime_secs: u64,
+    pub restart_count: u32,
+    pub restart_policy: RestartPolicy,
+    pub port_resolution: Option<PortResolution>,
 }
 
 /// Cumulative resource metrics for all processes managed by mini_dev.
@@ -277,10 +402,65 @@ mod tests {
             cpu_percent: 2.5,
             memory_rss_mb: 85.4,
             uptime_secs: 42,
+            restart_count: 0,
+            restart_policy: RestartPolicy::Never,
+            port_resolution: Some(PortResolution::Unchanged { port: 5173 }),
         };
 
         let json = serde_json::to_string(&summary).unwrap();
         let decoded: DevProcessSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(summary, decoded);
+    }
+
+    #[test]
+    fn test_restart_policy_logic() {
+        let never = RestartPolicy::Never;
+        assert!(!never.should_restart(Some(0)));
+        assert!(!never.should_restart(Some(1)));
+        assert!(!never.should_restart(None));
+
+        let on_fail = RestartPolicy::on_failure_default();
+        assert!(!on_fail.should_restart(Some(0)));
+        assert!(on_fail.should_restart(Some(1)));
+        assert!(on_fail.should_restart(None));
+        assert_eq!(on_fail.max_retries(), 3);
+        assert_eq!(on_fail.backoff_ms(), 1000);
+
+        let always = RestartPolicy::Always {
+            max_retries: 5,
+            backoff_ms: 200,
+        };
+        assert!(always.should_restart(Some(0)));
+        assert!(always.should_restart(Some(1)));
+        assert_eq!(always.max_retries(), 5);
+        assert_eq!(always.backoff_ms(), 200);
+    }
+
+    #[test]
+    fn test_port_conflict_policy_parsing() {
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("error"),
+            PortConflictPolicy::Error
+        );
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("fail"),
+            PortConflictPolicy::Error
+        );
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("kill"),
+            PortConflictPolicy::Kill
+        );
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("ignore"),
+            PortConflictPolicy::Ignore
+        );
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("fallback"),
+            PortConflictPolicy::Fallback
+        );
+        assert_eq!(
+            PortConflictPolicy::from_str_loose("unknown"),
+            PortConflictPolicy::Fallback
+        );
     }
 }

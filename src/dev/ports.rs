@@ -1,7 +1,7 @@
 //! Dev server port auto-discovery and socket probing utilities.
 
 use std::collections::HashSet;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 /// Scans a line of process stdout/stderr output for exposed localhost port numbers and URLs.
@@ -101,6 +101,269 @@ pub fn find_open_process_ports(_pid: u32) -> Vec<u16> {
     Vec::new()
 }
 
+/// Identifies the operating system process ID listening on a given TCP port.
+#[cfg(target_os = "linux")]
+pub fn find_pid_by_port(port: u16) -> Option<u32> {
+    let target_hex = format!("{:04X}", port);
+    let mut target_inodes = HashSet::new();
+
+    for net_file in &["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(content) = std::fs::read_to_string(net_file) {
+            for line in content.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // parts[1] is local_address (e.g. 0100007F:1435), parts[3] is state ("0A" == TCP_LISTEN), parts[9] is inode
+                if parts.len() > 9 && parts[3] == "0A" {
+                    if let Some(port_part) = parts[1].split(':').nth(1) {
+                        if port_part.eq_ignore_ascii_case(&target_hex) {
+                            if let Ok(inode) = parts[9].parse::<u64>() {
+                                target_inodes.insert(inode);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if target_inodes.is_empty() {
+        return None;
+    }
+
+    // Scan /proc to find which PID owns this socket inode
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if let Ok(pid) = name_str.parse::<u32>() {
+                let fd_dir = format!("/proc/{}/fd", pid);
+                if let Ok(fd_entries) = std::fs::read_dir(fd_dir) {
+                    for fd_entry in fd_entries.flatten() {
+                        if let Ok(target) = std::fs::read_link(fd_entry.path()) {
+                            let target_str = target.to_string_lossy();
+                            if target_str.starts_with("socket:[") && target_str.ends_with(']') {
+                                let inode_str = &target_str[8..target_str.len() - 1];
+                                if let Ok(inode) = inode_str.parse::<u64>() {
+                                    if target_inodes.contains(&inode) {
+                                        return Some(pid);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn find_pid_by_port(_port: u16) -> Option<u32> {
+    None
+}
+
+/// Retrieves the command name and command line arguments of a process by PID.
+#[cfg(target_os = "linux")]
+pub fn get_process_info(pid: u32) -> (Option<String>, Option<String>) {
+    let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+        .ok()
+        .map(|s| s.replace('\0', " ").trim().to_string());
+
+    (comm, cmdline)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_process_info(_pid: u32) -> (Option<String>, Option<String>) {
+    (None, None)
+}
+
+/// Finds the next available TCP port on localhost starting from `start_port`.
+pub fn find_next_available_port(start_port: u16, max_tries: u16) -> Option<u16> {
+    for offset in 0..max_tries {
+        let Some(port) = start_port.checked_add(offset) else {
+            break;
+        };
+        if port == 0 {
+            continue;
+        }
+        if !is_port_listening(port) {
+            // Confirm port is genuinely bindable
+            if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+                drop(listener);
+                return Some(port);
+            }
+        }
+    }
+    None
+}
+
+/// Detects if a spawn request has an explicit or inferred target network port.
+pub fn detect_requested_port(req: &crate::dev::models::SpawnDevRequest) -> Option<u16> {
+    if let Some(hint) = req.port_hint {
+        return Some(hint);
+    }
+
+    if let Some(port_val) = req.extra_env.get("PORT") {
+        if let Ok(p) = port_val.parse::<u16>() {
+            return Some(p);
+        }
+    }
+
+    let cmd = &req.command;
+    let markers = ["--port ", "--port=", "-p ", "-p=", "PORT="];
+    for marker in &markers {
+        let mut search_slice = cmd.as_str();
+        while let Some(idx) = search_slice.find(marker) {
+            let remainder = &search_slice[idx + marker.len()..];
+            let num_str: String = remainder
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(p) = num_str.parse::<u16>() {
+                if (1024..=65535).contains(&p) {
+                    return Some(p);
+                }
+            }
+            if remainder.is_empty() {
+                break;
+            }
+            search_slice = remainder;
+        }
+    }
+
+    None
+}
+
+/// Rewrites explicit port parameters in a command string from an old port to a new port.
+pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> String {
+    let old_s = old_port.to_string();
+    let new_s = new_port.to_string();
+
+    let patterns = [
+        format!("--port {}", old_s),
+        format!("--port={}", old_s),
+        format!("-p {}", old_s),
+        format!("-p={}", old_s),
+        format!("PORT={}", old_s),
+        format!("port:{}", old_s),
+    ];
+
+    let replacements = [
+        format!("--port {}", new_s),
+        format!("--port={}", new_s),
+        format!("-p {}", new_s),
+        format!("-p={}", new_s),
+        format!("PORT={}", new_s),
+        format!("port:{}", new_s),
+    ];
+
+    let mut result = command.to_string();
+    for (pat, rep) in patterns.iter().zip(replacements.iter()) {
+        if result.contains(pat) {
+            result = result.replace(pat, rep);
+        }
+    }
+    result
+}
+
+/// Evaluates requested port availability against the selected conflict policy.
+pub fn arbitrate_port(
+    requested_port: u16,
+    policy: crate::dev::models::PortConflictPolicy,
+) -> std::result::Result<crate::dev::models::PortResolution, crate::error::DevError> {
+    use crate::dev::models::{PortConflict, PortConflictPolicy, PortResolution};
+
+    if !is_port_listening(requested_port) {
+        return Ok(PortResolution::Unchanged {
+            port: requested_port,
+        });
+    }
+
+    let conflicting_pid = find_pid_by_port(requested_port);
+    let (process_name, command_line) = if let Some(pid) = conflicting_pid {
+        get_process_info(pid)
+    } else {
+        (None, None)
+    };
+
+    let suggested_fallback = find_next_available_port(requested_port + 1, 100);
+
+    let conflict = PortConflict {
+        port: requested_port,
+        conflicting_pid,
+        process_name: process_name.clone(),
+        command_line,
+        suggested_fallback,
+    };
+
+    match policy {
+        PortConflictPolicy::Fallback => {
+            if let Some(fallback_port) = suggested_fallback {
+                Ok(PortResolution::Shifted {
+                    requested: requested_port,
+                    resolved: fallback_port,
+                    conflict,
+                })
+            } else {
+                Err(crate::error::DevError::Port(format!(
+                    "Port {} is occupied by PID {:?} and no available fallback port was found in range {}..{}",
+                    requested_port, conflicting_pid, requested_port + 1, requested_port + 100
+                )))
+            }
+        }
+        PortConflictPolicy::Error => Err(crate::error::DevError::PortConflict {
+            port: requested_port,
+            conflicting_pid,
+            process_name,
+            suggested: suggested_fallback,
+        }),
+        PortConflictPolicy::Kill => {
+            if let Some(pid) = conflicting_pid {
+                #[cfg(unix)]
+                unsafe {
+                    let _ = libc::kill(pid as i32, libc::SIGTERM);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+                if is_port_listening(requested_port) {
+                    #[cfg(unix)]
+                    unsafe {
+                        let _ = libc::kill(pid as i32, libc::SIGKILL);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if !is_port_listening(requested_port) {
+                    return Ok(PortResolution::Reclaimed {
+                        port: requested_port,
+                        killed_pid: Some(pid),
+                    });
+                }
+            }
+            if let Some(fallback_port) = suggested_fallback {
+                Ok(PortResolution::Shifted {
+                    requested: requested_port,
+                    resolved: fallback_port,
+                    conflict,
+                })
+            } else {
+                Err(crate::error::DevError::PortConflict {
+                    port: requested_port,
+                    conflicting_pid,
+                    process_name,
+                    suggested: suggested_fallback,
+                })
+            }
+        }
+        PortConflictPolicy::Ignore => Ok(PortResolution::Ignored {
+            port: requested_port,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +381,138 @@ mod tests {
 
         let line4 = "Nothing here to see";
         assert!(scan_ports_from_output(line4).is_empty());
+    }
+
+    #[test]
+    fn test_detect_requested_port() {
+        use crate::dev::models::{DevProcessType, SpawnDevRequest};
+        use std::collections::HashMap;
+
+        // Port hint
+        let req1 = SpawnDevRequest {
+            command: "npm run dev".into(),
+            name: None,
+            process_type: DevProcessType::Frontend,
+            working_dir: None,
+            extra_env: HashMap::new(),
+            port_hint: Some(3000),
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+        assert_eq!(detect_requested_port(&req1), Some(3000));
+
+        // PORT env var
+        let mut env = HashMap::new();
+        env.insert("PORT".into(), "8080".into());
+        let req2 = SpawnDevRequest {
+            command: "python app.py".into(),
+            name: None,
+            process_type: DevProcessType::Backend,
+            working_dir: None,
+            extra_env: env,
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+        assert_eq!(detect_requested_port(&req2), Some(8080));
+
+        // --port CLI flag
+        let req3 = SpawnDevRequest {
+            command: "vite --port 5173".into(),
+            name: None,
+            process_type: DevProcessType::Frontend,
+            working_dir: None,
+            extra_env: HashMap::new(),
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+        assert_eq!(detect_requested_port(&req3), Some(5173));
+
+        // -p= CLI flag
+        let req4 = SpawnDevRequest {
+            command: "server -p=4000".into(),
+            name: None,
+            process_type: DevProcessType::Backend,
+            working_dir: None,
+            extra_env: HashMap::new(),
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+        assert_eq!(detect_requested_port(&req4), Some(4000));
+    }
+
+    #[test]
+    fn test_rewrite_command_port() {
+        let cmd1 = "vite --port 3000 --host";
+        assert_eq!(
+            rewrite_command_port(cmd1, 3000, 3001),
+            "vite --port 3001 --host"
+        );
+
+        let cmd2 = "server --port=8080";
+        assert_eq!(rewrite_command_port(cmd2, 8080, 8081), "server --port=8081");
+
+        let cmd3 = "app -p 4000";
+        assert_eq!(rewrite_command_port(cmd3, 4000, 4005), "app -p 4005");
+
+        let cmd4 = "PORT=5000 node index.js";
+        assert_eq!(
+            rewrite_command_port(cmd4, 5000, 5001),
+            "PORT=5001 node index.js"
+        );
+    }
+
+    #[test]
+    fn test_find_next_available_port() {
+        // Find port starting above 30000
+        let port = find_next_available_port(39900, 50);
+        assert!(port.is_some());
+        let p = port.unwrap();
+        assert!(p >= 39900 && p < 39950);
+    }
+
+    #[test]
+    fn test_arbitrate_port_lifecycle() {
+        use crate::dev::models::{PortConflictPolicy, PortResolution};
+
+        // Pick high port that should be free
+        let free_port = 49123;
+        if !is_port_listening(free_port) {
+            let res = arbitrate_port(free_port, PortConflictPolicy::Fallback).unwrap();
+            assert_eq!(res, PortResolution::Unchanged { port: free_port });
+            assert_eq!(res.resolved_port(), free_port);
+        }
+
+        // Test with simulated bound port
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let bound_port = listener.local_addr().unwrap().port();
+
+        // Fallback policy: should shift to next available port
+        let res = arbitrate_port(bound_port, PortConflictPolicy::Fallback).unwrap();
+        match res {
+            PortResolution::Shifted {
+                requested,
+                resolved,
+                ..
+            } => {
+                assert_eq!(requested, bound_port);
+                assert_ne!(resolved, bound_port);
+            }
+            _ => panic!("Expected Shifted resolution"),
+        }
+
+        // Error policy: should return error
+        let err_res = arbitrate_port(bound_port, PortConflictPolicy::Error);
+        assert!(err_res.is_err());
+
+        // Ignore policy: should return ignored
+        let ign_res = arbitrate_port(bound_port, PortConflictPolicy::Ignore).unwrap();
+        assert_eq!(ign_res, PortResolution::Ignored { port: bound_port });
     }
 }

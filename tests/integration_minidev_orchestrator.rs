@@ -36,6 +36,8 @@ async fn test_minidev_process_lifecycle_and_zero_orphan() {
         extra_env: HashMap::new(),
         port_hint: Some(5199),
         max_memory_mb: None,
+        port_policy: None,
+        restart_policy: None,
     };
 
     let summary = registry

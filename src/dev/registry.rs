@@ -54,7 +54,7 @@ impl MiniDevRegistry {
         let handle = spawn_process_group(workspace_root, req).await?;
         let handle_arc = Arc::new(handle);
         let id = handle_arc.id.clone();
-        let pid = handle_arc.pid;
+        let pid = handle_arc.pid();
 
         if let Ok(mut set) = self.active_pgids.lock() {
             set.insert(pid);
@@ -162,9 +162,10 @@ impl MiniDevRegistry {
                     .and_then(|s| lock.get(&DevProcessId::from(s)))
             })
             .ok_or_else(|| DevError::NotFound(id.to_string()))?;
-        if handle.pgid > 0 && handle.pgid != std::process::id() {
+        let current_pgid = handle.pgid();
+        if current_pgid > 0 && current_pgid != std::process::id() {
             if let Ok(mut set) = self.active_pgids.lock() {
-                set.remove(&handle.pgid);
+                set.remove(&current_pgid);
             }
         }
         handle.terminate().await?;
@@ -190,6 +191,8 @@ impl MiniDevRegistry {
                 extra_env: HashMap::new(),
                 port_hint: handle.ports.read().await.first().copied(),
                 max_memory_mb: None,
+                port_policy: None,
+                restart_policy: Some(handle.restart_policy.clone()),
             };
             (req, Arc::clone(handle))
         };
@@ -197,13 +200,13 @@ impl MiniDevRegistry {
         // Terminate old process
         let _ = old_handle.terminate().await;
         if let Ok(mut set) = self.active_pgids.lock() {
-            set.remove(&old_handle.pid);
+            set.remove(&old_handle.pid());
         }
 
         // Spawn new process
         let new_handle = spawn_process_group(workspace_root, req).await?;
         let new_arc = Arc::new(new_handle);
-        let pid = new_arc.pid;
+        let pid = new_arc.pid();
         if let Ok(mut set) = self.active_pgids.lock() {
             set.insert(pid);
         }
@@ -271,8 +274,8 @@ impl MiniDevRegistry {
             process_type: DevProcessType::Worker,
             command,
             working_dir,
-            pid,
-            pgid,
+            pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
+            pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
             started_at: std::time::Instant::now(),
             status: Arc::new(RwLock::new(DevProcessStatus::Running)),
             ports: Arc::new(RwLock::new(Vec::new())),
@@ -281,6 +284,9 @@ impl MiniDevRegistry {
             ))),
             is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
+            port_resolution: Arc::new(RwLock::new(None)),
         });
 
         if pgid > 0 && pgid != std::process::id() {
@@ -292,6 +298,16 @@ impl MiniDevRegistry {
         let mut lock = self.processes.write().await;
         lock.insert(id, Arc::clone(&handle));
         handle
+    }
+
+    /// Updates an active PGID when a monitored process is auto-restarted with a new PID/PGID.
+    pub fn update_active_pgid(&self, old_pgid: u32, new_pgid: u32) {
+        if let Ok(mut set) = self.active_pgids.lock() {
+            set.remove(&old_pgid);
+            if new_pgid > 0 && new_pgid != std::process::id() {
+                set.insert(new_pgid);
+            }
+        }
     }
 
     /// Registers an external child PID (such as Chrome or a background subagent)
@@ -311,7 +327,7 @@ impl MiniDevRegistry {
         let mut pids = Vec::new();
         for handle in lock.values() {
             if handle.status.read().await.is_alive() {
-                pids.push(handle.pid);
+                pids.push(handle.pid());
             }
         }
         sample_aggregate_metrics(&pids)
@@ -321,26 +337,32 @@ impl MiniDevRegistry {
     async fn create_summary(&self, handle: &DevProcessHandle) -> DevProcessSummary {
         let status = handle.status.read().await.clone();
         let ports = handle.ports.read().await.clone();
+        let current_pid = handle.pid();
         let usage = if status.is_alive() {
-            sample_process_metrics(handle.pid)
+            sample_process_metrics(current_pid)
         } else {
             Default::default()
         };
 
         let primary_port = ports.first().copied();
         let url = primary_port.map(|p| format!("http://localhost:{}", p));
+        let restart_count = handle.restart_stats.read().await.restart_count;
+        let port_resolution = handle.port_resolution.read().await.clone();
 
         DevProcessSummary {
             id: handle.id.clone(),
             name: handle.name.clone(),
             process_type: handle.process_type,
             status,
-            pid: Some(handle.pid),
+            pid: Some(current_pid),
             ports,
             url,
             cpu_percent: usage.cpu_percent,
             memory_rss_mb: usage.memory_rss_mb,
             uptime_secs: handle.uptime_secs(),
+            restart_count,
+            restart_policy: handle.restart_policy.clone(),
+            port_resolution,
         }
     }
 }
@@ -384,6 +406,8 @@ mod tests {
             extra_env: HashMap::new(),
             port_hint: None,
             max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
         };
 
         let summary = registry.spawn(temp.path(), req).await.unwrap();
