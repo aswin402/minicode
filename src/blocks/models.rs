@@ -351,7 +351,9 @@ impl BlockPalette {
     /// Formats the palette tokens as a Tailwind CSS theme color configuration object.
     pub fn to_tailwind_config(&self) -> String {
         format!(
-            "// Tailwind CSS Theme Colors\ncolors: {{\n  bg: '{}',\n  surface: '{}',\n  accent: '{}',\n  text: '{}',\n}}",
+            "// Tailwind CSS Theme Colors\n// Classes: bg-palette-bg, bg-palette-surface, text-palette-accent, border-palette-accent, text-palette-text\n// Direct aliases: bg-theme-bg, bg-theme-surface, text-theme-accent, border-theme-accent, text-theme-text\ncolors: {{\n  palette: {{\n    bg: '{}',\n    surface: '{}',\n    accent: '{}',\n    text: '{}',\n  }},\n  bg: '{}',\n  surface: '{}',\n  accent: '{}',\n  text: '{}',\n  'theme-bg': '{}',\n  'theme-surface': '{}',\n  'theme-accent': '{}',\n  'theme-text': '{}',\n}}",
+            self.colors[0], self.colors[1], self.colors[2], self.colors[3],
+            self.colors[0], self.colors[1], self.colors[2], self.colors[3],
             self.colors[0], self.colors[1], self.colors[2], self.colors[3]
         )
     }
@@ -674,6 +676,8 @@ mod tests {
         assert!(tw.contains("surface: '#1A1C29'"));
         assert!(tw.contains("accent: '#00FFCC'"));
         assert!(tw.contains("text: '#FFFFFF'"));
+        assert!(tw.contains("'theme-bg': '#0D0E15'"));
+        assert!(tw.contains("'theme-accent': '#00FFCC'"));
 
         // 3. SCSS Variables
         let scss = pal.to_scss_variables();

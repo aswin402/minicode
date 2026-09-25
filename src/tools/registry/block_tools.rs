@@ -249,9 +249,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Framework override (react, tailwind, svelte, shadcn, css)"
                     },
+                    "palette": {
+                        "type": "string",
+                        "description": "Optional palette name or UUID (e.g. 'Cyberpunk Neon', 'Aceternity Dark') to automatically inject design tokens into the scaffolded component"
+                    },
                     "wire_to": {
                         "type": "string",
-                        "description": "Optional consumer file (e.g. 'src/App.tsx') to auto-wire the component import into"
+                        "description": "Optional consumer file (e.g. 'src/App.tsx') to auto-wire the component import into (alias: wire)"
                     }
                 }
             }),
@@ -787,7 +791,13 @@ pub async fn dispatch(
                 if let Some(comp_name) =
                     opt_str(args, "component_name").or_else(|| opt_str(args, "component"))
                 {
-                    let conventions = ProjectConventions::detect(workspace_root);
+                    let mut conventions = ProjectConventions::detect(workspace_root);
+                    if let Some(fw) = opt_str(args, "framework").map(BlockFramework::from_str_loose) {
+                        conventions.framework = fw;
+                        if fw == BlockFramework::Tailwind {
+                            conventions.has_tailwind = true;
+                        }
+                    }
                     let target_dir_arg = opt_str(args, "target_dir")
                         .unwrap_or_else(|| conventions.component_dir.to_str().unwrap_or("src/components"));
                     let category_str = opt_str(args, "category").unwrap_or("section");
@@ -795,8 +805,27 @@ pub async fn dispatch(
                     let description = opt_str(args, "description").unwrap_or("Custom UI component");
                     let props = opt_string_array(args, "props").unwrap_or_default();
 
-                    let (filename, code) =
-                        scaffold_custom_component(&conventions, comp_name, category, description, &props);
+                    let palette_opt = if let Some(pal_name_or_id) = opt_str(args, "palette") {
+                        let store = get_global_block_store().read().map_err(|e| {
+                            ToolError::ExecutionFailed(format!("BlockStore lock error: {}", e))
+                        })?;
+                        if let Ok(uuid) = Uuid::parse_str(pal_name_or_id.trim()) {
+                            store.get_palette(&uuid).cloned()
+                        } else {
+                            store.search_palettes(pal_name_or_id).into_iter().next().cloned()
+                        }
+                    } else {
+                        None
+                    };
+
+                    let (filename, code) = scaffold_custom_component(
+                        &conventions,
+                        comp_name,
+                        category,
+                        description,
+                        &props,
+                        palette_opt.as_ref(),
+                    );
                     let base_path = crate::sandbox::path::validate_path_in_workspace(
                         workspace_root,
                         Path::new(target_dir_arg),
@@ -816,8 +845,18 @@ pub async fn dispatch(
 
                     let rel_dest = dest.strip_prefix(workspace_root).unwrap_or(&dest);
 
+                    let palette_info = palette_opt
+                        .as_ref()
+                        .map(|p| {
+                            format!(
+                                "- Palette: `{}` (Bg: {}, Surface: {}, Accent: {}, Text: {})\n",
+                                p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
+                            )
+                        })
+                        .unwrap_or_default();
+
                     let mut out = format!(
-                        "Successfully scaffolded custom component '{}'.\n- File: `{}`\n- Framework: {}\n- TypeScript: {}\n- Export Style: {}\n- Styling: {}\n- Category: {}\n\n```{}\n{}\n```\n",
+                        "Successfully scaffolded custom component '{}'.\n- File: `{}`\n- Framework: {}\n- TypeScript: {}\n- Export Style: {}\n- Styling: {}\n- Category: {}\n{}```{}\n{}\n```\n",
                         comp_name,
                         rel_dest.display(),
                         conventions.framework,
@@ -825,11 +864,14 @@ pub async fn dispatch(
                         if conventions.is_default_export { "Default" } else { "Named" },
                         if conventions.has_tailwind { "Tailwind CSS" } else if conventions.has_scss { "SCSS" } else { "CSS" },
                         category,
+                        palette_info,
                         conventions.file_extension,
                         code
                     );
 
-                    if let Some(wire_target) = opt_str(args, "wire_to") {
+                    if let Some(wire_target) =
+                        opt_str(args, "wire_to").or_else(|| opt_str(args, "wire"))
+                    {
                         let wire_path = crate::sandbox::path::validate_path_in_workspace(
                             workspace_root,
                             Path::new(wire_target),
@@ -1670,5 +1712,50 @@ mod tests {
             .filter(|l| l.contains("UserBadge"))
             .count();
         assert_eq!(import_line_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_block_scaffold_with_palette_and_auto_wire() {
+        let temp = tempdir().unwrap();
+
+        // 1. Setup a consumer file
+        let app_file = temp.path().join("src/App.tsx");
+        std::fs::create_dir_all(app_file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &app_file,
+            "import React from 'react';\n\nexport default function App() {\n  return <div>App</div>;\n}\n",
+        )
+        .unwrap();
+
+        // 2. Scaffold with palette and wire alias
+        let scaffold_res = dispatch(
+            "block_scaffold",
+            &json!({
+                "component_name": "ThemedPricing",
+                "category": "pricing",
+                "description": "Themed pricing table",
+                "palette": "Cyberpunk Neon",
+                "framework": "tailwind",
+                "wire": "src/App.tsx"
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(scaffold_res.contains("Successfully scaffolded custom component 'ThemedPricing'"));
+        assert!(scaffold_res.contains("Palette: `Cyberpunk Neon`"));
+        assert!(scaffold_res.contains("Auto-Wired into `src/App.tsx`"));
+
+        // Verify component has palette tokens
+        let comp_file = temp.path().join("src/components/ThemedPricing.tsx");
+        let comp_content = std::fs::read_to_string(&comp_file).unwrap();
+        assert!(comp_content.contains("bg-[#0F0C1B]"));
+        assert!(comp_content.contains("text-[#00F0FF]"));
+
+        // Verify App.tsx has import statement
+        let app_content = std::fs::read_to_string(&app_file).unwrap();
+        assert!(app_content.contains("ThemedPricing"));
     }
 }

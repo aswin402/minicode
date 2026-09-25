@@ -230,6 +230,8 @@ pub const MAX_COMPILER_DIAGNOSTICS: usize = 3;
 pub const MAX_COMPILER_ERROR_LINES: usize = 8;
 /// Default execution timeout in seconds for exec_cmd
 pub const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Scaled execution timeout in seconds for package managers, heavy builds, and tests
+pub const EXEC_PACKAGE_MANAGER_TIMEOUT_SECS: u64 = 120;
 /// Maximum raw output bytes captured before hard truncation
 pub const EXEC_MAX_OUTPUT_BYTES: usize = 512 * 1024;
 /// Default User-Agent header for web fetching tool

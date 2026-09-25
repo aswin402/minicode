@@ -359,12 +359,13 @@ impl MiniKitSyncEngine {
                 6. `block_delete`: Delete a component from the warehouse by UUID.\n\
                 7. `block_palettes`: Query 4-hex curated color palettes with multi-format token export (CSS, Tailwind, SCSS, JSON).\n\
                 8. `block_gradients`: Search curated modern CSS gradients with color stops.\n\
-                9. `block_scaffold`: Scaffold complete layout templates (`landing`, `portfolio`, `dashboard`) or project-tailored custom components.\n\
+                9. `block_scaffold`: Scaffold complete layout templates (`landing`, `portfolio`, `dashboard`) or project-tailored custom components with palette token inheritance (`palette`) and auto-wiring (`wire_to`).\n\
                 10. `block_import`: Generate exact path-aliased import statements and JSX tags, with optional auto-wiring into consumer files.\n\
                 11. `block_stats`: Inspect warehouse catalog statistics and category/framework breakdowns.\n\n\
                 ## AI Agent Guidelines\n\
                 - **Query First**: Always query `block_search` or `block_palettes` before creating UI components or color palettes from scratch.\n\
-                - **Surgical Insertion**: Use `block_insert` to safely write components to target paths in the project.\n\
+                - **Themed Scaffolding & Wiring**: Pass `palette=\"<palette_name>\"` to `block_scaffold` to automatically apply background, surface, and accent tokens, and `wire_to=\"src/App.tsx\"` to auto-wire the component.\n\
+                - **Surgical Insertion & Imports**: Use `block_insert` to safely write components, and `block_import` with `wire=true` to inject imports into existing files without rewriting them.\n\
                 - **Path Sandboxing**: All file insertions are confined within the workspace.\n\n\
                 ## User Shortcuts & Commands\n\
                 - **Keyboard Shortcut**: Press `F6` in the TUI to open the interactive MiniBlocks browser modal.\n\

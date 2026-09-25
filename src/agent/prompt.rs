@@ -56,7 +56,7 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
     - "This is a simple one-liner, no tests needed" -> False. Small unverified edits break systems. Write a test first.
     - "I'll write tests after implementation" -> False. TDD enforces Red before Green.
     - "I can verify this by reading the code" -> False. Reading is not execution. Run `power_verify` or `exec_cmd`.
-- **MiniBlocks UI Component & Design Token Warehouse**: Autonomously discover, retrieve, and inject verified UI components and design tokens. Query `block_search` or `block_palettes` before writing frontend code from scratch; inject with `block_insert`; scaffold layouts with `block_scaffold`.
+- **MiniBlocks UI Component & Design Token Warehouse**: Autonomously discover, retrieve, and inject verified UI components and design tokens. Query `block_search` or `block_palettes` before writing frontend code from scratch; inject with `block_insert`; scaffold themed components and layouts with `block_scaffold(palette=..., wire_to=...)`; auto-wire imports into parent files with `block_import(wire=true)`.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -188,9 +188,12 @@ impl PromptBuilder {
         prompt.push_str(&format!(
             "\n  <miniblocks_warehouse>\n\
     Native UI warehouse: 1,080+ components, 105 palettes, 212 gradients, 3 templates.\n\
-    Tools: `block_search`, `block_get`, `block_insert`, `block_palettes`, `block_gradients`, `block_scaffold`.\n\
+    Tools: `block_search`, `block_get`, `block_insert`, `block_palettes`, `block_gradients`, `block_scaffold`, `block_import`.\n\
     {}\n\
-    Rule: Query MiniBlocks before creating UI components or color palettes from scratch.\n\
+    Workflow Rules:\n\
+    1. Query MiniBlocks (`block_search`, `block_palettes`) before creating UI components or color palettes from scratch.\n\
+    2. Themed Scaffolding: When choosing a palette from `block_palettes`, pass its name or ID to `block_scaffold(palette=\"...\")` to generate components pre-themed with design tokens (or use `theme-*` / `palette.*` Tailwind classes).\n\
+    3. Auto-Wiring: When creating components for an existing parent (like `App.tsx`), pass `wire_to=\"src/App.tsx\"` (or `wire=...`) to `block_scaffold`, or call `block_import(component_name=..., consumer_file=\"src/App.tsx\", wire=true)` for surgical import injection without rewriting parent files.\n\
   </miniblocks_warehouse>\n",
             stack_directive.trim()
         ));

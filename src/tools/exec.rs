@@ -51,6 +51,42 @@ pub fn resolve_context_window(workspace_root: &Path) -> usize {
     0
 }
 
+/// Determines the optimal execution timeout based on command characteristics.
+/// Extends default timeout to 120s for package managers, heavy builds, and test suites.
+pub fn resolve_smart_exec_timeout(command_str: &str, explicit_timeout: Option<u64>) -> Duration {
+    if let Some(s) = explicit_timeout {
+        return Duration::from_secs(s);
+    }
+
+    let cmd = command_str.trim().to_lowercase();
+    let is_package_mgr_or_build = cmd.starts_with("npm ")
+        || cmd.starts_with("pnpm ")
+        || cmd.starts_with("yarn ")
+        || cmd.starts_with("bun ")
+        || cmd.starts_with("cargo ")
+        || cmd.starts_with("uv ")
+        || cmd.starts_with("pip ")
+        || cmd.starts_with("pip3 ")
+        || cmd.starts_with("poetry ")
+        || cmd.starts_with("go build")
+        || cmd.starts_with("go test")
+        || cmd.starts_with("mvn ")
+        || cmd.starts_with("gradle ")
+        || cmd.contains("npm install")
+        || cmd.contains("npm i")
+        || cmd.contains("pnpm install")
+        || cmd.contains("pnpm i")
+        || cmd.contains("cargo build")
+        || cmd.contains("cargo test")
+        || cmd.contains("cargo check");
+
+    if is_package_mgr_or_build {
+        Duration::from_secs(crate::constants::EXEC_PACKAGE_MANAGER_TIMEOUT_SECS)
+    } else {
+        Duration::from_secs(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS)
+    }
+}
+
 /// Executes a shell command inside the sandboxed workspace environment using active context window limit.
 pub async fn exec_cmd(
     workspace_root: &Path,
@@ -67,8 +103,7 @@ pub async fn exec_cmd_with_context(
     timeout_secs: Option<u64>,
     explicit_context: Option<usize>,
 ) -> Result<String> {
-    let timeout =
-        Duration::from_secs(timeout_secs.unwrap_or(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS));
+    let timeout = resolve_smart_exec_timeout(command_str, timeout_secs);
 
     let mut std_cmd = build_sanitized_command("sh", workspace_root);
     std_cmd.arg("-c").arg(command_str);
@@ -313,5 +348,42 @@ mod tests {
         assert!(err_msg.contains("non-zero status (1)"));
         assert!(err_msg.contains("Probable Fault Sites"));
         assert!(err_msg.contains("src/main.rs:42"));
+    }
+
+    #[test]
+    fn test_resolve_smart_exec_timeout() {
+        // Explicit timeout overrides everything
+        assert_eq!(
+            resolve_smart_exec_timeout("npm install", Some(10)),
+            Duration::from_secs(10)
+        );
+
+        // Package managers scale to 120s
+        assert_eq!(
+            resolve_smart_exec_timeout("npm install lucide-react", None),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            resolve_smart_exec_timeout("pnpm add react", None),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            resolve_smart_exec_timeout("cargo test -j 1", None),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            resolve_smart_exec_timeout("uv sync", None),
+            Duration::from_secs(120)
+        );
+
+        // Regular commands stay at default 30s
+        assert_eq!(
+            resolve_smart_exec_timeout("ls -la", None),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            resolve_smart_exec_timeout("cat src/main.rs", None),
+            Duration::from_secs(30)
+        );
     }
 }

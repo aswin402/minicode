@@ -94,9 +94,9 @@ pub async fn dispatch(
                 if let Some(eph) = get_bool(args, "ephemeral") {
                     policy.ephemeral_overlay = eph;
                 }
-                if let Some(t) = opt_u64(args, "timeout_secs") {
-                    policy.timeout_secs = t;
-                }
+                policy.timeout_secs = opt_u64(args, "timeout_secs").unwrap_or_else(|| {
+                    crate::tools::exec::resolve_smart_exec_timeout(cmd, None).as_secs()
+                });
                 if let Some(m) = opt_u64(args, "max_memory_mb") {
                     policy.max_memory_mb = Some(m);
                 }
