@@ -140,7 +140,54 @@ impl SubagentPool {
             workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
         }
 
-        let mut res = worker.run(provider).await?;
+        let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", id));
+        let worker_name = format!(
+            "Subagent ({}) - {}",
+            role.badge(),
+            prompt.chars().take(40).collect::<String>()
+        );
+        let dev_handle = dev_registry
+            .register_worker(
+                dev_id,
+                worker_name,
+                format!("subagent::{} - {}", role.badge(), prompt),
+                effective_root.clone(),
+                std::process::id(),
+                0,
+                Some(Arc::new(move || {
+                    cancel_flag_clone.store(true, Ordering::SeqCst);
+                })),
+            )
+            .await;
+
+        dev_handle
+            .append_log(format!("[{}] Subagent worker running: {}", id, prompt))
+            .await;
+        let run_res = worker.run(provider).await;
+        match &run_res {
+            Ok(sub_res) => {
+                dev_handle
+                    .append_log(format!("[{}] Completed: {}", id, sub_res.final_summary))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                    .await;
+            }
+            Err(e) => {
+                dev_handle
+                    .append_log(format!("[{}] Execution error: {}", id, e))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                        e.to_string(),
+                    ))
+                    .await;
+            }
+        }
+
+        let mut res = run_res?;
         if isolate_worktree {
             res.worktree_branch = Some(format!("subagent/{}", id));
         }
@@ -204,12 +251,43 @@ impl SubagentPool {
             workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
         }
 
+        let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", id));
+        let worker_name = format!(
+            "Subagent ({}) - {}",
+            role.badge(),
+            prompt.chars().take(40).collect::<String>()
+        );
+        let dev_handle = dev_registry
+            .register_worker(
+                dev_id,
+                worker_name,
+                format!("subagent::{} - {}", role.badge(), prompt),
+                effective_root.clone(),
+                std::process::id(),
+                0,
+                Some(Arc::new(move || {
+                    cancel_flag_clone.store(true, Ordering::SeqCst);
+                })),
+            )
+            .await;
+
         let worker_id = id.clone();
         let worker_role = role;
+        let prompt_log = prompt.to_string();
 
         let ws_root = self.workspace_root.clone();
 
         tokio::spawn(async move {
+            dev_handle
+                .append_log(format!(
+                    "[{}] Background subagent started (role: {}): {}",
+                    worker_id,
+                    worker_role.badge(),
+                    prompt_log
+                ))
+                .await;
             let res = worker.run(provider).await;
             let scratchpad = crate::agent::subagent::get_global_scratchpad();
             match res {
@@ -229,6 +307,22 @@ impl SubagentPool {
                     );
                     let _ = scratchpad.save_to_disk(&ws_root);
                     tracing::info!(subagent_id = %worker_id, "Background subagent completed");
+
+                    dev_handle
+                        .append_log(format!(
+                            "[{}] Subagent completed successfully (tokens: {}, turns: {})",
+                            worker_id, sub_res.tokens_used, sub_res.turns_executed
+                        ))
+                        .await;
+                    dev_handle
+                        .append_log(format!(
+                            "[{}] Summary: {}",
+                            worker_id, sub_res.final_summary
+                        ))
+                        .await;
+                    dev_handle
+                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                        .await;
                 }
                 Err(e) => {
                     tracing::error!(subagent_id = %worker_id, error = %e, "Background subagent failed");
@@ -240,6 +334,15 @@ impl SubagentPool {
                         &worker_id,
                     );
                     let _ = scratchpad.save_to_disk(&ws_root);
+
+                    dev_handle
+                        .append_log(format!("[{}] Subagent execution error: {}", worker_id, e))
+                        .await;
+                    dev_handle
+                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                            e.to_string(),
+                        ))
+                        .await;
                 }
             }
         });

@@ -152,6 +152,22 @@ impl SubAgent {
                 MinicodeError::Channel(format!("Failed to spawn subagent process: {}", e))
             })?;
 
+        let child_id = child.id().unwrap_or(0);
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", self.task_id));
+        let worker_name = format!("Subagent Task - {}", self.task_id);
+        let dev_handle = dev_registry
+            .register_worker(
+                dev_id,
+                worker_name,
+                format!("minicode --json-stream --yes --dir {:?}", target_dir),
+                target_dir.clone(),
+                child_id,
+                child_id,
+                None,
+            )
+            .await;
+
         // Write prompt to subagent stdin via StdinCommand protocol
         if let Some(mut stdin) = child.stdin.take() {
             let cmd_obj = crate::agent::types::StdinCommand::UserInput {
@@ -172,17 +188,22 @@ impl SubAgent {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
 
+            let dev_handle_clone = std::sync::Arc::clone(&dev_handle);
             let run_future = async {
                 while let Ok(Some(line)) = lines.next_line().await {
                     if let Ok(event) = serde_json::from_str::<AgentEvent>(&line) {
                         match event {
                             AgentEvent::StreamDelta { delta, .. } => {
                                 final_response.push_str(&delta);
+                                dev_handle_clone.append_log(&delta).await;
                             }
                             AgentEvent::FileModified { path, .. } => {
                                 if !files_modified.contains(&path) {
-                                    files_modified.push(path);
+                                    files_modified.push(path.clone());
                                 }
+                                dev_handle_clone
+                                    .append_log(format!("📝 File modified: {}", path))
+                                    .await;
                             }
                             AgentEvent::TurnEnd {
                                 total_tokens_used,
@@ -233,6 +254,30 @@ impl SubAgent {
         }
 
         let _ = child.kill().await;
+
+        if success {
+            dev_handle
+                .append_log(format!(
+                    "[{}] Subagent task completed successfully (tokens: {})",
+                    self.task_id, tokens_used
+                ))
+                .await;
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                .await;
+        } else {
+            dev_handle
+                .append_log(format!(
+                    "[{}] Subagent task failed: {}",
+                    self.task_id, final_response
+                ))
+                .await;
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                    final_response.clone(),
+                ))
+                .await;
+        }
 
         let worktree_branch = if self.use_worktree {
             Some(format!("subagent/{}", self.task_id))

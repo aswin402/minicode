@@ -432,9 +432,36 @@ impl<'a> App<'a> {
                         self.timeline.add_status("ℹ No active server URL found. Start a server with 'mini_dev start' first.".to_string());
                     }
                 }
+                "workers" | "subagents" => {
+                    let list = registry.list_workers().await;
+                    if list.is_empty() {
+                        self.timeline.add_status(
+                            "ℹ No active autonomous subagents or delegated workers running."
+                                .to_string(),
+                        );
+                    } else {
+                        let mut msg = format!(
+                            "🤖 Active Autonomous Subagents & Workers ({})\n",
+                            list.len()
+                        );
+                        for p in list {
+                            msg.push_str(&format!(
+                                "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
+                                p.id,
+                                p.name,
+                                p.status,
+                                p.pid.unwrap_or(0),
+                                p.cpu_percent,
+                                p.memory_rss_mb,
+                                p.uptime_secs,
+                            ));
+                        }
+                        self.timeline.add_status(msg);
+                    }
+                }
                 unknown => {
                     self.timeline.add_status(format!(
-                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | resources | logs <id> | stop <id> | kill | screenshot]",
+                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | workers | resources | logs <id> | stop <id> | kill | screenshot]",
                         unknown
                     ));
                 }

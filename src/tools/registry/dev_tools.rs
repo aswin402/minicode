@@ -23,8 +23,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL)"
+                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot", "workers"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks)"
                 },
                 "command": {
                     "type": "string",
@@ -36,7 +36,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "process_type": {
                     "type": "string",
-                    "enum": ["frontend", "backend", "docker", "script", "browser", "subagent"],
+                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent"],
                     "description": "Category of process (default: 'frontend')"
                 },
                 "id": {
@@ -138,13 +138,45 @@ pub async fn dispatch(
                     live_summary.ports,
                 ))
             }
-            "list" => {
-                let list = registry.list().await;
+            "workers" => {
+                let list = registry.list_workers().await;
                 if list.is_empty() {
-                    return Ok("ℹ No development processes are currently running.".to_string());
+                    return Ok("ℹ No autonomous subagents or delegated workers are currently active.".to_string());
                 }
 
-                let mut out = format!("📋 Managed Development Processes ({} active):\n\n", list.len());
+                let mut out = format!("🤖 Active Autonomous Subagents & Workers ({} active):\n\n", list.len());
+                for p in list {
+                    out.push_str(&format!(
+                        "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
+                        p.id,
+                        p.name,
+                        p.status,
+                        p.pid.unwrap_or(0),
+                        p.cpu_percent,
+                        p.memory_rss_mb,
+                        p.uptime_secs,
+                    ));
+                }
+                Ok(out)
+            }
+            "list" => {
+                let filter_type = opt_str(args, "process_type")
+                    .map(DevProcessType::from_str_loose);
+                let list = registry.list_filtered(filter_type).await;
+                if list.is_empty() {
+                    if let Some(ft) = filter_type {
+                        return Ok(format!("ℹ No processes of type '{:?}' are currently running.", ft));
+                    } else {
+                        return Ok("ℹ No development processes are currently running.".to_string());
+                    }
+                }
+
+                let header = if let Some(ft) = filter_type {
+                    format!("📋 Managed Processes [{:?}] ({} active):\n\n", ft, list.len())
+                } else {
+                    format!("📋 Managed Development Processes ({} active):\n\n", list.len())
+                };
+                let mut out = header;
                 for p in list {
                     let url_disp = p.url.as_deref().unwrap_or("-");
                     out.push_str(&format!(
@@ -230,7 +262,7 @@ pub async fn dispatch(
                 let id_str = require_str(args, "id", "mini_dev")?;
                 let id = DevProcessId::from(id_str);
                 registry.stop(&id).await?;
-                Ok(format!("✔ Process '{}' stopped successfully.", id_str))
+                Ok(format!("✔ Process/worker '{}' stopped successfully.", id_str))
             }
             "restart" => {
                 let id_str = require_str(args, "id", "mini_dev")?;
@@ -316,7 +348,7 @@ pub async fn dispatch(
             }
             unknown => Err(ToolError::InvalidArguments {
                 name: "mini_dev".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all, screenshot", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all, screenshot, workers", unknown),
             }.into()),
         }
     }.await)
@@ -325,6 +357,7 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -378,5 +411,65 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(kill_res.contains("Terminated"));
+    }
+
+    #[tokio::test]
+    async fn test_mini_dev_workers_dispatch() {
+        let temp = tempdir().unwrap();
+        let registry = get_global_dev_registry();
+
+        let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel_flag);
+
+        let dev_id = DevProcessId::from("worker-subagent-test-99");
+        let handle = registry
+            .register_worker(
+                dev_id.clone(),
+                "Subagent (Tester) - Verify Auth".to_string(),
+                "minicode run --tools tester 'test'".to_string(),
+                temp.path().to_path_buf(),
+                std::process::id(),
+                0,
+                Some(Arc::new(move || {
+                    cancel_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                })),
+            )
+            .await;
+
+        handle.append_log("Worker initializing sandbox...").await;
+
+        // 1. Query via action: "workers"
+        let workers_args = json!({ "action": "workers" });
+        let workers_res = dispatch("mini_dev", &workers_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(workers_res.contains("Subagent (Tester) - Verify Auth"));
+        assert!(workers_res.contains("worker-subagent-test-99"));
+
+        // 2. Query via action: "list", process_type: "worker"
+        let list_worker_args = json!({ "action": "list", "process_type": "worker" });
+        let list_worker_res = dispatch("mini_dev", &list_worker_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(list_worker_res.contains("Subagent (Tester) - Verify Auth"));
+
+        // 3. Query logs via raw id
+        let logs_args = json!({ "action": "logs", "id": "subagent-test-99" });
+        let logs_res = dispatch("mini_dev", &logs_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(logs_res.contains("Worker initializing sandbox"));
+
+        // 4. Stop worker
+        let stop_args = json!({ "action": "stop", "id": "subagent-test-99" });
+        let stop_res = dispatch("mini_dev", &stop_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stop_res.contains("stopped successfully"));
+        assert!(cancel_flag.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

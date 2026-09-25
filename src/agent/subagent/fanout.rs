@@ -362,6 +362,35 @@ impl FanoutOrchestrator {
         };
 
         let child_id = child.id();
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", agent_id));
+        let worker_name = format!(
+            "Worker ({:?}) - {}",
+            task_item.role,
+            task_item.task.chars().take(40).collect::<String>()
+        );
+        let token_cancel_hook = cancel_token.clone();
+        let pid_val = child_id.unwrap_or(0);
+
+        let dev_handle = dev_registry
+            .register_worker(
+                dev_id,
+                worker_name,
+                format!(
+                    "minicode run -d {:?} --tools {:?} '{}'",
+                    target_dir,
+                    task_item.role.tool_filter_mode(),
+                    task_item.task
+                ),
+                target_dir.clone(),
+                pid_val,
+                pid_val,
+                Some(Arc::new(move || {
+                    token_cancel_hook.cancel();
+                })),
+            )
+            .await;
+
         let stdout = match child.stdout.take() {
             Some(out) => out,
             None => {
@@ -392,6 +421,7 @@ impl FanoutOrchestrator {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
 
+        let dev_handle_clone = Arc::clone(&dev_handle);
         let execution_future = async {
             while let Ok(Some(line)) = lines.next_line().await {
                 let trimmed = line.trim();
@@ -402,11 +432,20 @@ impl FanoutOrchestrator {
                     match event {
                         AgentEvent::StreamDelta { delta, .. } => {
                             final_response.push_str(&delta);
+                            dev_handle_clone.append_log(&delta).await;
+                        }
+                        AgentEvent::ToolCall { tool, .. } => {
+                            dev_handle_clone
+                                .append_log(format!("🔧 Executing tool: {}", tool))
+                                .await;
                         }
                         AgentEvent::FileModified { path, .. } => {
                             if !files_modified.contains(&path) {
-                                files_modified.push(path);
+                                files_modified.push(path.clone());
                             }
+                            dev_handle_clone
+                                .append_log(format!("📝 File modified: {}", path))
+                                .await;
                         }
                         AgentEvent::TurnEnd {
                             total_tokens_used,
@@ -420,6 +459,12 @@ impl FanoutOrchestrator {
                                     files_modified.push(f);
                                 }
                             }
+                            dev_handle_clone
+                                .append_log(format!(
+                                    "🏁 Turn ended (tokens: {})",
+                                    total_tokens_used
+                                ))
+                                .await;
                             if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
                                 || status == crate::constants::TURN_STATUS_CANCELLED
                             {
@@ -429,7 +474,10 @@ impl FanoutOrchestrator {
                         AgentEvent::Error { message, .. } => {
                             tracing::error!(agent_id = %agent_id, message = %message, "Subagent encountered error");
                             child_success = false;
-                            error_msg = Some(message);
+                            error_msg = Some(message.clone());
+                            dev_handle_clone
+                                .append_log(format!("❌ Subagent error: {}", message))
+                                .await;
                         }
                         _ => {}
                     }
@@ -443,6 +491,9 @@ impl FanoutOrchestrator {
 
         let (exit_status, captured_stderr) = tokio::select! {
             _ = cancel_token.cancelled() => {
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                    .await;
                 let _ = child.kill().await;
                 #[cfg(unix)]
                 if let Some(pid) = child_id {
@@ -527,6 +578,27 @@ impl FanoutOrchestrator {
                     }
                 });
             }
+        }
+
+        if child_success {
+            dev_handle
+                .append_log(format!(
+                    "[{}] Worker finished successfully (tokens: {})",
+                    agent_id, tokens_used
+                ))
+                .await;
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                .await;
+        } else {
+            dev_handle
+                .append_log(format!("[{}] Worker failed: {}", agent_id, final_response))
+                .await;
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                    final_response.clone(),
+                ))
+                .await;
         }
 
         if child_success {

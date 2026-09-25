@@ -2,12 +2,13 @@
 
 use crate::dev::metrics::{sample_aggregate_metrics, sample_process_metrics};
 use crate::dev::models::{
-    DevProcessId, DevProcessSummary, DevProcessType, RuntimeResourceSummary, SpawnDevRequest,
+    DevProcessId, DevProcessStatus, DevProcessSummary, DevProcessType, RuntimeResourceSummary,
+    SpawnDevRequest,
 };
 use crate::dev::process::{spawn_process_group, DevProcessHandle};
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -72,28 +73,58 @@ impl MiniDevRegistry {
         Ok(summary)
     }
 
-    /// Lists summaries of all managed processes.
-    pub async fn list(&self) -> Vec<DevProcessSummary> {
+    /// Lists summaries of all managed processes, optionally filtered by process category.
+    pub async fn list_filtered(
+        &self,
+        filter_type: Option<DevProcessType>,
+    ) -> Vec<DevProcessSummary> {
         let lock = self.processes.read().await;
         let mut summaries = Vec::with_capacity(lock.len());
         for handle in lock.values() {
+            if let Some(target) = filter_type {
+                if handle.process_type != target {
+                    continue;
+                }
+            }
             summaries.push(self.create_summary(handle).await);
         }
         summaries.sort_by(|a, b| a.name.cmp(&b.name));
         summaries
     }
 
-    /// Retrieves detailed summary for a specific process ID.
+    /// Lists summaries of all managed processes.
+    pub async fn list(&self) -> Vec<DevProcessSummary> {
+        self.list_filtered(None).await
+    }
+
+    /// Lists summaries of active worker processes (autonomous subagents & tasks).
+    pub async fn list_workers(&self) -> Vec<DevProcessSummary> {
+        self.list_filtered(Some(DevProcessType::Worker)).await
+    }
+
+    /// Retrieves detailed summary for a specific process ID with flexible prefix matching.
     pub async fn get(&self, id: &DevProcessId) -> Option<DevProcessSummary> {
         let lock = self.processes.read().await;
         if let Some(handle) = lock.get(id) {
             Some(self.create_summary(handle).await)
         } else {
-            None
+            let alt_id = DevProcessId::from(format!("worker-{}", id.as_str()));
+            if let Some(handle) = lock.get(&alt_id) {
+                Some(self.create_summary(handle).await)
+            } else if let Some(stripped) = id.as_str().strip_prefix("worker-") {
+                let s_id = DevProcessId::from(stripped);
+                if let Some(handle) = lock.get(&s_id) {
+                    Some(self.create_summary(handle).await)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
     }
 
-    /// Reads recent logs from the process output ring buffer.
+    /// Reads recent logs from the process output ring buffer with flexible ID matching.
     pub async fn logs(
         &self,
         id: &DevProcessId,
@@ -103,18 +134,38 @@ impl MiniDevRegistry {
         let lock = self.processes.read().await;
         let handle = lock
             .get(id)
+            .or_else(|| {
+                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
+                lock.get(&alt)
+            })
+            .or_else(|| {
+                id.as_str()
+                    .strip_prefix("worker-")
+                    .and_then(|s| lock.get(&DevProcessId::from(s)))
+            })
             .ok_or_else(|| DevError::NotFound(id.to_string()))?;
         Ok(handle.get_logs(tail, filter).await)
     }
 
-    /// Stops a managed process by ID.
+    /// Stops a managed process or subagent worker by ID with flexible ID matching.
     pub async fn stop(&self, id: &DevProcessId) -> Result<bool> {
         let lock = self.processes.read().await;
         let handle = lock
             .get(id)
+            .or_else(|| {
+                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
+                lock.get(&alt)
+            })
+            .or_else(|| {
+                id.as_str()
+                    .strip_prefix("worker-")
+                    .and_then(|s| lock.get(&DevProcessId::from(s)))
+            })
             .ok_or_else(|| DevError::NotFound(id.to_string()))?;
-        if let Ok(mut set) = self.active_pgids.lock() {
-            set.remove(&handle.pid);
+        if handle.pgid > 0 && handle.pgid != std::process::id() {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.remove(&handle.pgid);
+            }
         }
         handle.terminate().await?;
         Ok(true)
@@ -202,6 +253,47 @@ impl MiniDevRegistry {
         Ok(count)
     }
 
+    /// Registers an autonomous subagent or delegated worker task into the dev registry.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_worker(
+        &self,
+        id: DevProcessId,
+        name: String,
+        command: String,
+        working_dir: PathBuf,
+        pid: u32,
+        pgid: u32,
+        cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Arc<DevProcessHandle> {
+        let handle = Arc::new(DevProcessHandle {
+            id: id.clone(),
+            name,
+            process_type: DevProcessType::Worker,
+            command,
+            working_dir,
+            pid,
+            pgid,
+            started_at: std::time::Instant::now(),
+            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
+            ports: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                crate::dev::process::MAX_RING_BUFFER_LINES,
+            ))),
+            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
+        });
+
+        if pgid > 0 && pgid != std::process::id() {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.insert(pgid);
+            }
+        }
+
+        let mut lock = self.processes.write().await;
+        lock.insert(id, Arc::clone(&handle));
+        handle
+    }
+
     /// Registers an external child PID (such as Chrome or a background subagent)
     /// to ensure it is terminated on minicode exit.
     pub fn register_external_pid(&self, pid: u32) {
@@ -258,11 +350,14 @@ impl MiniDevRegistry {
 pub fn kill_all_sync() {
     if let Some(registry) = GLOBAL_DEV_REGISTRY.get() {
         if let Ok(mut set) = registry.active_pgids.lock() {
+            let my_pid = std::process::id();
             for &pgid in set.iter() {
-                #[cfg(unix)]
-                unsafe {
-                    let _ = libc::kill(-(pgid as i32), libc::SIGTERM);
-                    let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
+                if pgid > 0 && pgid != my_pid {
+                    #[cfg(unix)]
+                    unsafe {
+                        let _ = libc::kill(-(pgid as i32), libc::SIGTERM);
+                        let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
+                    }
                 }
             }
             set.clear();
@@ -320,5 +415,55 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let updated = registry.get(&summary.id).await.unwrap();
         assert!(!updated.status.is_alive());
+    }
+
+    #[tokio::test]
+    async fn test_register_worker_lifecycle() {
+        let registry = MiniDevRegistry::new();
+        let temp = tempdir().unwrap();
+
+        let cancel_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_clone = Arc::clone(&cancel_called);
+
+        let dev_id = DevProcessId::from("worker-subagent-coder-1");
+        let handle = registry
+            .register_worker(
+                dev_id.clone(),
+                "Subagent (Coder) - Task 1".to_string(),
+                "minicode run -d /tmp".to_string(),
+                temp.path().to_path_buf(),
+                std::process::id(),
+                0,
+                Some(Arc::new(move || {
+                    cancel_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                })),
+            )
+            .await;
+
+        handle.append_log("Worker spawned in worktree").await;
+        handle.append_log("Running tests...").await;
+
+        // Verify list_workers includes it
+        let workers = registry.list_workers().await;
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].process_type, DevProcessType::Worker);
+        assert_eq!(workers[0].name, "Subagent (Coder) - Task 1");
+
+        // Verify flexible get without worker- prefix
+        let raw_id = DevProcessId::from("subagent-coder-1");
+        let summary = registry.get(&raw_id).await.expect("found by raw id");
+        assert_eq!(summary.id, dev_id);
+
+        // Verify logs
+        let logs = registry.logs(&raw_id, 10, None).await.unwrap();
+        assert_eq!(logs.len(), 2);
+        assert!(logs[0].contains("Worker spawned"));
+
+        // Verify stop invokes cancel hook
+        registry.stop(&raw_id).await.unwrap();
+        assert!(cancel_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        let updated = registry.get(&dev_id).await.unwrap();
+        assert_eq!(updated.status, DevProcessStatus::Stopped);
     }
 }

@@ -123,6 +123,31 @@ impl SubagentOrchestrator {
             ToolError::ExecutionFailed(format!("Failed to spawn subagent process: {}", e))
         })?;
 
+        let child_id = child.id().unwrap_or(0);
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", agent_id));
+        let worker_name = format!(
+            "Worker ({}) - {}",
+            role.badge(),
+            task.chars().take(40).collect::<String>()
+        );
+        let dev_handle = dev_registry
+            .register_worker(
+                dev_id,
+                worker_name,
+                format!(
+                    "minicode run -d {:?} --tools {:?} '{}'",
+                    target_dir,
+                    role.tool_filter_mode(),
+                    task
+                ),
+                target_dir.clone(),
+                child_id,
+                child_id,
+                None,
+            )
+            .await;
+
         // 6. Asynchronously read lines from child stdout using BufReader
         let stdout = child.stdout.take().ok_or_else(|| {
             if let Some(ref handle) = worktree_handle {
@@ -143,6 +168,7 @@ impl SubagentOrchestrator {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
 
+        let dev_handle_clone = std::sync::Arc::clone(&dev_handle);
         let read_stdout = async {
             while let Ok(Some(line)) = lines.next_line().await {
                 let trimmed = line.trim();
@@ -153,16 +179,23 @@ impl SubagentOrchestrator {
                     match event {
                         AgentEvent::StreamDelta { delta, .. } => {
                             final_response.push_str(&delta);
+                            dev_handle_clone.append_log(&delta).await;
                         }
                         AgentEvent::ToolCall { tool, .. } => {
                             if !tools_executed.contains(&tool) {
-                                tools_executed.push(tool);
+                                tools_executed.push(tool.clone());
                             }
+                            dev_handle_clone
+                                .append_log(format!("🔧 Tool: {}", tool))
+                                .await;
                         }
                         AgentEvent::FileModified { path, .. } => {
                             if !files_modified.contains(&path) {
-                                files_modified.push(path);
+                                files_modified.push(path.clone());
                             }
+                            dev_handle_clone
+                                .append_log(format!("📝 File modified: {}", path))
+                                .await;
                         }
                         AgentEvent::TurnEnd {
                             total_tokens_used,
@@ -176,6 +209,12 @@ impl SubagentOrchestrator {
                                     files_modified.push(f);
                                 }
                             }
+                            dev_handle_clone
+                                .append_log(format!(
+                                    "🏁 Turn ended (tokens: {})",
+                                    total_tokens_used
+                                ))
+                                .await;
                             if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
                                 || status == crate::constants::TURN_STATUS_CANCELLED
                             {
@@ -185,7 +224,10 @@ impl SubagentOrchestrator {
                         AgentEvent::Error { message, .. } => {
                             tracing::error!(message = %message, "Subagent encountered error");
                             child_success = false;
-                            error_msg = Some(message);
+                            error_msg = Some(message.clone());
+                            dev_handle_clone
+                                .append_log(format!("❌ Error: {}", message))
+                                .await;
                         }
                         _ => {}
                     }
@@ -220,6 +262,9 @@ impl SubagentOrchestrator {
                 )));
             }
             Err(_) => {
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                    .await;
                 let _ = child.kill().await;
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
@@ -249,11 +294,23 @@ impl SubagentOrchestrator {
                     "Subagent execution failed".to_string()
                 }
             });
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                    reason.clone(),
+                ))
+                .await;
             return Err(ToolError::ExecutionFailed(format!(
                 "Subagent `{}` failed: {}",
                 agent_id, reason
             )));
         }
+
+        dev_handle
+            .append_log(format!("[{}] Subagent finished successfully", agent_id))
+            .await;
+        dev_handle
+            .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+            .await;
 
         // Child succeeded: capture diff if worktree was used, and retain worktree for arbitration
         let diff = if let Some(ref handle) = worktree_handle {

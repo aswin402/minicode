@@ -14,6 +14,22 @@ use tokio::sync::RwLock;
 /// Maximum number of log lines retained in the in-memory ring buffer per process.
 pub const MAX_RING_BUFFER_LINES: usize = 1000;
 
+/// Thread-safe cancellation hook invoked when a process or worker handle is terminated.
+#[derive(Clone)]
+pub struct CancelHook(pub Arc<dyn Fn() + Send + Sync>);
+
+impl CancelHook {
+    pub fn new(f: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self(f)
+    }
+}
+
+impl std::fmt::Debug for CancelHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CancelHook")
+    }
+}
+
 /// Live handle to a background managed process.
 #[derive(Debug)]
 pub struct DevProcessHandle {
@@ -29,6 +45,7 @@ pub struct DevProcessHandle {
     pub ports: Arc<RwLock<Vec<u16>>>,
     pub logs: Arc<RwLock<VecDeque<String>>>,
     pub is_shutting_down: Arc<AtomicBool>,
+    pub cancel_hook: Option<CancelHook>,
 }
 
 impl DevProcessHandle {
@@ -56,15 +73,35 @@ impl DevProcessHandle {
         lines
     }
 
-    /// Terminates the process group cleanly with SIGTERM followed by SIGKILL fallback.
+    /// Appends a log line into the in-memory ring buffer.
+    pub async fn append_log(&self, line: impl Into<String>) {
+        let mut lock = self.logs.write().await;
+        if lock.len() >= MAX_RING_BUFFER_LINES {
+            lock.pop_front();
+        }
+        lock.push_back(line.into());
+    }
+
+    /// Updates the process lifecycle status.
+    pub async fn update_status(&self, new_status: DevProcessStatus) {
+        let mut lock = self.status.write().await;
+        *lock = new_status;
+    }
+
+    /// Terminates the process group cleanly with optional cancel hook, SIGTERM followed by SIGKILL fallback.
     pub async fn terminate(&self) -> Result<()> {
         self.is_shutting_down.store(true, Ordering::SeqCst);
+        if let Some(ref hook) = self.cancel_hook {
+            (hook.0)();
+        }
         let mut status_lock = self.status.write().await;
         if !status_lock.is_alive() {
             return Ok(());
         }
 
-        terminate_process_group(self.pgid).await?;
+        if self.pgid > 0 && self.pgid != std::process::id() {
+            terminate_process_group(self.pgid).await?;
+        }
         *status_lock = DevProcessStatus::Stopped;
         Ok(())
     }
@@ -233,6 +270,7 @@ pub async fn spawn_process_group(
         ports,
         logs,
         is_shutting_down,
+        cancel_hook: None,
     })
 }
 
