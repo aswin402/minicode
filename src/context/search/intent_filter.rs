@@ -186,6 +186,27 @@ impl IntentClassifier {
             categories.insert(ToolCategory::Blocks);
         }
 
+        // 10. MiniDev Runtime Orchestrator Intent
+        if lower.contains("server")
+            || lower.contains("dev server")
+            || lower.contains("run server")
+            || lower.contains("start server")
+            || lower.contains("launch server")
+            || lower.contains("backend")
+            || lower.contains("frontend")
+            || lower.contains("daemon")
+            || lower.contains("background process")
+            || lower.contains("background task")
+            || lower.contains("mini_dev")
+            || lower.contains("processes")
+            || lower.contains("restart server")
+            || lower.contains("kill server")
+            || lower.contains("stop server")
+            || lower.contains("vite")
+        {
+            categories.insert(ToolCategory::Dev);
+        }
+
         categories
     }
 

@@ -4,6 +4,7 @@ pub mod blocks;
 pub mod config;
 pub mod constants;
 pub mod context;
+pub mod dev;
 pub mod error;
 pub mod git;
 pub mod logging;

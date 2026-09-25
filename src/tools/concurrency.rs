@@ -245,6 +245,9 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "miniblock_update" | "block_delete" | "miniblock_delete" | "block_scaffold"
         | "miniblock_scaffold" | "block_import" | "miniblock_import" => ToolSafetyLevel::Mutating,
 
+        // MiniDev Runtime Orchestrator
+        "mini_dev" | "dev_manager" => ToolSafetyLevel::Mutating,
+
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,
     }

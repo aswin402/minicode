@@ -3,6 +3,7 @@ pub mod block_tools;
 #[allow(unused_imports)]
 pub use block_tools as miniblocks_tools;
 pub mod context_tools;
+pub mod dev_tools;
 pub mod exec_tools;
 pub mod explore_tools;
 pub mod fs_tools;

@@ -56,6 +56,7 @@ impl ToolRegistry {
         schemas.extend(registry::minipower_tools::get_schemas());
         schemas.extend(registry::explore_tools::get_schemas());
         schemas.extend(registry::block_tools::get_schemas());
+        schemas.extend(registry::dev_tools::get_schemas());
         schemas
     }
 
@@ -265,6 +266,11 @@ impl ToolRegistry {
 
         // 11. MiniBlocks UI Component & Design Token Warehouse Tools
         if let Some(res) = registry::block_tools::dispatch(tool_name, args, workspace_root).await {
+            return res;
+        }
+
+        // 12. MiniDev Runtime Orchestrator Tools
+        if let Some(res) = registry::dev_tools::dispatch(tool_name, args, workspace_root).await {
             return res;
         }
 

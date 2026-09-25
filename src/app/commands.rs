@@ -296,6 +296,108 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        // MiniDev Runtime Orchestrator Slash Commands (/dev, /processes, /serve)
+        if prompt_lower == "/dev"
+            || prompt_lower == "/processes"
+            || prompt_lower == "/serve"
+            || prompt_lower.starts_with("/dev ")
+            || prompt_lower.starts_with("/processes ")
+            || prompt_lower.starts_with("/serve ")
+        {
+            let sub = if prompt_lower.starts_with("/dev ") {
+                prompt_trimmed[5..].trim()
+            } else if prompt_lower.starts_with("/processes ") {
+                prompt_trimmed[11..].trim()
+            } else if prompt_lower.starts_with("/serve ") {
+                prompt_trimmed[7..].trim()
+            } else {
+                ""
+            };
+
+            let registry = crate::dev::registry::get_global_dev_registry();
+            match sub {
+                "" | "list" => {
+                    let list = registry.list().await;
+                    if list.is_empty() {
+                        self.timeline.add_status("ℹ No active development processes running. Use 'mini_dev start' to launch one.".to_string());
+                    } else {
+                        let mut msg = format!("🚀 Active Development Processes ({})\n", list.len());
+                        for p in list {
+                            let url_disp = p.url.as_deref().unwrap_or("-");
+                            msg.push_str(&format!(
+                                "• [{}] {} ({:?}) - URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB\n",
+                                p.id,
+                                p.name,
+                                p.process_type,
+                                url_disp,
+                                p.pid.unwrap_or(0),
+                                p.cpu_percent,
+                                p.memory_rss_mb,
+                            ));
+                        }
+                        self.timeline.add_status(msg);
+                    }
+                }
+                "resources" => {
+                    let res = registry.resources().await;
+                    self.timeline.add_status(format!(
+                        "📈 Runtime Resource Telemetry:\n• Active Processes: {}\n• Total CPU Usage: {:.1}%\n• Total RSS Memory: {:.1} MB\n• Listening Ports: {:?}",
+                        res.total_active_processes,
+                        res.total_cpu_percent,
+                        res.total_memory_rss_mb,
+                        res.active_ports,
+                    ));
+                }
+                "kill" | "kill_all" | "stop all" => {
+                    let count = registry.kill_all().await.unwrap_or(0);
+                    self.timeline.add_status(format!(
+                        "✔ Terminated {} active development processes.",
+                        count
+                    ));
+                }
+                other if other.starts_with("stop ") => {
+                    let id_str = other[5..].trim();
+                    let id = crate::dev::models::DevProcessId::from(id_str);
+                    match registry.stop(&id).await {
+                        Ok(_) => self
+                            .timeline
+                            .add_status(format!("✔ Stopped development process '{}'.", id_str)),
+                        Err(e) => self
+                            .timeline
+                            .add_status(format!("❌ Failed to stop process '{}': {}", id_str, e)),
+                    }
+                }
+                other if other.starts_with("logs ") => {
+                    let id_str = other[5..].trim();
+                    let id = crate::dev::models::DevProcessId::from(id_str);
+                    match registry.logs(&id, 20, None).await {
+                        Ok(logs) => {
+                            if logs.is_empty() {
+                                self.timeline
+                                    .add_status(format!("ℹ No logs for process '{}'.", id_str));
+                            } else {
+                                self.timeline.add_status(format!(
+                                    "📜 Logs for '{}':\n{}",
+                                    id_str,
+                                    logs.join("\n")
+                                ));
+                            }
+                        }
+                        Err(e) => self
+                            .timeline
+                            .add_status(format!("❌ Error fetching logs: {}", e)),
+                    }
+                }
+                unknown => {
+                    self.timeline.add_status(format!(
+                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | resources | logs <id> | stop <id> | kill]",
+                        unknown
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")

@@ -37,6 +37,9 @@ pub enum MinicodeError {
     #[error("UI error: {0}")]
     Ui(String),
 
+    #[error("Dev runtime error: {0}")]
+    Dev(#[from] DevError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -273,6 +276,30 @@ pub enum GitError {
 
     #[error("GitHub CLI ('gh') is not installed or not in PATH. Please install gh to use pull request features.")]
     GhCliNotFound,
+}
+
+#[derive(Error, Debug)]
+pub enum DevError {
+    #[error("Process '{0}' not found")]
+    NotFound(String),
+
+    #[error("Process spawn failed: {0}")]
+    SpawnFailed(String),
+
+    #[error("Failed to terminate process '{0}': {1}")]
+    TerminationFailed(String, String),
+
+    #[error("IO error in dev runtime: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Port error: {0}")]
+    Port(String),
+
+    #[error("Resource limit exceeded: {0}")]
+    ResourceExceeded(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 impl<T> From<tokio::sync::mpsc::error::SendError<T>> for MinicodeError {

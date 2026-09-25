@@ -4,6 +4,7 @@ pub mod blocks;
 mod config;
 mod constants;
 mod context;
+pub mod dev;
 mod error;
 pub mod git;
 mod logging;
@@ -555,6 +556,7 @@ fn install_panic_hook() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     install_panic_hook();
+    let _dev_lifecycle_guard = dev::lifecycle::install_lifecycle_hooks();
     let cli = Cli::parse();
 
     // 1. Resolve workspace root
