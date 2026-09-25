@@ -536,6 +536,23 @@ pub fn scaffold_custom_component(
         "custom-component-desc".to_string()
     };
 
+    let has_title_in_props = props.iter().any(|p| p.trim().eq_ignore_ascii_case("title"));
+    let has_desc_in_props = props.iter().any(|p| {
+        p.trim().eq_ignore_ascii_case("description") || p.trim().eq_ignore_ascii_case("desc")
+    });
+
+    let h2_element = if has_title_in_props {
+        format!("<h2 className=\"{}\">{{title}}</h2>", title_class)
+    } else {
+        format!("<h2 className=\"{}\">{}</h2>", title_class, clean_name)
+    };
+
+    let p_element = if has_desc_in_props {
+        format!("<p className=\"{}\">{{description}}</p>", desc_class)
+    } else {
+        format!("<p className=\"{}\">{}</p>", desc_class, description)
+    };
+
     let cta_snippet = if let Some(pal) = palette {
         format!(
             "      <div className=\"pt-2\">\n        <button className=\"inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[{}] text-white font-medium hover:opacity-90 transition-opacity\">\n          <span>Explore</span>\n        </button>\n      </div>\n",
@@ -547,28 +564,26 @@ pub fn scaffold_custom_component(
 
     let code = if conventions.is_default_export {
         format!(
-            "import React from \"react\";\n{}{}\nexport default function {}({}) {{\n  return (\n    <section className=\"{} ${{className}}\">\n      <h2 className=\"{}\">{{title}}</h2>\n      <p className=\"{}\">{}</p>\n{}    </section>\n  );\n}}\n",
+            "import React from \"react\";\n{}{}\nexport default function {}({}) {{\n  return (\n    <section className={{`{} ${{className}}`}}>\n      {}\n      {}\n{}    </section>\n  );\n}}\n",
             icon_import,
             props_interface,
             clean_name,
             props_destructure,
             container_class,
-            title_class,
-            desc_class,
-            description,
+            h2_element,
+            p_element,
             cta_snippet
         )
     } else {
         format!(
-            "import React from \"react\";\n{}{}\nexport function {}({}) {{\n  return (\n    <section className=\"{} ${{className}}\">\n      <h2 className=\"{}\">{{title}}</h2>\n      <p className=\"{}\">{}</p>\n{}    </section>\n  );\n}}\n",
+            "import React from \"react\";\n{}{}\nexport function {}({}) {{\n  return (\n    <section className={{`{} ${{className}}`}}>\n      {}\n      {}\n{}    </section>\n  );\n}}\n",
             icon_import,
             props_interface,
             clean_name,
             props_destructure,
             container_class,
-            title_class,
-            desc_class,
-            description,
+            h2_element,
+            p_element,
             cta_snippet
         )
     };

@@ -253,6 +253,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional palette name or UUID (e.g. 'Cyberpunk Neon', 'Aceternity Dark') to automatically inject design tokens into the scaffolded component"
                     },
+                    "typescript": {
+                        "type": "boolean",
+                        "description": "Whether to scaffold TypeScript (.tsx) or JavaScript (.jsx). Default: auto-detected or true"
+                    },
                     "wire_to": {
                         "type": "string",
                         "description": "Optional consumer file (e.g. 'src/App.tsx') to auto-wire the component import into (alias: wire)"
@@ -798,6 +802,18 @@ pub async fn dispatch(
                             conventions.has_tailwind = true;
                         }
                     }
+                    if let Some(ts) = get_bool(args, "typescript").or_else(|| get_bool(args, "ts")) {
+                        conventions.is_typescript = ts;
+                        if ts && conventions.framework != BlockFramework::Svelte {
+                            conventions.file_extension = "tsx".to_string();
+                        } else if !ts && conventions.framework != BlockFramework::Svelte {
+                            conventions.file_extension = "jsx".to_string();
+                        }
+                    } else if !conventions.is_typescript && conventions.framework != BlockFramework::Svelte {
+                        // Default modern React / Tailwind component scaffolding to TypeScript (.tsx)
+                        conventions.is_typescript = true;
+                        conventions.file_extension = "tsx".to_string();
+                    }
                     let target_dir_arg = opt_str(args, "target_dir")
                         .unwrap_or_else(|| conventions.component_dir.to_str().unwrap_or("src/components"));
                     let category_str = opt_str(args, "category").unwrap_or("section");
@@ -876,22 +892,37 @@ pub async fn dispatch(
                             workspace_root,
                             Path::new(wire_target),
                         )?;
-                        let import_path =
-                            resolve_import_path(workspace_root, &dest, &wire_path, &conventions);
-                        let stmt = generate_import_statement(
-                            comp_name,
-                            &import_path,
-                            conventions.is_default_export,
-                        );
-                        let wired = wire_import_into_file(&wire_path, &stmt, comp_name)
-                            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-                        if wired {
-                            out.push_str(&format!("\n- Auto-Wired into `{}`: `{}`\n", wire_target, stmt));
-                        } else {
+                        if !wire_path.is_file() {
                             out.push_str(&format!(
-                                "\n- Import already present in `{}`: `{}`\n",
-                                wire_target, stmt
+                                "\n- Auto-Wiring deferred: Target file `{}` does not exist yet. Component was scaffolded at `{}`.\n",
+                                wire_target,
+                                rel_dest.display()
                             ));
+                        } else {
+                            let import_path =
+                                resolve_import_path(workspace_root, &dest, &wire_path, &conventions);
+                            let stmt = generate_import_statement(
+                                comp_name,
+                                &import_path,
+                                conventions.is_default_export,
+                            );
+                            match wire_import_into_file(&wire_path, &stmt, comp_name) {
+                                Ok(true) => {
+                                    out.push_str(&format!("\n- Auto-Wired into `{}`: `{}`\n", wire_target, stmt));
+                                }
+                                Ok(false) => {
+                                    out.push_str(&format!(
+                                        "\n- Import already present in `{}`: `{}`\n",
+                                        wire_target, stmt
+                                    ));
+                                }
+                                Err(e) => {
+                                    out.push_str(&format!(
+                                        "\n- Auto-Wiring notice (`{}`): {}\n",
+                                        wire_target, e
+                                    ));
+                                }
+                            }
                         }
                     }
 
@@ -1757,5 +1788,35 @@ mod tests {
         // Verify App.tsx has import statement
         let app_content = std::fs::read_to_string(&app_file).unwrap();
         assert!(app_content.contains("ThemedPricing"));
+    }
+
+    #[tokio::test]
+    async fn test_block_scaffold_deferred_auto_wire_when_target_missing() {
+        let temp = tempdir().unwrap();
+
+        // Target consumer file does NOT exist yet
+        let scaffold_res = dispatch(
+            "block_scaffold",
+            &json!({
+                "component_name": "DeferredNavbar",
+                "category": "navbar",
+                "description": "Responsive navigation header",
+                "palette": "Cyberpunk Neon",
+                "framework": "tailwind",
+                "wire": "src/App.tsx"
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(scaffold_res.contains("Successfully scaffolded custom component 'DeferredNavbar'"));
+        assert!(scaffold_res
+            .contains("Auto-Wiring deferred: Target file `src/App.tsx` does not exist yet"));
+
+        // Verify component was still created successfully
+        let comp_file = temp.path().join("src/components/DeferredNavbar.tsx");
+        assert!(comp_file.is_file());
     }
 }
