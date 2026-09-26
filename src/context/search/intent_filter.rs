@@ -98,9 +98,20 @@ impl IntentClassifier {
             || lower.contains("impact analysis")
             || lower.contains("repo_map")
             || lower.contains("repomap")
+            || lower.contains("who calls")
+            || lower.contains("where is")
+            || lower.contains("how does")
+            || lower.contains("call hierarchy")
+            || lower.contains("impact of")
+            || (crate::utils::has_word(&lower, "trace")
+                && (crate::utils::has_word(&lower, "call")
+                    || crate::utils::has_word(&lower, "function")
+                    || crate::utils::has_word(&lower, "symbol")
+                    || crate::utils::has_word(&lower, "flow")))
         {
             categories.insert(ToolCategory::Codegraph);
             categories.insert(ToolCategory::Memory);
+            categories.insert(ToolCategory::Search);
         }
 
         // 5. Multi-Agent & Swarm Intent
@@ -171,8 +182,15 @@ impl IntentClassifier {
             || lower.contains("red flag")
             || lower.contains("worktree")
             || lower.contains("compliance")
+            || lower.contains("acceptance criteria")
+            || lower.contains("end-to-end")
+            || crate::utils::has_word(&lower, "implement")
+            || crate::utils::has_word(&lower, "refactor")
+            || crate::utils::has_word(&lower, "feature")
+            || crate::utils::has_word(&lower, "milestone")
         {
             categories.insert(ToolCategory::MiniPower);
+            categories.insert(ToolCategory::Memory);
         }
 
         // 9. MiniBlocks UI Component & Design Warehouse Intent
@@ -189,29 +207,58 @@ impl IntentClassifier {
             || lower.contains("hero")
             || lower.contains("ui design")
             || lower.contains("design token")
+            || lower.contains("landing page")
+            || lower.contains("landing")
+            || lower.contains("dashboard")
+            || lower.contains("sidebar")
+            || lower.contains("pricing")
+            || lower.contains("modal")
+            || lower.contains("dialog")
+            || lower.contains("tailwind")
+            || lower.contains("dark mode")
+            || lower.contains("light mode")
+            || lower.contains("responsive")
+            || crate::utils::has_word(&lower, "ui")
+            || crate::utils::has_word(&lower, "frontend")
+            || crate::utils::has_word(&lower, "css")
+            || crate::utils::has_word(&lower, "styling")
+            || crate::utils::has_word(&lower, "button")
+            || crate::utils::has_word(&lower, "card")
+            || crate::utils::has_word(&lower, "table")
+            || crate::utils::has_word(&lower, "footer")
+            || crate::utils::has_word(&lower, "header")
+            || crate::utils::has_word(&lower, "wireframe")
         {
             categories.insert(ToolCategory::Blocks);
+            categories.insert(ToolCategory::MiniKit);
         }
 
         // 10. MiniDev Runtime Orchestrator Intent
-        if lower.contains("server")
-            || lower.contains("dev server")
+        if lower.contains("dev server")
             || lower.contains("run server")
             || lower.contains("start server")
             || lower.contains("launch server")
-            || lower.contains("backend")
-            || lower.contains("frontend")
-            || lower.contains("daemon")
-            || lower.contains("background process")
-            || lower.contains("background task")
-            || lower.contains("mini_dev")
-            || lower.contains("processes")
             || lower.contains("restart server")
             || lower.contains("kill server")
             || lower.contains("stop server")
-            || lower.contains("vite")
+            || lower.contains("background process")
+            || lower.contains("background task")
+            || lower.contains("mini_dev")
+            || lower.contains("listen on port")
+            || lower.contains("port ")
+            || lower.starts_with("serve")
+            || lower.contains(" serve ")
+            || crate::utils::has_word(&lower, "daemon")
+            || crate::utils::has_word(&lower, "vite")
+            || (crate::utils::has_word(&lower, "server")
+                && (crate::utils::has_word(&lower, "start")
+                    || crate::utils::has_word(&lower, "run")
+                    || crate::utils::has_word(&lower, "status")
+                    || crate::utils::has_word(&lower, "logs")
+                    || crate::utils::has_word(&lower, "kill")))
         {
             categories.insert(ToolCategory::Dev);
+            categories.insert(ToolCategory::Exec);
         }
 
         categories
@@ -357,6 +404,33 @@ mod tests {
         assert!(detected2.contains(&ToolCategory::Blocks));
         let detected3 = IntentClassifier::detect("scaffold a hero section from miniblocks");
         assert!(detected3.contains(&ToolCategory::Blocks));
+        // Natural UI prompts without commands
+        let detected4 = IntentClassifier::detect(
+            "create a modern landing page with a pricing table in dark mode",
+        );
+        assert!(detected4.contains(&ToolCategory::Blocks));
+        assert!(detected4.contains(&ToolCategory::MiniKit));
+        let detected5 = IntentClassifier::detect("style the sidebar and button with tailwind");
+        assert!(detected5.contains(&ToolCategory::Blocks));
+    }
+
+    #[test]
+    fn test_intent_detection_natural_prompts() {
+        // Natural AST / CodeGraph exploration
+        let det_ast =
+            IntentClassifier::detect("where is process_payment defined and who calls it?");
+        assert!(det_ast.contains(&ToolCategory::Codegraph));
+        assert!(det_ast.contains(&ToolCategory::Search));
+
+        // Natural Dev server
+        let det_dev = IntentClassifier::detect("start the dev server on port 3000");
+        assert!(det_dev.contains(&ToolCategory::Dev));
+        assert!(det_dev.contains(&ToolCategory::Exec));
+
+        // Natural Engineering / TDD
+        let det_eng = IntentClassifier::detect("implement user authentication feature with tests");
+        assert!(det_eng.contains(&ToolCategory::MiniPower));
+        assert!(det_eng.contains(&ToolCategory::Memory));
     }
 
     #[test]

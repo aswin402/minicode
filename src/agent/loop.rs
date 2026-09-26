@@ -432,6 +432,26 @@ impl AgentLoop {
             self.cumulative_tokens_used,
         );
 
+        // Autonomous Workflow Routing & Dynamic Pre-Turn Context Enrichment
+        let workflow_archetype = crate::agent::orchestrator::WorkflowRouter::classify(user_prompt);
+        let workflow_enrichment = crate::agent::orchestrator::WorkflowRouter::enrich_context(
+            &self.workspace_root,
+            user_prompt,
+            workflow_archetype,
+        )
+        .await;
+
+        // Auto-initialize living IntentLedger for multi-phase engineering if not already active
+        if self.config.agent.intent.enabled
+            && self.intent_ledger.is_none()
+            && workflow_archetype
+                == crate::agent::orchestrator::WorkflowArchetype::MultiPhaseEngineering
+        {
+            self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
+                user_prompt,
+            ));
+        }
+
         let recency_block = PromptBuilder::build_recency_context(
             &self.workspace_root,
             if anchor_block.is_empty() {
@@ -447,6 +467,7 @@ impl AgentLoop {
             } else {
                 None
             },
+            workflow_enrichment.as_deref(),
         );
 
         let prompt_with_context = if recency_block.trim().is_empty() {
@@ -491,6 +512,11 @@ impl AgentLoop {
 
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
             std::collections::HashSet::new();
+        // Pre-activate tools recommended for the classified workflow archetype
+        for cat in workflow_archetype.recommended_categories() {
+            active_categories.insert(cat);
+        }
+
         let mut active_mcp_servers: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 

@@ -98,6 +98,13 @@ pub fn mask_secret(secret: &str, visible_tail: usize) -> String {
     result
 }
 
+/// Checks if a string contains `word` as a distinct token, bounded by whitespace or punctuation.
+#[must_use]
+pub fn has_word(text: &str, word: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|w| w.eq_ignore_ascii_case(word))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +159,18 @@ mod tests {
         assert_eq!(mask_secret("short", 10), "*****");
         assert_eq!(mask_secret("", 4), "");
         assert_eq!(mask_secret("abcdef", 2), "****ef");
+    }
+
+    #[test]
+    fn test_has_word() {
+        assert!(has_word("style the sidebar with css", "css"));
+        assert!(!has_word("process background tasks", "css"));
+        assert!(has_word("modern UI with buttons", "ui"));
+        assert!(!has_word("build cargo project", "ui"));
+        assert!(has_word("start the dev-server", "dev"));
+        assert!(has_word(
+            "where is process_payment defined?",
+            "process_payment"
+        ));
     }
 }

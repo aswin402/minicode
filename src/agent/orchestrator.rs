@@ -339,3 +339,488 @@ impl MultiAgentOrchestrator {
         out
     }
 }
+
+/// Execution archetype detected from natural language user prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowArchetype {
+    /// UI/frontend development, styling, components, or layout creation.
+    UiDesign,
+    /// AST slicing, code tracing, architecture exploration, or impact analysis.
+    CodeExploration,
+    /// Dev servers, background daemons, port monitoring, or runtime logs.
+    RuntimeDev,
+    /// Complex multi-step feature engineering, refactoring, or TDD workflows.
+    MultiPhaseEngineering,
+    /// Standard or single-step task (bugfix, direct file edit, general question).
+    Standard,
+}
+
+impl WorkflowArchetype {
+    /// Returns the recommended tool categories for this execution archetype.
+    pub fn recommended_categories(&self) -> Vec<crate::tools::category::ToolCategory> {
+        use crate::tools::category::ToolCategory;
+        match self {
+            Self::UiDesign => vec![ToolCategory::Blocks, ToolCategory::MiniKit],
+            Self::CodeExploration => vec![
+                ToolCategory::Codegraph,
+                ToolCategory::Search,
+                ToolCategory::Memory,
+            ],
+            Self::RuntimeDev => vec![ToolCategory::Dev, ToolCategory::Exec],
+            Self::MultiPhaseEngineering => vec![
+                ToolCategory::MiniPower,
+                ToolCategory::Memory,
+                ToolCategory::Files,
+                ToolCategory::Exec,
+            ],
+            Self::Standard => vec![],
+        }
+    }
+}
+
+/// Autonomous workflow router that analyzes natural language prompts,
+/// classifies execution archetypes, activates tool categories, and synthesizes
+/// specialized pre-turn context without requiring manual slash commands.
+pub struct WorkflowRouter;
+
+impl WorkflowRouter {
+    /// Classifies user prompt into an execution archetype.
+    pub fn classify(prompt: &str) -> WorkflowArchetype {
+        let lower = prompt.to_ascii_lowercase();
+
+        // 1. UI Design & Component Warehouse Archetype
+        if lower.contains("landing page")
+            || lower.contains("landing")
+            || lower.contains("dashboard")
+            || lower.contains("sidebar")
+            || lower.contains("pricing")
+            || lower.contains("modal")
+            || lower.contains("dialog")
+            || lower.contains("navbar")
+            || lower.contains("hero section")
+            || lower.contains("ui design")
+            || lower.contains("design token")
+            || lower.contains("tailwind")
+            || lower.contains("palette")
+            || lower.contains("gradient")
+            || lower.contains("dark mode")
+            || lower.contains("light mode")
+            || lower.contains("wireframe")
+            || crate::utils::has_word(&lower, "ui")
+            || crate::utils::has_word(&lower, "frontend")
+            || crate::utils::has_word(&lower, "component")
+            || crate::utils::has_word(&lower, "components")
+            || crate::utils::has_word(&lower, "css")
+            || crate::utils::has_word(&lower, "styling")
+            || crate::utils::has_word(&lower, "button")
+            || crate::utils::has_word(&lower, "card")
+            || crate::utils::has_word(&lower, "table")
+        {
+            return WorkflowArchetype::UiDesign;
+        }
+
+        // 2. Runtime Dev & Process Orchestration Archetype
+        if lower.contains("dev server")
+            || lower.contains("run server")
+            || lower.contains("start server")
+            || lower.contains("launch server")
+            || lower.contains("restart server")
+            || lower.contains("kill server")
+            || lower.contains("stop server")
+            || lower.contains("background process")
+            || lower.contains("background task")
+            || lower.contains("mini_dev")
+            || lower.contains("listen on port")
+            || lower.contains("port ")
+            || lower.starts_with("serve")
+            || lower.contains(" serve ")
+            || crate::utils::has_word(&lower, "daemon")
+            || crate::utils::has_word(&lower, "vite")
+            || (crate::utils::has_word(&lower, "server")
+                && (crate::utils::has_word(&lower, "start")
+                    || crate::utils::has_word(&lower, "run")
+                    || crate::utils::has_word(&lower, "status")
+                    || crate::utils::has_word(&lower, "logs")
+                    || crate::utils::has_word(&lower, "kill")))
+        {
+            return WorkflowArchetype::RuntimeDev;
+        }
+
+        // 3. Multi-Phase Engineering, Planning & TDD Archetype
+        if lower.contains("power plan")
+            || lower.contains("superpower")
+            || lower.contains("minipower")
+            || lower.contains("acceptance criteria")
+            || lower.contains("end-to-end")
+            || lower.contains("verification barrier")
+            || (crate::utils::has_word(&lower, "implement")
+                && (crate::utils::has_word(&lower, "feature")
+                    || crate::utils::has_word(&lower, "module")
+                    || crate::utils::has_word(&lower, "system")
+                    || crate::utils::has_word(&lower, "service")
+                    || crate::utils::has_word(&lower, "api")
+                    || crate::utils::has_word(&lower, "with")))
+            || (crate::utils::has_word(&lower, "refactor")
+                && (crate::utils::has_word(&lower, "codebase")
+                    || crate::utils::has_word(&lower, "layer")
+                    || crate::utils::has_word(&lower, "architecture")
+                    || crate::utils::has_word(&lower, "system")
+                    || crate::utils::has_word(&lower, "module")))
+            || (crate::utils::has_word(&lower, "build")
+                && (crate::utils::has_word(&lower, "app")
+                    || crate::utils::has_word(&lower, "fullstack")
+                    || crate::utils::has_word(&lower, "feature")
+                    || crate::utils::has_word(&lower, "system")))
+            || (crate::utils::has_word(&lower, "plan")
+                && crate::utils::has_word(&lower, "milestones"))
+            || crate::utils::has_word(&lower, "tdd")
+            || crate::utils::has_word(&lower, "milestone")
+        {
+            return WorkflowArchetype::MultiPhaseEngineering;
+        }
+
+        // 4. CodeGraph, AST Slicing & Architecture Exploration Archetype
+        if lower.contains("blast radius")
+            || lower.contains("code graph")
+            || lower.contains("codegraph")
+            || lower.contains("code_explore")
+            || lower.contains("diff_impact")
+            || lower.contains("code_explain")
+            || lower.contains("call trace")
+            || lower.contains("trace flow")
+            || lower.contains("who calls")
+            || lower.contains("call hierarchy")
+            || lower.contains("dependency graph")
+            || lower.contains("repo map")
+            || lower.contains("repomap")
+            || lower.contains("impact of")
+            || crate::utils::has_word(&lower, "callers")
+            || crate::utils::has_word(&lower, "callees")
+            || crate::utils::has_word(&lower, "architecture")
+            || (crate::utils::has_word(&lower, "trace")
+                && (crate::utils::has_word(&lower, "call")
+                    || crate::utils::has_word(&lower, "function")
+                    || crate::utils::has_word(&lower, "symbol")
+                    || crate::utils::has_word(&lower, "flow")))
+        {
+            return WorkflowArchetype::CodeExploration;
+        }
+
+        WorkflowArchetype::Standard
+    }
+
+    /// Synthesizes contextual enrichment block according to the detected archetype.
+    pub async fn enrich_context(
+        workspace_root: &Path,
+        prompt: &str,
+        archetype: WorkflowArchetype,
+    ) -> Option<String> {
+        match archetype {
+            WorkflowArchetype::UiDesign => Self::enrich_ui_design(prompt),
+            WorkflowArchetype::CodeExploration => Self::enrich_code_exploration(prompt),
+            WorkflowArchetype::RuntimeDev => Self::enrich_runtime_dev().await,
+            WorkflowArchetype::MultiPhaseEngineering => {
+                Self::enrich_multiphase_engineering(workspace_root, prompt)
+            }
+            WorkflowArchetype::Standard => None,
+        }
+    }
+
+    fn enrich_ui_design(prompt: &str) -> Option<String> {
+        let store_lock = crate::blocks::get_global_block_store();
+        let store = match store_lock.read() {
+            Ok(s) => s,
+            Err(e) => e.into_inner(),
+        };
+
+        let lower = prompt.to_ascii_lowercase();
+        let candidates = [
+            "navbar",
+            "hero",
+            "pricing",
+            "card",
+            "table",
+            "button",
+            "modal",
+            "sidebar",
+            "footer",
+            "form",
+            "dashboard",
+            "accordion",
+            "tabs",
+            "avatar",
+            "badge",
+            "dropdown",
+            "input",
+            "slider",
+        ];
+
+        let mut matched_query = None;
+        for c in &candidates {
+            if lower.contains(c) {
+                matched_query = Some(*c);
+                break;
+            }
+        }
+
+        let filter = crate::blocks::BlockSearchFilter {
+            query: matched_query.map(|q| q.to_string()),
+            limit: 4,
+            ..Default::default()
+        };
+
+        let components = store.search_components(&filter);
+        let palettes = store.list_palettes();
+
+        let mut out = String::from("<recommended_miniblocks>\n");
+        out.push_str("  Autonomous UI Warehouse Guidance:\n");
+        out.push_str("  1. Do not code UI elements, styles, or color palettes from scratch when warehouse blocks match.\n");
+
+        if !components.is_empty() {
+            out.push_str("  2. Matching verified components in MiniBlocks warehouse:\n");
+            for c in components.iter().take(3) {
+                out.push_str(&format!(
+                    "     • `{}` ({}, {:?}): {}\n",
+                    c.name, c.category, c.framework, c.description
+                ));
+            }
+            out.push_str("     Action: Use `block_insert` or `block_scaffold` to insert them directly into project source.\n");
+        } else {
+            out.push_str("  2. Search warehouse with `block_search` to find pre-built components for your stack.\n");
+        }
+
+        if !palettes.is_empty() {
+            out.push_str("  3. Available color palette tokens:\n");
+            for p in palettes.iter().take(2) {
+                out.push_str(&format!(
+                    "     • `{}` (Colors: [Background: {}, Surface: {}, Accent: {}, Text: {}])\n",
+                    p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
+                ));
+            }
+            out.push_str("     Action: Pass palette name to `block_scaffold(palette=\"...\")` for automated theme tokens.\n");
+        }
+
+        out.push_str("</recommended_miniblocks>");
+        Some(out)
+    }
+
+    fn enrich_code_exploration(prompt: &str) -> Option<String> {
+        let mut symbols = Vec::new();
+
+        // 1. Backtick extraction `foo`
+        let mut parts = prompt.split('`');
+        let _ = parts.next();
+        while let Some(candidate) = parts.next() {
+            let trimmed = candidate.trim();
+            if !trimmed.is_empty() && trimmed.len() <= 64 && !trimmed.contains(' ') {
+                symbols.push(trimmed.to_string());
+            }
+            let _ = parts.next();
+        }
+
+        // 2. Snake_case or CamelCase words if no backticks found
+        if symbols.is_empty() {
+            for word in prompt.split_whitespace() {
+                let clean = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                let is_snake = clean.contains('_') && clean.len() >= 3 && clean.len() <= 50;
+                let is_camel = clean.len() >= 4
+                    && clean
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false)
+                    && clean.chars().skip(1).any(|c| c.is_lowercase())
+                    && clean.chars().skip(2).any(|c| c.is_uppercase());
+
+                if is_snake || is_camel {
+                    symbols.push(clean.to_string());
+                }
+                if symbols.len() >= 3 {
+                    break;
+                }
+            }
+        }
+
+        let mut out = String::from("<code_exploration_guidance>\n");
+        out.push_str("  Autonomous AST & CodeGraph Guidance:\n");
+        if !symbols.is_empty() {
+            out.push_str(&format!(
+                "  Candidate symbol(s) detected in user prompt: {}\n",
+                symbols
+                    .iter()
+                    .map(|s| format!("`{}`", s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            out.push_str("  1. Use `code_explore(symbol=\"...\")` or `code_explain(symbol=\"...\")` for fast surgical AST inspection without loading full files.\n");
+        } else {
+            out.push_str("  1. Use `code_explore(query=\"...\")` to locate definitions, callers, callees, and layer boundaries across the repository.\n");
+        }
+        out.push_str("  2. Use `diff_impact` before or after modifications to verify architectural layer boundaries and blast radius.\n");
+        out.push_str("</code_exploration_guidance>");
+        Some(out)
+    }
+
+    async fn enrich_runtime_dev() -> Option<String> {
+        let dev_reg = crate::dev::get_global_dev_registry();
+        let procs = dev_reg.list().await;
+
+        let mut out = String::from("<active_dev_services>\n");
+        if procs.is_empty() {
+            out.push_str("  Managed Runtime Daemons: None currently active.\n");
+            out.push_str("  Autonomous Action: Use `mini_dev(action=\"start\", command=\"...\", port=...)` to launch dev servers asynchronously.\n");
+        } else {
+            out.push_str(&format!(
+                "  Managed Runtime Daemons ({} active):\n",
+                procs.len()
+            ));
+            for p in &procs {
+                let port_str = if p.ports.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " [Ports: {}]",
+                        p.ports
+                            .iter()
+                            .map(|pt| pt.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                let pid_str = p
+                    .pid
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "N/A".to_string());
+                out.push_str(&format!(
+                    "  • [{}] `{}` (PID: {}, Status: {}{})\n",
+                    p.id, p.name, pid_str, p.status, port_str
+                ));
+            }
+            out.push_str("  Autonomous Action: Inspect live output via `mini_dev(action=\"logs\", id=\"...\")` or check health with `mini_dev(action=\"status\")`.\n");
+        }
+        out.push_str("</active_dev_services>");
+        Some(out)
+    }
+
+    fn enrich_multiphase_engineering(workspace_root: &Path, _prompt: &str) -> Option<String> {
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
+        let docs_name = docs_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
+
+        let mut out = String::from("<autonomous_engineering_guidance>\n");
+        out.push_str("  Autonomous 4-Gate Methodology Activated:\n");
+        out.push_str(&format!(
+            "  1. Gate 1 (Intent Anchor): Define the goal and bite-sized milestones. Record progress in `{}/core/todo.md` using `create_plan` or direct file edits.\n",
+            docs_name
+        ));
+        out.push_str(&format!(
+            "  2. Gate 2 (Architecture & Discovery): Consult relevant specs in `{}/core/` and verify dependencies before making changes.\n",
+            docs_name
+        ));
+        out.push_str("  3. Gate 3 (TDD Implementation): Write or update tests FIRST. Verify failure (Red), then implement minimal code, then verify green.\n");
+        out.push_str("  4. Gate 4 (Verification Barrier): Execute compiler/test checks (`cargo test -j 1 ...`, `npm test`, etc.) to confirm 0 errors before concluding.\n");
+        out.push_str("</autonomous_engineering_guidance>");
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workflow_router_classify_ui_design() {
+        assert_eq!(
+            WorkflowRouter::classify(
+                "Create a modern landing page with a pricing card in dark mode"
+            ),
+            WorkflowArchetype::UiDesign
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Style the sidebar and buttons with tailwind"),
+            WorkflowArchetype::UiDesign
+        );
+    }
+
+    #[test]
+    fn test_workflow_router_classify_runtime_dev() {
+        assert_eq!(
+            WorkflowRouter::classify("Start the dev server on port 3000"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Check the server logs with mini_dev"),
+            WorkflowArchetype::RuntimeDev
+        );
+    }
+
+    #[test]
+    fn test_workflow_router_classify_code_exploration() {
+        assert_eq!(
+            WorkflowRouter::classify("Where is `process_payment` defined and who calls it?"),
+            WorkflowArchetype::CodeExploration
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Analyze the blast radius and call hierarchy of this struct"),
+            WorkflowArchetype::CodeExploration
+        );
+    }
+
+    #[test]
+    fn test_workflow_router_classify_multiphase_engineering() {
+        assert_eq!(
+            WorkflowRouter::classify("Implement user authentication feature with tests"),
+            WorkflowArchetype::MultiPhaseEngineering
+        );
+        assert_eq!(
+            WorkflowRouter::classify(
+                "Refactor the database architecture layer with acceptance criteria"
+            ),
+            WorkflowArchetype::MultiPhaseEngineering
+        );
+    }
+
+    #[test]
+    fn test_workflow_router_classify_standard() {
+        assert_eq!(
+            WorkflowRouter::classify("Fix typo on line 42 in main.rs"),
+            WorkflowArchetype::Standard
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workflow_router_enrichment() {
+        let temp = tempfile::tempdir().unwrap();
+        let prompt_ui = "Build a responsive navbar component";
+        let enrichment =
+            WorkflowRouter::enrich_context(temp.path(), prompt_ui, WorkflowArchetype::UiDesign)
+                .await;
+        assert!(enrichment.is_some());
+        let text = enrichment.unwrap();
+        assert!(text.contains("<recommended_miniblocks>"));
+
+        let prompt_ast = "Trace callers of `execute_turn`";
+        let enrichment_ast = WorkflowRouter::enrich_context(
+            temp.path(),
+            prompt_ast,
+            WorkflowArchetype::CodeExploration,
+        )
+        .await;
+        assert!(enrichment_ast.is_some());
+        let text_ast = enrichment_ast.unwrap();
+        assert!(text_ast.contains("<code_exploration_guidance>"));
+        assert!(text_ast.contains("`execute_turn`"));
+
+        let enrichment_eng = WorkflowRouter::enrich_context(
+            temp.path(),
+            "Implement feature X",
+            WorkflowArchetype::MultiPhaseEngineering,
+        )
+        .await;
+        assert!(enrichment_eng.is_some());
+        let text_eng = enrichment_eng.unwrap();
+        assert!(text_eng.contains("<autonomous_engineering_guidance>"));
+    }
+}

@@ -219,6 +219,7 @@ impl PromptBuilder {
         git_status: Option<&crate::git::GitStatus>,
         context_budget: Option<&crate::context::budget::ContextBudget>,
         intent_ledger: Option<&crate::context::memory::intent::IntentLedger>,
+        workflow_enrichment: Option<&str>,
     ) -> String {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
@@ -451,6 +452,15 @@ impl PromptBuilder {
             recency.push_str("  </intent_focus>\n");
         }
 
+        // 11. Workflow-Specific Autonomous Guidance & Warehouse Enrichments
+        if let Some(enrichment) = workflow_enrichment {
+            if !enrichment.trim().is_empty() {
+                recency.push_str("  ");
+                recency.push_str(enrichment.trim());
+                recency.push('\n');
+            }
+        }
+
         recency.push_str("</workspace_context>");
         recency
     }
@@ -605,6 +615,7 @@ mod tests {
             Some(&status),
             Some(&budget),
             None,
+            None,
         );
 
         assert!(recency.contains("<workspace_context>"));
@@ -645,8 +656,15 @@ mod tests {
         );
 
         // Without drift
-        let recency =
-            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
+        let recency = PromptBuilder::build_recency_context(
+            &temp_dir,
+            None,
+            &[],
+            None,
+            None,
+            Some(&ledger),
+            None,
+        );
         assert!(recency.contains("<goal_anchor>"));
         assert!(recency.contains("<root_objective>Build AgentBench sandbox</root_objective>"));
         assert!(recency.contains("<execution_ledger progress=\"0/1 completed\">"));
@@ -655,8 +673,15 @@ mod tests {
 
         // With drift
         ledger.consecutive_turns_without_progress = 6;
-        let recency_drift =
-            PromptBuilder::build_recency_context(&temp_dir, None, &[], None, None, Some(&ledger));
+        let recency_drift = PromptBuilder::build_recency_context(
+            &temp_dir,
+            None,
+            &[],
+            None,
+            None,
+            Some(&ledger),
+            None,
+        );
         assert!(recency_drift.contains("<intent_focus>"));
         assert!(recency_drift.contains("⚠️ Task Drift Warning"));
         assert!(recency_drift.contains("Dashboard metrics"));
@@ -707,11 +732,32 @@ mod tests {
             Some(&git_status),
             None,
             None,
+            None,
         );
 
         assert!(recency.contains("<minipower_verification_barrier>"));
         assert!(recency.contains("4-Gate Pre-Completion Verification Barrier"));
         assert!(recency.contains("<minipower_active_plan>"));
         assert!(recency.contains("Task 1: Autonomous MiniPower wiring"));
+    }
+
+    #[test]
+    fn test_build_recency_context_with_workflow_enrichment() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let enrichment =
+            "<recommended_miniblocks>\n  • `navbar_simple` (React)\n</recommended_miniblocks>";
+        let recency = PromptBuilder::build_recency_context(
+            temp_dir.path(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some(enrichment),
+        );
+        assert!(recency.contains("<workspace_context>"));
+        assert!(recency.contains("<recommended_miniblocks>"));
+        assert!(recency.contains("`navbar_simple` (React)"));
+        assert!(recency.contains("</workspace_context>"));
     }
 }
