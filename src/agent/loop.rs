@@ -463,11 +463,14 @@ impl AgentLoop {
         )
         .await;
 
-        // Auto-initialize living IntentLedger for multi-phase engineering if not already active
+        // Auto-initialize living IntentLedger for multi-phase engineering and UI design if not already active
         if self.config.agent.intent.enabled
             && self.intent_ledger.is_none()
-            && workflow_archetype
-                == crate::agent::orchestrator::WorkflowArchetype::MultiPhaseEngineering
+            && matches!(
+                workflow_archetype,
+                crate::agent::orchestrator::WorkflowArchetype::MultiPhaseEngineering
+                    | crate::agent::orchestrator::WorkflowArchetype::UiDesign
+            )
         {
             self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
                 user_prompt,

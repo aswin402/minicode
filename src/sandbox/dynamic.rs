@@ -593,42 +593,76 @@ async fn execute_std_command_with_limits(
 /// (e.g. web servers, dev servers, package managers, network downloaders).
 pub fn is_likely_network_or_server_command(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
-    let keywords = [
-        "http.server",
-        "http-server",
-        "serve",
-        "live-server",
-        "vite",
-        "next dev",
-        "npm start",
-        "npm run dev",
-        "yarn dev",
-        "pnpm dev",
-        "cargo run",
-        "flask",
-        "uvicorn",
-        "gunicorn",
-        "express",
-        "fastapi",
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
+
+    // 1. Explicit local bindings, ports, and protocols
+    if lower.contains("localhost")
+        || lower.contains("127.0.0.1")
+        || lower.contains("0.0.0.0")
+        || lower.contains("http://")
+        || lower.contains("https://")
+    {
+        return true;
+    }
+
+    // 2. HTTP module servers
+    if lower.contains("http.server") || lower.contains("http-server") {
+        return true;
+    }
+
+    // 3. Exact word-bounded standalone networking / dev-server binaries
+    let standalone = [
         "curl",
         "wget",
-        "fetch",
-        "git clone",
-        "git push",
-        "git pull",
-        "cargo install",
-        "npm install",
-        "pip install",
-        "pip3 install",
-        "bun dev",
-        "deno run",
-        "python -m http",
-        "python3 -m http",
+        "vite",
+        "uvicorn",
+        "gunicorn",
+        "flask",
+        "live-server",
     ];
-    keywords.iter().any(|&k| lower.contains(k))
+    if standalone
+        .iter()
+        .any(|&tool| crate::utils::has_word(&lower, tool))
+    {
+        return true;
+    }
+
+    // 4. Word-bounded package manager and version control network operations
+    let network_pairs = [
+        ("npm", "install"),
+        ("npm", "i"),
+        ("npm", "start"),
+        ("pip", "install"),
+        ("pip3", "install"),
+        ("cargo", "install"),
+        ("cargo", "add"),
+        ("bun", "add"),
+        ("yarn", "add"),
+        ("git", "clone"),
+        ("git", "pull"),
+        ("git", "push"),
+        ("git", "fetch"),
+        ("cargo", "run"),
+    ];
+    for (t1, t2) in network_pairs {
+        if crate::utils::has_word(&lower, t1) && crate::utils::has_word(&lower, t2) {
+            return true;
+        }
+    }
+
+    // 5. Dev server scripts: (e.g. "npm run dev", "yarn dev", "bun dev", "deno run")
+    if (crate::utils::has_word(&lower, "npm")
+        || crate::utils::has_word(&lower, "yarn")
+        || crate::utils::has_word(&lower, "pnpm")
+        || crate::utils::has_word(&lower, "bun")
+        || crate::utils::has_word(&lower, "deno"))
+        && (crate::utils::has_word(&lower, "dev")
+            || crate::utils::has_word(&lower, "serve")
+            || crate::utils::has_word(&lower, "start"))
+    {
+        return true;
+    }
+
+    false
 }
 
 /// Formats a `SandboxExecutionResult` into an agent-friendly narrative summary.
@@ -737,5 +771,9 @@ mod tests {
         assert!(!is_likely_network_or_server_command("echo hello world"));
         assert!(!is_likely_network_or_server_command("ls -la"));
         assert!(!is_likely_network_or_server_command("cargo test -j 1"));
+        assert!(!is_likely_network_or_server_command("cat server.log"));
+        assert!(!is_likely_network_or_server_command(
+            "grep -rn 'reserve' src/"
+        ));
     }
 }

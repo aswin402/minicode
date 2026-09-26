@@ -406,11 +406,11 @@ impl PromptBuilder {
                 recency.push_str(&format!("    Specs: {}\n", available_specs.join(", ")));
                 recency.push_str("  </project_blueprint>\n");
             }
-        } else {
-            // Fresh or uninitialized workspace: Guide the agent to scaffold docs first
+        } else if Self::is_empty_workspace(workspace_dir) {
+            // Fresh or empty workspace: Guide the agent to scaffold docs when starting a project from scratch
             recency.push_str("  <project_bootstrap_guidance>\n");
-            recency.push_str("    Notice: Workspace has not been scaffolded with canonical project specifications yet.\n");
-            recency.push_str("    Autonomous Action: Invoke `kit_sync` or create `minikit_docs/core/` (prd.md, design.md, todo.md) to anchor architecture and tasks before writing code.\n");
+            recency.push_str("    Notice: Workspace is empty / newly initialized.\n");
+            recency.push_str("    Autonomous Action: When bootstrapping a new project from scratch, invoke `kit_sync` or create `minikit_docs/core/` (prd.md, design.md, todo.md) to anchor architecture and tasks before writing code.\n");
             recency.push_str("  </project_bootstrap_guidance>\n");
         }
 
@@ -540,6 +540,21 @@ impl PromptBuilder {
         }
 
         prompt
+    }
+
+    fn is_empty_workspace(workspace: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(workspace) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            return false;
+        }
+        true
     }
 }
 
@@ -780,5 +795,38 @@ mod tests {
         assert!(recency.contains("<recommended_miniblocks>"));
         assert!(recency.contains("`navbar_simple` (React)"));
         assert!(recency.contains("</workspace_context>"));
+    }
+
+    #[test]
+    fn test_is_empty_workspace_and_bootstrap_guidance() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        assert!(PromptBuilder::is_empty_workspace(temp_dir.path()));
+
+        // Empty workspace gets project bootstrap guidance
+        let recency_empty = PromptBuilder::build_recency_context(
+            temp_dir.path(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(recency_empty.contains("<project_bootstrap_guidance>"));
+
+        // Non-empty workspace (e.g., existing code without docs) does NOT get nagged with kit_sync
+        std::fs::write(temp_dir.path().join("main.rs"), "fn main() {}").unwrap();
+        assert!(!PromptBuilder::is_empty_workspace(temp_dir.path()));
+
+        let recency_non_empty = PromptBuilder::build_recency_context(
+            temp_dir.path(),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(!recency_non_empty.contains("<project_bootstrap_guidance>"));
     }
 }

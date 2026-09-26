@@ -388,35 +388,34 @@ impl WorkflowRouter {
     pub fn classify(prompt: &str) -> WorkflowArchetype {
         let lower = prompt.to_ascii_lowercase();
 
-        // 1. UI Design & Component Warehouse Archetype
-        if lower.contains("landing page")
-            || lower.contains("landing")
-            || lower.contains("dashboard")
-            || lower.contains("sidebar")
-            || lower.contains("pricing")
-            || lower.contains("modal")
-            || lower.contains("dialog")
-            || lower.contains("navbar")
-            || lower.contains("hero section")
-            || lower.contains("ui design")
-            || lower.contains("design token")
-            || lower.contains("tailwind")
-            || lower.contains("palette")
-            || lower.contains("gradient")
-            || lower.contains("dark mode")
-            || lower.contains("light mode")
-            || lower.contains("wireframe")
-            || crate::utils::has_word(&lower, "ui")
-            || crate::utils::has_word(&lower, "frontend")
-            || crate::utils::has_word(&lower, "component")
-            || crate::utils::has_word(&lower, "components")
-            || crate::utils::has_word(&lower, "css")
-            || crate::utils::has_word(&lower, "styling")
-            || crate::utils::has_word(&lower, "button")
-            || crate::utils::has_word(&lower, "card")
-            || crate::utils::has_word(&lower, "table")
+        // 1. CodeGraph, AST Slicing & Architecture Exploration Archetype
+        // Prioritized when prompt specifically asks to locate, trace, or inspect symbols/callers
+        if lower.contains("blast radius")
+            || lower.contains("code graph")
+            || lower.contains("codegraph")
+            || lower.contains("code_explore")
+            || lower.contains("diff_impact")
+            || lower.contains("code_explain")
+            || lower.contains("call trace")
+            || lower.contains("trace flow")
+            || lower.contains("who calls")
+            || lower.contains("call hierarchy")
+            || lower.contains("dependency graph")
+            || lower.contains("repo map")
+            || lower.contains("repomap")
+            || lower.contains("impact of")
+            || crate::utils::has_word(&lower, "callers")
+            || crate::utils::has_word(&lower, "callees")
+            || (crate::utils::has_word(&lower, "where")
+                && (crate::utils::has_word(&lower, "defined")
+                    || crate::utils::has_word(&lower, "located")))
+            || (crate::utils::has_word(&lower, "trace")
+                && (crate::utils::has_word(&lower, "call")
+                    || crate::utils::has_word(&lower, "function")
+                    || crate::utils::has_word(&lower, "symbol")
+                    || crate::utils::has_word(&lower, "flow")))
         {
-            return WorkflowArchetype::UiDesign;
+            return WorkflowArchetype::CodeExploration;
         }
 
         // 2. Runtime Dev & Process Orchestration Archetype
@@ -435,7 +434,6 @@ impl WorkflowRouter {
             || lower.starts_with("serve")
             || lower.contains(" serve ")
             || crate::utils::has_word(&lower, "daemon")
-            || crate::utils::has_word(&lower, "vite")
             || (crate::utils::has_word(&lower, "server")
                 && (crate::utils::has_word(&lower, "start")
                     || crate::utils::has_word(&lower, "run")
@@ -479,31 +477,41 @@ impl WorkflowRouter {
             return WorkflowArchetype::MultiPhaseEngineering;
         }
 
-        // 4. CodeGraph, AST Slicing & Architecture Exploration Archetype
-        if lower.contains("blast radius")
-            || lower.contains("code graph")
-            || lower.contains("codegraph")
-            || lower.contains("code_explore")
-            || lower.contains("diff_impact")
-            || lower.contains("code_explain")
-            || lower.contains("call trace")
-            || lower.contains("trace flow")
-            || lower.contains("who calls")
-            || lower.contains("call hierarchy")
-            || lower.contains("dependency graph")
-            || lower.contains("repo map")
-            || lower.contains("repomap")
-            || lower.contains("impact of")
-            || crate::utils::has_word(&lower, "callers")
-            || crate::utils::has_word(&lower, "callees")
-            || crate::utils::has_word(&lower, "architecture")
-            || (crate::utils::has_word(&lower, "trace")
-                && (crate::utils::has_word(&lower, "call")
-                    || crate::utils::has_word(&lower, "function")
-                    || crate::utils::has_word(&lower, "symbol")
-                    || crate::utils::has_word(&lower, "flow")))
-        {
-            return WorkflowArchetype::CodeExploration;
+        // 4. UI Design & Component Warehouse Archetype
+        let is_explicit_ui = lower.contains("landing page")
+            || lower.contains("landing")
+            || lower.contains("sidebar")
+            || lower.contains("navbar")
+            || lower.contains("hero section")
+            || lower.contains("ui design")
+            || lower.contains("design token")
+            || lower.contains("tailwind")
+            || lower.contains("palette")
+            || lower.contains("gradient")
+            || lower.contains("dark mode")
+            || lower.contains("light mode")
+            || lower.contains("wireframe")
+            || crate::utils::has_word(&lower, "ui")
+            || crate::utils::has_word(&lower, "frontend")
+            || crate::utils::has_word(&lower, "css")
+            || crate::utils::has_word(&lower, "styling");
+
+        let has_ui_component_term = crate::utils::has_word(&lower, "component")
+            || crate::utils::has_word(&lower, "components")
+            || crate::utils::has_word(&lower, "button")
+            || crate::utils::has_word(&lower, "modal")
+            || crate::utils::has_word(&lower, "card")
+            || crate::utils::has_word(&lower, "dialog");
+
+        // Disambiguate data structure / database terms from UI components
+        let has_data_backend_term = lower.contains("database")
+            || lower.contains("hash table")
+            || lower.contains("sql table")
+            || lower.contains("pricing calculation")
+            || lower.contains("pricing algorithm");
+
+        if (is_explicit_ui || has_ui_component_term) && !has_data_backend_term {
+            return WorkflowArchetype::UiDesign;
         }
 
         WorkflowArchetype::Standard
@@ -526,6 +534,21 @@ impl WorkflowRouter {
         }
     }
 
+    fn is_empty_workspace(workspace: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(workspace) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            return false;
+        }
+        true
+    }
+
     fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
@@ -537,34 +560,39 @@ impl WorkflowRouter {
         let candidates = [
             "navbar",
             "hero",
-            "pricing",
             "card",
+            "pricing",
+            "testimonial",
+            "feature",
+            "faq",
+            "footer",
+            "sidebar",
+            "form",
+            "modal",
             "table",
             "button",
-            "modal",
-            "sidebar",
-            "footer",
-            "form",
-            "dashboard",
-            "accordion",
+            "input",
             "tabs",
+            "accordion",
             "avatar",
             "badge",
             "dropdown",
-            "input",
             "slider",
+            "cta",
+            "auth",
+            "dashboard",
         ];
 
-        let mut matched_query = None;
-        for c in &candidates {
-            if lower.contains(c) {
-                matched_query = Some(*c);
-                break;
-            }
-        }
+        let matched_queries: Vec<&str> = candidates
+            .iter()
+            .copied()
+            .filter(|&c| crate::utils::has_word(&lower, c))
+            .collect();
+
+        let primary_query = matched_queries.first().copied();
 
         let filter = crate::blocks::BlockSearchFilter {
-            query: matched_query.map(|q| q.to_string()),
+            query: primary_query.map(|q| q.to_string()),
             limit: 4,
             ..Default::default()
         };
@@ -582,6 +610,12 @@ impl WorkflowRouter {
                 out.push_str(&format!(
                     "     • `{}` ({}, {:?}): {}\n",
                     c.name, c.category, c.framework, c.description
+                ));
+            }
+            if matched_queries.len() > 1 {
+                out.push_str(&format!(
+                    "     Tip: User prompt also requested other UI blocks ({}). Query them with `block_search`.\n",
+                    matched_queries[1..].join(", ")
                 ));
             }
             out.push_str("     Action: Use `block_insert` or `block_scaffold` to insert them directly into project source.\n");
@@ -606,9 +640,9 @@ impl WorkflowRouter {
         out.push_str("    Decompose frontend applications into separate modular files (`index.html`, `styles.css`, `app.js` or components) from turn 1.\n");
 
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
-        if !core_dir.exists() {
+        if !core_dir.exists() && Self::is_empty_workspace(workspace_root) {
             out.push_str("  • Bootstrap & Scaffolding Invariant:\n");
-            out.push_str("    This workspace lacks project documentation. Run `kit_sync` or ensure `minikit_docs/core/` (prd.md, design.md, todo.md) is initialized to anchor architecture and tasks before writing code.\n");
+            out.push_str("    This workspace is empty. Run `kit_sync` or ensure `minikit_docs/core/` (prd.md, design.md, todo.md) is initialized to anchor architecture and tasks before writing code.\n");
         }
 
         out.push_str("  • Development Server Invariant:\n");
