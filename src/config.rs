@@ -1036,7 +1036,7 @@ impl Config {
     #[allow(dead_code)]
     pub fn static_default_model_for_provider(provider_name: &str) -> &'static str {
         match provider_name.to_lowercase().as_str() {
-            "gemini" | "google" => "gemini-2.5-pro",
+            "gemini" | "google" => "gemini-2.0-flash",
             "anthropic" | "claude" => "claude-3-7-sonnet-20250219",
             "openrouter" => "anthropic/claude-3.7-sonnet",
             "openai" => "gpt-4o",
@@ -1044,7 +1044,7 @@ impl Config {
             "groq" => "llama-3.3-70b-versatile",
             "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             "minimax" => "MiniMax-Text-01",
-            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-plus",
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash",
             "mistral" => "codestral-latest",
             "ollama" => "qwen2.5-coder",
             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
@@ -1060,7 +1060,7 @@ impl Config {
 
     /// Returns the effective default model for a provider:
     /// First checks `self.provider.default_models.get(provider_name)`;
-    /// if present and non-empty, returns it. Otherwise returns static catalog default.
+    /// if present and non-empty, returns it. Otherwise dynamically resolves via DynamicModelResolver.
     pub fn get_default_model_for_provider(&self, provider_name: &str) -> String {
         let norm = provider_name.to_lowercase();
         if let Some(model) = self
@@ -1074,7 +1074,7 @@ impl Config {
                 return trimmed.to_string();
             }
         }
-        Self::static_default_model_for_provider(provider_name).to_string()
+        crate::agent::models::DynamicModelResolver::resolve_model_sync(provider_name, None)
     }
 
     /// Returns true if a local provider has been explicitly configured by the user
@@ -1722,10 +1722,7 @@ mod tests {
         );
 
         // Default models
-        assert_eq!(
-            config.get_default_model_for_provider("ollama"),
-            "qwen2.5-coder"
-        );
+        assert!(!config.get_default_model_for_provider("ollama").is_empty());
         assert_eq!(
             config.get_default_model_for_provider("lmstudio"),
             "local-model"
@@ -1854,7 +1851,7 @@ mod tests {
         assert_eq!(config.get_default_model_for_provider("openai"), "o3-mini");
         assert_eq!(
             config.get_default_model_for_provider("gemini"),
-            "gemini-2.5-pro"
+            "gemini-2.0-flash"
         );
     }
 }

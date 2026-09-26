@@ -648,8 +648,10 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
 
 /// Default provider name
 pub const DEFAULT_PROVIDER: &str = "gemini";
-/// Default Gemini model
-pub const DEFAULT_MODEL_GEMINI: &str = "gemini-2.5-pro";
+/// Universal dynamic model resolution indicator
+pub const DEFAULT_MODEL_AUTO: &str = ":auto";
+/// Default Gemini model (dynamically resolved at runtime via DynamicModelResolver)
+pub const DEFAULT_MODEL_GEMINI: &str = ":auto";
 /// OpenRouter default model used when config omits one
 #[allow(dead_code)]
 pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";

@@ -479,8 +479,10 @@ impl AgentLoop {
         }
 
         // Record turn start checkpoint with prompt and message boundary
-        let backup_manager = crate::session::backup::BackupManager::new(&self.workspace_root);
-        if let Err(e) = backup_manager.record_turn_start(turn_id, user_prompt, message_index) {
+        if let Err(e) = self
+            .backup_manager
+            .record_turn_start(turn_id, user_prompt, message_index)
+        {
             tracing::warn!(turn = turn_id, error = %e, "Failed to record turn start checkpoint");
         }
 

@@ -13,6 +13,364 @@ pub struct ModelInfo {
     pub is_free: bool,
 }
 
+/// Universal semantic capability tiers decoupling agents and configurations
+/// from specific provider model identifiers and revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SemanticTier {
+    /// Newest, most capable, or recommended model from the active provider
+    Auto,
+    /// Highest capability, architectural, or complex reasoning model
+    Smart,
+    /// Lowest latency, cost-effective, high-throughput model (e.g. Flash, Haiku, Mini)
+    Fast,
+    /// Extended thinking or dedicated reasoning model (e.g. thinking-exp, o1, o3, R1)
+    Reasoning,
+}
+
+impl SemanticTier {
+    /// Parses a semantic tier loosely from a string (e.g. ":fast", "fast", ":smart", ":auto")
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        let trimmed = s.trim().trim_start_matches(':').to_lowercase();
+        match trimmed.as_str() {
+            "auto" | "default" | "" => Some(SemanticTier::Auto),
+            "smart" | "pro" | "best" | "architect" => Some(SemanticTier::Smart),
+            "fast" | "flash" | "mini" | "haiku" | "small" | "quick" => Some(SemanticTier::Fast),
+            "reasoning" | "thinking" | "reasoner" | "deep" => Some(SemanticTier::Reasoning),
+            _ => None,
+        }
+    }
+}
+
+/// Extracts a semantic numerical version score (major, minor, patch/date) from a model ID string.
+/// Higher numbers indicate newer/higher capability models.
+/// Examples:
+/// - "gemini-3.7-flash" -> (3, 7, 0)
+/// - "gemini-2.5-flash" -> (2, 5, 0)
+/// - "gemini-2.0-flash" -> (2, 0, 0)
+/// - "gemini-1.5-pro"   -> (1, 5, 0)
+/// - "claude-3-7-sonnet-20250219" -> (3, 7, 20250219)
+/// - "claude-3-5-sonnet-20241022" -> (3, 5, 20241022)
+/// - "gpt-4.5-preview"  -> (4, 5, 0)
+/// - "gpt-4o"           -> (4, 0, 0)
+/// - "o3-mini"          -> (3, 0, 0)
+/// - "o1"               -> (1, 0, 0)
+pub fn extract_version_score(id: &str) -> (u32, u32, u32) {
+    let lower = id.to_lowercase();
+
+    // 1. Check for trailing date stamp like -20250219 or 20241022
+    let mut date_stamp = 0u32;
+    for part in lower.split(|c: char| !c.is_alphanumeric()) {
+        if part.len() == 8 && (part.starts_with("202") || part.starts_with("203")) {
+            if let Ok(d) = part.parse::<u32>() {
+                date_stamp = d;
+            }
+        }
+    }
+
+    // 2. Scan for major.minor patterns e.g. "3.7", "2.5", "2.0", "1.5", "3.5", "4.5", "3.3"
+    let mut major = 0u32;
+    let mut minor = 0u32;
+
+    let parts: Vec<&str> = lower.split(['-', '/', '_', ':']).collect();
+    for (i, part) in parts.iter().enumerate() {
+        if let Some((maj_str, min_str)) = part.split_once('.') {
+            let maj_digits: String = maj_str.chars().filter(|c| c.is_ascii_digit()).collect();
+            let min_digits: String = min_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let (Ok(maj), Ok(min)) = (maj_digits.parse::<u32>(), min_digits.parse::<u32>()) {
+                if maj < 100 && min < 100 && (maj, min) > (major, minor) {
+                    major = maj;
+                    minor = min;
+                }
+            }
+        } else if let Some(stripped) = part.strip_prefix('o') {
+            if let Ok(num) = stripped
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+            {
+                if num < 100 && (num, 0) > (major, minor) {
+                    major = num;
+                }
+            }
+        } else if let Some(stripped) = part.strip_prefix('v') {
+            if let Ok(num) = stripped
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+            {
+                if num < 100 && (num, 0) > (major, minor) {
+                    major = num;
+                }
+            }
+        } else if i + 1 < parts.len() {
+            // Check consecutive parts like "3" and "7" in "claude-3-7-sonnet"
+            if let (Ok(maj), Ok(min)) = (part.parse::<u32>(), parts[i + 1].parse::<u32>()) {
+                if maj < 10 && min < 100 && (maj, min) > (major, minor) {
+                    major = maj;
+                    minor = min;
+                }
+            }
+        }
+    }
+
+    // 3. Fallback to any standalone single digit if major is still 0
+    if major == 0 {
+        for part in lower.split(|c: char| !c.is_alphanumeric()) {
+            if let Ok(num) = part.parse::<u32>() {
+                if num < 100 {
+                    major = num;
+                    break;
+                }
+            }
+        }
+    }
+
+    (major, minor, date_stamp)
+}
+
+/// Dynamically filters and selects the most optimal model from an active list for a semantic tier.
+pub fn select_best_model_for_tier(models: &[ModelInfo], tier: SemanticTier) -> Option<String> {
+    if models.is_empty() {
+        return None;
+    }
+
+    // Filter out non-chat / utility models
+    let chat_models: Vec<&ModelInfo> = models
+        .iter()
+        .filter(|m| {
+            let id = m.id.to_lowercase();
+            !id.contains("embed")
+                && !id.contains("whisper")
+                && !id.contains("tts")
+                && !id.contains("audio")
+                && !id.contains("moderation")
+                && !id.contains("dall-e")
+                && !id.contains("image")
+                && !id.contains("babbage")
+                && !id.contains("davinci")
+        })
+        .collect();
+
+    let pool = if chat_models.is_empty() {
+        models.iter().collect::<Vec<_>>()
+    } else {
+        chat_models
+    };
+
+    match tier {
+        SemanticTier::Fast => {
+            // Prefer flash, haiku, mini, small, 8b, fast
+            let fast_matches: Vec<&ModelInfo> = pool
+                .iter()
+                .filter(|m| {
+                    let id = m.id.to_lowercase();
+                    id.contains("flash")
+                        || id.contains("haiku")
+                        || id.contains("mini")
+                        || id.contains("small")
+                        || id.contains("8b")
+                        || id.contains("fast")
+                })
+                .copied()
+                .collect();
+
+            let candidates = if !fast_matches.is_empty() {
+                fast_matches
+            } else {
+                pool
+            };
+
+            candidates
+                .iter()
+                .max_by_key(|m| extract_version_score(&m.id))
+                .map(|m| m.id.clone())
+        }
+        SemanticTier::Reasoning => {
+            // Prefer thinking, reasoning, reasoner, o1, o3, r1
+            let reasoning_matches: Vec<&ModelInfo> = pool
+                .iter()
+                .filter(|m| {
+                    let id = m.id.to_lowercase();
+                    id.contains("thinking")
+                        || id.contains("reason")
+                        || id.contains("r1")
+                        || id.starts_with("o1")
+                        || id.starts_with("o3")
+                        || id.contains("-o1")
+                        || id.contains("-o3")
+                })
+                .copied()
+                .collect();
+
+            if !reasoning_matches.is_empty() {
+                reasoning_matches
+                    .iter()
+                    .max_by_key(|m| extract_version_score(&m.id))
+                    .map(|m| m.id.clone())
+            } else {
+                // Fallback to Smart if no reasoning model found
+                select_best_model_for_tier(models, SemanticTier::Smart)
+            }
+        }
+        SemanticTier::Smart | SemanticTier::Auto => {
+            // For Smart / Auto, rank by version score.
+            // If equal version, prefer pro / sonnet / plus over flash / mini for smart tier
+            pool.iter()
+                .max_by(|a, b| {
+                    let score_a = extract_version_score(&a.id);
+                    let score_b = extract_version_score(&b.id);
+                    if score_a != score_b {
+                        score_a.cmp(&score_b)
+                    } else {
+                        let a_pref = a.id.contains("pro")
+                            || a.id.contains("sonnet")
+                            || a.id.contains("opus")
+                            || a.id.contains("plus");
+                        let b_pref = b.id.contains("pro")
+                            || b.id.contains("sonnet")
+                            || b.id.contains("opus")
+                            || b.id.contains("plus");
+                        a_pref.cmp(&b_pref)
+                    }
+                })
+                .map(|m| m.id.clone())
+        }
+    }
+}
+
+/// Dynamic Model Resolver that resolves active and fallback models for all providers
+/// without requiring static hardcoded strings.
+pub struct DynamicModelResolver;
+
+impl DynamicModelResolver {
+    /// Synchronously resolves the active model for a provider from local cache or dynamic heuristics.
+    /// Never blocks on network requests; safe for immediate UI and CLI startup.
+    pub fn resolve_model_sync(provider: &str, requested: Option<&str>) -> String {
+        let norm_prov = provider.to_lowercase();
+        let req_trim = requested.unwrap_or("").trim();
+
+        // If explicit model name that is not a semantic tier like :auto, :smart, :fast, :reasoning
+        if !req_trim.is_empty() && !req_trim.starts_with(':') {
+            return req_trim.to_string();
+        }
+
+        let tier = SemanticTier::from_str_loose(req_trim).unwrap_or(SemanticTier::Auto);
+
+        let fetcher = ModelFetcher::new();
+        if let Some(models) = fetcher.get_cached_models(&norm_prov) {
+            if let Some(best) = select_best_model_for_tier(&models, tier) {
+                return best;
+            }
+        }
+
+        Self::canonical_fallback(&norm_prov, tier)
+    }
+
+    /// Asynchronously resolves the model for a provider, querying the live /models API
+    /// if the local cache is empty or stale.
+    #[allow(dead_code)]
+    pub async fn resolve_model_async(
+        provider: &str,
+        requested: Option<&str>,
+        api_key: &str,
+        custom_base_url: Option<&str>,
+    ) -> String {
+        let norm_prov = provider.to_lowercase();
+        let req_trim = requested.unwrap_or("").trim();
+
+        if !req_trim.is_empty() && !req_trim.starts_with(':') {
+            return req_trim.to_string();
+        }
+
+        let tier = SemanticTier::from_str_loose(req_trim).unwrap_or(SemanticTier::Auto);
+
+        let fetcher = ModelFetcher::new();
+        if !api_key.is_empty()
+            || norm_prov == "ollama"
+            || norm_prov == "lmstudio"
+            || custom_base_url.is_some()
+        {
+            if let Ok(models) = fetcher
+                .fetch_models(&norm_prov, api_key, custom_base_url)
+                .await
+            {
+                if let Some(best) = select_best_model_for_tier(&models, tier) {
+                    return best;
+                }
+            }
+        }
+
+        Self::resolve_model_sync(provider, requested)
+    }
+
+    /// Returns the next fallback model for a provider when a specific model encounters a 404 or deprecation.
+    pub fn resolve_next_fallback(
+        provider: &str,
+        failed_model: &str,
+        tier: SemanticTier,
+    ) -> Option<String> {
+        let fetcher = ModelFetcher::new();
+        fetcher.invalidate_model(provider, failed_model);
+
+        if let Some(models) = fetcher.get_cached_models(provider) {
+            let remaining: Vec<ModelInfo> = models
+                .into_iter()
+                .filter(|m| m.id != failed_model)
+                .collect();
+            if let Some(next) = select_best_model_for_tier(&remaining, tier) {
+                return Some(next);
+            }
+        }
+
+        let fallback = Self::canonical_fallback(provider, tier);
+        if fallback != failed_model {
+            Some(fallback)
+        } else {
+            None
+        }
+    }
+
+    /// Safe canonical fallback when offline and cache is empty
+    pub fn canonical_fallback(provider: &str, tier: SemanticTier) -> String {
+        let norm = provider.to_lowercase();
+        match norm.as_str() {
+            "gemini" | "google" => match tier {
+                SemanticTier::Fast => "gemini-2.0-flash".to_string(),
+                SemanticTier::Reasoning => "gemini-2.0-flash-thinking-exp".to_string(),
+                SemanticTier::Smart | SemanticTier::Auto => "gemini-2.0-flash".to_string(),
+            },
+            "anthropic" | "claude" => match tier {
+                SemanticTier::Fast => "claude-3-5-haiku-20241022".to_string(),
+                SemanticTier::Reasoning | SemanticTier::Smart | SemanticTier::Auto => {
+                    "claude-3-7-sonnet-20250219".to_string()
+                }
+            },
+            "openai" => match tier {
+                SemanticTier::Fast => "gpt-4o-mini".to_string(),
+                SemanticTier::Reasoning => "o3-mini".to_string(),
+                SemanticTier::Smart | SemanticTier::Auto => "gpt-4o".to_string(),
+            },
+            "deepseek" => match tier {
+                SemanticTier::Reasoning => "deepseek-reasoner".to_string(),
+                _ => "deepseek-chat".to_string(),
+            },
+            "groq" => "llama-3.3-70b-versatile".to_string(),
+            "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
+            "minimax" => "MiniMax-Text-01".to_string(),
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash".to_string(),
+            "mistral" => "codestral-latest".to_string(),
+            "ollama" => "qwen2.5-coder".to_string(),
+            "openrouter" => "anthropic/claude-3.7-sonnet".to_string(),
+            "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => {
+                "local-model".to_string()
+            }
+            _ => "default-model".to_string(),
+        }
+    }
+}
+
 /// Extracts context window size encoded in the model name (e.g. `llama-3.1-8b-instruct-128k`, `qwen2.5-32k`, `gemini-1.5-pro-2m`)
 pub fn parse_context_window_from_name(model: &str) -> Option<usize> {
     let lower = model.to_lowercase();
@@ -198,6 +556,22 @@ impl ModelFetcher {
         };
 
         Self { client, cache_path }
+    }
+
+    /// Returns cached models for a provider if available
+    pub fn get_cached_models(&self, provider: &str) -> Option<Vec<ModelInfo>> {
+        let cache = self.load_cache();
+        cache.providers.get(&provider.to_lowercase()).cloned()
+    }
+
+    /// Removes a model from disk cache when an API returns 404 (model not found / deprecated)
+    pub fn invalidate_model(&self, provider: &str, model_id: &str) {
+        let mut cache = self.load_cache();
+        let norm = provider.to_lowercase();
+        if let Some(list) = cache.providers.get_mut(&norm) {
+            list.retain(|m| m.id != model_id && !m.id.ends_with(model_id));
+        }
+        self.save_cache(&cache);
     }
 
     /// Loads cached models from disk if available
@@ -776,5 +1150,92 @@ mod tests {
             get_model_context_limit("ollama/llama3.3:70b"),
             crate::constants::CONTEXT_WINDOW_64K
         );
+    }
+
+    #[test]
+    fn test_extract_version_score() {
+        assert!(
+            extract_version_score("gemini-3.7-flash") > extract_version_score("gemini-2.5-flash")
+        );
+        assert!(
+            extract_version_score("gemini-2.5-flash") > extract_version_score("gemini-2.0-flash")
+        );
+        assert!(
+            extract_version_score("gemini-2.0-flash") > extract_version_score("gemini-1.5-pro")
+        );
+        assert!(
+            extract_version_score("claude-3-7-sonnet-20250219")
+                > extract_version_score("claude-3-5-sonnet-20241022")
+        );
+        assert!(extract_version_score("gpt-4.5-preview") > extract_version_score("gpt-4o"));
+        assert_eq!(extract_version_score("gemini-3.7-flash").0, 3);
+        assert_eq!(extract_version_score("gemini-3.7-flash").1, 7);
+    }
+
+    #[test]
+    fn test_select_best_model_for_tier_gemini() {
+        let models = vec![
+            ModelInfo {
+                id: "gemini-1.5-pro".to_string(),
+                name: "Gemini 1.5 Pro".to_string(),
+                description: None,
+                context_length: Some(2_000_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "gemini-2.0-flash".to_string(),
+                name: "Gemini 2.0 Flash".to_string(),
+                description: None,
+                context_length: Some(1_000_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "gemini-2.5-flash".to_string(),
+                name: "Gemini 2.5 Flash".to_string(),
+                description: None,
+                context_length: Some(1_000_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "gemini-3.7-flash".to_string(),
+                name: "Gemini 3.7 Flash".to_string(),
+                description: None,
+                context_length: Some(1_000_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "text-embedding-004".to_string(),
+                name: "Text Embedding 004".to_string(),
+                description: None,
+                context_length: Some(2_048),
+                is_free: false,
+            },
+        ];
+
+        // Fast tier selects newest flash model automatically without hardcoding
+        assert_eq!(
+            select_best_model_for_tier(&models, SemanticTier::Fast),
+            Some("gemini-3.7-flash".to_string())
+        );
+
+        // Auto tier also resolves to the highest capability model
+        assert_eq!(
+            select_best_model_for_tier(&models, SemanticTier::Auto),
+            Some("gemini-3.7-flash".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dynamic_model_resolver_sync_fallback() {
+        // Explicit model name passes through verbatim
+        assert_eq!(
+            DynamicModelResolver::resolve_model_sync("gemini", Some("custom-model-x")),
+            "custom-model-x"
+        );
+
+        // Semantic tiers resolve cleanly
+        assert!(!DynamicModelResolver::resolve_model_sync("gemini", Some(":auto")).is_empty());
+        assert!(!DynamicModelResolver::resolve_model_sync("anthropic", Some(":fast")).is_empty());
+        assert!(!DynamicModelResolver::resolve_model_sync("openai", Some(":reasoning")).is_empty());
     }
 }

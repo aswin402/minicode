@@ -58,7 +58,9 @@ impl<P: Provider> Provider for ResilientProvider<P> {
     ) -> Result<ChunkStream> {
         self.circuit_breaker.can_execute()?;
 
+        let mut current_options = options.clone();
         let mut last_error = None;
+
         for attempt in 0..=self.retry_policy.max_retries {
             if attempt > 0 {
                 let delay = self.retry_policy.delay_for_attempt(attempt);
@@ -70,13 +72,44 @@ impl<P: Provider> Provider for ResilientProvider<P> {
                 tokio::time::sleep(delay).await;
             }
 
-            match self.inner.stream_completion(messages, tools, options).await {
+            match self
+                .inner
+                .stream_completion(messages, tools, &current_options)
+                .await
+            {
                 Ok(stream) => {
                     self.circuit_breaker.record_success();
                     return Ok(stream);
                 }
                 Err(err) => {
                     self.circuit_breaker.record_failure();
+
+                    // Check if error is due to Model Not Found / 404 / Decommissioned
+                    let err_str = err.to_string().to_lowercase();
+                    if err_str.contains("404")
+                        || err_str.contains("not found")
+                        || err_str.contains("model not found")
+                        || err_str.contains("does not exist")
+                        || err_str.contains("unsupported model")
+                    {
+                        if let Some(next_model) =
+                            crate::agent::models::DynamicModelResolver::resolve_next_fallback(
+                                self.inner.name(),
+                                &current_options.model,
+                                crate::agent::models::SemanticTier::Auto,
+                            )
+                        {
+                            tracing::warn!(
+                                provider = %self.inner.name(),
+                                failed_model = %current_options.model,
+                                fallback_model = %next_model,
+                                "LLM model returned 404/Not Found; dynamically failing over to next available model"
+                            );
+                            current_options.model = next_model;
+                            continue;
+                        }
+                    }
+
                     if !RetryPolicy::is_retryable(&err) {
                         return Err(err);
                     }

@@ -1,6 +1,5 @@
 use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
 use crate::agent::types::{Message, Role, ToolCall};
-use crate::constants::DEFAULT_MODEL_GEMINI;
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
 use reqwest_eventsource::{Event, EventSource};
@@ -152,7 +151,7 @@ impl Provider for GeminiProvider {
     }
 
     fn default_model(&self) -> &str {
-        DEFAULT_MODEL_GEMINI
+        ":auto"
     }
 
     async fn stream_completion(
@@ -161,10 +160,16 @@ impl Provider for GeminiProvider {
         tools: &[ToolSchema],
         options: &CompletionOptions,
     ) -> Result<ChunkStream> {
-        let model = if options.model.is_empty() {
-            self.default_model()
+        let model = if options.model.is_empty()
+            || options.model == ":auto"
+            || options.model.starts_with(':')
+        {
+            crate::agent::models::DynamicModelResolver::resolve_model_sync(
+                "gemini",
+                Some(&options.model),
+            )
         } else {
-            &options.model
+            options.model.clone()
         };
 
         let url = format!(

@@ -205,20 +205,30 @@ impl<'a> App<'a> {
                             .provider
                             .default_models
                             .insert((*prov).to_string(), (*model).to_string());
-                        let _ = self.config.save(Some(&self.workspace_root));
-                        self.timeline.add_status(format!(
-                            "✔ Default model for provider '{}' set to '{}'",
-                            prov, model
-                        ));
+                        if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                            tracing::warn!(error = %e, "Failed to persist default model setting");
+                            self.timeline
+                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Default model for provider '{}' set to '{}'",
+                                prov, model
+                            ));
+                        }
                     }
                     ["auto_approve", val] => {
                         let enabled = matches!(val.to_lowercase().as_str(), "on" | "true" | "1");
                         self.config.agent.auto_approve = enabled;
-                        let _ = self.config.save(Some(&self.workspace_root));
-                        self.timeline.add_status(format!(
-                            "✔ Auto-approve {}",
-                            if enabled { "enabled" } else { "disabled" }
-                        ));
+                        if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                            tracing::warn!(error = %e, "Failed to persist auto-approve setting");
+                            self.timeline
+                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                        } else {
+                            self.timeline.add_status(format!(
+                                "✔ Auto-approve {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            ));
+                        }
                     }
                     ["thinking", tokens_str] => {
                         let budget = match tokens_str.to_lowercase().as_str() {
@@ -231,9 +241,14 @@ impl<'a> App<'a> {
                         };
                         self.config.provider.thinking_budget =
                             if budget == 0 { None } else { Some(budget) };
-                        let _ = self.config.save(Some(&self.workspace_root));
-                        self.timeline
-                            .add_status(format!("✔ Thinking budget set to {} tokens", budget));
+                        if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                            tracing::warn!(error = %e, "Failed to persist thinking budget setting");
+                            self.timeline
+                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                        } else {
+                            self.timeline
+                                .add_status(format!("✔ Thinking budget set to {} tokens", budget));
+                        }
                     }
                     _ => {
                         self.modal = ModalState::new_settings(&self.config, &self.workspace_root);

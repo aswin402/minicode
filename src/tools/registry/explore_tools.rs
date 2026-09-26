@@ -7,7 +7,7 @@ use crate::tools::param;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::Command;
+use tokio::process::Command;
 
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
@@ -166,7 +166,7 @@ pub async fn dispatch(
                 }
                 cmd.current_dir(workspace_root);
 
-                match cmd.output() {
+                match cmd.output().await {
                     Ok(output) => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         stdout
