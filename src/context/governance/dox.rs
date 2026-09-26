@@ -7,6 +7,8 @@ const CANDIDATE_RULE_FILES: &[&str] = &[
     ".agents.md",
     "CLAUDE.md",
     ".cursorrules",
+    "minikit_docs/core/spec.md",
+    "onpkg_docs/core/spec.md",
     ".dox",
     ".dox.md",
     ".rules.md",
@@ -28,6 +30,29 @@ impl DoxEngine {
         active_files: &[impl AsRef<Path>],
     ) -> String {
         Self::resolve_scoped_rules_with_budget(workspace_root, active_files, DEFAULT_MAX_DOX_CHARS)
+    }
+
+    /// Resolves scoped rules with dynamic character budget derived from real-time context budget headroom.
+    pub fn resolve_scoped_rules_with_headroom(
+        workspace_root: &Path,
+        active_files: &[impl AsRef<Path>],
+        budget: Option<&crate::context::budget::ContextBudget>,
+    ) -> String {
+        let max_chars = match budget {
+            Some(b) => {
+                let pct = b.percentage();
+                if pct >= crate::constants::BUDGET_PRESSURE_HIGH_THRESHOLD {
+                    2_000
+                } else if pct >= crate::constants::BUDGET_PRESSURE_MODERATE_THRESHOLD {
+                    6_000
+                } else {
+                    let h = b.headroom_tokens();
+                    (h * 4 / 10).clamp(DEFAULT_MAX_DOX_CHARS, 16_000)
+                }
+            }
+            None => DEFAULT_MAX_DOX_CHARS,
+        };
+        Self::resolve_scoped_rules_with_budget(workspace_root, active_files, max_chars)
     }
 
     /// Resolves hierarchical developer rules with a maximum character budget and smart
@@ -305,5 +330,29 @@ Write comprehensive tests.
         let capped = DoxEngine::resolve_scoped_rules_with_budget(ws, &["src/main.rs"], 500);
         assert!(capped.len() <= 600);
         assert!(capped.contains("truncated to preserve context budget"));
+    }
+
+    #[test]
+    fn test_dox_headroom_scaling() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        fs::write(ws.join("AGENTS.md"), "# Rules\n- Rule 1").unwrap();
+
+        let budget_healthy = crate::context::budget::ContextBudget::new(10_000, 100_000, 10_000);
+        let rules_healthy = DoxEngine::resolve_scoped_rules_with_headroom(
+            ws,
+            &["src/main.rs"],
+            Some(&budget_healthy),
+        );
+        assert!(rules_healthy.contains("Rule 1"));
+
+        let budget_critical = crate::context::budget::ContextBudget::new(95_000, 100_000, 95_000);
+        let rules_critical = DoxEngine::resolve_scoped_rules_with_headroom(
+            ws,
+            &["src/main.rs"],
+            Some(&budget_critical),
+        );
+        assert!(rules_critical.contains("Rule 1"));
     }
 }

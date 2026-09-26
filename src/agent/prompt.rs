@@ -229,17 +229,17 @@ impl PromptBuilder {
         // radix-tree prefix caching. Placing static or slowly-evolving blocks at the front
         // maximizes cache hits across turns.
 
-        // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md for active working set)
-        if !active_working_set.is_empty() {
-            let scoped_rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules(
+        // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md with dynamic headroom scaling)
+        let scoped_rules =
+            crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_headroom(
                 workspace_dir,
                 active_working_set,
+                context_budget,
             );
-            if !scoped_rules.is_empty() {
-                recency.push_str("  <scoped_developer_rules>\n");
-                recency.push_str(scoped_rules.trim());
-                recency.push_str("\n  </scoped_developer_rules>\n");
-            }
+        if !scoped_rules.is_empty() {
+            recency.push_str("  <scoped_developer_rules>\n");
+            recency.push_str(scoped_rules.trim());
+            recency.push_str("\n  </scoped_developer_rules>\n");
         }
 
         // 2. Progressive 4-Tier Memory (<progressive_memory>)
@@ -412,7 +412,13 @@ impl PromptBuilder {
                 if let Ok(content) = std::fs::read_to_string(todo_path) {
                     let pending: Vec<&str> = content
                         .lines()
-                        .filter(|l| l.trim().starts_with("- [ ]") || l.trim().starts_with("* [ ]"))
+                        .filter(|l| {
+                            let trimmed = l.trim();
+                            trimmed.starts_with("- [ ]")
+                                || trimmed.starts_with("* [ ]")
+                                || trimmed.starts_with("- [>]")
+                                || trimmed.starts_with("* [>]")
+                        })
                         .take(5)
                         .collect();
                     if !pending.is_empty() {

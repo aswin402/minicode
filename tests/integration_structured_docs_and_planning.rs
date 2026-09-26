@@ -182,6 +182,7 @@ async fn test_e2e_two_tier_plan_hierarchy_and_minipower() {
         None,
         None,
         Some(&loaded_ledger),
+        None,
     );
     assert!(recency.contains("<project_blueprint>"));
     assert!(recency.contains("Location: minikit_docs/core/"));

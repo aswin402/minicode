@@ -338,8 +338,30 @@ impl AgentLoop {
         crate::context::dedup::ObservationDeduplicator::deduplicate_messages(&mut self.messages);
 
         // 2. Smart 4-tier progressive auto-compaction
-        self.compactor
-            .compact(&mut self.messages, self.current_turn_id)
+        let metrics = self
+            .compactor
+            .compact(&mut self.messages, self.current_turn_id);
+
+        if let Some(ref m) = metrics {
+            if m.tier >= 2 {
+                // Senior Engineer Pre/PostCompact Hook: persist critical context to .minicode/NOTES.md
+                let wm = crate::context::working_memory::WorkingMemory::new(&self.workspace_root);
+                for d in &self.compactor.anchor().key_decisions {
+                    let _ = wm.append_note(
+                        crate::context::memory::working_memory::NoteSection::Invariants,
+                        d,
+                    );
+                }
+                for e in &self.compactor.anchor().unresolved_errors {
+                    let _ = wm.append_note(
+                        crate::context::memory::working_memory::NoteSection::NegativeKnowledge,
+                        e,
+                    );
+                }
+            }
+        }
+
+        metrics
     }
 
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
@@ -584,6 +606,28 @@ impl AgentLoop {
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
         let mut items_progressed_this_turn = false;
+
+        // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
+        let turn_tx_id = if let Ok(None) =
+            crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
+        {
+            match crate::session::transaction::TransactionManager::begin(
+                &self.workspace_root,
+                &format!(
+                    "Autonomous turn #{}: {}",
+                    turn_id,
+                    user_prompt.chars().take(80).collect::<String>()
+                ),
+            ) {
+                Ok(m) => Some(m.tx_id),
+                Err(e) => {
+                    tracing::debug!(error = %e, "Could not begin automatic transaction for turn");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let mut max_iterations = self.config.agent.max_tool_iterations;
         let mut auto_continues_remaining = if self.config.agent.auto_continue {
@@ -1526,6 +1570,75 @@ impl AgentLoop {
 
                     if !report.all_passed {
                         heal_attempts += 1;
+                        if heal_attempts >= crate::constants::VERIFICATION_MAX_ATTEMPTS {
+                            tracing::warn!(
+                                "Pre-completion verification barrier failed after {} attempts. Triggering Senior Engineer Macro-Rollback.",
+                                heal_attempts
+                            );
+                            let mut rollback_msg = String::new();
+                            if let Ok(Some(active_tx)) =
+                                crate::session::transaction::TransactionManager::get_active(
+                                    &self.workspace_root,
+                                )
+                            {
+                                match crate::session::transaction::TransactionManager::rollback(
+                                    &self.workspace_root,
+                                    Some(&active_tx.tx_id),
+                                    Some("Pre-completion verification barrier failed 3 auto-heal attempts"),
+                                ) {
+                                    Ok(receipt) => {
+                                        rollback_msg = format!(
+                                            "\n\n🚨 [SENIOR ENGINEER ROLLBACK] Verification barrier failed 3 auto-heal attempts. Reverted workspace to pre-task baseline:\n{}",
+                                            receipt.format_receipt()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "Failed to rollback active transaction");
+                                    }
+                                }
+                            }
+
+                            // Record Discarded Approach / Negative Knowledge in .minicode/NOTES.md
+                            let wm = crate::context::working_memory::WorkingMemory::new(
+                                &self.workspace_root,
+                            );
+                            let failed_summary = format!(
+                                "Approach failed verification barrier on files: {}. Remediation failure summary: {}",
+                                turn_files_modified.join(", "),
+                                report
+                                    .format_remediation_prompt()
+                                    .lines()
+                                    .take(3)
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
+                            let _ = wm.append_note(
+                                crate::context::memory::working_memory::NoteSection::NegativeKnowledge,
+                                &failed_summary,
+                            );
+
+                            let error_feedback = format!(
+                                "Verification barrier failed after {} auto-heal attempts.{}\nRecorded discarded approach in `.minicode/NOTES.md`. Please propose a different hypothesis or approach.",
+                                heal_attempts,
+                                rollback_msg
+                            );
+                            let status_event = AgentEvent::ToolResult {
+                                turn_id,
+                                tool_id: format!("verification_barrier_{}", heal_attempts),
+                                tool: "verification_barrier".to_string(),
+                                success: false,
+                                output: error_feedback.clone(),
+                                duration_ms: 50,
+                            };
+                            let _ = event_sender.send(status_event);
+
+                            let clean_text =
+                                crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                            self.messages.push(Message::assistant(clean_text));
+                            self.messages.push(Message::user(error_feedback));
+                            break;
+                        }
+
                         let error_feedback = report.format_remediation_prompt();
                         let error_feedback = crate::sandbox::redact::SecretRedactor::global()
                             .redact(&error_feedback);
@@ -1549,6 +1662,26 @@ impl AgentLoop {
                         self.messages.push(Message::assistant(clean_text));
                         self.messages.push(Message::user(error_feedback));
                         continue;
+                    } else {
+                        // Verification passed! Commit active transaction and sync task progress
+                        if let Ok(Some(_)) =
+                            crate::session::transaction::TransactionManager::get_active(
+                                &self.workspace_root,
+                            )
+                        {
+                            let _ = crate::session::transaction::TransactionManager::commit(
+                                &self.workspace_root,
+                                None,
+                            );
+                        }
+                        let wm = crate::context::working_memory::WorkingMemory::new(
+                            &self.workspace_root,
+                        );
+                        if let Some(active_task) = wm.read_parsed_tasks().into_iter().find(|t| {
+                            t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                        }) {
+                            let _ = wm.update_progress(&active_task.title, "completed");
+                        }
                     }
                 } else if !turn_files_modified.is_empty()
                     && self.config.agent.auto_heal
@@ -1590,6 +1723,28 @@ impl AgentLoop {
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
                 self.messages.push(Message::assistant(clean_text));
                 break;
+            }
+        }
+
+        // Finalize transaction if one was initiated for this turn and is still active
+        if let Some(ref tx_id) = turn_tx_id {
+            if let Ok(Some(active)) =
+                crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
+            {
+                if active.tx_id == *tx_id {
+                    if was_cancelled || circuit_tripped {
+                        let _ = crate::session::transaction::TransactionManager::rollback(
+                            &self.workspace_root,
+                            Some(tx_id),
+                            Some("Turn cancelled or circuit breaker tripped"),
+                        );
+                    } else {
+                        let _ = crate::session::transaction::TransactionManager::commit(
+                            &self.workspace_root,
+                            Some(tx_id),
+                        );
+                    }
+                }
             }
         }
 
