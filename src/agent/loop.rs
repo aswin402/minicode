@@ -1575,6 +1575,43 @@ impl AgentLoop {
         }
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
+        // Bi-Temporal Architecture Memory & Decision Record Logging (Graphiti & Semantica integration)
+        if !turn_files_modified.is_empty() && !was_cancelled && !circuit_tripped {
+            let mut mem_store =
+                crate::context::temporal_memory::TemporalMemoryStore::load_or_default(
+                    &self.workspace_root,
+                );
+            let mut invalidated_any = false;
+            for f in &turn_files_modified {
+                if mem_store.invalidate_facts_for_file(f) > 0 {
+                    invalidated_any = true;
+                }
+            }
+            if invalidated_any {
+                let _ = mem_store.save(&self.workspace_root);
+            }
+
+            let decision_rec = crate::context::decision_record::DecisionRecord {
+                id: format!("DEC-{}-{}", chrono::Utc::now().timestamp(), turn_id),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                turn_id,
+                intent: user_prompt.to_string(),
+                decision: format!(
+                    "Modified {} file(s) to fulfill requirements: {}",
+                    turn_files_modified.len(),
+                    turn_files_modified.join(", ")
+                ),
+                rationale: "Autonomous execution of user task requirements".to_string(),
+                alternatives_considered: Vec::new(),
+                files_affected: turn_files_modified.clone(),
+                verified: heal_attempts == 0,
+            };
+            let _ = crate::context::decision_record::DecisionLogger::append(
+                &self.workspace_root,
+                &decision_rec,
+            );
+        }
+
         // Autonomous Git Auto-Commit if files were modified during this turn
         if !turn_files_modified.is_empty()
             && self.config.git.auto_commit

@@ -82,6 +82,9 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // Exploration & CodeGraph Tools (Read-Only)
         "code_explore"
         | "diff_impact"
+        | "code_explain"
+        | "code_trace"
+        | "code_impact"
         | "blast_radius"
         | "get_ast_outline"
         | "score_task_complexity"

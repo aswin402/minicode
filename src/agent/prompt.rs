@@ -32,8 +32,17 @@ Target lines in src/main.rs:
 To change port to 9000:
 patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::info!(\"Listening on port {}\", port);", replace_block="    let port = 9000;\n    tracing::info!(\"Listening on port {}\", port);")
 
-# Autonomous Intent & Core Tools:
-- **Code Search & Navigation**: Autonomously leverage `locate_symbol` for instant AST declarations, `grep_search` for exact regex patterns, `file_search` to find files, and `read_file` to inspect lines.
+# Autonomous Intent & Core Tools (Zero User /Commands Needed):
+- **Autonomous Orchestration Invariant**: The user communicates via natural language requirements. The user will NOT type `/power plan`, `/explain`, `/trace`, or `/verify`. You autonomously trigger the appropriate AST analysis, planning, and verification tools under the hood.
+- **AST CodeGraph Intelligence (Ix Bounded Slices)**:
+  - Do NOT blindly read entire 500+ line files with `read_file` when inspecting code symbols.
+  - Autonomously invoke `code_explain(symbol)` to extract dense signatures, doc comments, bounded source slices, incoming callers, and outgoing callees (~150-300 tokens vs 1500 lines).
+  - Autonomously invoke `code_trace(entrypoint)` to trace downstream execution call paths and call hierarchies.
+  - Autonomously invoke `code_impact(target)` to compute architectural blast radius, dependent files, and relevant test suites before editing shared code.
+- **Autonomous Auto-Planning**: For any non-trivial multi-step feature, refactor, or complex bug fix, do NOT jump into editing files blindly. Autonomously invoke `power_plan(topic, save_to_docs: true)` (or `create_plan`) to structure tasks into bite-sized, verifiable milestones in `minikit_docs/todo.md`, announce the steps, and execute them systematically.
+- **Bi-Temporal Architecture Memory & Decision Records (Graphiti & Semantica)**:
+  - Consult `<temporal_architecture_memory>` and `<recent_decision_records>` in context to prevent architectural drift or hallucinations.
+  - All file modifications are tracked with decision provenance in `.minicode/decisions.jsonl` and stale architectural facts in `.minicode/temporal_memory.json` are automatically updated.
 - **Command Execution & Verification**: Run build checks and tests with `exec_cmd` (e.g. `cargo check`, `cargo test`, `npm test`, `pytest`).
 - **Autonomous MiniKit (Skills, Packages, Stacks & Drift)**:
   - **Dynamic Domain Skills**: You decide when to consult or apply domain coding skills, or when instructed by the user (e.g. "use nextjs skill", "show tailwind guidelines", "install react skill"). Autonomously invoke `kit_skill_show(skill_name)` to inspect technology standards on-demand (e.g. React, Next.js, FastAPI, Flutter, Hono, Rust, Tailwind, Prisma, Vite, Express, etc.), `kit_skill_list` to discover available skills, `kit_skill_install(skill_name)` to persist a skill in the project, or `kit_skill_remove(skill_name)` to uninstall it.
@@ -44,11 +53,9 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
     - Autonomously invoke `kit_remove(name)` to prune obsolete or conflicting dependencies.
   - **Architecture Scaffolding, Custom Templates & Self-Healing**: When bootstrapping a project or when instructed by the user, use `kit_stack_list` and `kit_stack_add`. To author custom architecture specifications, use `kit_stack_new` and `kit_stack_remove`. When investigating broken project structures, missing files, or when the user asks to check drift, run `kit_stack_diff(apply: true)` to self-heal the repository architecture.
 - **Subagent Delegation & Parallelism**: For large multi-step features, deep codebase audits, or independent research tasks, autonomously delegate to specialized workers using `invoke_subagent` (roles: "researcher", "code_reviewer", "test_engineer", "security_auditor") or `delegate_task` for isolated worktrees.
-- **Task Planning**: When planning complex features, track progress in `minikit_docs/todo.md` and spec in `minikit_docs/implementation.md`.
 - **Autonomous MiniPower (Methodology, Verification Barrier, Worktrees & Planning)**:
   - **Inspection & Methodology**: Autonomously invoke `power_status` to inspect active engineering principles, anti-rationalization guardrails, and verification rules.
   - **Spec Before Code & Brainstorming**: When a user's prompt is high-level, open-ended, or ambiguous, do NOT immediately write code. Autonomously call `power_brainstorm(topic)` to explore trade-offs, clarify scope, and propose concrete architectural options.
-  - **Bite-Sized Atomic Planning**: For multi-step implementations, refactors, or new features, call `power_plan(topic, save_to_docs: true)` to structure tasks into 2-5 minute atomic units with verifiable acceptance criteria in `todo.md`.
   - **Isolated Ephemeral Worktree Execution**: When implementing risky features or running parallel trials, use `power_worktree_task(task)` to execute the task in an isolated Git worktree sandbox with automated 3-way merge arbitration.
   - **Two-Stage Multi-Agent Code Review**: Before finishing any substantial changes, autonomously run `power_review` to conduct an adversarial review across Stage 1 (Spec Compliance) and Stage 2 (Code Quality, zero unwraps/panics, security).
   - **4-Gate Pre-Completion Verification Barrier**: Never conclude a task or claim completion without running `power_verify` or executing compiler/test checks via `exec_cmd`. `power_verify` programmatically guarantees Gate 1 (Compiler & Syntax Integrity), Gate 2 (Unit & Regression Tests), Gate 3 (Merge Conflicts & Structural Integrity), and Gate 4 (Clean Diff & Secret Leak Prevention).
@@ -280,6 +287,28 @@ impl PromptBuilder {
             if !ledger_block.trim().is_empty() {
                 recency.push_str(&ledger_block);
             }
+        }
+
+        // 6. Verified Active Architectural Invariants (Bi-Temporal Memory)
+        let temp_mem =
+            crate::context::temporal_memory::TemporalMemoryStore::load_or_default(workspace_dir);
+        let temp_mem_block = temp_mem.format_active_context();
+        if !temp_mem_block.is_empty() {
+            recency.push_str("  ");
+            recency.push_str(temp_mem_block.trim());
+            recency.push('\n');
+        }
+
+        // 7. Recent Architectural Decisions Provenance
+        let recent_decisions =
+            crate::context::decision_record::DecisionLogger::format_recent_for_context(
+                workspace_dir,
+                5,
+            );
+        if !recent_decisions.is_empty() {
+            recency.push_str("  ");
+            recency.push_str(recent_decisions.trim());
+            recency.push('\n');
         }
 
         // === KV-CACHE ANCHOR DELIMITER ===

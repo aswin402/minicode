@@ -555,6 +555,24 @@ impl CodeGraph {
         }
     }
 
+    /// Loads a cached graph from disk if available and runs an incremental update,
+    /// or performs a full build if no valid cache exists. Automatically persists the resulting graph.
+    pub fn load_or_build(workspace_root: &Path) -> Result<Self> {
+        let mut graph = Self::new();
+        if graph.load_cached(workspace_root) {
+            if let Ok(stats) = graph.incremental_update(workspace_root) {
+                if stats.files_reparsed > 0 || stats.files_removed > 0 {
+                    let _ = graph.save_to_disk(workspace_root);
+                }
+            }
+            Ok(graph)
+        } else {
+            graph.build_graph(workspace_root)?;
+            let _ = graph.save_to_disk(workspace_root);
+            Ok(graph)
+        }
+    }
+
     /// Persists current graph state to `.minicode/graph.json`.
     pub fn save_to_disk(&self, workspace_root: &Path) -> Result<()> {
         let snapshot =

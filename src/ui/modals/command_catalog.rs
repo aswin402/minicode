@@ -36,8 +36,8 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         category: "Agent & Automation",
         shortcut: "Ctrl+P",
         description:
-            "MiniPower native autonomous engineering methodology, worktree execution & verification",
-        example: "/power | /power task <prompt> | /power brainstorm <topic> | /power plan <topic> | /power review | /power verify",
+            "MiniPower autonomous engineering principles, verification barrier & methodology status",
+        example: "/power",
     },
     CommandCatalogItem {
         name: "/diff",
@@ -54,13 +54,6 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/undo",
     },
     CommandCatalogItem {
-        name: "/plan",
-        category: "Workflows & Scaffolding",
-        shortcut: "",
-        description: "Generate structured implementation plan without modifying files",
-        example: "/plan add auth middleware",
-    },
-    CommandCatalogItem {
         name: "/blocks",
         category: "Workflows & Scaffolding",
         shortcut: "F6",
@@ -71,7 +64,8 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         name: "/processes",
         category: "Agent & Automation",
         shortcut: "F7",
-        description: "Inspect, manage, and supervise running dev servers, workers, ports & live logs",
+        description:
+            "Inspect, manage, and supervise running dev servers, workers, ports & live logs",
         example: "/processes | /dev | /dev ps | /dev stop <id>",
     },
     CommandCatalogItem {
@@ -166,13 +160,6 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         shortcut: "",
         description: "List and view domain-specific architectural skills and best practices",
         example: "/skills | /kit skill <name>",
-    },
-    CommandCatalogItem {
-        name: "/drift",
-        category: "Code & Inspection",
-        shortcut: "",
-        description: "Detect and self-heal architecture template drift (/drift or /heal)",
-        example: "/drift | /heal",
     },
     CommandCatalogItem {
         name: "/terminal",
