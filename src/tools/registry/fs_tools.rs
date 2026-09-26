@@ -80,7 +80,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "write_file".to_string(),
-            description: "Create a new file or completely overwrite an existing file with the provided content.".to_string(),
+            description: "Create a new file or completely overwrite an existing file with the provided content. Note: To prevent token truncation and JSON parsing EOF errors, keep files modular (under 300 lines or 12KB). For large applications, separate concerns into distinct files (e.g. HTML, CSS, JS) or write the scaffold first and use patch_file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -90,7 +90,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "content": {
                         "type": "string",
-                        "description": "The complete text content to write"
+                        "description": "The complete text content to write (keep under 300 lines; decompose large files into modular components)"
                     }
                 },
                 "required": ["path", "content"]

@@ -516,7 +516,7 @@ impl WorkflowRouter {
         archetype: WorkflowArchetype,
     ) -> Option<String> {
         match archetype {
-            WorkflowArchetype::UiDesign => Self::enrich_ui_design(prompt),
+            WorkflowArchetype::UiDesign => Self::enrich_ui_design(workspace_root, prompt),
             WorkflowArchetype::CodeExploration => Self::enrich_code_exploration(prompt),
             WorkflowArchetype::RuntimeDev => Self::enrich_runtime_dev().await,
             WorkflowArchetype::MultiPhaseEngineering => {
@@ -526,7 +526,7 @@ impl WorkflowRouter {
         }
     }
 
-    fn enrich_ui_design(prompt: &str) -> Option<String> {
+    fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,
@@ -599,6 +599,20 @@ impl WorkflowRouter {
             }
             out.push_str("     Action: Pass palette name to `block_scaffold(palette=\"...\")` for automated theme tokens.\n");
         }
+
+        // Modular anti-monolith & dev server rules
+        out.push_str("  • Modular Code Architecture Invariant:\n");
+        out.push_str("    NEVER write massive monolithic files (>300 lines or >12KB) in a single tool call to avoid token truncation and JSON EOF errors.\n");
+        out.push_str("    Decompose frontend applications into separate modular files (`index.html`, `styles.css`, `app.js` or components) from turn 1.\n");
+
+        let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
+        if !core_dir.exists() {
+            out.push_str("  • Bootstrap & Scaffolding Invariant:\n");
+            out.push_str("    This workspace lacks project documentation. Run `kit_sync` or ensure `minikit_docs/core/` (prd.md, design.md, todo.md) is initialized to anchor architecture and tasks before writing code.\n");
+        }
+
+        out.push_str("  • Development Server Invariant:\n");
+        out.push_str("    To run and test the web application (e.g. `python3 -m http.server 8080 &`), use `exec_cmd` or `mini_dev(action=\"start\")`.\n");
 
         out.push_str("</recommended_miniblocks>");
         Some(out)
@@ -721,6 +735,10 @@ impl WorkflowRouter {
         ));
         out.push_str("  3. Gate 3 (TDD Implementation): Write or update tests FIRST. Verify failure (Red), then implement minimal code, then verify green.\n");
         out.push_str("  4. Gate 4 (Verification Barrier): Execute compiler/test checks (`cargo test -j 1 ...`, `npm test`, etc.) to confirm 0 errors before concluding.\n");
+        out.push_str("  5. Anti-Monolith Invariant: Write modular, cleanly scoped files under 300 lines rather than giant single files to prevent JSON EOF parsing cutoffs.\n");
+        out.push_str(
+            "  6. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd`.\n",
+        );
         out.push_str("</autonomous_engineering_guidance>");
         Some(out)
     }

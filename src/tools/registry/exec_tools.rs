@@ -9,13 +9,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "exec_cmd".to_string(),
-            description: "Execute a shell command inside the sandboxed workspace environment (with timeout and environment sanitization).".to_string(),
+            description: "Primary shell execution tool for project development, testing, builds (cargo, npm, pip), dev servers (e.g. python3 -m http.server, npm run dev), and git operations. Always use exec_cmd for standard development workflow commands.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The shell command string to execute"
+                        "description": "The shell command string to execute in workspace root"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -27,7 +27,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "sandbox_exec".to_string(),
-            description: "Execute a command inside an isolated code sandbox with configurable network access, read-only filesystem protection, ephemeral scratchpad overlay, and resource limits.".to_string(),
+            description: "Execute untrusted or experimental shell scripts inside an isolated security sandbox (Bubblewrap / Landlock) with resource limits. DO NOT use sandbox_exec for running local dev servers, builds, or tests — use exec_cmd instead.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -37,7 +37,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "allow_network": {
                         "type": "boolean",
-                        "description": "Whether TCP/socket network access is permitted (default: false for security)"
+                        "description": "Whether network/socket access is permitted. If omitted, auto-permits networking for dev servers and package managers, otherwise defaults to false for security."
                     },
                     "read_only": {
                         "type": "boolean",
@@ -87,6 +87,8 @@ pub async fn dispatch(
                 let mut policy = crate::sandbox::SandboxPolicy::default();
                 if let Some(net) = get_bool(args, "allow_network") {
                     policy.allow_network = net;
+                } else if crate::sandbox::is_likely_network_or_server_command(cmd) {
+                    policy.allow_network = true;
                 }
                 if let Some(ro) = get_bool(args, "read_only") {
                     policy.read_only_workspace = ro;

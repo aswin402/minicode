@@ -13,8 +13,8 @@ pub use arbitration::{
 };
 #[allow(unused_imports)]
 pub use dynamic::{
-    format_sandbox_result, is_bwrap_available, run_sandboxed, SandboxBackendPreference,
-    SandboxBackendType, SandboxExecutionResult, SandboxPolicy,
+    format_sandbox_result, is_bwrap_available, is_likely_network_or_server_command, run_sandboxed,
+    SandboxBackendPreference, SandboxBackendType, SandboxExecutionResult, SandboxPolicy,
 };
 #[allow(unused_imports)]
 pub use worktree::{GitWorktreeManager, WorktreeHandle};

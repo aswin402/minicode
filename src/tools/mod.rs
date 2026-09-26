@@ -136,9 +136,13 @@ impl ToolRegistry {
                 .get("__raw")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
+            let mut reason = format!("{}. Raw arguments: '{}'", err_msg, raw);
+            if err_msg.contains("EOF while parsing") || raw.len() > 8000 {
+                reason.push_str("\n[Actionable Recovery Guidance]: The tool call payload was truncated or malformed because the generated output was too large for a single tool call. Do NOT attempt to write a massive monolithic file. Decompose your project into modular files (e.g. separate index.html, styles.css, app.js) or write the scaffold structure first and use patch_file.");
+            }
             return Err(ToolError::InvalidArguments {
                 name: tool_name.to_string(),
-                reason: format!("{}. Raw arguments: '{}'", err_msg, raw),
+                reason,
             }
             .into());
         }

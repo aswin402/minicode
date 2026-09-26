@@ -589,6 +589,48 @@ async fn execute_std_command_with_limits(
     })
 }
 
+/// Returns true if a command string likely requires network or loopback socket communication
+/// (e.g. web servers, dev servers, package managers, network downloaders).
+pub fn is_likely_network_or_server_command(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    let keywords = [
+        "http.server",
+        "http-server",
+        "serve",
+        "live-server",
+        "vite",
+        "next dev",
+        "npm start",
+        "npm run dev",
+        "yarn dev",
+        "pnpm dev",
+        "cargo run",
+        "flask",
+        "uvicorn",
+        "gunicorn",
+        "express",
+        "fastapi",
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "curl",
+        "wget",
+        "fetch",
+        "git clone",
+        "git push",
+        "git pull",
+        "cargo install",
+        "npm install",
+        "pip install",
+        "pip3 install",
+        "bun dev",
+        "deno run",
+        "python -m http",
+        "python3 -m http",
+    ];
+    keywords.iter().any(|&k| lower.contains(k))
+}
+
 /// Formats a `SandboxExecutionResult` into an agent-friendly narrative summary.
 pub fn format_sandbox_result(result: &SandboxExecutionResult) -> String {
     let mut header = format!(
@@ -676,5 +718,24 @@ mod tests {
             .contains(&"scratch_file.txt".to_string()));
         // Must NOT exist in the host workspace
         assert!(!temp_dir.path().join("scratch_file.txt").exists());
+    }
+
+    #[test]
+    fn test_is_likely_network_or_server_command() {
+        assert!(is_likely_network_or_server_command(
+            "python3 -m http.server 8080 &"
+        ));
+        assert!(is_likely_network_or_server_command(
+            "python -m http.server 3000"
+        ));
+        assert!(is_likely_network_or_server_command("npm run dev"));
+        assert!(is_likely_network_or_server_command("npx vite"));
+        assert!(is_likely_network_or_server_command("cargo run"));
+        assert!(is_likely_network_or_server_command(
+            "curl -s http://localhost:8080"
+        ));
+        assert!(!is_likely_network_or_server_command("echo hello world"));
+        assert!(!is_likely_network_or_server_command("ls -la"));
+        assert!(!is_likely_network_or_server_command("cargo test -j 1"));
     }
 }
