@@ -188,10 +188,10 @@ impl MiniDevRegistry {
                 name: Some(handle.name.clone()),
                 process_type: handle.process_type,
                 working_dir: Some(handle.working_dir.clone()),
-                extra_env: HashMap::new(),
+                extra_env: handle.extra_env.clone(),
                 port_hint: handle.ports.read().await.first().copied(),
-                max_memory_mb: None,
-                port_policy: None,
+                max_memory_mb: handle.max_memory_mb,
+                port_policy: handle.port_policy,
                 restart_policy: Some(handle.restart_policy.clone()),
             };
             (req, Arc::clone(handle))
@@ -203,8 +203,10 @@ impl MiniDevRegistry {
             set.remove(&old_handle.pid());
         }
 
-        // Spawn new process
-        let new_handle = spawn_process_group(workspace_root, req).await?;
+        // Spawn new process preserving the canonical ID
+        let new_handle =
+            crate::dev::process::spawn_process_group_with_id(workspace_root, req, Some(id.clone()))
+                .await?;
         let new_arc = Arc::new(new_handle);
         let pid = new_arc.pid();
         if let Ok(mut set) = self.active_pgids.lock() {
@@ -274,6 +276,9 @@ impl MiniDevRegistry {
             process_type: DevProcessType::Worker,
             command,
             working_dir,
+            extra_env: HashMap::new(),
+            port_policy: None,
+            max_memory_mb: None,
             pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
             pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
             started_at: std::time::Instant::now(),
@@ -390,6 +395,7 @@ pub fn kill_all_sync() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -489,5 +495,75 @@ mod tests {
 
         let updated = registry.get(&dev_id).await.unwrap();
         assert_eq!(updated.status, DevProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_restart_lifecycle_preserves_id_and_env() {
+        use crate::dev::models::SpawnDevRequest;
+
+        let registry = MiniDevRegistry::new();
+        let temp = tempdir().unwrap();
+
+        let mut env = HashMap::new();
+        env.insert("CUSTOM_KEY".to_string(), "CUSTOM_VAL_123".to_string());
+
+        let req = SpawnDevRequest {
+            command: "echo 'Server started'; sleep 60".to_string(),
+            name: Some("resilient-service".to_string()),
+            process_type: DevProcessType::Backend,
+            working_dir: None,
+            extra_env: env,
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+
+        let summary1 = registry.spawn(temp.path(), req).await.expect("spawn ok");
+        let orig_id = summary1.id.clone();
+        let orig_pid = summary1.pid.expect("pid ok");
+
+        // Give process a moment to initialize
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Restart process
+        let summary2 = registry
+            .restart(temp.path(), &orig_id)
+            .await
+            .expect("restart ok");
+
+        // Invariant 1: DevProcessId must be strictly preserved across restarts
+        assert_eq!(
+            summary2.id, orig_id,
+            "DevProcessId must match canonical original ID"
+        );
+        assert_ne!(
+            summary2.pid,
+            Some(orig_pid),
+            "New PID must be assigned on restart"
+        );
+
+        // Invariant 2: Subsequent lookup by original ID must succeed
+        let queried = registry
+            .get(&orig_id)
+            .await
+            .expect("must find restarted process by original ID");
+        assert_eq!(queried.id, orig_id);
+
+        // Invariant 3: Environment variables must be preserved in handle
+        {
+            let lock = registry.processes.read().await;
+            let handle = lock.get(&orig_id).expect("handle exists");
+            assert_eq!(
+                handle.extra_env.get("CUSTOM_KEY").map(|s| s.as_str()),
+                Some("CUSTOM_VAL_123"),
+                "Environment variable must survive restart"
+            );
+        }
+
+        // Invariant 4: Stop by original ID must cleanly terminate new instance
+        registry.stop(&orig_id).await.expect("stop ok");
+        let stopped = registry.get(&orig_id).await.expect("exists");
+        assert_eq!(stopped.status, DevProcessStatus::Stopped);
     }
 }

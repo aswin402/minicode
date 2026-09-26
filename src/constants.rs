@@ -880,6 +880,20 @@ pub const BROWSER_PROFILES_DIR: &str = ".minicode/browser_profiles";
 /// Relative directory inside workspace for browser screenshots
 pub const BROWSER_SCREENSHOTS_DIR: &str = ".minicode/screenshots";
 
+// === MiniDev Runtime & Port Orchestrator ===
+/// Default scan range when searching for fallback available ports (100)
+pub const DEFAULT_PORT_SCAN_RANGE: u16 = 100;
+/// Default timeout in milliseconds when probing port connectivity (50ms)
+pub const DEFAULT_PORT_CONNECT_TIMEOUT_MS: u64 = 50;
+/// In-memory ring buffer log capacity per process (1000 lines)
+pub const DEFAULT_DEV_LOG_RING_BUFFER_SIZE: usize = 1000;
+/// Grace period in milliseconds before SIGKILL escalation during process termination (1000ms)
+pub const DEFAULT_DEV_TERMINATE_GRACE_MS: u64 = 1000;
+/// Rapid crash window threshold in seconds to detect crash loops (3s)
+pub const DEFAULT_WATCHDOG_FAST_CRASH_SECS: u64 = 3;
+/// Maximum consecutive rapid crashes before triggering crash-loop degradation (3)
+pub const DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT: u32 = 3;
+
 // === Session & History ===
 /// Maximum byte length for session preview in list_sessions_rich
 pub const SESSION_PREVIEW_MAX_BYTES: usize = 60;

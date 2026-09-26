@@ -1,14 +1,14 @@
 //! Isolated process group management, death-pipe sentinels, ring buffers, and graceful teardown.
 
 use crate::dev::models::{
-    DevProcessId, DevProcessStatus, DevProcessType, PortResolution, RestartPolicy, RestartStats,
-    SpawnDevRequest,
+    DevProcessId, DevProcessStatus, DevProcessType, PortConflictPolicy, PortResolution,
+    RestartPolicy, RestartStats, SpawnDevRequest,
 };
 use crate::dev::ports::{
     arbitrate_port, detect_requested_port, rewrite_command_port, scan_ports_from_output,
 };
 use crate::error::{DevError, Result};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 
 /// Maximum number of log lines retained in the in-memory ring buffer per process.
-pub const MAX_RING_BUFFER_LINES: usize = 1000;
+pub const MAX_RING_BUFFER_LINES: usize = crate::constants::DEFAULT_DEV_LOG_RING_BUFFER_SIZE;
 
 /// Thread-safe cancellation hook invoked when a process or worker handle is terminated.
 #[derive(Clone)]
@@ -43,6 +43,9 @@ pub struct DevProcessHandle {
     pub process_type: DevProcessType,
     pub command: String,
     pub working_dir: PathBuf,
+    pub extra_env: HashMap<String, String>,
+    pub port_policy: Option<PortConflictPolicy>,
+    pub max_memory_mb: Option<u64>,
     pub pid: Arc<AtomicU32>,
     pub pgid: Arc<AtomicU32>,
     pub started_at: Instant,
@@ -174,9 +177,18 @@ fn create_tokio_command(
 /// port conflict arbitration, and auto-restart watchdog supervision.
 pub async fn spawn_process_group(
     workspace_root: &Path,
-    mut req: SpawnDevRequest,
+    req: SpawnDevRequest,
 ) -> Result<DevProcessHandle> {
-    let dev_id = DevProcessId::new(req.name.as_deref());
+    spawn_process_group_with_id(workspace_root, req, None).await
+}
+
+/// Spawns a command inside an isolated process group, optionally preserving an existing DevProcessId across restarts.
+pub async fn spawn_process_group_with_id(
+    workspace_root: &Path,
+    mut req: SpawnDevRequest,
+    explicit_id: Option<DevProcessId>,
+) -> Result<DevProcessHandle> {
+    let dev_id = explicit_id.unwrap_or_else(|| DevProcessId::new(req.name.as_deref()));
     let display_name = req
         .name
         .clone()
@@ -199,7 +211,7 @@ pub async fn spawn_process_group(
     // 1. Port conflict arbitration
     let port_policy = req.port_policy.unwrap_or_default();
     let port_resolution = if let Some(requested_port) = detect_requested_port(&req) {
-        let res = arbitrate_port(requested_port, port_policy)?;
+        let res = arbitrate_port(requested_port, port_policy).await?;
         match &res {
             PortResolution::Shifted {
                 requested,
@@ -344,7 +356,8 @@ pub async fn spawn_process_group(
             };
 
             let elapsed = spawn_time.elapsed();
-            let is_fast_crash = elapsed < Duration::from_secs(3);
+            let is_fast_crash =
+                elapsed < Duration::from_secs(crate::constants::DEFAULT_WATCHDOG_FAST_CRASH_SECS);
 
             let mut stats = stats_clone.write().await;
             if is_fast_crash {
@@ -353,10 +366,14 @@ pub async fn spawn_process_group(
                 stats.consecutive_fast_crashes = 0;
             }
 
-            // Crash loop protection: 3 rapid crashes in succession stops auto-restart
-            if stats.consecutive_fast_crashes >= 3 {
+            // Crash loop protection: rapid crashes in succession stops auto-restart
+            if stats.consecutive_fast_crashes
+                >= crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT
+            {
                 let msg = format!(
-                    "[WATCHDOG] Crash loop detected: 3 rapid crashes within 3s of spawn (last exit code: {:?}). Auto-restart disabled.",
+                    "[WATCHDOG] Crash loop detected: {} rapid crashes within {}s of spawn (last exit code: {:?}). Auto-restart disabled.",
+                    crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT,
+                    crate::constants::DEFAULT_WATCHDOG_FAST_CRASH_SECS,
                     exit_code
                 );
                 {
@@ -366,9 +383,10 @@ pub async fn spawn_process_group(
                     }
                     l_lock.push_back(msg);
                 }
-                *status_clone.write().await = DevProcessStatus::Degraded(
-                    "Crash loop detected (3 rapid failures)".to_string(),
-                );
+                *status_clone.write().await = DevProcessStatus::Degraded(format!(
+                    "Crash loop detected ({} rapid failures)",
+                    crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT
+                ));
                 break;
             }
 
@@ -488,6 +506,9 @@ pub async fn spawn_process_group(
         process_type: req.process_type,
         command: req.command,
         working_dir: work_dir,
+        extra_env: req.extra_env,
+        port_policy: req.port_policy,
+        max_memory_mb: req.max_memory_mb,
         pid: pid_atomic,
         pgid: pgid_atomic,
         started_at: Instant::now(),

@@ -494,8 +494,10 @@ impl<'a> App<'a> {
                             } else {
                                 (None, None)
                             };
-                            let suggested =
-                                crate::dev::ports::find_next_available_port(port + 1, 100);
+                            let suggested = crate::dev::ports::find_next_available_port(
+                                port + 1,
+                                crate::constants::DEFAULT_PORT_SCAN_RANGE,
+                            );
                             let pid_str = pid
                                 .map(|p| p.to_string())
                                 .unwrap_or_else(|| "unknown".to_string());

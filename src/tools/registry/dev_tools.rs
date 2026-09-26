@@ -86,6 +86,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "type": "string",
                     "description": "Subdirectory relative to workspace root in which to run the command"
                 },
+                "env": {
+                    "type": "object",
+                    "description": "Optional environment variables key-value map to inject into the process"
+                },
                 "port_hint": {
                     "type": "integer",
                     "description": "Optional expected localhost port (e.g. 3000, 5173, 8080) for expedited health verification"
@@ -134,7 +138,10 @@ pub async fn dispatch(
                     (None, None, None)
                 };
                 let suggested = if is_listening {
-                    crate::dev::ports::find_next_available_port(port + 1, 100)
+                    crate::dev::ports::find_next_available_port(
+                        port + 1,
+                        crate::constants::DEFAULT_PORT_SCAN_RANGE,
+                    )
                 } else {
                     Some(port)
                 };
@@ -185,6 +192,17 @@ pub async fn dispatch(
                 let port_policy_str = opt_str(args, "port_policy").unwrap_or("fallback");
                 let port_policy = crate::dev::models::PortConflictPolicy::from_str_loose(port_policy_str);
 
+                let mut extra_env = HashMap::new();
+                if let Some(env_obj) = args.get("env").and_then(|v| v.as_object()) {
+                    for (k, v) in env_obj {
+                        if let Some(s) = v.as_str() {
+                            extra_env.insert(k.clone(), s.to_string());
+                        } else {
+                            extra_env.insert(k.clone(), v.to_string());
+                        }
+                    }
+                }
+
                 let auto_restart = opt_bool(args, "auto_restart", false);
                 let restart_policy = if auto_restart {
                     Some(crate::dev::models::RestartPolicy::on_failure_default())
@@ -207,7 +225,7 @@ pub async fn dispatch(
                     name,
                     process_type,
                     working_dir,
-                    extra_env: HashMap::new(),
+                    extra_env,
                     port_hint,
                     max_memory_mb: None,
                     port_policy: Some(port_policy),

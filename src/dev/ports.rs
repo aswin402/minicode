@@ -36,10 +36,15 @@ pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
     result
 }
 
-/// Checks whether a TCP port is currently open and accepting connections on localhost.
+/// Checks whether a TCP port is currently open and accepting connections on localhost (IPv4 or IPv6).
 pub fn is_port_listening(port: u16) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok()
+    let timeout = Duration::from_millis(crate::constants::DEFAULT_PORT_CONNECT_TIMEOUT_MS);
+    let v4 = SocketAddr::from(([127, 0, 0, 1], port));
+    if TcpStream::connect_timeout(&v4, timeout).is_ok() {
+        return true;
+    }
+    let v6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port));
+    TcpStream::connect_timeout(&v6, timeout).is_ok()
 }
 
 /// Discovers open listening ports associated with a process ID by inspecting active sockets.
@@ -192,9 +197,15 @@ pub fn find_next_available_port(start_port: u16, max_tries: u16) -> Option<u16> 
             continue;
         }
         if !is_port_listening(port) {
-            // Confirm port is genuinely bindable
+            // Confirm port is genuinely bindable on IPv4
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 drop(listener);
+                // Also verify IPv6 is not already occupied
+                if let Err(e) = TcpListener::bind(("::1", port)) {
+                    if e.kind() == std::io::ErrorKind::AddrInUse {
+                        continue;
+                    }
+                }
                 return Some(port);
             }
         }
@@ -272,10 +283,11 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
 }
 
 /// Evaluates requested port availability against the selected conflict policy.
-pub fn arbitrate_port(
+pub async fn arbitrate_port(
     requested_port: u16,
     policy: crate::dev::models::PortConflictPolicy,
 ) -> std::result::Result<crate::dev::models::PortResolution, crate::error::DevError> {
+    use crate::constants::DEFAULT_PORT_SCAN_RANGE;
     use crate::dev::models::{PortConflict, PortConflictPolicy, PortResolution};
 
     if !is_port_listening(requested_port) {
@@ -291,7 +303,7 @@ pub fn arbitrate_port(
         (None, None)
     };
 
-    let suggested_fallback = find_next_available_port(requested_port + 1, 100);
+    let suggested_fallback = find_next_available_port(requested_port + 1, DEFAULT_PORT_SCAN_RANGE);
 
     let conflict = PortConflict {
         port: requested_port,
@@ -312,7 +324,7 @@ pub fn arbitrate_port(
             } else {
                 Err(crate::error::DevError::Port(format!(
                     "Port {} is occupied by PID {:?} and no available fallback port was found in range {}..{}",
-                    requested_port, conflicting_pid, requested_port + 1, requested_port + 100
+                    requested_port, conflicting_pid, requested_port + 1, requested_port + DEFAULT_PORT_SCAN_RANGE
                 )))
             }
         }
@@ -328,13 +340,13 @@ pub fn arbitrate_port(
                 unsafe {
                     let _ = libc::kill(pid as i32, libc::SIGTERM);
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 if is_port_listening(requested_port) {
                     #[cfg(unix)]
                     unsafe {
                         let _ = libc::kill(pid as i32, libc::SIGKILL);
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 if !is_port_listening(requested_port) {
                     return Ok(PortResolution::Reclaimed {
@@ -477,14 +489,16 @@ mod tests {
         assert!(p >= 39900 && p < 39950);
     }
 
-    #[test]
-    fn test_arbitrate_port_lifecycle() {
+    #[tokio::test]
+    async fn test_arbitrate_port_lifecycle() {
         use crate::dev::models::{PortConflictPolicy, PortResolution};
 
         // Pick high port that should be free
         let free_port = 49123;
         if !is_port_listening(free_port) {
-            let res = arbitrate_port(free_port, PortConflictPolicy::Fallback).unwrap();
+            let res = arbitrate_port(free_port, PortConflictPolicy::Fallback)
+                .await
+                .unwrap();
             assert_eq!(res, PortResolution::Unchanged { port: free_port });
             assert_eq!(res.resolved_port(), free_port);
         }
@@ -494,7 +508,9 @@ mod tests {
         let bound_port = listener.local_addr().unwrap().port();
 
         // Fallback policy: should shift to next available port
-        let res = arbitrate_port(bound_port, PortConflictPolicy::Fallback).unwrap();
+        let res = arbitrate_port(bound_port, PortConflictPolicy::Fallback)
+            .await
+            .unwrap();
         match res {
             PortResolution::Shifted {
                 requested,
@@ -508,11 +524,13 @@ mod tests {
         }
 
         // Error policy: should return error
-        let err_res = arbitrate_port(bound_port, PortConflictPolicy::Error);
+        let err_res = arbitrate_port(bound_port, PortConflictPolicy::Error).await;
         assert!(err_res.is_err());
 
         // Ignore policy: should return ignored
-        let ign_res = arbitrate_port(bound_port, PortConflictPolicy::Ignore).unwrap();
+        let ign_res = arbitrate_port(bound_port, PortConflictPolicy::Ignore)
+            .await
+            .unwrap();
         assert_eq!(ign_res, PortResolution::Ignored { port: bound_port });
     }
 }
