@@ -79,70 +79,30 @@ pub fn render_welcome_screen(
     let vert_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),            // 0: Top Header
-            Constraint::Min(1),               // 1: Top spacer (flexible)
-            Constraint::Length(3),            // 2: Brand logo lockup (3 lines)
-            Constraint::Length(1),            // 3: Spacer between logo and input dock
-            Constraint::Length(input_height), // 4: Centered Dynamic Input Dock
-            Constraint::Length(1),            // 5: Spacer between input and status
-            Constraint::Length(1),            // 6: Status strip (● READY | Model)
-            Constraint::Min(2),               // 7: Bottom spacer (flexible)
-            Constraint::Length(1),            // 8: Bottom Edge Bar
+            Constraint::Min(1),               // 0: Top spacer (flexible)
+            Constraint::Length(3),            // 1: Brand logo lockup (3 lines)
+            Constraint::Length(1),            // 2: Spacer between logo and input dock
+            Constraint::Length(input_height), // 3: Centered Dynamic Input Dock
+            Constraint::Min(2),               // 4: Bottom spacer (flexible)
+            Constraint::Length(1),            // 5: Bottom Edge Bar
         ])
         .split(area);
 
-    // 1. Top Header: "MiniCode vX.X.X" (left) ... "AI Coding Assistant" (right)
-    let version_str = format!("MiniCode v{}", env!("CARGO_PKG_VERSION"));
-    let top_left = Span::styled(
-        version_str,
-        Style::default()
-            .fg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let top_right = Span::styled("AI Coding Assistant", Style::default().fg(theme.muted));
-
-    let tl_width = (top_left.content.chars().count() + 2) as u16;
-    let tr_width = (top_right.content.chars().count() + 2) as u16;
-
-    if area.width >= tl_width + tr_width {
-        let top_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(tl_width),
-                Constraint::Min(1),
-                Constraint::Length(tr_width),
-            ])
-            .split(vert_chunks[0]);
-
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::raw(" "), top_left])),
-            top_chunks[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![top_right, Span::raw(" ")])).alignment(Alignment::Right),
-            top_chunks[2],
-        );
-    }
-
-    // 2. Brand Logo Lockup (Option A: Stepped geometric pillars + typography)
-    // Logo block width:
-    // Left pillar: 4 chars
-    // Gap: 4 chars
-    // Right pillar: 4 chars
-    // Gap to text: 3 chars
-    // "Build better, with AI": 21 chars
-    // Total lockup width = 12 + 3 + 21 = 36 chars.
-    let lockup_width = 36_u16;
-    let lockup_area = if vert_chunks[2].width > lockup_width {
-        let offset_x = (vert_chunks[2].width - lockup_width) / 2;
+    // 1. Brand Logo Lockup (Stepped geometric pillars + typography)
+    let version_str = format!("minicode v{}", env!("CARGO_PKG_VERSION"));
+    let slogan = "Build better, with AI";
+    let max_text_len = slogan.chars().count().max(version_str.chars().count());
+    let lockup_width = (15 + max_text_len) as u16;
+    let lockup_area = if vert_chunks[1].width > lockup_width {
+        let offset_x = (vert_chunks[1].width - lockup_width) / 2;
         Rect {
-            x: vert_chunks[2].x + offset_x,
-            y: vert_chunks[2].y,
+            x: vert_chunks[1].x + offset_x,
+            y: vert_chunks[1].y,
             width: lockup_width,
             height: 3,
         }
     } else {
-        vert_chunks[2]
+        vert_chunks[1]
     };
 
     let line1 = Line::from(vec![
@@ -163,53 +123,35 @@ pub fn render_welcome_screen(
         Span::raw("    "),
         Span::styled("████", Style::default().fg(theme.info)),
         Span::raw("   "),
-        Span::styled("Build better, with AI", Style::default().fg(theme.muted)),
+        Span::styled(slogan, Style::default().fg(theme.muted)),
     ]);
 
     let line3 = Line::from(vec![
         Span::styled("██  ", Style::default().fg(theme.brand_accent)),
         Span::raw("    "),
         Span::styled("  ██", Style::default().fg(theme.info)),
+        Span::raw("   "),
+        Span::styled(version_str, Style::default().fg(theme.muted)),
     ]);
 
     let logo_para = Paragraph::new(vec![line1, line2, line3]);
     frame.render_widget(logo_para, lockup_area);
 
-    // 3. Centered Input Dock
+    // 2. Centered Input Dock
     // Responsive width: 65% of screen width clamped between 42 and 74 columns
-    let input_width = (vert_chunks[4].width * 65 / 100)
+    let input_width = (vert_chunks[3].width * 65 / 100)
         .clamp(40, 74)
-        .min(vert_chunks[4].width);
-    let input_x = vert_chunks[4].x + (vert_chunks[4].width.saturating_sub(input_width)) / 2;
+        .min(vert_chunks[3].width);
+    let input_x = vert_chunks[3].x + (vert_chunks[3].width.saturating_sub(input_width)) / 2;
     let centered_input_rect = Rect {
         x: input_x,
-        y: vert_chunks[4].y,
+        y: vert_chunks[3].y,
         width: input_width,
-        height: vert_chunks[4].height,
+        height: vert_chunks[3].height,
     };
     input_dock.render(frame, centered_input_rect, theme);
 
-    // 4. Live Status Strip (● READY | Provider Model)
-    let provider_display = title_case(ctx.provider);
-    let model_display = format_model_name(ctx.model);
-    let status_spans = vec![
-        Span::styled("● ", Style::default().fg(theme.success)),
-        Span::styled(
-            "READY",
-            Style::default()
-                .fg(theme.success)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  |  ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{} {}", provider_display, model_display),
-            Style::default().fg(theme.text_primary),
-        ),
-    ];
-    let status_para = Paragraph::new(Line::from(status_spans)).alignment(Alignment::Center);
-    frame.render_widget(status_para, vert_chunks[6]);
-
-    // 5. Bottom Edge Bar: path:branch (left) ... version (right)
+    // 3. Bottom Edge Bar: path:branch (left) ... provider model (right)
     let display_path = if let Some(ref home) = dirs::home_dir() {
         if let Ok(rel) = ctx.workspace.strip_prefix(home) {
             format!("~/{}", rel.display())
@@ -226,10 +168,15 @@ pub fn render_welcome_screen(
 
     let full_path_str = format!("{}{}", display_path, git_info);
     let bot_left = Span::styled(full_path_str, Style::default().fg(theme.muted));
-    let bot_right = Span::styled(
-        format!("v{}", env!("CARGO_PKG_VERSION")),
-        Style::default().fg(theme.muted),
-    );
+
+    let provider_display = title_case(ctx.provider);
+    let model_display = format_model_name(ctx.model);
+    let model_str = if provider_display.is_empty() {
+        model_display
+    } else {
+        format!("{} {}", provider_display, model_display)
+    };
+    let bot_right = Span::styled(model_str, Style::default().fg(theme.muted));
 
     let bl_width = (bot_left.content.chars().count() + 2) as u16;
     let br_width = (bot_right.content.chars().count() + 2) as u16;
@@ -242,7 +189,7 @@ pub fn render_welcome_screen(
                 Constraint::Min(1),
                 Constraint::Length(br_width),
             ])
-            .split(vert_chunks[8]);
+            .split(vert_chunks[5]);
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::raw(" "), bot_left])),
@@ -286,6 +233,24 @@ mod tests {
                 assert!(rect.height == 3);
             })
             .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut rendered = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                rendered.push_str(buffer[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+
+        // Logo lockup includes slogan on line 2 and version on line 3
+        assert!(rendered.contains("Build better, with AI"));
+        assert!(rendered.contains("minicode v"));
+        // Model is rendered in bottom-right corner
+        assert!(rendered.contains("Minimax MiniMax-M2.7"));
+        // Top header and ready status are removed
+        assert!(!rendered.contains("AI Coding Assistant"));
+        assert!(!rendered.contains("READY"));
     }
 
     #[test]

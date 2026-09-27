@@ -1,5 +1,7 @@
 pub mod circuit_breaker;
 pub mod complexity;
+#[allow(dead_code, unused_imports)]
+pub mod council;
 pub mod critic;
 pub mod dag;
 pub mod hypothesis;
@@ -25,6 +27,12 @@ pub mod task_dag;
 pub mod types;
 pub mod verification_barrier;
 
+#[allow(unused_imports)]
+pub use council::{
+    AgentPerspective, CouncilConfig, CouncilOrchestrator, CouncilOutcome, CouncilResult,
+    DebateRound, DeliberationEngine, DivergenceAnalyzer, DivergenceReport, MemberId,
+    SynthesizedView, Vote, VoteBallot, VoteProtocol, VotingResult,
+};
 #[allow(unused_imports)]
 pub use dag::{
     DagCompiler, DagExecutionReport, DagExecutor, DagNodeResult, DagNodeSpec, DagSpec,

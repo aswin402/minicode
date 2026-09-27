@@ -976,7 +976,7 @@ pub const MAX_DIFF_SNAPSHOT_BYTES: usize = 512 * 1024;
 /// Exit confirmation modal dialog width in columns
 pub const EXIT_CONFIRM_MODAL_WIDTH: u16 = 54;
 /// Exit confirmation modal dialog height in rows
-pub const EXIT_CONFIRM_MODAL_HEIGHT: u16 = 8;
+pub const EXIT_CONFIRM_MODAL_HEIGHT: u16 = 7;
 /// Workspace analysis modal dialog width in columns
 pub const WORKSPACE_ANALYSIS_WIDTH: u16 = 78;
 /// Workspace analysis modal dialog height in rows
