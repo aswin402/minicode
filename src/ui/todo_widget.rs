@@ -9,7 +9,7 @@
 use crate::config::TodoWidgetStyle;
 use crate::ui::theme::Theme;
 use crate::ui::view::{LivePlanBlock, LivePlanTaskStatus};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
@@ -93,11 +93,11 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         };
 
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", Color::Green, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
                 ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
-            LivePlanTaskStatus::Pending => ("○ ", Color::DarkGray, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
         lines.push(Line::from(vec![
@@ -162,11 +162,11 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         };
 
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", Color::Green, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
                 ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
-            LivePlanTaskStatus::Pending => ("○ ", Color::DarkGray, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
         lines.push(Line::from(vec![
@@ -223,11 +223,11 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     // Tasks
     for task in &plan.tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", Color::Green, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
                 ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
-            LivePlanTaskStatus::Pending => ("○ ", Color::DarkGray, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
         lines.push(Line::from(vec![
@@ -277,11 +277,11 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
     // Tasks with clean indentation
     for task in &plan.tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", Color::Green, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
                 ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
-            LivePlanTaskStatus::Pending => ("○ ", Color::DarkGray, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
         lines.push(Line::from(vec![

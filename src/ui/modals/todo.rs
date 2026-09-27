@@ -3,15 +3,15 @@
 //! Features:
 //! - Border-embedded title and status with zero top banner clutter.
 //! - Continuous 6-column aligned Git-graph subway spine (`│`, `◉`, `✔`, `○`).
-//! - Smart history collapse (hides 200+ completed phases, toggleable via Space).
+//! - Smart history collapse (hides 200+ completed phases, auto-expanding on navigation or Space).
 //! - Active/selected milestone auto-expands its atomic task tree.
-//! - Integrated bottom footer dock with dynamic unicode progress meter and navigation keyhints.
+//! - Responsive integrated bottom footer dock with dynamic unicode progress meter and navigation keyhints.
 
 use crate::context::memory::working_memory::{MilestonePhase, TaskItemStatus};
 use crate::ui::layout_utils::centered_rect;
 use crate::ui::theme::Theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
@@ -81,6 +81,7 @@ impl TodoModalState {
     }
 
     /// Moves selection up in the currently focused pane.
+    /// If moving into collapsed historical phases, auto-expands so the cursor never vanishes.
     pub fn prev(&mut self) {
         match self.active_pane {
             TodoModalPane::Milestones => {
@@ -88,6 +89,16 @@ impl TodoModalState {
                     self.selected_milestone -= 1;
                     self.selected_task = 0;
                     self.task_scroll = 0;
+
+                    let active_idx = self
+                        .milestones
+                        .iter()
+                        .position(|m| m.is_active)
+                        .or_else(|| self.milestones.iter().position(|m| m.pending_tasks > 0))
+                        .unwrap_or(0);
+                    if active_idx > 2 && self.selected_milestone < active_idx.saturating_sub(1) {
+                        self.show_all_completed = true;
+                    }
                 }
             }
             TodoModalPane::Tasks => {
@@ -118,6 +129,7 @@ impl TodoModalState {
                 self.selected_milestone = 0;
                 self.selected_task = 0;
                 self.task_scroll = 0;
+                self.show_all_completed = true;
             }
             TodoModalPane::Tasks => {
                 self.selected_task = 0;
@@ -155,6 +167,8 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
     let active_milestone = state.milestones.iter().find(|m| m.is_active);
     let active_label = if let Some(m) = active_milestone {
         format!("{} · Active", m.id)
+    } else if state.milestones.is_empty() {
+        "No Milestones".to_string()
     } else {
         "All Completed".to_string()
     };
@@ -213,8 +227,11 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         )));
     } else {
         // Smart Historical Collapsing:
-        // When there are more than 2 completed milestones before active, collapse earlier ones unless expanded.
-        let should_collapse = !state.show_all_completed && active_idx > 2;
+        // Only collapse if user hasn't explicitly expanded AND selected milestone is within the visible window.
+        let should_collapse = !state.show_all_completed
+            && active_idx > 2
+            && state.selected_milestone >= active_idx.saturating_sub(1);
+
         let start_idx = if should_collapse {
             active_idx.saturating_sub(1)
         } else {
@@ -277,9 +294,9 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
             } else if milestone.total_tasks > 0
                 && milestone.completed_tasks == milestone.total_tasks
             {
-                ("✔", Color::Green)
+                ("✔", theme.success)
             } else {
-                ("○", Color::DarkGray)
+                ("○", theme.muted)
             };
 
             let pointer = if is_selected_m { "▶ " } else { "  " };
@@ -313,7 +330,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                     .bg(m_bg)
                     .add_modifier(Modifier::BOLD)
             } else if pct == 100 {
-                Style::default().fg(Color::Green).bg(m_bg)
+                Style::default().fg(theme.success).bg(m_bg)
             } else {
                 Style::default().fg(theme.muted).bg(m_bg)
             };
@@ -360,81 +377,96 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
 
             // Atomic tasks branch under active or selected milestone
             let show_tasks = milestone.is_active || is_selected_m;
-            if show_tasks && !milestone.tasks.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("   │  "),
-                    Span::styled(
-                        "└── Tasks",
-                        Style::default()
-                            .fg(theme.muted)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" ({}/{})", milestone.completed_tasks, milestone.total_tasks),
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
-
-                let task_count = milestone.tasks.len();
-                for (t_idx, task) in milestone.tasks.iter().enumerate() {
-                    let is_selected_task = is_selected_m && t_idx == state.selected_task;
-                    let is_last_task = t_idx == task_count - 1;
-                    let branch = if is_last_task {
-                        "      └── "
-                    } else {
-                        "      ├── "
-                    };
-
-                    let task_bg = if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                        theme.bg_elevated
-                    } else {
-                        theme.bg_primary
-                    };
-
-                    let (t_bullet, t_color, t_mod) = match task.status {
-                        TaskItemStatus::Completed => ("✔ ", Color::Green, Modifier::empty()),
-                        TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
-                        TaskItemStatus::Pending => ("○ ", Color::DarkGray, Modifier::empty()),
-                    };
-
-                    let task_pointer =
-                        if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                            "▶ "
-                        } else {
-                            "  "
-                        };
-
-                    let t_line_idx = lines.len();
-                    if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                        cursor_line = t_line_idx;
+            if show_tasks {
+                if milestone.tasks.is_empty() {
+                    if is_selected_m {
+                        lines.push(Line::from(vec![
+                            Span::raw("   │  "),
+                            Span::styled(
+                                "└── (No atomic tasks in this milestone)",
+                                Style::default()
+                                    .fg(theme.muted)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
                     }
-
+                } else {
                     lines.push(Line::from(vec![
+                        Span::raw("   │  "),
                         Span::styled(
-                            task_pointer,
+                            "└── Tasks",
                             Style::default()
-                                .fg(theme.brand_accent)
-                                .bg(task_bg)
+                                .fg(theme.muted)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(" │", Style::default().fg(theme.border).bg(task_bg)),
-                        Span::styled(branch, Style::default().fg(theme.muted).bg(task_bg)),
                         Span::styled(
-                            t_bullet,
-                            Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
-                        ),
-                        Span::styled(
-                            task.title.clone(),
-                            Style::default()
-                                .fg(if is_selected_task {
-                                    theme.text_primary
-                                } else {
-                                    theme.muted
-                                })
-                                .bg(task_bg)
-                                .add_modifier(t_mod),
+                            format!(" ({}/{})", milestone.completed_tasks, milestone.total_tasks),
+                            Style::default().fg(theme.muted),
                         ),
                     ]));
+
+                    let task_count = milestone.tasks.len();
+                    for (t_idx, task) in milestone.tasks.iter().enumerate() {
+                        let is_selected_task = is_selected_m && t_idx == state.selected_task;
+                        let is_last_task = t_idx == task_count - 1;
+                        let branch = if is_last_task {
+                            "      └── "
+                        } else {
+                            "      ├── "
+                        };
+
+                        let task_bg =
+                            if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                                theme.bg_elevated
+                            } else {
+                                theme.bg_primary
+                            };
+
+                        let (t_bullet, t_color, t_mod) = match task.status {
+                            TaskItemStatus::Completed => ("✔ ", theme.success, Modifier::empty()),
+                            TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
+                            TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
+                        };
+
+                        let task_pointer =
+                            if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                                "▶ "
+                            } else {
+                                "  "
+                            };
+
+                        let t_line_idx = lines.len();
+                        if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                            cursor_line = t_line_idx;
+                        }
+
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                task_pointer,
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .bg(task_bg)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(" │", Style::default().fg(theme.border).bg(task_bg)),
+                            Span::styled(branch, Style::default().fg(theme.muted).bg(task_bg)),
+                            Span::styled(
+                                t_bullet,
+                                Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
+                            ),
+                            Span::styled(
+                                task.title.clone(),
+                                Style::default()
+                                    .fg(if is_selected_task {
+                                        theme.text_primary
+                                    } else {
+                                        theme.muted
+                                    })
+                                    .bg(task_bg)
+                                    .add_modifier(t_mod),
+                            ),
+                        ]));
+                    }
                 }
             }
 
@@ -467,7 +499,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         chunks[1],
     );
 
-    // Integrated Footer Dock: Dynamic Progress Meter + Navigation Keyhints
+    // Responsive Integrated Footer Dock: Dynamic Progress Meter + Navigation Keyhints
     let selected_m = state.milestones.get(state.selected_milestone);
     let (m_label, pct, done, total) = if let Some(m) = selected_m {
         let p = if m.total_tasks > 0 {
@@ -480,81 +512,147 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         ("Roadmap".to_string(), 100, 0, 0)
     };
 
-    let bar_slots = 16usize;
+    let available_w = chunks[2].width as usize;
+
+    let (bar_slots, right_spans) = if available_w >= 100 {
+        let bar_slots = 16usize;
+        let right_spans = vec![
+            Span::styled(
+                "[Tab] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if state.active_pane == TodoModalPane::Milestones {
+                    "Tasks  "
+                } else {
+                    "Roadmap  "
+                },
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                "[Space] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if state.show_all_completed {
+                    "Collapse  "
+                } else {
+                    "All  "
+                },
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                "[↑/↓] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Move  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[Esc] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Close  ", Style::default().fg(theme.muted)),
+        ];
+        (bar_slots, right_spans)
+    } else if available_w >= 70 {
+        let bar_slots = 8usize;
+        let right_spans = vec![
+            Span::styled(
+                "[Tab] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "[Space] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "[↑/↓] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "[Esc] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Close  ", Style::default().fg(theme.muted)),
+        ];
+        (bar_slots, right_spans)
+    } else {
+        let bar_slots = 6usize;
+        let right_spans = vec![
+            Span::styled(
+                "[Esc] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Close ", Style::default().fg(theme.muted)),
+        ];
+        (bar_slots, right_spans)
+    };
+
     let filled = (pct * bar_slots) / 100;
     let empty = bar_slots.saturating_sub(filled);
     let bar_str = format!("{}{}", "▰".repeat(filled), "▱".repeat(empty));
     let bar_color = if pct == 100 {
-        Color::Green
+        theme.success
     } else {
         theme.brand_accent
     };
 
-    let left_spans = vec![
-        Span::raw("  "),
-        Span::styled(
-            format!("{} Progress  ", m_label),
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(bar_str, Style::default().fg(bar_color)),
-        Span::styled(
-            format!("  {}% ", pct),
-            Style::default()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("({}/{} Tasks)", done, total),
-            Style::default().fg(theme.muted),
-        ),
-    ];
-
-    let right_spans = vec![
-        Span::styled(
-            "[Tab] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if state.active_pane == TodoModalPane::Milestones {
-                "Tasks  "
-            } else {
-                "Roadmap  "
-            },
-            Style::default().fg(theme.muted),
-        ),
-        Span::styled(
-            "[Space] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            if state.show_all_completed {
-                "Collapse  "
-            } else {
-                "All  "
-            },
-            Style::default().fg(theme.muted),
-        ),
-        Span::styled(
-            "[↑/↓] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Move  ", Style::default().fg(theme.muted)),
-        Span::styled(
-            "[Esc] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("Close  ", Style::default().fg(theme.muted)),
-    ];
+    let left_spans = if available_w >= 70 {
+        vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{} Progress  ", m_label),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(bar_str, Style::default().fg(bar_color)),
+            Span::styled(
+                format!("  {}% ", pct),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({}/{} Tasks)", done, total),
+                Style::default().fg(theme.muted),
+            ),
+        ]
+    } else {
+        vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("{} ", m_label),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(bar_str, Style::default().fg(bar_color)),
+            Span::styled(
+                format!(" {}%", pct),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    };
 
     let left_w: usize = left_spans
         .iter()
@@ -564,7 +662,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         .iter()
         .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
         .sum();
-    let space_count = (chunks[2].width as usize).saturating_sub(left_w + right_w);
+    let space_count = available_w.saturating_sub(left_w + right_w);
 
     let mut footer_spans = left_spans;
     footer_spans.push(Span::raw(" ".repeat(space_count)));
