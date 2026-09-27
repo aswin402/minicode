@@ -361,6 +361,14 @@ pub async fn dispatch(
         })()),
         "begin_transaction" => Some((|| {
             let desc = param::require_str(args, "description", "begin_transaction")?;
+            if let Ok(Some(active)) =
+                crate::session::transaction::TransactionManager::get_active(workspace_root)
+            {
+                return Ok(format!(
+                    "✔ Active workspace transaction '{}' already protecting workspace: {}\nAll subsequent file modifications are journaled in the WAL.",
+                    active.tx_id, active.description
+                ));
+            }
             let manifest =
                 crate::session::transaction::TransactionManager::begin(workspace_root, desc)?;
             Ok(format!(
