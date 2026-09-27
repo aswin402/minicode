@@ -8,8 +8,10 @@ use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// Status of a discrete task item in the execution plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskItemStatus {
     Pending,
     InProgress,
@@ -17,7 +19,7 @@ pub enum TaskItemStatus {
 }
 
 /// A parsed atomic task item from `todo.md` or `task_plan.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskItem {
     pub line_index: usize,
     pub status: TaskItemStatus,
@@ -250,7 +252,11 @@ impl WorkingMemory {
                     status: TaskItemStatus::Completed,
                     title,
                 });
-            } else if trimmed.starts_with("- [>]") || trimmed.starts_with("* [>]") {
+            } else if trimmed.starts_with("- [>]")
+                || trimmed.starts_with("* [>]")
+                || trimmed.starts_with("- [/]")
+                || trimmed.starts_with("* [/]")
+            {
                 let title = trimmed[5..].trim().to_string();
                 tasks.push(TaskItem {
                     line_index: idx,
@@ -269,6 +275,13 @@ impl WorkingMemory {
                 tasks.push(TaskItem {
                     line_index: idx,
                     status: TaskItemStatus::Pending,
+                    title,
+                });
+            } else if let Some(bracket) = trimmed.find("[>]").or_else(|| trimmed.find("[/]")) {
+                let title = trimmed[bracket + 3..].trim().to_string();
+                tasks.push(TaskItem {
+                    line_index: idx,
+                    status: TaskItemStatus::InProgress,
                     title,
                 });
             } else if let Some(bracket) = trimmed.find("[x]") {

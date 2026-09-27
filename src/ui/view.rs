@@ -50,6 +50,31 @@ pub struct SwarmMatrixBlock {
     pub duration_ms: Option<u64>,
 }
 
+/// Execution status of a discrete task in a live plan block
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LivePlanTaskStatus {
+    Completed,
+    InProgress,
+    Pending,
+}
+
+/// A parsed task item in a visual Live Plan Card
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LivePlanTaskItem {
+    pub title: String,
+    pub status: LivePlanTaskStatus,
+}
+
+/// An inline Oh-My-Pi / Pi style Live Plan & Execution Progress card
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LivePlanBlock {
+    pub title: String,
+    pub total_tasks: usize,
+    pub completed_tasks: usize,
+    pub active_task: Option<String>,
+    pub tasks: Vec<LivePlanTaskItem>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TimelineEntry {
     UserPrompt(String),
@@ -78,6 +103,7 @@ pub enum TimelineEntry {
     },
     SubagentTree(SubagentTreeBlock),
     SubagentSwarm(SwarmMatrixBlock),
+    LivePlan(LivePlanBlock),
     ContextCompaction {
         tier: usize,
         turns_summarized: usize,
@@ -501,6 +527,16 @@ impl TimelineView {
         self.entries.push(TimelineEntry::SystemStatus(status));
     }
 
+    /// Adds or updates in-place the Live Plan & Execution Progress card in the timeline
+    pub fn update_live_plan(&mut self, plan: LivePlanBlock) {
+        if let Some(TimelineEntry::LivePlan(ref mut existing)) = self.entries.last_mut() {
+            *existing = plan;
+        } else {
+            self.entries.push(TimelineEntry::LivePlan(plan));
+        }
+        self.auto_scroll.set(true);
+    }
+
     pub fn add_context_compaction(
         &mut self,
         tier: usize,
@@ -746,6 +782,21 @@ impl TimelineView {
                             "- [{}] {}: {} tokens\n",
                             w.role_name, w.id, w.tokens_used
                         ));
+                    }
+                    out.push('\n');
+                }
+                TimelineEntry::LivePlan(plan) => {
+                    out.push_str(&format!(
+                        "### Plan Progress: {}/{} Tasks Completed\n",
+                        plan.completed_tasks, plan.total_tasks
+                    ));
+                    for t in &plan.tasks {
+                        let mark = match t.status {
+                            LivePlanTaskStatus::Completed => "[x]",
+                            LivePlanTaskStatus::InProgress => "[/]",
+                            LivePlanTaskStatus::Pending => "[ ]",
+                        };
+                        out.push_str(&format!("- {} {}\n", mark, t.title));
                     }
                     out.push('\n');
                 }
@@ -1725,6 +1776,60 @@ impl TimelineView {
                     ]));
                     lines.push(Line::from(String::new()));
                 }
+                TimelineEntry::LivePlan(plan) => {
+                    let header_text = format!(
+                        "┌── 📋 Plan Progress: {}/{} Tasks Completed ──",
+                        plan.completed_tasks, plan.total_tasks
+                    );
+                    let header_len = UnicodeWidthStr::width(header_text.as_str());
+                    let right_padding = (area.width as usize)
+                        .saturating_sub(header_len)
+                        .saturating_sub(1);
+                    let full_header = format!("{}{}", header_text, "─".repeat(right_padding));
+
+                    lines.push(Line::from(vec![Span::styled(
+                        full_header,
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+
+                    for task in &plan.tasks {
+                        let (bullet, bullet_color, text_color, modifier) = match task.status {
+                            LivePlanTaskStatus::Completed => {
+                                ("✔", theme.success, theme.text_primary, Modifier::empty())
+                            }
+                            LivePlanTaskStatus::InProgress => {
+                                ("▶", theme.info, theme.brand_accent, Modifier::BOLD)
+                            }
+                            LivePlanTaskStatus::Pending => {
+                                ("○", theme.muted, theme.muted, Modifier::empty())
+                            }
+                        };
+
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", Style::default().fg(theme.border)),
+                            Span::styled(
+                                format!(" {} ", bullet),
+                                Style::default()
+                                    .fg(bullet_color)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                &task.title,
+                                Style::default().fg(text_color).add_modifier(modifier),
+                            ),
+                        ]));
+                    }
+
+                    let bottom_border =
+                        format!("└{}", "─".repeat((area.width as usize).saturating_sub(2)));
+                    lines.push(Line::from(vec![Span::styled(
+                        bottom_border,
+                        Style::default().fg(theme.border),
+                    )]));
+                    lines.push(Line::from(String::new()));
+                }
                 TimelineEntry::SystemStatus(status) => {
                     let trimmed = status.trim_start();
                     let prefixes = [
@@ -2315,5 +2420,65 @@ mod tests {
             }
             _ => panic!("Expected ToolFinished"),
         }
+    }
+
+    #[test]
+    fn test_live_plan_update_and_transcript() {
+        let mut view = TimelineView::new();
+        let plan1 = LivePlanBlock {
+            title: "Plan Progress".to_string(),
+            total_tasks: 3,
+            completed_tasks: 1,
+            active_task: Some("T2: Implementation".to_string()),
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "T1: Design".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                },
+                LivePlanTaskItem {
+                    title: "T2: Implementation".to_string(),
+                    status: LivePlanTaskStatus::InProgress,
+                },
+                LivePlanTaskItem {
+                    title: "T3: Verification".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                },
+            ],
+        };
+
+        view.update_live_plan(plan1);
+        assert_eq!(view.entries.len(), 1);
+
+        // Update in-place
+        let plan2 = LivePlanBlock {
+            title: "Plan Progress".to_string(),
+            total_tasks: 3,
+            completed_tasks: 2,
+            active_task: Some("T3: Verification".to_string()),
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "T1: Design".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                },
+                LivePlanTaskItem {
+                    title: "T2: Implementation".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                },
+                LivePlanTaskItem {
+                    title: "T3: Verification".to_string(),
+                    status: LivePlanTaskStatus::InProgress,
+                },
+            ],
+        };
+
+        view.update_live_plan(plan2);
+        // Crucial test: in-place update must not duplicate entries
+        assert_eq!(view.entries.len(), 1);
+
+        let transcript = view.get_all_transcript_text();
+        assert!(transcript.contains("### Plan Progress: 2/3 Tasks Completed"));
+        assert!(transcript.contains("- [x] T1: Design"));
+        assert!(transcript.contains("- [x] T2: Implementation"));
+        assert!(transcript.contains("- [/] T3: Verification"));
     }
 }

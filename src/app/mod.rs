@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
@@ -70,6 +70,7 @@ pub struct App<'a> {
     pub pending_submission: Option<PendingSubmission>,
     pub session_skipped_indexing: bool,
     pub session_skipped_drift: bool,
+    pub active_task: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +115,7 @@ impl<'a> App<'a> {
             pending_submission: None,
             session_skipped_indexing: false,
             session_skipped_drift: false,
+            active_task: None,
         }
     }
 
@@ -184,6 +186,40 @@ impl<'a> App<'a> {
                         "⚠️ Anti-Thrashing Breaker: Halting loop\n{}",
                         intervention
                     ));
+                }
+                AgentEvent::PlanUpdated {
+                    total_tasks,
+                    completed_tasks,
+                    active_task,
+                    tasks,
+                    ..
+                } => {
+                    self.active_task = active_task.clone();
+                    let live_tasks = tasks
+                        .iter()
+                        .map(|t| crate::ui::view::LivePlanTaskItem {
+                            title: t.title.clone(),
+                            status: match t.status {
+                                crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                    crate::ui::view::LivePlanTaskStatus::Completed
+                                }
+                                crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                    crate::ui::view::LivePlanTaskStatus::InProgress
+                                }
+                                crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                    crate::ui::view::LivePlanTaskStatus::Pending
+                                }
+                            },
+                        })
+                        .collect();
+                    self.timeline
+                        .update_live_plan(crate::ui::view::LivePlanBlock {
+                            title: "Plan Progress".to_string(),
+                            total_tasks: *total_tasks,
+                            completed_tasks: *completed_tasks,
+                            active_task: active_task.clone(),
+                            tasks: live_tasks,
+                        });
                 }
                 _ => {}
             }
@@ -342,6 +378,29 @@ impl<'a> App<'a> {
                         );
                         let mut padded_spans = vec![Span::raw(" ")];
                         padded_spans.extend(activity_line.spans);
+                        if let Some(ref task) = self.active_task {
+                            padded_spans
+                                .push(Span::styled(" │ ", Style::default().fg(self.theme.border)));
+                            padded_spans.push(Span::styled(
+                                "▶ ",
+                                Style::default()
+                                    .fg(self.theme.info)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            let max_task_len =
+                                (chunks[1].width as usize).saturating_sub(45).max(15);
+                            let disp_task = if task.len() > max_task_len {
+                                format!("{}...", &task[..max_task_len.saturating_sub(3)])
+                            } else {
+                                task.clone()
+                            };
+                            padded_spans.push(Span::styled(
+                                disp_task,
+                                Style::default()
+                                    .fg(self.theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
                         frame.render_widget(
                             Paragraph::new(vec![
                                 Line::from(padded_spans),
@@ -597,6 +656,39 @@ impl<'a> App<'a> {
                                     success,
                                     &summary,
                                 );
+                            }
+                            AgentEvent::PlanUpdated {
+                                total_tasks,
+                                completed_tasks,
+                                active_task,
+                                tasks,
+                                ..
+                            } => {
+                                self.active_task = active_task.clone();
+                                let live_tasks = tasks
+                                    .iter()
+                                    .map(|t| crate::ui::view::LivePlanTaskItem {
+                                        title: t.title.clone(),
+                                        status: match t.status {
+                                            crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                                crate::ui::view::LivePlanTaskStatus::Completed
+                                            }
+                                            crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                                crate::ui::view::LivePlanTaskStatus::InProgress
+                                            }
+                                            crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                                crate::ui::view::LivePlanTaskStatus::Pending
+                                            }
+                                        },
+                                    })
+                                    .collect();
+                                self.timeline.update_live_plan(crate::ui::view::LivePlanBlock {
+                                    title: "Plan Progress".to_string(),
+                                    total_tasks,
+                                    completed_tasks,
+                                    active_task,
+                                    tasks: live_tasks,
+                                });
                             }
                             _ => {}
                         }

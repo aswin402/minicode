@@ -40,6 +40,20 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/power",
     },
     CommandCatalogItem {
+        name: "/plan",
+        category: "Agent & Automation",
+        shortcut: "",
+        description: "Generate structured, verifiable milestone implementation plan in todo.md",
+        example: "/plan | /plan <feature description>",
+    },
+    CommandCatalogItem {
+        name: "/todo",
+        category: "Agent & Automation",
+        shortcut: "",
+        description: "Display or manage the active execution tasks and live plan progress card",
+        example: "/todo | /todo add <task> | /todo done <id> | /tasks",
+    },
+    CommandCatalogItem {
         name: "/diff",
         category: "Code & Inspection",
         shortcut: "Ctrl+D",

@@ -1119,6 +1119,114 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/todo"
+            || prompt == "/tasks"
+            || prompt.starts_with("/todo ")
+            || prompt.starts_with("/tasks ")
+        {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+
+            let remainder = if let Some(rest) = prompt.strip_prefix("/todo ") {
+                rest.trim()
+            } else if let Some(rest) = prompt.strip_prefix("/tasks ") {
+                rest.trim()
+            } else {
+                ""
+            };
+
+            if let Some(task_desc) = remainder.strip_prefix("add ") {
+                let trimmed_desc = task_desc.trim();
+                if trimmed_desc.is_empty() {
+                    self.timeline
+                        .add_status("⚠️ Usage: /todo add <task description>".to_string());
+                    return Ok(CommandAction::Continue);
+                }
+                let todo_path = wm.canonical_todo_path();
+                let existing = std::fs::read_to_string(&todo_path).unwrap_or_default();
+                let next_idx = wm.read_parsed_tasks().len() + 1;
+                let new_line = format!("\n- [ ] T{}: {}\n", next_idx, trimmed_desc);
+                let updated = if existing.trim().is_empty() {
+                    format!("# Execution Tasks\n{}", new_line)
+                } else {
+                    format!("{}{}", existing.trim_end(), new_line)
+                };
+                if let Err(e) = std::fs::write(&todo_path, updated) {
+                    self.timeline
+                        .add_status(format!("✗ Failed to write task to todo.md: {}", e));
+                    return Ok(CommandAction::Continue);
+                }
+                self.timeline
+                    .add_status(format!("✔ Added task T{}: {}", next_idx, trimmed_desc));
+            } else if let Some(step_name) = remainder.strip_prefix("done ") {
+                let trimmed_step = step_name.trim();
+                if trimmed_step.is_empty() {
+                    self.timeline
+                        .add_status("⚠️ Usage: /todo done <task index or title>".to_string());
+                    return Ok(CommandAction::Continue);
+                }
+                if let Err(e) = wm.update_progress(trimmed_step, "completed") {
+                    self.timeline
+                        .add_status(format!("✗ Failed to mark task done: {}", e));
+                    return Ok(CommandAction::Continue);
+                }
+                self.timeline
+                    .add_status(format!("✔ Marked task '{}' completed", trimmed_step));
+            }
+
+            let tasks = wm.read_parsed_tasks();
+            if tasks.is_empty() {
+                self.timeline.add_status(
+                    "ℹ No active tasks found in todo.md. Use /plan <feature> or /todo add <task> to create tasks.".to_string(),
+                );
+            } else {
+                let total_tasks = tasks.len();
+                let completed_tasks = tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status
+                            == crate::context::memory::working_memory::TaskItemStatus::Completed
+                    })
+                    .count();
+                let active_task = tasks
+                    .iter()
+                    .find(|t| {
+                        t.status
+                            == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                    })
+                    .map(|t| t.title.clone());
+
+                self.active_task = active_task.clone();
+                let live_tasks = tasks
+                    .iter()
+                    .map(|t| crate::ui::view::LivePlanTaskItem {
+                        title: t.title.clone(),
+                        status: match t.status {
+                            crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                crate::ui::view::LivePlanTaskStatus::Completed
+                            }
+                            crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                crate::ui::view::LivePlanTaskStatus::InProgress
+                            }
+                            crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                crate::ui::view::LivePlanTaskStatus::Pending
+                            }
+                        },
+                    })
+                    .collect();
+
+                self.timeline
+                    .update_live_plan(crate::ui::view::LivePlanBlock {
+                        title: "Plan Progress".to_string(),
+                        total_tasks,
+                        completed_tasks,
+                        active_task,
+                        tasks: live_tasks,
+                    });
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if let Some(cmd) = parse_goal_command(prompt) {
             match cmd {
                 GoalSubcommand::Show => {

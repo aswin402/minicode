@@ -407,6 +407,34 @@ impl HonoLogFormatter {
                 ))
             }
 
+            AgentEvent::PlanUpdated {
+                turn_id,
+                total_tasks,
+                completed_tasks,
+                active_task,
+                ..
+            } => {
+                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let badge = self.color("\x1b[38;2;162;119;255m");
+                let turn_str = turn_id.map(|t| format!("#{} ", t)).unwrap_or_default();
+                let active_str = active_task
+                    .as_deref()
+                    .map(|a| format!(" | Active: {}", a))
+                    .unwrap_or_default();
+                Some(format!(
+                    "{}{}  {} {}PLAN{}   {}[{}/{} Completed{}]",
+                    dim,
+                    time,
+                    arrow_in,
+                    badge,
+                    reset,
+                    turn_str,
+                    completed_tasks,
+                    total_tasks,
+                    active_str
+                ))
+            }
+
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
@@ -572,6 +600,26 @@ impl HonoLogFormatter {
                 Some(*turn_id),
                 if *success { 200 } else { 500 },
                 format!("[{}: {}] {}", role, subagent_id, summary),
+            ),
+            AgentEvent::PlanUpdated {
+                turn_id,
+                total_tasks,
+                completed_tasks,
+                active_task,
+                ..
+            } => (
+                "plan_updated",
+                *turn_id,
+                200,
+                format!(
+                    "{}/{} tasks completed{}",
+                    completed_tasks,
+                    total_tasks,
+                    active_task
+                        .as_deref()
+                        .map(|a| format!(" (active: {})", a))
+                        .unwrap_or_default()
+                ),
             ),
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }

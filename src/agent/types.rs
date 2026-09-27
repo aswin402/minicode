@@ -251,6 +251,17 @@ pub enum AgentEvent {
         suggested_command: Option<String>,
     },
 
+    #[serde(rename = "plan_updated")]
+    PlanUpdated {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<usize>,
+        total_tasks: usize,
+        completed_tasks: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_task: Option<String>,
+        tasks: Vec<crate::context::memory::working_memory::TaskItem>,
+    },
+
     #[serde(rename = "context_compacted")]
     ContextCompacted {
         turn_id: usize,

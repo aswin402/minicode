@@ -535,6 +535,9 @@ impl AgentLoop {
         // Reset stuck detector at start of user turn
         self.stuck_detector.reset();
 
+        // Broadcast initial active execution plan tasks if present
+        self.emit_current_plan(Some(turn_id), &event_sender);
+
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
             std::collections::HashSet::new();
         // Pre-activate tools recommended for the classified workflow archetype
@@ -1486,6 +1489,14 @@ impl AgentLoop {
                                 }
                             }
 
+                            if tool_result.success
+                                && (tool_call.name.contains("plan")
+                                    || tool_call.name == "update_progress"
+                                    || tool_call.arguments.to_string().contains("todo.md"))
+                            {
+                                self.emit_current_plan(Some(turn_id), &event_sender);
+                            }
+
                             turn_tool_results.push(tool_result);
                             if circuit_tripped {
                                 break;
@@ -1685,6 +1696,7 @@ impl AgentLoop {
                         }) {
                             let _ = wm.update_progress(&active_task.title, "completed");
                         }
+                        self.emit_current_plan(Some(turn_id), &event_sender);
                     }
                 } else if !turn_files_modified.is_empty()
                     && self.config.agent.auto_heal
@@ -2160,6 +2172,42 @@ impl AgentLoop {
             output,
         ));
         turn_tool_results.push(rejected);
+    }
+
+    /// Checks WorkingMemory for current active execution plan tasks and emits
+    /// an `AgentEvent::PlanUpdated` if any tasks are present.
+    pub fn emit_current_plan(
+        &self,
+        turn_id: Option<usize>,
+        event_sender: &mpsc::UnboundedSender<AgentEvent>,
+    ) {
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+        let tasks = wm.read_parsed_tasks();
+        if !tasks.is_empty() {
+            let total_tasks = tasks.len();
+            let completed_tasks = tasks
+                .iter()
+                .filter(|t| {
+                    t.status == crate::context::memory::working_memory::TaskItemStatus::Completed
+                })
+                .count();
+            let active_task = tasks
+                .iter()
+                .find(|t| {
+                    t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                })
+                .map(|t| t.title.clone());
+
+            let event = AgentEvent::PlanUpdated {
+                turn_id,
+                total_tasks,
+                completed_tasks,
+                active_task,
+                tasks,
+            };
+            let _ = self.session_store.append_event(&self.session_id, &event);
+            let _ = event_sender.send(event);
+        }
     }
 }
 
