@@ -26,6 +26,19 @@ pub struct TaskItem {
     pub title: String,
 }
 
+/// A milestone or phase section containing a collection of atomic tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MilestonePhase {
+    pub id: String,
+    pub title: String,
+    pub total_tasks: usize,
+    pub completed_tasks: usize,
+    pub in_progress_tasks: usize,
+    pub pending_tasks: usize,
+    pub tasks: Vec<TaskItem>,
+    pub is_active: bool,
+}
+
 /// Quadrants of the senior engineer scratchpad (`.minicode/NOTES.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -235,6 +248,59 @@ impl WorkingMemory {
         }
     }
 
+    /// Parses a single task line into a TaskItem if it contains a task marker.
+    pub fn parse_task_line(idx: usize, trimmed: &str) -> Option<TaskItem> {
+        if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
+            let title = trimmed[5..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::Completed,
+                title,
+            })
+        } else if trimmed.starts_with("- [>]")
+            || trimmed.starts_with("* [>]")
+            || trimmed.starts_with("- [/]")
+            || trimmed.starts_with("* [/]")
+        {
+            let title = trimmed[5..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::InProgress,
+                title,
+            })
+        } else if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
+            let title = trimmed[5..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::Pending,
+                title,
+            })
+        } else if let Some(bracket) = trimmed.find("[ ]") {
+            let title = trimmed[bracket + 3..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::Pending,
+                title,
+            })
+        } else if let Some(bracket) = trimmed.find("[>]").or_else(|| trimmed.find("[/]")) {
+            let title = trimmed[bracket + 3..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::InProgress,
+                title,
+            })
+        } else if let Some(bracket) = trimmed.find("[x]") {
+            let title = trimmed[bracket + 3..].trim().to_string();
+            Some(TaskItem {
+                line_index: idx,
+                status: TaskItemStatus::Completed,
+                title,
+            })
+        } else {
+            None
+        }
+    }
+
     /// Parses all discrete task items from the active plan.
     pub fn read_parsed_tasks(&self) -> Vec<TaskItem> {
         let content = match self.read_plan() {
@@ -244,56 +310,156 @@ impl WorkingMemory {
 
         let mut tasks = Vec::new();
         for (idx, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
-                let title = trimmed[5..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::Completed,
-                    title,
-                });
-            } else if trimmed.starts_with("- [>]")
-                || trimmed.starts_with("* [>]")
-                || trimmed.starts_with("- [/]")
-                || trimmed.starts_with("* [/]")
-            {
-                let title = trimmed[5..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::InProgress,
-                    title,
-                });
-            } else if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
-                let title = trimmed[5..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::Pending,
-                    title,
-                });
-            } else if let Some(bracket) = trimmed.find("[ ]") {
-                let title = trimmed[bracket + 3..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::Pending,
-                    title,
-                });
-            } else if let Some(bracket) = trimmed.find("[>]").or_else(|| trimmed.find("[/]")) {
-                let title = trimmed[bracket + 3..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::InProgress,
-                    title,
-                });
-            } else if let Some(bracket) = trimmed.find("[x]") {
-                let title = trimmed[bracket + 3..].trim().to_string();
-                tasks.push(TaskItem {
-                    line_index: idx,
-                    status: TaskItemStatus::Completed,
-                    title,
-                });
+            if let Some(task) = Self::parse_task_line(idx, line.trim()) {
+                tasks.push(task);
             }
         }
         tasks
+    }
+
+    /// Parses roadmap milestones and their tasks from canonical `todo.md`.
+    pub fn read_roadmap_milestones(&self) -> Vec<MilestonePhase> {
+        let content = match self.read_plan() {
+            Ok(Some(c)) => c,
+            _ => return Vec::new(),
+        };
+
+        let mut milestones: Vec<MilestonePhase> = Vec::new();
+        let mut current_id = "General".to_string();
+        let mut current_title = "Active Tasks".to_string();
+        let mut current_tasks: Vec<TaskItem> = Vec::new();
+
+        for (idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("### ")
+                || trimmed.starts_with("## ")
+                || trimmed.starts_with("# ")
+            {
+                let header_text = trimmed.trim_start_matches('#').trim();
+                if !current_tasks.is_empty() {
+                    let total = current_tasks.len();
+                    let completed = current_tasks
+                        .iter()
+                        .filter(|t| t.status == TaskItemStatus::Completed)
+                        .count();
+                    let in_progress = current_tasks
+                        .iter()
+                        .filter(|t| t.status == TaskItemStatus::InProgress)
+                        .count();
+                    let pending = current_tasks
+                        .iter()
+                        .filter(|t| t.status == TaskItemStatus::Pending)
+                        .count();
+                    milestones.push(MilestonePhase {
+                        id: current_id.clone(),
+                        title: current_title.clone(),
+                        total_tasks: total,
+                        completed_tasks: completed,
+                        in_progress_tasks: in_progress,
+                        pending_tasks: pending,
+                        tasks: std::mem::take(&mut current_tasks),
+                        is_active: false,
+                    });
+                }
+                if let Some((id_part, title_part)) = header_text.split_once(':') {
+                    current_id = id_part.trim().to_string();
+                    current_title = title_part.trim().to_string();
+                } else {
+                    current_id = header_text.to_string();
+                    current_title = header_text.to_string();
+                }
+                continue;
+            }
+
+            if let Some(task) = Self::parse_task_line(idx, trimmed) {
+                current_tasks.push(task);
+            }
+        }
+
+        if !current_tasks.is_empty() {
+            let total = current_tasks.len();
+            let completed = current_tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Completed)
+                .count();
+            let in_progress = current_tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::InProgress)
+                .count();
+            let pending = current_tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Pending)
+                .count();
+            milestones.push(MilestonePhase {
+                id: current_id,
+                title: current_title,
+                total_tasks: total,
+                completed_tasks: completed,
+                in_progress_tasks: in_progress,
+                pending_tasks: pending,
+                tasks: current_tasks,
+                is_active: false,
+            });
+        }
+
+        // Determine active milestone dynamically:
+        // 1. First milestone with any InProgress task
+        // 2. Otherwise, first milestone with any Pending task
+        // 3. If all tasks across all milestones are completed, no milestone is active!
+        if let Some(active_idx) = milestones.iter().position(|m| m.in_progress_tasks > 0) {
+            milestones[active_idx].is_active = true;
+        } else if let Some(pending_idx) = milestones.iter().position(|m| m.pending_tasks > 0) {
+            milestones[pending_idx].is_active = true;
+        }
+
+        milestones
+    }
+
+    /// Reads only the active phase's tasks, windowed to recent completed + active + next pending.
+    /// Returns `(phase_title, windowed_tasks)`. If all tasks are completed or no tasks exist,
+    /// returns `(None, Vec::new())`.
+    pub fn read_active_phase_tasks(&self) -> (Option<String>, Vec<TaskItem>) {
+        let milestones = self.read_roadmap_milestones();
+        if let Some(active_milestone) = milestones.iter().find(|m| m.is_active) {
+            let phase_label = if active_milestone.id == active_milestone.title {
+                active_milestone.id.clone()
+            } else {
+                format!("{}: {}", active_milestone.id, active_milestone.title)
+            };
+            let tasks = &active_milestone.tasks;
+
+            let completed: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Completed)
+                .collect();
+            let in_progress: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::InProgress)
+                .collect();
+            let pending: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Pending)
+                .collect();
+
+            let mut windowed = Vec::new();
+            // Take up to 2 most recent completed tasks for context
+            let start = completed.len().saturating_sub(2);
+            for t in &completed[start..] {
+                windowed.push((*t).clone());
+            }
+            // Take all in-progress tasks
+            for t in in_progress {
+                windowed.push(t.clone());
+            }
+            // Take up to 3 next pending tasks
+            for t in pending.into_iter().take(3) {
+                windowed.push(t.clone());
+            }
+
+            (Some(phase_label), windowed)
+        } else {
+            (None, Vec::new())
+        }
     }
 
     /// Appends a new architectural finding or observation.
@@ -688,6 +854,77 @@ mod tests {
         assert!(block.contains("▶ Task 2: Implement 4D Scorer"));
         assert!(block.contains("○ Task 3: Run Benchmarks"));
         assert!(block.contains("<senior_engineer_scratchpad>"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_roadmap_milestones_and_active_scoping() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_roadmap_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let todo_path = temp_dir.join("todo.md");
+
+        // 1. Multi-phase file with Phase 1 done, Phase 2 in progress, Phase 3 pending
+        let multi_phase_content = r#"
+### Phase 140: MiniDev Runtime
+- [x] 140.1: Process isolation
+- [x] 140.2: Port scanner
+
+### Phase 141: In-TUI Process Monitor
+- [x] 141.1: Interactive modal
+- [>] 141.2: Status indicators
+- [ ] 141.3: Ring-buffer logs
+- [ ] 141.4: Telemetry
+
+### Phase 142: Two-Tier Plan
+- [ ] 142.1: Scoped WorkingMemory
+"#;
+        fs::write(&todo_path, multi_phase_content).unwrap();
+
+        let milestones = wm.read_roadmap_milestones();
+        assert_eq!(milestones.len(), 3);
+
+        // Phase 140
+        assert_eq!(milestones[0].id, "Phase 140");
+        assert_eq!(milestones[0].title, "MiniDev Runtime");
+        assert_eq!(milestones[0].total_tasks, 2);
+        assert_eq!(milestones[0].completed_tasks, 2);
+        assert!(!milestones[0].is_active);
+
+        // Phase 141 should be marked active because it has an InProgress task
+        assert_eq!(milestones[1].id, "Phase 141");
+        assert_eq!(milestones[1].total_tasks, 4);
+        assert_eq!(milestones[1].completed_tasks, 1);
+        assert_eq!(milestones[1].in_progress_tasks, 1);
+        assert_eq!(milestones[1].pending_tasks, 2);
+        assert!(milestones[1].is_active);
+
+        // Phase 142
+        assert!(!milestones[2].is_active);
+
+        // Scoped active tasks should return Phase 141 only
+        let (phase_label, active_tasks) = wm.read_active_phase_tasks();
+        assert_eq!(
+            phase_label,
+            Some("Phase 141: In-TUI Process Monitor".to_string())
+        );
+        assert_eq!(active_tasks.len(), 4);
+        assert_eq!(active_tasks[0].status, TaskItemStatus::Completed);
+        assert_eq!(active_tasks[1].status, TaskItemStatus::InProgress);
+
+        // 2. Mark all tasks completed: active tasks should return None
+        let all_done_content = r#"
+### Phase 140: MiniDev Runtime
+- [x] 140.1: Process isolation
+- [x] 140.2: Port scanner
+"#;
+        fs::write(&todo_path, all_done_content).unwrap();
+        let (phase_label_done, active_tasks_done) = wm.read_active_phase_tasks();
+        assert_eq!(phase_label_done, None);
+        assert!(active_tasks_done.is_empty());
 
         fs::remove_dir_all(temp_dir).ok();
     }

@@ -2182,7 +2182,7 @@ impl AgentLoop {
         event_sender: &mpsc::UnboundedSender<AgentEvent>,
     ) {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-        let tasks = wm.read_parsed_tasks();
+        let (_phase_label, tasks) = wm.read_active_phase_tasks();
         if !tasks.is_empty() {
             let total_tasks = tasks.len();
             let completed_tasks = tasks

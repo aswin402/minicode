@@ -323,6 +323,28 @@ fn default_intent_max_items() -> usize {
     crate::constants::DEFAULT_INTENT_MAX_ITEMS
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoWidgetStyle {
+    #[default]
+    Tree,
+    Card,
+    Rail,
+    Minimal,
+}
+
+impl TodoWidgetStyle {
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tree => "tree",
+            Self::Card => "card",
+            Self::Rail => "rail",
+            Self::Minimal => "minimal",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -330,6 +352,9 @@ pub struct UiConfig {
 
     #[serde(default = "default_animation")]
     pub animation: String,
+
+    #[serde(default = "default_todo_style")]
+    pub todo_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -341,11 +366,23 @@ pub struct UiConfig {
     pub show_cost: bool,
 }
 
+impl UiConfig {
+    pub fn todo_style_enum(&self) -> TodoWidgetStyle {
+        match self.todo_style.to_lowercase().as_str() {
+            "card" | "box" => TodoWidgetStyle::Card,
+            "rail" | "gutter" => TodoWidgetStyle::Rail,
+            "minimal" | "open" => TodoWidgetStyle::Minimal,
+            _ => TodoWidgetStyle::Tree,
+        }
+    }
+}
+
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             theme: default_theme(),
             animation: default_animation(),
+            todo_style: default_todo_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -359,6 +396,10 @@ fn default_theme() -> String {
 
 fn default_animation() -> String {
     "dual_pillars".to_string()
+}
+
+fn default_todo_style() -> String {
+    "tree".to_string()
 }
 
 fn default_max_width() -> usize {
@@ -554,6 +595,7 @@ pub struct RawUiConfig {
     pub plain: Option<bool>,
     pub theme: Option<String>,
     pub animation: Option<String>,
+    pub todo_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
 }
@@ -854,6 +896,9 @@ impl Config {
         if let Some(animation) = other.ui.animation {
             self.ui.animation = animation;
         }
+        if let Some(todo_style) = other.ui.todo_style {
+            self.ui.todo_style = todo_style;
+        }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
         }
@@ -941,6 +986,9 @@ impl Config {
         }
         if let Ok(animation) = std::env::var(env_vars::MINICODE_ANIMATION) {
             self.ui.animation = animation;
+        }
+        if let Ok(todo_style) = std::env::var(env_vars::MINICODE_TODO_STYLE) {
+            self.ui.todo_style = todo_style;
         }
         if let Ok(level) = std::env::var(env_vars::MINICODE_LOG_LEVEL) {
             self.logging.level = level;
@@ -1591,6 +1639,7 @@ mod tests {
             animation = "braille_wave"
             theme = "monokai"
             show_cost = true
+            todo_style = "rail"
 
             [agent]
             tool_mode = "full"
@@ -1601,10 +1650,40 @@ mod tests {
         config.merge_raw(raw);
         assert_eq!(config.ui.animation, "braille_wave");
         assert_eq!(config.ui.theme, "monokai");
+        assert_eq!(config.ui.todo_style, "rail");
+        assert_eq!(config.ui.todo_style_enum(), TodoWidgetStyle::Rail);
         assert!(config.ui.show_cost);
         assert_eq!(config.agent.tool_mode, ToolFilterMode::Full);
         assert!(!config.agent.syntax_barrier);
         assert!(!config.agent.auto_lint);
+    }
+
+    #[test]
+    fn test_todo_widget_style_enum_mapping() {
+        let mut ui = UiConfig::default();
+        assert_eq!(ui.todo_style, "tree");
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Tree);
+
+        ui.todo_style = "card".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Card);
+
+        ui.todo_style = "box".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Card);
+
+        ui.todo_style = "rail".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Rail);
+
+        ui.todo_style = "gutter".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Rail);
+
+        ui.todo_style = "minimal".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Minimal);
+
+        ui.todo_style = "open".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Minimal);
+
+        ui.todo_style = "unknown".to_string();
+        assert_eq!(ui.todo_style_enum(), TodoWidgetStyle::Tree);
     }
 
     #[test]

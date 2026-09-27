@@ -143,8 +143,9 @@ fn test_native_doctor_diagnostics() {
 fn test_slash_commands_contain_stack_plan_goal() {
     let cmd_names: Vec<&str> = PALETTE_COMMANDS.iter().map(|c| c.slash_name).collect();
     assert!(cmd_names.contains(&"/stack"));
-    assert!(cmd_names.contains(&"/plan"));
+    assert!(cmd_names.contains(&"/todo"));
     assert!(cmd_names.contains(&"/goal"));
+    assert!(cmd_names.contains(&"/blocks"));
 }
 
 #[test]

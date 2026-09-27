@@ -89,13 +89,6 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("F3"),
     },
     PaletteCommand {
-        slash_name: "/config",
-        title: "Workspace Config",
-        description: "Manage provider defaults, autonomy & settings (alias for /settings)",
-        category: CommandCategory::System,
-        shortcut: Some("F3"),
-    },
-    PaletteCommand {
         slash_name: "/configure",
         title: "Configure Providers",
         description: "Interactive API key & endpoint manager",
@@ -139,11 +132,11 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
-        slash_name: "/plan",
-        title: "Plan Feature",
-        description: "Break complex task into verifiable milestones",
+        slash_name: "/todo",
+        title: "Todo & Milestone DAG",
+        description: "Inspect active milestone tasks and project roadmap modal",
         category: CommandCategory::Intelligence,
-        shortcut: None,
+        shortcut: Some("F8"),
     },
     PaletteCommand {
         slash_name: "/review",
@@ -180,6 +173,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         description: "Revert file modifications from previous turn",
         category: CommandCategory::Tools,
         shortcut: Some("Ctrl+U"),
+    },
+    PaletteCommand {
+        slash_name: "/blocks",
+        title: "MiniBlocks Warehouse",
+        description: "Browse, preview, and inject UI components, palettes & templates",
+        category: CommandCategory::Tools,
+        shortcut: Some("F6"),
     },
     PaletteCommand {
         slash_name: "/stack",

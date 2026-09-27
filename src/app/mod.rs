@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
@@ -71,6 +71,7 @@ pub struct App<'a> {
     pub session_skipped_indexing: bool,
     pub session_skipped_drift: bool,
     pub active_task: Option<String>,
+    pub active_plan: Option<crate::ui::view::LivePlanBlock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +117,7 @@ impl<'a> App<'a> {
             session_skipped_indexing: false,
             session_skipped_drift: false,
             active_task: None,
+            active_plan: None,
         }
     }
 
@@ -195,31 +197,34 @@ impl<'a> App<'a> {
                     ..
                 } => {
                     self.active_task = active_task.clone();
-                    let live_tasks = tasks
-                        .iter()
-                        .map(|t| crate::ui::view::LivePlanTaskItem {
-                            title: t.title.clone(),
-                            status: match t.status {
-                                crate::context::memory::working_memory::TaskItemStatus::Completed => {
-                                    crate::ui::view::LivePlanTaskStatus::Completed
-                                }
-                                crate::context::memory::working_memory::TaskItemStatus::InProgress => {
-                                    crate::ui::view::LivePlanTaskStatus::InProgress
-                                }
-                                crate::context::memory::working_memory::TaskItemStatus::Pending => {
-                                    crate::ui::view::LivePlanTaskStatus::Pending
-                                }
-                            },
-                        })
-                        .collect();
-                    self.timeline
-                        .update_live_plan(crate::ui::view::LivePlanBlock {
-                            title: "Plan Progress".to_string(),
+                    if tasks.is_empty() {
+                        self.active_plan = None;
+                    } else {
+                        let live_tasks = tasks
+                            .iter()
+                            .map(|t| crate::ui::view::LivePlanTaskItem {
+                                title: t.title.clone(),
+                                status: match t.status {
+                                    crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                        crate::ui::view::LivePlanTaskStatus::Completed
+                                    }
+                                    crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                        crate::ui::view::LivePlanTaskStatus::InProgress
+                                    }
+                                    crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                        crate::ui::view::LivePlanTaskStatus::Pending
+                                    }
+                                },
+                            })
+                            .collect();
+                        self.active_plan = Some(crate::ui::view::LivePlanBlock {
+                            title: "Plan".to_string(),
                             total_tasks: *total_tasks,
                             completed_tasks: *completed_tasks,
                             active_task: active_task.clone(),
                             tasks: live_tasks,
                         });
+                    }
                 }
                 _ => {}
             }
@@ -339,12 +344,16 @@ impl<'a> App<'a> {
                     );
                 } else {
                     let input_height = self.input_dock.required_height();
-                    let activity_spacer_height = if self.is_working { 2 } else { 1 };
+                    let todo_height = crate::ui::todo_widget::todo_widget_required_height(
+                        &self.active_plan,
+                        self.config.ui.todo_style_enum(),
+                    );
+                    let activity_spacer_height = todo_height + if self.is_working { 2 } else { 1 };
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
                             Constraint::Min(4),                         // 0: Streaming Timeline
-                            Constraint::Length(activity_spacer_height), // 1: Live Activity Bar + Bottom Spacer above input dock
+                            Constraint::Length(activity_spacer_height), // 1: Live Todo Widget + Activity Bar + Spacer
                             Constraint::Length(input_height),           // 2: Dynamic Input Dock
                             Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
                             Constraint::Length(1), // 4: Minimal Bottom Status Line
@@ -365,6 +374,22 @@ impl<'a> App<'a> {
                     };
                     self.timeline.render(frame, chunks[0], &timeline_ctx);
 
+                    let mut activity_lines: Vec<Line> = Vec::new();
+
+                    // 1. Render active todo widget if present
+                    if let Some(ref plan) = self.active_plan {
+                        if !plan.tasks.is_empty() {
+                            let todo_lines = crate::ui::todo_widget::render_todo_widget(
+                                plan,
+                                self.config.ui.todo_style_enum(),
+                                chunks[1].width,
+                                &self.theme,
+                            );
+                            activity_lines.extend(todo_lines);
+                        }
+                    }
+
+                    // 2. Render thinking animation line underneath if working
                     if self.is_working {
                         let elapsed_secs = (working_millis as f64) / 1000.0;
                         let default_act = crate::ui::animation::AgentActivity::Thinking;
@@ -378,35 +403,14 @@ impl<'a> App<'a> {
                         );
                         let mut padded_spans = vec![Span::raw(" ")];
                         padded_spans.extend(activity_line.spans);
-                        if let Some(ref task) = self.active_task {
-                            padded_spans
-                                .push(Span::styled(" │ ", Style::default().fg(self.theme.border)));
-                            padded_spans.push(Span::styled(
-                                "▶ ",
-                                Style::default()
-                                    .fg(self.theme.info)
-                                    .add_modifier(Modifier::BOLD),
-                            ));
-                            let max_task_len =
-                                (chunks[1].width as usize).saturating_sub(45).max(15);
-                            let disp_task = if task.len() > max_task_len {
-                                format!("{}...", &task[..max_task_len.saturating_sub(3)])
-                            } else {
-                                task.clone()
-                            };
-                            padded_spans.push(Span::styled(
-                                disp_task,
-                                Style::default()
-                                    .fg(self.theme.brand_accent)
-                                    .add_modifier(Modifier::BOLD),
-                            ));
-                        }
+                        activity_lines.push(Line::from(padded_spans));
+                        activity_lines.push(Line::from(String::new()));
+                    }
+
+                    if !activity_lines.is_empty() {
                         frame.render_widget(
-                            Paragraph::new(vec![
-                                Line::from(padded_spans),
-                                Line::from(String::new()),
-                            ])
-                            .style(Style::default().bg(self.theme.bg_primary)),
+                            Paragraph::new(activity_lines)
+                                .style(Style::default().bg(self.theme.bg_primary)),
                             chunks[1],
                         );
                     }
@@ -665,30 +669,34 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.active_task = active_task.clone();
-                                let live_tasks = tasks
-                                    .iter()
-                                    .map(|t| crate::ui::view::LivePlanTaskItem {
-                                        title: t.title.clone(),
-                                        status: match t.status {
-                                            crate::context::memory::working_memory::TaskItemStatus::Completed => {
-                                                crate::ui::view::LivePlanTaskStatus::Completed
-                                            }
-                                            crate::context::memory::working_memory::TaskItemStatus::InProgress => {
-                                                crate::ui::view::LivePlanTaskStatus::InProgress
-                                            }
-                                            crate::context::memory::working_memory::TaskItemStatus::Pending => {
-                                                crate::ui::view::LivePlanTaskStatus::Pending
-                                            }
-                                        },
-                                    })
-                                    .collect();
-                                self.timeline.update_live_plan(crate::ui::view::LivePlanBlock {
-                                    title: "Plan Progress".to_string(),
-                                    total_tasks,
-                                    completed_tasks,
-                                    active_task,
-                                    tasks: live_tasks,
-                                });
+                                if tasks.is_empty() {
+                                    self.active_plan = None;
+                                } else {
+                                    let live_tasks = tasks
+                                        .iter()
+                                        .map(|t| crate::ui::view::LivePlanTaskItem {
+                                            title: t.title.clone(),
+                                            status: match t.status {
+                                                crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                                    crate::ui::view::LivePlanTaskStatus::Completed
+                                                }
+                                                crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                                    crate::ui::view::LivePlanTaskStatus::InProgress
+                                                }
+                                                crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                                    crate::ui::view::LivePlanTaskStatus::Pending
+                                                }
+                                            },
+                                        })
+                                        .collect();
+                                    self.active_plan = Some(crate::ui::view::LivePlanBlock {
+                                        title: "Plan".to_string(),
+                                        total_tasks,
+                                        completed_tasks,
+                                        active_task,
+                                        tasks: live_tasks,
+                                    });
+                                }
                             }
                             _ => {}
                         }
@@ -988,6 +996,16 @@ impl<'a> App<'a> {
                                                 logs,
                                             ),
                                         );
+                                    }
+                                    continue;
+                                }
+
+                                // F8 toggles interactive Implementation Roadmap & Milestone DAG modal
+                                if key_event.code == KeyCode::F(8) {
+                                    if matches!(self.modal, ModalState::Todo(_)) {
+                                        self.modal = ModalState::None;
+                                    } else {
+                                        self.modal = ModalState::new_todo(&self.workspace_root);
                                     }
                                     continue;
                                 }

@@ -273,7 +273,7 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/commands" {
+        if prompt == "/commands" || prompt == "/command" {
             self.modal = ModalState::new_command_catalog();
             return Ok(CommandAction::Continue);
         }
@@ -1091,139 +1091,14 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/plan" || prompt.starts_with("/plan ") {
-            let query = prompt.trim_start_matches("/plan").trim();
-            let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
-            let docs_name = docs_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
-            let plan_prompt = if query.is_empty() {
-                format!(
-                    "Inspect the current repository architecture and generate a structured, verifiable milestone implementation plan in {}/core/todo.md and {}/core/implementation.md.",
-                    docs_name, docs_name
-                )
-            } else {
-                format!(
-                    "Plan and break down the following implementation into actionable verifiable tasks in {}/core/todo.md: {}",
-                    docs_name, query
-                )
-            };
-            self.timeline.add_user_message(prompt.to_string());
-            self.is_working = true;
-            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-            self.work_start = Some(Instant::now());
-            let cancel = tokio_util::sync::CancellationToken::new();
-            self.cancel_token = Some(cancel.clone());
-            let _ = control_tx.send(AgentCommand::Prompt(plan_prompt, Some(cancel)));
-            return Ok(CommandAction::Continue);
-        }
-
         if prompt == "/todo"
             || prompt == "/tasks"
+            || prompt == "/plan"
             || prompt.starts_with("/todo ")
             || prompt.starts_with("/tasks ")
+            || prompt.starts_with("/plan ")
         {
-            let wm =
-                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-
-            let remainder = if let Some(rest) = prompt.strip_prefix("/todo ") {
-                rest.trim()
-            } else if let Some(rest) = prompt.strip_prefix("/tasks ") {
-                rest.trim()
-            } else {
-                ""
-            };
-
-            if let Some(task_desc) = remainder.strip_prefix("add ") {
-                let trimmed_desc = task_desc.trim();
-                if trimmed_desc.is_empty() {
-                    self.timeline
-                        .add_status("⚠️ Usage: /todo add <task description>".to_string());
-                    return Ok(CommandAction::Continue);
-                }
-                let todo_path = wm.canonical_todo_path();
-                let existing = std::fs::read_to_string(&todo_path).unwrap_or_default();
-                let next_idx = wm.read_parsed_tasks().len() + 1;
-                let new_line = format!("\n- [ ] T{}: {}\n", next_idx, trimmed_desc);
-                let updated = if existing.trim().is_empty() {
-                    format!("# Execution Tasks\n{}", new_line)
-                } else {
-                    format!("{}{}", existing.trim_end(), new_line)
-                };
-                if let Err(e) = std::fs::write(&todo_path, updated) {
-                    self.timeline
-                        .add_status(format!("✗ Failed to write task to todo.md: {}", e));
-                    return Ok(CommandAction::Continue);
-                }
-                self.timeline
-                    .add_status(format!("✔ Added task T{}: {}", next_idx, trimmed_desc));
-            } else if let Some(step_name) = remainder.strip_prefix("done ") {
-                let trimmed_step = step_name.trim();
-                if trimmed_step.is_empty() {
-                    self.timeline
-                        .add_status("⚠️ Usage: /todo done <task index or title>".to_string());
-                    return Ok(CommandAction::Continue);
-                }
-                if let Err(e) = wm.update_progress(trimmed_step, "completed") {
-                    self.timeline
-                        .add_status(format!("✗ Failed to mark task done: {}", e));
-                    return Ok(CommandAction::Continue);
-                }
-                self.timeline
-                    .add_status(format!("✔ Marked task '{}' completed", trimmed_step));
-            }
-
-            let tasks = wm.read_parsed_tasks();
-            if tasks.is_empty() {
-                self.timeline.add_status(
-                    "ℹ No active tasks found in todo.md. Use /plan <feature> or /todo add <task> to create tasks.".to_string(),
-                );
-            } else {
-                let total_tasks = tasks.len();
-                let completed_tasks = tasks
-                    .iter()
-                    .filter(|t| {
-                        t.status
-                            == crate::context::memory::working_memory::TaskItemStatus::Completed
-                    })
-                    .count();
-                let active_task = tasks
-                    .iter()
-                    .find(|t| {
-                        t.status
-                            == crate::context::memory::working_memory::TaskItemStatus::InProgress
-                    })
-                    .map(|t| t.title.clone());
-
-                self.active_task = active_task.clone();
-                let live_tasks = tasks
-                    .iter()
-                    .map(|t| crate::ui::view::LivePlanTaskItem {
-                        title: t.title.clone(),
-                        status: match t.status {
-                            crate::context::memory::working_memory::TaskItemStatus::Completed => {
-                                crate::ui::view::LivePlanTaskStatus::Completed
-                            }
-                            crate::context::memory::working_memory::TaskItemStatus::InProgress => {
-                                crate::ui::view::LivePlanTaskStatus::InProgress
-                            }
-                            crate::context::memory::working_memory::TaskItemStatus::Pending => {
-                                crate::ui::view::LivePlanTaskStatus::Pending
-                            }
-                        },
-                    })
-                    .collect();
-
-                self.timeline
-                    .update_live_plan(crate::ui::view::LivePlanBlock {
-                        title: "Plan Progress".to_string(),
-                        total_tasks,
-                        completed_tasks,
-                        active_task,
-                        tasks: live_tasks,
-                    });
-            }
+            self.modal = ModalState::new_todo(&self.workspace_root);
             return Ok(CommandAction::Continue);
         }
 
@@ -1645,8 +1520,46 @@ impl<'a> App<'a> {
         }
 
         if prompt == "/theme" || prompt == "/themes" {
-            self.modal =
-                ModalState::new_theme_select(&self.config.ui.theme, &self.config.ui.animation);
+            self.modal = ModalState::new_theme_select(
+                &self.config.ui.theme,
+                &self.config.ui.animation,
+                &self.config.ui.todo_style,
+            );
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt == "/todo-style" || prompt.starts_with("/todo-style ") {
+            let arg = prompt.strip_prefix("/todo-style").unwrap_or("").trim();
+            if arg.is_empty() {
+                let options_desc = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS
+                    .iter()
+                    .map(|o| format!("  • {} - {}", o.id, o.name))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.timeline.add_status(format!(
+                    "Current todo widget style: '{}'\nAvailable styles:\n{}",
+                    self.config.ui.todo_style, options_desc
+                ));
+            } else {
+                let lower = arg.to_lowercase();
+                if let Some(opt) = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_lowercase().contains(&lower))
+                {
+                    self.config.ui.todo_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.timeline.add_status(format!(
+                        "✔ Todo widget style switched to '{}' ({}) and saved to config",
+                        opt.name, opt.id
+                    ));
+                } else {
+                    self.timeline.add_status(format!(
+                        "⚠️ Unknown style '{}'. Available: tree, card, rail, minimal",
+                        arg
+                    ));
+                }
+            }
             return Ok(CommandAction::Continue);
         }
 

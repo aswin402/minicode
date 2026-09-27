@@ -40,18 +40,11 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/power",
     },
     CommandCatalogItem {
-        name: "/plan",
-        category: "Agent & Automation",
-        shortcut: "",
-        description: "Generate structured, verifiable milestone implementation plan in todo.md",
-        example: "/plan | /plan <feature description>",
-    },
-    CommandCatalogItem {
         name: "/todo",
         category: "Agent & Automation",
-        shortcut: "",
-        description: "Display or manage the active execution tasks and live plan progress card",
-        example: "/todo | /todo add <task> | /todo done <id> | /tasks",
+        shortcut: "F8",
+        description: "Inspect active milestone tasks and project roadmap in interactive DAG modal",
+        example: "/todo | /tasks | F8",
     },
     CommandCatalogItem {
         name: "/diff",
@@ -132,18 +125,18 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/theme | /theme catppuccin",
     },
     CommandCatalogItem {
+        name: "/todo-style",
+        category: "Display & Aesthetics",
+        shortcut: "",
+        description: "Switch inline todo widget layout style (tree, card, rail, minimal)",
+        example: "/todo-style | /todo-style tree | /todo-style card",
+    },
+    CommandCatalogItem {
         name: "/settings",
         category: "Config & Runtime",
         shortcut: "F3",
         description: "Interactive settings modal: providers, models, autonomy & connection probes",
-        example: "/settings | /config | /settings autonomy | /settings probes",
-    },
-    CommandCatalogItem {
-        name: "/config",
-        category: "Config & Runtime",
-        shortcut: "F3",
-        description: "Workspace configuration & preference manager (alias for /settings)",
-        example: "/config | /settings",
+        example: "/settings | /settings autonomy | /settings probes",
     },
     CommandCatalogItem {
         name: "/configure",

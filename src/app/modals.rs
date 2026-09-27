@@ -394,19 +394,37 @@ impl<'a> App<'a> {
                 ref mut active_tab,
                 ref mut theme_selected_index,
                 ref mut animation_selected_index,
+                ref mut todo_style_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
+                ref mut active_todo_style,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
                 }
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                KeyCode::Tab | KeyCode::Right => {
                     *active_tab = match *active_tab {
                         crate::ui::modals::ThemeModalTab::Themes => {
                             crate::ui::modals::ThemeModalTab::Animations
                         }
                         crate::ui::modals::ThemeModalTab::Animations => {
+                            crate::ui::modals::ThemeModalTab::TodoStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::TodoStyles => {
                             crate::ui::modals::ThemeModalTab::Themes
+                        }
+                    };
+                }
+                KeyCode::BackTab | KeyCode::Left => {
+                    *active_tab = match *active_tab {
+                        crate::ui::modals::ThemeModalTab::Themes => {
+                            crate::ui::modals::ThemeModalTab::TodoStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::Animations => {
+                            crate::ui::modals::ThemeModalTab::Themes
+                        }
+                        crate::ui::modals::ThemeModalTab::TodoStyles => {
+                            crate::ui::modals::ThemeModalTab::Animations
                         }
                     };
                 }
@@ -416,12 +434,18 @@ impl<'a> App<'a> {
                 KeyCode::Char('2') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::Animations;
                 }
+                KeyCode::Char('3') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::TodoStyles;
+                }
                 KeyCode::Up => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
                     }
                     crate::ui::modals::ThemeModalTab::Animations => {
                         *animation_selected_index = animation_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::TodoStyles => {
+                        *todo_style_selected_index = todo_style_selected_index.saturating_sub(1);
                     }
                 },
                 KeyCode::Down => match *active_tab {
@@ -433,6 +457,12 @@ impl<'a> App<'a> {
                     crate::ui::modals::ThemeModalTab::Animations => {
                         if *animation_selected_index + 1 < animations.len() {
                             *animation_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::TodoStyles => {
+                        let total = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS.len();
+                        if *todo_style_selected_index + 1 < total {
+                            *todo_style_selected_index += 1;
                         }
                     }
                 },
@@ -496,6 +526,36 @@ impl<'a> App<'a> {
 
                                 self.timeline.add_status(format!(
                                     "✔ Loading animation switched to '{}' and saved to config",
+                                    chosen_name
+                                ));
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::TodoStyles => {
+                            let options = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS;
+                            if !options.is_empty() && *todo_style_selected_index < options.len() {
+                                let chosen = &options[*todo_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.todo_style = chosen_id.clone();
+                                *active_todo_style = chosen_id;
+
+                                // Persist to configuration file (workspace and global)
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save todo_style setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save todo_style setting to global config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.timeline.add_status(format!(
+                                    "✔ Todo widget style switched to '{}' and saved to config",
                                     chosen_name
                                 ));
                             }
@@ -842,6 +902,7 @@ impl<'a> App<'a> {
                                 self.modal = ModalState::new_theme_select(
                                     &self.config.ui.theme,
                                     &self.config.ui.animation,
+                                    &self.config.ui.todo_style,
                                 );
                             }
                             "/explore" => {
@@ -2438,6 +2499,30 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char(c) => {
                     state.handle_char(c);
+                }
+                _ => {}
+            },
+            ModalState::Todo(state) => match key.code {
+                KeyCode::Tab => {
+                    state.toggle_pane();
+                }
+                KeyCode::Up => {
+                    state.prev();
+                }
+                KeyCode::Down => {
+                    state.next();
+                }
+                KeyCode::Home => {
+                    state.first();
+                }
+                KeyCode::End => {
+                    state.last();
+                }
+                KeyCode::Esc | KeyCode::F(8) => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.modal = ModalState::None;
                 }
                 _ => {}
             },

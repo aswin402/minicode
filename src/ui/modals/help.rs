@@ -50,6 +50,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /todo      ", Style::default().fg(theme.success)),
+            Span::styled(
+                "Inspect active milestone tasks & project roadmap DAG modal (F8)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /blocks    ", Style::default().fg(theme.success)),
             Span::styled(
                 "MiniBlocks UI component & design token warehouse (F6)",
@@ -94,7 +101,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from(vec![
             Span::styled("  /commands  ", Style::default().fg(theme.success)),
             Span::styled(
-                "Open interactive command catalog & keybindings cheatsheet",
+                "Open interactive command catalog & keybindings (/command)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),
@@ -201,6 +208,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             Span::styled("  F7         ", Style::default().fg(theme.warning)),
             Span::styled(
                 "Toggle Process Monitor & Watchdog Supervisor (/processes)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  F8         ", Style::default().fg(theme.warning)),
+            Span::styled(
+                "Toggle Implementation Roadmap & Milestone DAG modal (/todo)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),

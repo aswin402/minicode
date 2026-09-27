@@ -103,6 +103,7 @@ pub enum TimelineEntry {
     },
     SubagentTree(SubagentTreeBlock),
     SubagentSwarm(SwarmMatrixBlock),
+    #[allow(dead_code)]
     LivePlan(LivePlanBlock),
     ContextCompaction {
         tier: usize,
@@ -528,6 +529,7 @@ impl TimelineView {
     }
 
     /// Adds or updates in-place the Live Plan & Execution Progress card in the timeline
+    #[allow(dead_code)]
     pub fn update_live_plan(&mut self, plan: LivePlanBlock) {
         if let Some(TimelineEntry::LivePlan(ref mut existing)) = self.entries.last_mut() {
             *existing = plan;

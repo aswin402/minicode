@@ -30,9 +30,13 @@ impl Default for PkgRegistry {
 
 impl PkgRegistry {
     pub fn new() -> Self {
+        let user_agent = format!(
+            "minicode/{} (https://github.com/aswin402/minicode)",
+            env!("CARGO_PKG_VERSION")
+        );
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .user_agent("minicode/0.3.39 (https://github.com/aswin402/minicode)")
+            .user_agent(user_agent)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { client }
@@ -237,13 +241,14 @@ impl PkgRegistry {
 
     async fn fetch_cargo(&self, name: &str) -> Result<PkgInfo> {
         let url = format!("https://crates.io/api/v1/crates/{}", name);
+        let user_agent = format!(
+            "minicode/{} (https://github.com/aswin402/minicode)",
+            env!("CARGO_PKG_VERSION")
+        );
         let resp = self
             .client
             .get(&url)
-            .header(
-                "User-Agent",
-                "minicode/0.3.39 (https://github.com/aswin402/minicode)",
-            )
+            .header("User-Agent", user_agent)
             .send()
             .await
             .map_err(|e| {

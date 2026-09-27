@@ -14,6 +14,7 @@ pub mod setup;
 pub mod status;
 pub mod subagent_drawer;
 pub mod theme;
+pub mod todo_widget;
 pub mod view;
 pub mod welcome;
 
