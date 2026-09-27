@@ -167,3 +167,59 @@ async fn test_verification_barrier_overall_evaluation() {
     assert_eq!(report.gate3_regression_conflicts, GateStatus::Passed);
     assert_eq!(report.gate4_diff_sanity, GateStatus::Passed);
 }
+
+#[tokio::test]
+async fn test_verification_barrier_html_asset_link_rejection() {
+    let temp = tempdir().unwrap();
+    let html_file = temp.path().join("index.html");
+    std::fs::write(
+        &html_file,
+        "<!DOCTYPE html>\n<html>\n<head>\n  <link rel=\"stylesheet\" href=\"styles.css\">\n  <script src=\"app.js\"></script>\n</head>\n<body>\n  <p>Test</p>\n</body>\n</html>\n",
+    )
+    .unwrap();
+
+    // Missing styles.css & app.js -> barrier rejects completion
+    let report = VerificationBarrier::verify(temp.path(), &["index.html".to_string()]).await;
+    assert!(!report.all_passed);
+    match report.gate1_syntax_compiler {
+        GateStatus::Failed {
+            gate_name, reason, ..
+        } => {
+            assert!(gate_name.contains("Gate 1"));
+            assert!(reason.contains("Broken asset link"));
+            assert!(reason.contains("styles.css"));
+        }
+        _ => panic!("Expected Gate 1 to fail on missing asset links"),
+    }
+
+    // Create both files -> barrier passes cleanly
+    std::fs::write(temp.path().join("styles.css"), "body { margin: 0; }").unwrap();
+    std::fs::write(temp.path().join("app.js"), "console.log('ready');").unwrap();
+
+    let report_ok = VerificationBarrier::verify(temp.path(), &["index.html".to_string()]).await;
+    assert!(report_ok.all_passed);
+    assert_eq!(report_ok.gate1_syntax_compiler, GateStatus::Passed);
+}
+
+#[tokio::test]
+async fn test_verification_barrier_css_unbalanced_rejection() {
+    let temp = tempdir().unwrap();
+    let css_file = temp.path().join("styles.css");
+    std::fs::write(
+        &css_file,
+        ".container {\n  max-width: 1200px;\n  /* unclosed block\n",
+    )
+    .unwrap();
+
+    let report = VerificationBarrier::verify(temp.path(), &["styles.css".to_string()]).await;
+    assert!(!report.all_passed);
+    match report.gate1_syntax_compiler {
+        GateStatus::Failed {
+            gate_name, reason, ..
+        } => {
+            assert!(gate_name.contains("Gate 1"));
+            assert!(reason.contains("unbalanced curly braces"));
+        }
+        _ => panic!("Expected Gate 1 to reject unbalanced CSS braces"),
+    }
+}

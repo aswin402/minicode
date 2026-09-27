@@ -166,7 +166,15 @@ impl VerificationBarrier {
     /// Executes all 4 gates against modified files in the workspace.
     pub async fn verify(workspace_root: &Path, modified_files: &[String]) -> VerificationReport {
         let gate1 = Self::check_gate1_syntax_compiler(workspace_root, modified_files);
-        let gate2 = Self::check_gate2_reproducer_test(workspace_root, modified_files);
+
+        // Check if any managed dev runtime daemon exited abnormally
+        let daemon_check = Self::check_daemon_health().await;
+        let gate2 = if let Some(failed_daemon) = daemon_check {
+            failed_daemon
+        } else {
+            Self::check_gate2_reproducer_test(workspace_root, modified_files)
+        };
+
         let gate3 = Self::check_gate3_regression_conflicts(workspace_root, modified_files);
         let gate4 = Self::check_gate4_diff_sanity(workspace_root, modified_files);
 
@@ -184,7 +192,7 @@ impl VerificationBarrier {
         }
     }
 
-    /// Gate 1: AST Syntax & Scoped Compiler Check
+    /// Gate 1: AST Syntax, Scoped Compiler & Asset Integrity Check
     pub fn check_gate1_syntax_compiler(
         workspace_root: &Path,
         modified_files: &[String],
@@ -200,7 +208,7 @@ impl VerificationBarrier {
                 Ok(c) => c,
                 Err(e) => {
                     return GateStatus::Failed {
-                        gate_name: "Gate 1: AST Syntax & Compiler Integrity",
+                        gate_name: "Gate 1: AST Syntax & Asset Integrity",
                         reason: format!("Failed to read modified file `{}`: {}", file, e),
                         actionable_remediation: format!("Ensure `{}` is accessible on disk.", file),
                     };
@@ -210,7 +218,7 @@ impl VerificationBarrier {
             // 1. In-memory Tree-sitter AST syntax barrier
             if let Some(err) = SyntaxGuard::check_syntax(&abs_path, &content) {
                 return GateStatus::Failed {
-                    gate_name: "Gate 1: AST Syntax & Compiler Integrity",
+                    gate_name: "Gate 1: AST Syntax & Asset Integrity",
                     reason: format!(
                         "AST syntax error in `{}` at line {}:{}: {}",
                         file, err.line, err.column, err.kind
@@ -226,13 +234,29 @@ impl VerificationBarrier {
             if let Some(diag) = ScopedCompiler::run_scoped_check(workspace_root, file) {
                 if diag.contains("reported errors:") {
                     return GateStatus::Failed {
-                        gate_name: "Gate 1: AST Syntax & Compiler Integrity",
+                        gate_name: "Gate 1: AST Syntax & Asset Integrity",
                         reason: format!("Compiler diagnostic detected in `{}`:\n{}", file, diag),
                         actionable_remediation: format!(
                             "Resolve the compiler/linter error in `{}`.",
                             file
                         ),
                     };
+                }
+            }
+
+            // 3. HTML Document & Local Asset Link Integrity
+            if file.ends_with(".html") || file.ends_with(".htm") {
+                if let Some(err) =
+                    Self::check_html_integrity(workspace_root, file, &abs_path, &content)
+                {
+                    return err;
+                }
+            }
+
+            // 4. CSS Syntax & Balanced Braces Integrity
+            if file.ends_with(".css") {
+                if let Some(err) = Self::check_css_integrity(file, &content) {
+                    return err;
                 }
             }
         }
@@ -285,7 +309,7 @@ impl VerificationBarrier {
                 let status = Command::new("cargo")
                     .arg("test")
                     .arg("-j")
-                    .arg("3")
+                    .arg("1")
                     .arg("--test")
                     .arg(&target)
                     .current_dir(&root)
@@ -539,6 +563,217 @@ impl VerificationBarrier {
 
         false
     }
+
+    /// Verifies HTML document structure and local asset link existence.
+    pub fn check_html_integrity(
+        workspace_root: &Path,
+        file: &str,
+        abs_path: &Path,
+        content: &str,
+    ) -> Option<GateStatus> {
+        let lower = content.to_lowercase();
+
+        // 1. Truncation checks for full HTML documents
+        let is_full_document = lower.contains("<!doctype html")
+            || (lower.contains("<html") && lower.contains("<head"));
+
+        if is_full_document && !lower.contains("</html>") {
+            return Some(GateStatus::Failed {
+                gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                reason: format!(
+                    "HTML document in `{}` is truncated: missing closing `</html>` tag.",
+                    file
+                ),
+                actionable_remediation: format!(
+                    "Ensure the complete HTML document is written with closing `</html>` in `{}`.",
+                    file
+                ),
+            });
+        }
+        if is_full_document && lower.contains("<body") && !lower.contains("</body>") {
+            return Some(GateStatus::Failed {
+                gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                reason: format!(
+                    "HTML document in `{}` is truncated: missing closing `</body>` tag.",
+                    file
+                ),
+                actionable_remediation: format!(
+                    "Ensure the body element is closed with `</body>` in `{}`.",
+                    file
+                ),
+            });
+        }
+
+        // 2. Validate local referenced code assets (stylesheets & scripts)
+        let html_dir = abs_path.parent().unwrap_or(workspace_root);
+        let tags = ["<link", "<script"];
+
+        for tag in tags {
+            let mut search_from = 0;
+            while let Some(tag_offset) = lower[search_from..].find(tag) {
+                let tag_start = search_from + tag_offset;
+                let tag_end = match content[tag_start..].find('>') {
+                    Some(p) => tag_start + p,
+                    None => break,
+                };
+                let tag_slice = &content[tag_start..=tag_end];
+
+                for attr in &["href", "src"] {
+                    let attr_pat = format!("{}=", attr);
+                    if let Some(attr_pos) = tag_slice.to_lowercase().find(&attr_pat) {
+                        let rest = &tag_slice[attr_pos + attr_pat.len()..];
+                        let trimmed = rest.trim_start();
+                        if let Some(quote) = trimmed.chars().next() {
+                            if quote == '"' || quote == '\'' {
+                                let after_quote = &trimmed[1..];
+                                if let Some(end_quote) = after_quote.find(quote) {
+                                    let mut raw_url = after_quote[..end_quote].trim();
+                                    if let Some(q) = raw_url.find('?') {
+                                        raw_url = &raw_url[..q];
+                                    }
+                                    if let Some(h) = raw_url.find('#') {
+                                        raw_url = &raw_url[..h];
+                                    }
+                                    let url = raw_url.trim();
+
+                                    // Filter out external URLs and special schemes
+                                    if !url.is_empty()
+                                        && !url.starts_with("http://")
+                                        && !url.starts_with("https://")
+                                        && !url.starts_with("//")
+                                        && !url.starts_with("data:")
+                                        && !url.starts_with("mailto:")
+                                        && !url.starts_with("tel:")
+                                        && !url.starts_with("javascript:")
+                                        && !url.starts_with('{')
+                                    {
+                                        // Only verify code assets (.css, .js, .mjs, .ts)
+                                        let is_code_asset = url.ends_with(".css")
+                                            || url.ends_with(".js")
+                                            || url.ends_with(".mjs")
+                                            || url.ends_with(".ts");
+
+                                        if is_code_asset {
+                                            let clean_url = url.trim_start_matches("./");
+                                            let target_local = html_dir.join(clean_url);
+                                            let target_root = workspace_root
+                                                .join(clean_url.trim_start_matches('/'));
+
+                                            if !target_local.exists() && !target_root.exists() {
+                                                return Some(GateStatus::Failed {
+                                                    gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                                                    reason: format!(
+                                                        "Broken asset link in `{}`: referenced asset `{}` does not exist on disk.",
+                                                        file, url
+                                                    ),
+                                                    actionable_remediation: format!(
+                                                        "Create the referenced file `{}` or update `{}` with the correct relative path.",
+                                                        clean_url, file
+                                                    ),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                search_from = tag_end + 1;
+            }
+        }
+
+        None
+    }
+
+    /// Verifies CSS syntax for balanced curly braces (ignoring comments and strings).
+    pub fn check_css_integrity(file: &str, content: &str) -> Option<GateStatus> {
+        let mut in_comment = false;
+        let mut in_string: Option<char> = None;
+        let mut open_braces: usize = 0;
+        let mut close_braces: usize = 0;
+        let mut chars = content.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if in_comment {
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    in_comment = false;
+                }
+                continue;
+            }
+
+            if let Some(quote) = in_string {
+                if ch == '\\' {
+                    chars.next(); // skip escaped char
+                } else if ch == quote {
+                    in_string = None;
+                }
+                continue;
+            }
+
+            if ch == '/' && chars.peek() == Some(&'*') {
+                chars.next();
+                in_comment = true;
+                continue;
+            }
+
+            if ch == '"' || ch == '\'' {
+                in_string = Some(ch);
+                continue;
+            }
+
+            if ch == '{' {
+                open_braces += 1;
+            } else if ch == '}' {
+                close_braces += 1;
+            }
+        }
+
+        if open_braces != close_braces {
+            return Some(GateStatus::Failed {
+                gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                reason: format!(
+                    "CSS syntax error in `{}`: unbalanced curly braces ({} opened vs {} closed).",
+                    file, open_braces, close_braces
+                ),
+                actionable_remediation: format!(
+                    "Check `{}` for unclosed CSS blocks or extra closing braces.",
+                    file
+                ),
+            });
+        }
+
+        None
+    }
+
+    /// Checks if any background dev server registered with mini_dev terminated with an error.
+    pub async fn check_daemon_health() -> Option<GateStatus> {
+        let registry = crate::dev::get_global_dev_registry();
+        let procs = registry.list().await;
+        for p in &procs {
+            if let crate::dev::models::DevProcessStatus::Exited(Some(code)) = p.status {
+                if code != 0 {
+                    let pid_str = p
+                        .pid
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "N/A".to_string());
+                    return Some(GateStatus::Failed {
+                        gate_name: "Gate 2: Reproducer & Runtime Daemon Health",
+                        reason: format!(
+                            "Managed runtime daemon `{}` (PID {}) terminated abnormally with exit code {}.",
+                            p.name, pid_str, code
+                        ),
+                        actionable_remediation: format!(
+                            "Inspect service logs via `mini_dev(action=\"logs\", id=\"{}\")` and resolve startup errors.",
+                            p.id
+                        ),
+                    });
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -672,5 +907,110 @@ mod tests {
         assert!(prompt.contains("[PRE-COMPLETION VERIFICATION BARRIER REJECTED COMPLETION]"));
         assert!(prompt.contains("Gate 1: AST Syntax"));
         assert!(prompt.contains("Gate 4: Diff Sanity"));
+    }
+
+    #[test]
+    fn test_gate1_html_asset_integrity_missing_css() {
+        let temp = tempdir().unwrap();
+        let html_file = temp.path().join("index.html");
+        std::fs::write(
+            &html_file,
+            "<!DOCTYPE html>\n<html>\n<head>\n  <link rel=\"stylesheet\" href=\"styles.css\">\n</head>\n<body>\n  <h1>Hello</h1>\n</body>\n</html>\n",
+        )
+        .unwrap();
+
+        // styles.css does not exist yet -> should fail
+        let status = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["index.html".to_string()],
+        );
+        match status {
+            GateStatus::Failed {
+                gate_name, reason, ..
+            } => {
+                assert!(gate_name.contains("Gate 1"));
+                assert!(reason.contains("Broken asset link"));
+                assert!(reason.contains("styles.css"));
+            }
+            _ => panic!("Expected Gate 1 to fail on missing styles.css"),
+        }
+
+        // Create styles.css -> should pass
+        std::fs::write(temp.path().join("styles.css"), "body { margin: 0; }").unwrap();
+        let status_ok = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["index.html".to_string()],
+        );
+        assert_eq!(status_ok, GateStatus::Passed);
+    }
+
+    #[test]
+    fn test_gate1_html_truncation_detection() {
+        let temp = tempdir().unwrap();
+        let html_file = temp.path().join("index.html");
+        // Missing closing </html> and </body>
+        std::fs::write(
+            &html_file,
+            "<!DOCTYPE html>\n<html>\n<head><title>Test</title></head>\n<body>\n  <h1>Cut off midway...",
+        )
+        .unwrap();
+
+        let status = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["index.html".to_string()],
+        );
+        match status {
+            GateStatus::Failed {
+                gate_name, reason, ..
+            } => {
+                assert!(gate_name.contains("Gate 1"));
+                assert!(reason.contains("truncated") || reason.contains("</html>"));
+            }
+            _ => panic!("Expected Gate 1 to detect truncated HTML document"),
+        }
+    }
+
+    #[test]
+    fn test_gate1_css_balanced_braces_check() {
+        let temp = tempdir().unwrap();
+        let css_broken = temp.path().join("broken.css");
+        std::fs::write(
+            &css_broken,
+            ".hero {\n  display: flex;\n  /* comment with { */\n  content: \"}\";\n",
+        )
+        .unwrap();
+
+        let status = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["broken.css".to_string()],
+        );
+        match status {
+            GateStatus::Failed {
+                gate_name, reason, ..
+            } => {
+                assert!(gate_name.contains("Gate 1"));
+                assert!(reason.contains("unbalanced curly braces"));
+            }
+            _ => panic!("Expected Gate 1 to reject unbalanced CSS braces"),
+        }
+
+        // Valid CSS
+        let css_clean = temp.path().join("clean.css");
+        std::fs::write(
+            &css_clean,
+            ".hero {\n  display: flex;\n  /* comment with { */\n  content: \"}\";\n}\n",
+        )
+        .unwrap();
+        let status_clean = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["clean.css".to_string()],
+        );
+        assert_eq!(status_clean, GateStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn test_gate2_daemon_health_check_passes_when_clean() {
+        let daemon_status = VerificationBarrier::check_daemon_health().await;
+        assert_eq!(daemon_status, None);
     }
 }
