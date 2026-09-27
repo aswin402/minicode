@@ -2518,6 +2518,9 @@ impl<'a> App<'a> {
                 KeyCode::End => {
                     state.last();
                 }
+                KeyCode::Char(' ') | KeyCode::Char('a') => {
+                    state.toggle_expand();
+                }
                 KeyCode::Esc | KeyCode::F(8) => {
                     self.modal = ModalState::None;
                 }

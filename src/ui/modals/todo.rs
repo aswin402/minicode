@@ -1,7 +1,11 @@
-//! Interactive Split-Pane Git-Graph Milestone DAG and Task Tracker Modal.
+//! Interactive Single-Pane Minimalist Roadmap DAG and Task Tracker Modal.
 //!
-//! Left pane: Vertical Git-commit style DAG showing roadmap milestones (◉──◉──▶──○).
-//! Right pane: Selected milestone details, progress bar, and atomic step tasks list.
+//! Features:
+//! - Border-embedded title and status with zero top banner clutter.
+//! - Continuous 6-column aligned Git-graph subway spine (`│`, `◉`, `✔`, `○`).
+//! - Smart history collapse (hides 200+ completed phases, toggleable via Space).
+//! - Active/selected milestone auto-expands its atomic task tree.
+//! - Integrated bottom footer dock with dynamic unicode progress meter and navigation keyhints.
 
 use crate::context::memory::working_memory::{MilestonePhase, TaskItemStatus};
 use crate::ui::layout_utils::centered_rect;
@@ -26,6 +30,7 @@ pub struct TodoModalState {
     pub selected_milestone: usize,
     pub selected_task: usize,
     pub active_pane: TodoModalPane,
+    pub show_all_completed: bool,
     #[allow(dead_code)]
     pub milestone_scroll: usize,
     #[allow(dead_code)]
@@ -35,7 +40,6 @@ pub struct TodoModalState {
 impl TodoModalState {
     /// Creates a new `TodoModalState`, auto-selecting the active milestone.
     pub fn new(milestones: Vec<MilestonePhase>) -> Self {
-        // Auto-select the active milestone, or the first one with pending tasks, or the last milestone
         let selected_milestone = milestones
             .iter()
             .position(|m| m.is_active)
@@ -47,6 +51,7 @@ impl TodoModalState {
             selected_milestone,
             selected_task: 0,
             active_pane: TodoModalPane::Milestones,
+            show_all_completed: false,
             milestone_scroll: 0,
             task_scroll: 0,
         }
@@ -101,6 +106,11 @@ impl TodoModalState {
         };
     }
 
+    /// Toggles expanding/collapsing all historical completed milestones.
+    pub fn toggle_expand(&mut self) {
+        self.show_all_completed = !self.show_all_completed;
+    }
+
     /// Jumps to the first item in the current pane.
     pub fn first(&mut self) {
         match self.active_pane {
@@ -136,379 +146,431 @@ impl TodoModalState {
     }
 }
 
-/// Renders the interactive Git-Graph Milestone DAG modal.
+/// Renders the single-pane minimal roadmap DAG modal.
 pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, theme: &Theme) {
-    let popup_area = centered_rect(88, 85, area);
+    let popup_area = centered_rect(84, 82, area);
     frame.render_widget(Clear, popup_area);
+
+    // Active milestone tag embedded directly in top border
+    let active_milestone = state.milestones.iter().find(|m| m.is_active);
+    let active_label = if let Some(m) = active_milestone {
+        format!("{} · Active", m.id)
+    } else {
+        "All Completed".to_string()
+    };
+
+    let title_span = Span::styled(
+        format!(" 📋 Roadmap · {} ", active_label),
+        Style::default()
+            .fg(theme.brand_accent)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let main_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand_accent))
-        .title(Span::styled(
-            " 📋 Implementation Roadmap & Milestone DAG (F8) ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ));
+        .title(title_span)
+        .title(
+            Line::from(vec![Span::styled(
+                " [Esc] Close ",
+                Style::default().fg(theme.muted),
+            )])
+            .alignment(ratatui::layout::Alignment::Right),
+        );
+
     let inner_area = main_block.inner(popup_area);
     frame.render_widget(main_block, popup_area);
 
+    // Minimal 3-row layout: Tree Body (Min 4) + Divider (1) + Footer Dock (1)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Top Summary Bar
-            Constraint::Min(8),    // Split Body (Milestones DAG + Tasks List)
-            Constraint::Length(1), // Bottom Navigation Keyhints
+            Constraint::Min(4),    // 0: Full-width unified Roadmap DAG Tree & Tasks
+            Constraint::Length(1), // 1: Horizontal divider
+            Constraint::Length(1), // 2: Integrated Footer Dock (Progress Meter & Controls)
         ])
         .split(inner_area);
 
-    // 1. Top Summary Bar
-    let total_milestones = state.milestones.len();
-    let completed_milestones = state
+    // Determine active milestone index for smart historical collapsing
+    let active_idx = state
         .milestones
         .iter()
-        .filter(|m| m.total_tasks > 0 && m.completed_tasks == m.total_tasks)
-        .count();
-    let total_tasks: usize = state.milestones.iter().map(|m| m.total_tasks).sum();
-    let total_done: usize = state.milestones.iter().map(|m| m.completed_tasks).sum();
+        .position(|m| m.is_active)
+        .or_else(|| state.milestones.iter().position(|m| m.pending_tasks > 0))
+        .unwrap_or(0);
 
-    let active_milestone_name = state
-        .milestones
-        .iter()
-        .find(|m| m.is_active)
-        .map(|m| format!("{}: {}", m.id, m.title))
-        .unwrap_or_else(|| "All Milestones Completed".to_string());
-
-    let summary_spans = vec![
-        Span::styled("Milestones: ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}/{} Completed", completed_milestones, total_milestones),
-            Style::default()
-                .fg(theme.success)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" │ ", Style::default().fg(theme.border)),
-        Span::styled("Tasks: ", Style::default().fg(theme.muted)),
-        Span::styled(
-            format!("{}/{} Total", total_done, total_tasks),
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" │ ", Style::default().fg(theme.border)),
-        Span::styled("Active: ", Style::default().fg(theme.muted)),
-        Span::styled(
-            active_milestone_name,
-            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-        ),
-    ];
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(summary_spans), Line::from(String::new())]),
-        chunks[0],
-    );
-
-    // 2. Split Body
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(42), // Left: Milestones DAG
-            Constraint::Percentage(58), // Right: Tasks List & Details
-        ])
-        .split(chunks[1]);
-
-    // Render Left Pane: Milestones DAG
-    let left_border_color = if state.active_pane == TodoModalPane::Milestones {
-        theme.brand_accent
-    } else {
-        theme.border
-    };
-    let left_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(left_border_color))
-        .title(Span::styled(
-            " Milestones (Roadmap DAG) ",
-            Style::default()
-                .fg(left_border_color)
-                .add_modifier(Modifier::BOLD),
-        ));
-    let left_inner = left_block.inner(body_chunks[0]);
-    frame.render_widget(left_block, body_chunks[0]);
-
-    let mut milestone_lines = Vec::new();
-    let visible_rows = (left_inner.height as usize).saturating_sub(1);
-    let start_idx = if state.selected_milestone >= visible_rows {
-        state.selected_milestone.saturating_sub(visible_rows / 2)
-    } else {
-        0
-    };
-
-    for (idx, milestone) in state.milestones.iter().enumerate().skip(start_idx) {
-        let is_selected = idx == state.selected_milestone;
-        let pct = if milestone.total_tasks > 0 {
-            (milestone.completed_tasks * 100) / milestone.total_tasks
-        } else {
-            100
-        };
-
-        let (node_marker, node_color) = if milestone.is_active {
-            ("▶ ", theme.info)
-        } else if milestone.total_tasks > 0 && milestone.completed_tasks == milestone.total_tasks {
-            ("◉ ", Color::Green)
-        } else {
-            ("○ ", Color::DarkGray)
-        };
-
-        let bg_color = if is_selected {
-            theme.bg_elevated
-        } else {
-            theme.bg_primary
-        };
-
-        let title_disp = if milestone.title.len() > 22 {
-            format!("{}...", &milestone.title[..19])
-        } else {
-            milestone.title.clone()
-        };
-
-        let pointer = if is_selected && state.active_pane == TodoModalPane::Milestones {
-            "❯ "
-        } else {
-            "  "
-        };
-
-        milestone_lines.push(Line::from(vec![
-            Span::styled(
-                pointer,
-                Style::default().fg(theme.brand_accent).bg(bg_color),
-            ),
-            Span::styled(
-                node_marker,
-                Style::default()
-                    .fg(node_color)
-                    .bg(bg_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}: {} ", milestone.id, title_disp),
-                Style::default()
-                    .fg(if is_selected {
-                        theme.text_primary
-                    } else {
-                        theme.muted
-                    })
-                    .bg(bg_color)
-                    .add_modifier(if is_selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ),
-            Span::styled(
-                format!("({}%)", pct),
-                Style::default()
-                    .fg(if pct == 100 {
-                        Color::Green
-                    } else {
-                        theme.muted
-                    })
-                    .bg(bg_color),
-            ),
-        ]));
-
-        if idx + 1 < state.milestones.len() {
-            milestone_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled("│", Style::default().fg(theme.border)),
-            ]));
-        }
-    }
+    let mut lines = Vec::new();
+    let mut cursor_line = 0usize;
 
     if state.milestones.is_empty() {
-        milestone_lines.push(Line::from(Span::styled(
-            "  (No milestones found in todo.md)",
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "   (No milestones found in todo.md)",
             Style::default()
                 .fg(theme.muted)
                 .add_modifier(Modifier::ITALIC),
         )));
+    } else {
+        // Smart Historical Collapsing:
+        // When there are more than 2 completed milestones before active, collapse earlier ones unless expanded.
+        let should_collapse = !state.show_all_completed && active_idx > 2;
+        let start_idx = if should_collapse {
+            active_idx.saturating_sub(1)
+        } else {
+            0
+        };
+
+        if should_collapse {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled("··· ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!(
+                        "{} completed phases (press Space to expand)",
+                        active_idx.saturating_sub(1)
+                    ),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+            lines.push(Line::from(vec![Span::raw("   │")]));
+        } else if state.show_all_completed && active_idx > 2 {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled("··· ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!(
+                        "Showing all {} phases (press Space to collapse)",
+                        state.milestones.len()
+                    ),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
+            lines.push(Line::from(vec![Span::raw("   │")]));
+        }
+
+        let visible_milestones: Vec<(usize, &MilestonePhase)> = state
+            .milestones
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .collect();
+
+        let visible_count = visible_milestones.len();
+
+        for (v_i, (m_idx, milestone)) in visible_milestones.iter().enumerate() {
+            let is_selected_m = *m_idx == state.selected_milestone;
+            let is_last_m = v_i == visible_count - 1;
+
+            // Character grid:
+            // Index 0..1: pointer "▶ " if selected milestone, else "  "
+            // Index 2: " "
+            // Index 3: node glyph ("◉", "✔", "○") aligned with rail "│"
+            // Index 4..5: "  "
+            // Index 6+: milestone title
+            let (node_glyph, node_color) = if milestone.is_active {
+                ("◉", theme.info)
+            } else if milestone.total_tasks > 0
+                && milestone.completed_tasks == milestone.total_tasks
+            {
+                ("✔", Color::Green)
+            } else {
+                ("○", Color::DarkGray)
+            };
+
+            let pointer = if is_selected_m { "▶ " } else { "  " };
+
+            let m_bg = if is_selected_m && state.active_pane == TodoModalPane::Milestones {
+                theme.bg_elevated
+            } else {
+                theme.bg_primary
+            };
+
+            let pct = if milestone.total_tasks > 0 {
+                (milestone.completed_tasks * 100) / milestone.total_tasks
+            } else {
+                100
+            };
+
+            let status_badge = if milestone.is_active {
+                format!(
+                    " [Active · {}/{} Tasks]",
+                    milestone.completed_tasks, milestone.total_tasks
+                )
+            } else if pct == 100 {
+                " [Done]".to_string()
+            } else {
+                format!(" [{}%]", pct)
+            };
+
+            let status_style = if milestone.is_active {
+                Style::default()
+                    .fg(theme.info)
+                    .bg(m_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else if pct == 100 {
+                Style::default().fg(Color::Green).bg(m_bg)
+            } else {
+                Style::default().fg(theme.muted).bg(m_bg)
+            };
+
+            let current_line_idx = lines.len();
+            if is_selected_m && state.active_pane == TodoModalPane::Milestones {
+                cursor_line = current_line_idx;
+            }
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    pointer,
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .bg(m_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ", Style::default().bg(m_bg)),
+                Span::styled(
+                    node_glyph,
+                    Style::default()
+                        .fg(node_color)
+                        .bg(m_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ", Style::default().bg(m_bg)),
+                Span::styled(
+                    format!("{}: {}", milestone.id, milestone.title),
+                    Style::default()
+                        .fg(if is_selected_m {
+                            theme.text_primary
+                        } else {
+                            theme.muted
+                        })
+                        .bg(m_bg)
+                        .add_modifier(if is_selected_m {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(status_badge, status_style),
+            ]));
+
+            // Atomic tasks branch under active or selected milestone
+            let show_tasks = milestone.is_active || is_selected_m;
+            if show_tasks && !milestone.tasks.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("   │  "),
+                    Span::styled(
+                        "└── Tasks",
+                        Style::default()
+                            .fg(theme.muted)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" ({}/{})", milestone.completed_tasks, milestone.total_tasks),
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+
+                let task_count = milestone.tasks.len();
+                for (t_idx, task) in milestone.tasks.iter().enumerate() {
+                    let is_selected_task = is_selected_m && t_idx == state.selected_task;
+                    let is_last_task = t_idx == task_count - 1;
+                    let branch = if is_last_task {
+                        "      └── "
+                    } else {
+                        "      ├── "
+                    };
+
+                    let task_bg = if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                        theme.bg_elevated
+                    } else {
+                        theme.bg_primary
+                    };
+
+                    let (t_bullet, t_color, t_mod) = match task.status {
+                        TaskItemStatus::Completed => ("✔ ", Color::Green, Modifier::empty()),
+                        TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
+                        TaskItemStatus::Pending => ("○ ", Color::DarkGray, Modifier::empty()),
+                    };
+
+                    let task_pointer =
+                        if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                            "▶ "
+                        } else {
+                            "  "
+                        };
+
+                    let t_line_idx = lines.len();
+                    if is_selected_task && state.active_pane == TodoModalPane::Tasks {
+                        cursor_line = t_line_idx;
+                    }
+
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            task_pointer,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .bg(task_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(" │", Style::default().fg(theme.border).bg(task_bg)),
+                        Span::styled(branch, Style::default().fg(theme.muted).bg(task_bg)),
+                        Span::styled(
+                            t_bullet,
+                            Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
+                        ),
+                        Span::styled(
+                            task.title.clone(),
+                            Style::default()
+                                .fg(if is_selected_task {
+                                    theme.text_primary
+                                } else {
+                                    theme.muted
+                                })
+                                .bg(task_bg)
+                                .add_modifier(t_mod),
+                        ),
+                    ]));
+                }
+            }
+
+            // Connecting rail between milestones
+            if !is_last_m {
+                lines.push(Line::from(vec![Span::raw("   │")]));
+            }
+        }
     }
 
-    frame.render_widget(Paragraph::new(milestone_lines), left_inner);
-
-    // Render Right Pane: Milestone Details & Tasks
-    let right_border_color = if state.active_pane == TodoModalPane::Tasks {
-        theme.brand_accent
+    // Auto-scroll viewport centering cursor line
+    let visible_height = chunks[0].height as usize;
+    let scroll_y = if cursor_line >= visible_height {
+        cursor_line.saturating_sub(visible_height / 2)
     } else {
-        theme.border
+        0
     };
+    frame.render_widget(
+        Paragraph::new(lines).scroll((scroll_y as u16, 0)),
+        chunks[0],
+    );
 
+    // Horizontal Divider Rule
+    let divider = "─".repeat(chunks[1].width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            divider,
+            Style::default().fg(theme.border),
+        )])),
+        chunks[1],
+    );
+
+    // Integrated Footer Dock: Dynamic Progress Meter + Navigation Keyhints
     let selected_m = state.milestones.get(state.selected_milestone);
-    let right_title = if let Some(m) = selected_m {
-        format!(" {} Tasks ({}/{}) ", m.id, m.completed_tasks, m.total_tasks)
-    } else {
-        " Milestone Details ".to_string()
-    };
-
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(right_border_color))
-        .title(Span::styled(
-            right_title,
-            Style::default()
-                .fg(right_border_color)
-                .add_modifier(Modifier::BOLD),
-        ));
-    let right_inner = right_block.inner(body_chunks[1]);
-    frame.render_widget(right_block, body_chunks[1]);
-
-    let mut task_lines = Vec::new();
-    if let Some(m) = selected_m {
-        // Milestone title & gauge
-        let pct = if m.total_tasks > 0 {
+    let (m_label, pct, done, total) = if let Some(m) = selected_m {
+        let p = if m.total_tasks > 0 {
             (m.completed_tasks * 100) / m.total_tasks
         } else {
             100
         };
-
-        let filled = (pct * 20) / 100;
-        let empty = 20usize.saturating_sub(filled);
-        let progress_bar = format!("[{}{}] {}%", "█".repeat(filled), "░".repeat(empty), pct);
-
-        task_lines.push(Line::from(vec![
-            Span::styled("Objective: ", Style::default().fg(theme.muted)),
-            Span::styled(
-                m.title.clone(),
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        task_lines.push(Line::from(vec![
-            Span::styled("Progress:  ", Style::default().fg(theme.muted)),
-            Span::styled(
-                progress_bar,
-                Style::default().fg(if pct == 100 {
-                    Color::Green
-                } else {
-                    theme.brand_accent
-                }),
-            ),
-            Span::styled(
-                if m.is_active {
-                    "  [ACTIVE MILESTONE]"
-                } else {
-                    ""
-                },
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        task_lines.push(Line::from(Span::styled(
-            "─".repeat((right_inner.width as usize).saturating_sub(2)),
-            Style::default().fg(theme.border),
-        )));
-
-        // Step Tasks List
-        if m.tasks.is_empty() {
-            task_lines.push(Line::from(Span::styled(
-                "  (No atomic tasks specified for this milestone)",
-                Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::ITALIC),
-            )));
-        } else {
-            for (idx, task) in m.tasks.iter().enumerate() {
-                let is_selected_task = idx == state.selected_task;
-                let bg_color = if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                    theme.bg_elevated
-                } else {
-                    theme.bg_primary
-                };
-
-                let pointer = if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                    "❯ "
-                } else {
-                    "  "
-                };
-
-                let (bullet, bullet_color, text_color, modifier) = match task.status {
-                    TaskItemStatus::Completed => {
-                        ("✔ ", Color::Green, theme.muted, Modifier::empty())
-                    }
-                    TaskItemStatus::InProgress => {
-                        ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
-                    }
-                    TaskItemStatus::Pending => {
-                        ("○ ", Color::DarkGray, theme.muted, Modifier::empty())
-                    }
-                };
-
-                task_lines.push(Line::from(vec![
-                    Span::styled(
-                        pointer,
-                        Style::default().fg(theme.brand_accent).bg(bg_color),
-                    ),
-                    Span::styled(
-                        bullet,
-                        Style::default()
-                            .fg(bullet_color)
-                            .bg(bg_color)
-                            .add_modifier(modifier),
-                    ),
-                    Span::styled(
-                        task.title.clone(),
-                        Style::default()
-                            .fg(text_color)
-                            .bg(bg_color)
-                            .add_modifier(modifier),
-                    ),
-                ]));
-            }
-        }
+        (m.id.clone(), p, m.completed_tasks, m.total_tasks)
     } else {
-        task_lines.push(Line::from(Span::styled(
-            "  Select a milestone from the left pane to view its step tasks",
+        ("Roadmap".to_string(), 100, 0, 0)
+    };
+
+    let bar_slots = 16usize;
+    let filled = (pct * bar_slots) / 100;
+    let empty = bar_slots.saturating_sub(filled);
+    let bar_str = format!("{}{}", "▰".repeat(filled), "▱".repeat(empty));
+    let bar_color = if pct == 100 {
+        Color::Green
+    } else {
+        theme.brand_accent
+    };
+
+    let left_spans = vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{} Progress  ", m_label),
             Style::default()
                 .fg(theme.muted)
-                .add_modifier(Modifier::ITALIC),
-        )));
-    }
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(bar_str, Style::default().fg(bar_color)),
+        Span::styled(
+            format!("  {}% ", pct),
+            Style::default()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({}/{} Tasks)", done, total),
+            Style::default().fg(theme.muted),
+        ),
+    ];
 
-    frame.render_widget(Paragraph::new(task_lines), right_inner);
-
-    // 3. Bottom Navigation Keyhints
-    let keyhints = vec![
+    let right_spans = vec![
         Span::styled(
             "[Tab] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Switch Pane  ", Style::default().fg(theme.muted)),
+        Span::styled(
+            if state.active_pane == TodoModalPane::Milestones {
+                "Tasks  "
+            } else {
+                "Roadmap  "
+            },
+            Style::default().fg(theme.muted),
+        ),
+        Span::styled(
+            "[Space] ",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if state.show_all_completed {
+                "Collapse  "
+            } else {
+                "All  "
+            },
+            Style::default().fg(theme.muted),
+        ),
         Span::styled(
             "[↑/↓] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Navigate  ", Style::default().fg(theme.muted)),
-        Span::styled(
-            "[Home/End] ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("First/Last  ", Style::default().fg(theme.muted)),
+        Span::styled("Move  ", Style::default().fg(theme.muted)),
         Span::styled(
             "[Esc] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Close", Style::default().fg(theme.muted)),
+        Span::styled("Close  ", Style::default().fg(theme.muted)),
     ];
-    frame.render_widget(Paragraph::new(Line::from(keyhints)), chunks[2]);
+
+    let left_w: usize = left_spans
+        .iter()
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let right_w: usize = right_spans
+        .iter()
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let space_count = (chunks[2].width as usize).saturating_sub(left_w + right_w);
+
+    let mut footer_spans = left_spans;
+    footer_spans.push(Span::raw(" ".repeat(space_count)));
+    footer_spans.extend(right_spans);
+
+    frame.render_widget(Paragraph::new(Line::from(footer_spans)), chunks[2]);
 }
 
 #[cfg(test)]
@@ -556,6 +618,7 @@ mod tests {
         // Auto-selects active milestone (index 1)
         assert_eq!(state.selected_milestone, 1);
         assert_eq!(state.active_pane, TodoModalPane::Milestones);
+        assert!(!state.show_all_completed);
 
         // Next milestone
         state.next();
@@ -570,6 +633,12 @@ mod tests {
         assert_eq!(state.active_pane, TodoModalPane::Tasks);
         state.toggle_pane();
         assert_eq!(state.active_pane, TodoModalPane::Milestones);
+
+        // Toggle expand
+        state.toggle_expand();
+        assert!(state.show_all_completed);
+        state.toggle_expand();
+        assert!(!state.show_all_completed);
 
         // First & last
         state.first();

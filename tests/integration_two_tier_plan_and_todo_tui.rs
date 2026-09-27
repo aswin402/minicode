@@ -206,3 +206,66 @@ fn test_integration_config_todo_style_persistence() {
     config.ui.todo_style = "minimal".to_string();
     assert_eq!(config.ui.todo_style_enum(), TodoWidgetStyle::Minimal);
 }
+
+#[test]
+fn test_integration_todo_modal_smart_collapse_and_rendering() {
+    use minicode::ui::modals::todo::render_todo_modal;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = tempdir().expect("Failed to create tempdir");
+    let docs_dir = dir.path().join("onpkg_docs").join("core");
+    fs::create_dir_all(&docs_dir).expect("Failed to create docs dir");
+
+    let mut todo_content = String::from("# Large Project Roadmap\n\n");
+    for i in 1..=10 {
+        todo_content.push_str(&format!("## Phase {}\n", i));
+        if i < 8 {
+            todo_content.push_str("- [x] T1: Completed setup\n- [x] T2: Completed polish\n\n");
+        } else if i == 8 {
+            todo_content.push_str("- [x] T1: Auth done\n- [>] T2: Distributed consensus in flight\n- [ ] T3: Council tool\n\n");
+        } else {
+            todo_content.push_str("- [ ] T1: Upcoming work\n\n");
+        }
+    }
+    fs::write(docs_dir.join("todo.md"), todo_content).expect("Failed to write todo.md");
+
+    let wm = WorkingMemory::new(dir.path());
+    let milestones = wm.read_roadmap_milestones();
+    assert_eq!(milestones.len(), 10);
+
+    let mut state = TodoModalState::new(milestones);
+    // Active milestone is Phase 8 (index 7)
+    assert_eq!(state.selected_milestone, 7);
+    assert!(!state.show_all_completed);
+
+    // Toggle expand
+    state.toggle_expand();
+    assert!(state.show_all_completed);
+    state.toggle_expand();
+    assert!(!state.show_all_completed);
+
+    // Render to Ratatui test buffer
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("Failed to create terminal");
+    let theme = Theme::aura_dark();
+
+    terminal
+        .draw(|f| {
+            render_todo_modal(f, f.area(), &state, &theme);
+        })
+        .expect("Failed to draw todo modal");
+
+    let buffer = terminal.backend().buffer();
+    let text = format!("{:?}", buffer);
+
+    // Assert top border embeds clean title without clutter
+    assert!(text.contains("Roadmap"));
+    assert!(text.contains("Phase 8"));
+
+    // Assert bottom dock embeds progress meter and keyhints
+    assert!(text.contains("Progress"));
+    assert!(text.contains("33%"));
+    assert!(text.contains("[Tab]"));
+    assert!(text.contains("[Space]"));
+}
