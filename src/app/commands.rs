@@ -312,13 +312,17 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniVault Agent Skills Warehouse Slash Commands (/vault, /skills, /minivault)
+        // MiniVault Agent Skills Warehouse Slash Commands (/vault, /skills, /minivault, /bundle, /bundles)
         if prompt_lower == "/vault"
             || prompt_lower == "/skills"
             || prompt_lower == "/minivault"
+            || prompt_lower == "/bundle"
+            || prompt_lower == "/bundles"
             || prompt_lower.starts_with("/vault ")
             || prompt_lower.starts_with("/skills ")
             || prompt_lower.starts_with("/minivault ")
+            || prompt_lower.starts_with("/bundle ")
+            || prompt_lower.starts_with("/bundles ")
         {
             let mut vault_modal = ModalState::new_vault(&self.workspace_root);
             let query = if prompt_lower.starts_with("/minivault ") {
@@ -327,11 +331,109 @@ impl<'a> App<'a> {
                 prompt_trimmed[8..].trim()
             } else if prompt_lower.starts_with("/vault ") {
                 prompt_trimmed[7..].trim()
+            } else if prompt_lower.starts_with("/bundles ") {
+                prompt_trimmed[9..].trim()
+            } else if prompt_lower.starts_with("/bundle ") {
+                prompt_trimmed[8..].trim()
             } else {
                 ""
             };
-            if !query.is_empty() {
-                if let ModalState::Vault(ref mut state) = vault_modal {
+
+            let is_bundle_root = prompt_lower == "/bundle" || prompt_lower == "/bundles";
+
+            if let ModalState::Vault(ref mut state) = vault_modal {
+                let query_lower = query.to_lowercase();
+                if is_bundle_root
+                    || query_lower == "bundle"
+                    || query_lower == "bundles"
+                    || query_lower == "bundle list"
+                    || query_lower == "bundles list"
+                {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Bundles;
+                    state.search_query.clear();
+                    state.refresh_filtered();
+                } else if query_lower.starts_with("bundle load ")
+                    || query_lower.starts_with("load bundle ")
+                {
+                    let bundle_name = query[12..].trim();
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Bundles;
+                    let store = crate::vault::store::VaultStore::new(&self.workspace_root);
+                    match store.load_bundle_to_project(bundle_name) {
+                        Ok((loaded, failed)) => {
+                            if failed.is_empty() {
+                                state.status_message = Some(format!(
+                                    "✔ Loaded bundle `{}` ({} skills: {}) into project!",
+                                    bundle_name,
+                                    loaded.len(),
+                                    loaded.join(", ")
+                                ));
+                            } else {
+                                state.status_message = Some(format!(
+                                    "✔ Loaded bundle `{}` ({} installed, {} failed/skipped).",
+                                    bundle_name,
+                                    loaded.len(),
+                                    failed.len()
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            state.status_message =
+                                Some(format!("❌ Failed to load bundle `{}`: {}", bundle_name, e));
+                        }
+                    }
+                    state.refresh_filtered();
+                } else if query_lower.starts_with("load ") {
+                    let target_name = query[5..].trim();
+                    let store = crate::vault::store::VaultStore::new(&self.workspace_root);
+                    if store.get_bundle(target_name).is_some() {
+                        state.active_tab = crate::ui::modals::vault::VaultTab::Bundles;
+                        match store.load_bundle_to_project(target_name) {
+                            Ok((loaded, failed)) => {
+                                if failed.is_empty() {
+                                    state.status_message = Some(format!(
+                                        "✔ Loaded bundle `{}` ({} skills: {}) into project!",
+                                        target_name,
+                                        loaded.len(),
+                                        loaded.join(", ")
+                                    ));
+                                } else {
+                                    state.status_message = Some(format!(
+                                        "✔ Loaded bundle `{}` ({} installed, {} failed/skipped).",
+                                        target_name,
+                                        loaded.len(),
+                                        failed.len()
+                                    ));
+                                }
+                            }
+                            Err(e) => {
+                                state.status_message = Some(format!(
+                                    "❌ Failed to load bundle `{}`: {}",
+                                    target_name, e
+                                ));
+                            }
+                        }
+                    } else {
+                        match store.load_to_project(target_name) {
+                            Ok(_) => {
+                                state.status_message = Some(format!(
+                                    "✔ Successfully loaded skill `{}` into active project!",
+                                    target_name
+                                ));
+                            }
+                            Err(e) => {
+                                state.status_message = Some(format!(
+                                    "❌ Failed to load skill `{}`: {}",
+                                    target_name, e
+                                ));
+                            }
+                        }
+                    }
+                    state.refresh_filtered();
+                } else if query_lower.starts_with("bundle ") {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Bundles;
+                    state.search_query = query[7..].trim().to_string();
+                    state.refresh_filtered();
+                } else if !query.is_empty() {
                     state.search_query = query.to_string();
                     state.refresh_filtered();
                 }

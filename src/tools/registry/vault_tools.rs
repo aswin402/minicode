@@ -16,13 +16,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "vault_search".to_string(),
-            description: "Search available agent skills across Built-in, Global, and Project vaults by keyword, name, description, or triggers.".to_string(),
+            description: "Search available agent skills across Built-in, Global, and Project vaults by keyword, name, description, triggers, or kind (reference docs vs workflow skills).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
                         "description": "Keyword search query across skill names, descriptions, and trigger tags (leave empty to list all)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Filter skills by category (e.g. 'frontend', 'backend', 'database', 'devops', 'testing', 'security', 'ui-styling')"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["all", "reference", "workflow", "doc", "skill"],
+                        "description": "Filter by skill kind: 'reference' / 'doc' (technical API reference cheatsheets) or 'workflow' / 'skill' (behavioral engineering methodologies & quality gates)"
                     },
                     "scope": {
                         "type": "string",
@@ -87,6 +96,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "description": {
                         "type": "string",
                         "description": "One-line summary of what the skill provides"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category for the skill (e.g. 'frontend', 'backend', 'database', 'devops', 'testing', 'security')"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["reference", "workflow"],
+                        "description": "Kind of skill: 'reference' (technical API cheatsheet / invariants) or 'workflow' (operational engineering methodology / quality gate)"
                     },
                     "instructions": {
                         "type": "string",
@@ -176,6 +194,74 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["url"]
             }),
         },
+        ToolSchema {
+            name: "vault_bundle_list".to_string(),
+            description: "List available skill bundles/packs across Built-in, Global, and Project vaults, including their categories, descriptions, and constituent skills.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search filter across bundle names, descriptions, or tags"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter (e.g. 'fullstack', 'backend', 'frontend', 'quality')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "vault_bundle_load".to_string(),
+            description: "Load an entire bundle/pack of skills into the active project (.minicode/skills/) in a single coordinated operation.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the bundle to load (e.g. 'fullstack-nextjs', 'rust-systems', 'frontend-delight')"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
+            name: "vault_bundle_create".to_string(),
+            description: "Create and register a new reusable skill bundle containing a collection of skills in either project or global scope.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Kebab-case name for the new bundle"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description of what this bundle provides"
+                    },
+                    "skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "List of skill names to include in this bundle"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Bundle category (default: 'general')"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Tags or keywords for discovery"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["project", "global"],
+                        "description": "Destination scope: 'project' (default) or 'global'"
+                    }
+                },
+                "required": ["name", "description", "skills"]
+            }),
+        },
     ]
 }
 
@@ -191,6 +277,8 @@ pub async fn dispatch(
         "vault_search" => Some(async move {
             let query = opt_query(args).unwrap_or("");
             let scope_str = opt_str(args, "scope").unwrap_or("all");
+            let category = opt_str(args, "category");
+            let kind_str = opt_str(args, "kind");
 
             let scope_filter = match scope_str {
                 "project" => Some(SkillScope::Project),
@@ -199,31 +287,37 @@ pub async fn dispatch(
                 _ => None,
             };
 
-            let mut results = if query.is_empty() {
-                store.list_by_scope(scope_filter)
-            } else {
-                let mut searched = store.search_skills(query);
-                if let Some(s) = scope_filter {
-                    searched.retain(|k| k.scope == s);
-                }
-                searched
+            let kind_filter: Option<crate::vault::models::SkillKind> = match kind_str {
+                Some("all") | None => None,
+                Some(k) => k.parse().ok(),
             };
+
+            let mut results = store.search_skills_categorized(query, category);
+            if let Some(s) = scope_filter {
+                results.retain(|k| k.scope == s);
+            }
+            if let Some(kf) = kind_filter {
+                results.retain(|k| k.kind() == kf);
+            }
 
             if results.is_empty() {
                 return Ok(format!(
-                    "ℹ No skills found matching query '{}' in scope '{}'.",
-                    query, scope_str
+                    "ℹ No skills found matching query '{}' (scope: '{}', kind: '{}').",
+                    query,
+                    scope_str,
+                    kind_str.unwrap_or("all")
                 ));
             }
 
             let mut out = format!(
-                "📦 **MiniVault Skills** ({} found matching '{}' [scope: {}]):\n\n",
+                "📦 **MiniVault Skills** ({} found matching '{}' [scope: {}, kind: {}]):\n\n",
                 results.len(),
                 query,
-                scope_str
+                scope_str,
+                kind_str.unwrap_or("all")
             );
-            out.push_str("| Scope | Status | Skill Name | Description | Triggers |\n");
-            out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+            out.push_str("| Scope | Type | Category | Status | Skill Name | Description | Triggers |\n");
+            out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
 
             for s in results.drain(..) {
                 let scope_badge = match s.scope {
@@ -231,6 +325,7 @@ pub async fn dispatch(
                     SkillScope::Global => "Global",
                     SkillScope::Builtin => "Built-in",
                 };
+                let type_badge = format!("[{}]", s.kind().badge());
                 let status_badge = if s.is_active_in_project {
                     "✅ Active"
                 } else {
@@ -242,8 +337,8 @@ pub async fn dispatch(
                     s.frontmatter.triggers.join(", ")
                 };
                 out.push_str(&format!(
-                    "| `{}` | {} | **`{}`** | {} | `{}` |\n",
-                    scope_badge, status_badge, s.name, s.description, triggers
+                    "| `{}` | `{}` | `{}` | {} | **`{}`** | {} | `{}` |\n",
+                    scope_badge, type_badge, s.category(), status_badge, s.name, s.description, triggers
                 ));
             }
 
@@ -279,6 +374,13 @@ pub async fn dispatch(
                 skill.name, scope_str, status_str
             );
             out.push_str(&format!("*{}*\n\n", skill.description));
+            out.push_str(&format!(
+                "• **Type**: `[{}] {}` ({})\n",
+                skill.kind().badge(),
+                skill.kind().as_str(),
+                skill.kind().description()
+            ));
+            out.push_str(&format!("• **Category**: `{}`\n", skill.category()));
 
             if !skill.frontmatter.globs.is_empty() {
                 out.push_str(&format!("• **Globs**: `{}`\n", skill.frontmatter.globs.join(", ")));
@@ -347,6 +449,8 @@ pub async fn dispatch(
 
             let triggers = opt_string_array(args, "triggers").unwrap_or_default();
             let globs = opt_string_array(args, "globs").unwrap_or_default();
+            let category = opt_str(args, "category");
+            let kind = opt_str(args, "kind");
             let scope_str = opt_str(args, "scope").unwrap_or("project");
 
             let target_scope = if scope_str.eq_ignore_ascii_case("global") {
@@ -355,7 +459,7 @@ pub async fn dispatch(
                 SkillScope::Project
             };
 
-            match store.create_skill(target_scope, name, description, instructions, triggers, globs) {
+            match store.create_skill(target_scope, name, description, category, kind, instructions, triggers, globs) {
                 Ok(skill) => {
                     let path_str = skill.path.map(|p| p.display().to_string()).unwrap_or_default();
                     Ok(format!(
@@ -448,6 +552,99 @@ pub async fn dispatch(
                 Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to import skill from URL: {}", e)).into()),
             }
         }.await),
+        "vault_bundle_list" => Some(async move {
+            let query = opt_query(args).unwrap_or("").to_lowercase();
+            let cat_filter = opt_str(args, "category").map(|c| c.trim().to_lowercase());
+
+            let mut bundles = store.list_all_bundles();
+            if let Some(ref cat) = cat_filter {
+                if !cat.is_empty() {
+                    bundles.retain(|b| b.category.eq_ignore_ascii_case(cat));
+                }
+            }
+            if !query.is_empty() {
+                bundles.retain(|b| b.matches_query(&query));
+            }
+
+            if bundles.is_empty() {
+                return Ok("📦 No skill bundles found matching criteria.".to_string());
+            }
+
+            let mut out = format!("📦 **MiniVault Skill Bundles** ({} available):\n\n", bundles.len());
+            out.push_str("| Scope | Category | Bundle Name | Included Skills | Description |\n");
+            out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+
+            for b in bundles {
+                let scope_badge = match b.scope {
+                    SkillScope::Project => "`Project`",
+                    SkillScope::Global => "`Global`",
+                    SkillScope::Builtin => "`Built-in`",
+                };
+                let skills_summary = b.skills.join(", ");
+                out.push_str(&format!(
+                    "| {} | `{}` | **`{}`** | `{}` | {} |\n",
+                    scope_badge, b.category, b.name, skills_summary, b.description
+                ));
+            }
+
+            out.push_str("\n💡 Use `vault_bundle_load(name)` to install all constituent skills into this project.\n");
+            Ok(out)
+        }.await),
+
+        "vault_bundle_load" => Some(async move {
+            let name = match require_str(args, "name", "vault_bundle_load") {
+                Ok(n) => n,
+                Err(e) => return Err(e.into()),
+            };
+
+            match store.load_bundle_to_project(name) {
+                Ok((loaded, failed)) => {
+                    let mut msg = format!("✔ Successfully loaded skill bundle `{}` into project!\n", name);
+                    msg.push_str(&format!("  • Installed skills ({}): {}\n", loaded.len(), loaded.join(", ")));
+                    if !failed.is_empty() {
+                        msg.push_str(&format!("  • Failed/skipped skills ({}): {}\n", failed.len(), failed.join(", ")));
+                    }
+                    msg.push_str("All active bundle skills are now automatically injected into orchestrator context.");
+                    Ok(msg)
+                }
+                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to load bundle: {}", e)).into()),
+            }
+        }.await),
+
+        "vault_bundle_create" => Some(async move {
+            let name = match require_str(args, "name", "vault_bundle_create") {
+                Ok(n) => n,
+                Err(e) => return Err(e.into()),
+            };
+            let description = match require_str(args, "description", "vault_bundle_create") {
+                Ok(d) => d,
+                Err(e) => return Err(e.into()),
+            };
+            let skills = match opt_string_array(args, "skills") {
+                Some(s) if !s.is_empty() => s,
+                _ => return Err(ToolError::invalid_args("vault_bundle_create", "skills array must contain at least 1 skill").into()),
+            };
+            let category = opt_str(args, "category").unwrap_or("general");
+            let tags = opt_string_array(args, "tags").unwrap_or_default();
+            let scope_str = opt_str(args, "scope").unwrap_or("project");
+
+            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
+                SkillScope::Global
+            } else {
+                SkillScope::Project
+            };
+
+            match store.create_bundle(target_scope, name, description, category, skills, tags) {
+                Ok(bundle) => {
+                    let path_str = bundle.path.map(|p| p.display().to_string()).unwrap_or_default();
+                    Ok(format!(
+                        "✔ Successfully created skill bundle `{}` [category: {}] with {} skills at `{}`.",
+                        bundle.name, bundle.category, bundle.skills.len(), path_str
+                    ))
+                }
+                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to create bundle: {}", e)).into()),
+            }
+        }.await),
 
         _ => None,
     }
@@ -469,6 +666,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(res.contains("tailwind-v4"));
+        assert!(res.contains("[Doc]"));
+
+        // 1b. Test search filtered by kind="reference"
+        let ref_res = dispatch("vault_search", &json!({ "kind": "reference" }), ws)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ref_res.contains("react"));
+        assert!(ref_res.contains("tailwind-v4"));
+        assert!(!ref_res.contains("tdd-workflow"));
+
+        // 1c. Test search filtered by kind="workflow"
+        let wf_res = dispatch("vault_search", &json!({ "kind": "workflow" }), ws)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wf_res.contains("tdd-workflow"));
+        assert!(wf_res.contains("security-audit"));
+        assert!(!wf_res.contains("react"));
 
         // 2. Test show
         let show_res = dispatch("vault_show", &json!({ "name": "tailwind-v4" }), ws)
@@ -476,6 +692,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(show_res.contains("Tailwind CSS v4 Guidelines"));
+        assert!(show_res.contains("[Doc]"));
+        assert!(show_res.contains("Technical Reference Guide"));
 
         // 3. Test load to project
         let load_res = dispatch("vault_load", &json!({ "name": "tailwind-v4" }), ws)
@@ -484,12 +702,13 @@ mod tests {
             .unwrap();
         assert!(load_res.contains("Successfully loaded skill `tailwind-v4`"));
 
-        // 4. Test create custom skill
+        // 4. Test create custom skill with kind="workflow"
         let create_res = dispatch(
             "vault_create",
             &json!({
                 "name": "micro-services",
                 "description": "Microservice resilience patterns",
+                "kind": "workflow",
                 "instructions": "Use circuit breakers and retry policies.",
                 "triggers": ["microservice", "resilience"],
                 "scope": "project"
@@ -507,5 +726,26 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(unload_res.contains("Successfully unloaded"));
+
+        // 6. Test bundle list
+        let bundle_list_res = dispatch("vault_bundle_list", &json!({}), ws)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(bundle_list_res.contains("fullstack-nextjs"));
+        assert!(bundle_list_res.contains("rust-systems"));
+
+        // 7. Test bundle load
+        let bundle_load_res = dispatch(
+            "vault_bundle_load",
+            &json!({ "name": "fullstack-nextjs" }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(bundle_load_res.contains("Successfully loaded skill bundle `fullstack-nextjs`"));
+        assert!(bundle_load_res.contains("react"));
+        assert!(bundle_load_res.contains("nextjs"));
     }
 }

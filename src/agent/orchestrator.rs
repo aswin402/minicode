@@ -405,12 +405,29 @@ impl WorkflowRouter {
             || lower.contains("show skill")
             || lower.contains("mini_vault")
             || lower.contains("minivault")
+            || lower.contains("skill bundle")
+            || lower.contains("skill bundles")
+            || lower.contains("load bundle")
+            || lower.contains("install bundle")
+            || lower.contains("create bundle")
+            || lower.contains("list bundles")
+            || lower.contains("list bundle")
+            || lower.contains("bundle list")
+            || lower.contains("fullstack bundle")
+            || lower.contains("bundled skills")
+            || lower.contains("bundled skill")
             || (crate::utils::has_word(&lower, "skill")
                 && (lower.contains("internet")
                     || lower.contains("github")
                     || lower.contains("http")
                     || lower.contains("project")
                     || lower.contains("global")))
+            || (crate::utils::has_word(&lower, "bundle")
+                && (lower.contains("vault")
+                    || lower.contains("stack")
+                    || lower.contains("load")
+                    || lower.contains("install")
+                    || lower.contains("skills")))
         {
             return WorkflowArchetype::VaultSkills;
         }
@@ -808,33 +825,76 @@ impl WorkflowRouter {
     fn enrich_vault_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store = crate::vault::store::VaultStore::new(workspace_root);
         let all_skills = store.list_all_skills();
+        let all_bundles = store.list_all_bundles();
         let lower = prompt.to_ascii_lowercase();
 
-        let matched: Vec<_> = all_skills
+        let matched_skills: Vec<_> = all_skills
             .into_iter()
             .filter(|s| s.matches_prompt(&lower))
             .take(6)
             .collect();
 
-        let mut out = String::from("<minivault_skills_guidance>\n");
-        out.push_str("  MiniVault Tool Suite: `vault_search`, `vault_show`, `vault_load`, `vault_unload`, `vault_create`, `vault_update`, `vault_delete`, `vault_import_url`.\n");
+        let matched_bundles: Vec<_> = all_bundles
+            .into_iter()
+            .filter(|b| b.matches_query(&lower))
+            .take(3)
+            .collect();
 
-        if !matched.is_empty() {
-            out.push_str("  Matched Skills in MiniVault:\n");
-            for m in matched {
-                let status = if m.is_active_in_project {
-                    "Active in Project"
-                } else {
-                    "Available in Vault"
-                };
+        let mut out = String::from("<minivault_skills_guidance>\n");
+        out.push_str("  MiniVault Tool Suite: `vault_search`, `vault_show`, `vault_load`, `vault_unload`, `vault_create`, `vault_update`, `vault_delete`, `vault_import_url`, `vault_bundle_list`, `vault_bundle_load`, `vault_bundle_create`.\n");
+
+        if !matched_bundles.is_empty() {
+            out.push_str("  Matched Skill Bundles in MiniVault:\n");
+            for b in &matched_bundles {
                 out.push_str(&format!(
-                    "  • `{}` [{:?} | {}]: {}\n",
-                    m.name, m.scope, status, m.description
+                    "  • Bundle `{}` ({} skills: {}): {}\n",
+                    b.name,
+                    b.skills.len(),
+                    b.skills.join(", "),
+                    b.description
                 ));
             }
+            out.push_str("  Autonomous Action: Call `vault_bundle_load(name)` to install this entire stack into the project.\n");
+        }
+
+        if !matched_skills.is_empty() {
+            let (docs, workflows): (Vec<_>, Vec<_>) = matched_skills
+                .into_iter()
+                .partition(|s| s.kind() == crate::vault::models::SkillKind::Reference);
+
+            if !docs.is_empty() {
+                out.push_str("  Matched Technical Reference Guides & Invariants ([Doc]):\n");
+                for d in &docs {
+                    let status = if d.is_active_in_project {
+                        "Active in Project"
+                    } else {
+                        "Available in Vault"
+                    };
+                    out.push_str(&format!(
+                        "  • [Doc] `{}` [{:?} | {}]: {}\n",
+                        d.name, d.scope, status, d.description
+                    ));
+                }
+            }
+
+            if !workflows.is_empty() {
+                out.push_str("  Matched Operational Engineering Methodologies ([Skill]):\n");
+                for w in &workflows {
+                    let status = if w.is_active_in_project {
+                        "Active in Project"
+                    } else {
+                        "Available in Vault"
+                    };
+                    out.push_str(&format!(
+                        "  • [Skill] `{}` [{:?} | {}]: {}\n",
+                        w.name, w.scope, status, w.description
+                    ));
+                }
+            }
+
             out.push_str("  Autonomous Action: Call `vault_load(name)` to install into active project, or `vault_show(name)` to inspect full rules.\n");
-        } else {
-            out.push_str("  Autonomous Action: Call `vault_search(query)` to find skills, or `vault_import_url(url)` to download skills from internet/GitHub.\n");
+        } else if matched_bundles.is_empty() {
+            out.push_str("  Autonomous Action: Call `vault_bundle_list()` for curated stacks, `vault_search(query)` to find skills, or `vault_import_url(url)` to download skills from internet/GitHub.\n");
         }
         out.push_str("</minivault_skills_guidance>");
         Some(out)
@@ -857,6 +917,14 @@ mod tests {
         );
         assert_eq!(
             WorkflowRouter::classify("Search skills for react in minivault"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Load fullstack-nextjs skill bundle"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Show available skill bundles in minivault"),
             WorkflowArchetype::VaultSkills
         );
     }

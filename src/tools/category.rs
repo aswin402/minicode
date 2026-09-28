@@ -82,7 +82,7 @@ impl ToolCategory {
             Self::MiniPower => "MiniPower methodology, verification barrier & worktree tasks (power_status, power_brainstorm, power_plan, power_review, power_verify, power_worktree_task)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Development servers, backends, docker & process orchestration (mini_dev)",
-            Self::Vault => "MiniVault multi-tier agent skills warehouse & lifecycle (vault_search, vault_show, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url)",
+            Self::Vault => "MiniVault multi-tier agent skills warehouse, bundles & lifecycle (vault_search, vault_show, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url, vault_bundle_list, vault_bundle_load, vault_bundle_create)",
         }
     }
 
@@ -123,7 +123,7 @@ impl FromStr for ToolCategory {
             "power" | "minipower" | "superpower" | "superpowers" | "verify" | "verification" | "review" | "brainstorm" | "worktree" | "tdd" => Ok(Self::MiniPower),
             "blocks" | "block" | "miniblocks" | "component" | "components" | "palette" | "palettes" => Ok(Self::Blocks),
             "dev" | "minidev" | "server" | "servers" | "daemon" | "orchestrator" => Ok(Self::Dev),
-            "vault" | "minivault" | "skill" | "skills" => Ok(Self::Vault),
+            "vault" | "minivault" | "skill" | "skills" | "bundle" | "bundles" => Ok(Self::Vault),
             other => Err(format!(
                 "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, vault, all",
                 other
@@ -139,7 +139,7 @@ pub fn activate_tools_schema() -> ToolSchema {
 
 /// JSON Schema for the `activate_tools` dynamic meta-tool with connected MCP servers advertised.
 pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSchema {
-    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'blocks' (MiniBlocks UI warehouse), 'dev' (MiniDev runtime & servers), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
+    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'blocks' (MiniBlocks UI warehouse), 'dev' (MiniDev runtime & servers), 'vault' (MiniVault skills & bundles), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
 
     let mut enums = vec![
         "git".to_string(),
@@ -154,6 +154,8 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
         "miniblocks".to_string(),
         "dev".to_string(),
         "minidev".to_string(),
+        "vault".to_string(),
+        "minivault".to_string(),
         "agent".to_string(),
         "search".to_string(),
         "memory".to_string(),

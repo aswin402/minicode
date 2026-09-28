@@ -53,6 +53,62 @@ impl SkillScope {
     }
 }
 
+/// Functional classification of an entry in MiniVault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillKind {
+    /// Technical Reference Guide (framework/library documentation, API cheatsheet, syntax invariants)
+    /// Example: `react`, `vite`, `tailwind-v4`, `postgres`, `docker`, `rust-tokio`
+    Reference,
+    /// Behavioral / Operational Skill (methodology, protocols, decision-making, quality gates)
+    /// Example: `tdd-workflow`, `systematic-debugging`, `security-audit`, `frontend-design`
+    Workflow,
+}
+
+impl SkillKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SkillKind::Reference => "reference",
+            SkillKind::Workflow => "workflow",
+        }
+    }
+
+    pub fn badge(&self) -> &'static str {
+        match self {
+            SkillKind::Reference => "Doc",
+            SkillKind::Workflow => "Skill",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            SkillKind::Reference => "Technical Reference Guide (Cheatsheet / Invariants)",
+            SkillKind::Workflow => "Behavioral Skill (Operational Methodology)",
+        }
+    }
+}
+
+impl std::fmt::Display for SkillKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for SkillKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().trim() {
+            "reference" | "ref" | "doc" | "docs" | "guide" | "cheatsheet" => Ok(Self::Reference),
+            "workflow" | "skill" | "behavior" | "methodology" | "protocol" => Ok(Self::Workflow),
+            other => Err(format!(
+                "Invalid skill kind '{}'. Valid kinds: 'reference', 'workflow'",
+                other
+            )),
+        }
+    }
+}
+
 /// Metadata extracted from the YAML frontmatter of a `SKILL.md` or `.md` file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFrontmatter {
@@ -63,6 +119,10 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub author: Option<String>,
     #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
     pub globs: Vec<String>,
     #[serde(default)]
     pub triggers: Vec<String>,
@@ -72,6 +132,30 @@ pub struct SkillFrontmatter {
     pub allowed_tools: Vec<String>,
 }
 
+impl SkillFrontmatter {
+    /// Returns the category name or 'general' if unspecified.
+    pub fn category_name(&self) -> &str {
+        match &self.category {
+            Some(c) if !c.trim().is_empty() => c.trim(),
+            _ => "general",
+        }
+    }
+
+    /// Returns the functional kind (`SkillKind::Reference` or `SkillKind::Workflow`).
+    /// Defaults to `Workflow` for testing/quality, and `Reference` for tech stack documentation.
+    pub fn skill_kind(&self) -> SkillKind {
+        if let Some(k) = &self.kind {
+            if let Ok(kind) = k.parse::<SkillKind>() {
+                return kind;
+            }
+        }
+        match self.category_name() {
+            "testing" | "quality" => SkillKind::Workflow,
+            _ => SkillKind::Reference,
+        }
+    }
+}
+
 impl Default for SkillFrontmatter {
     fn default() -> Self {
         Self {
@@ -79,6 +163,8 @@ impl Default for SkillFrontmatter {
             description: String::new(),
             version: default_version(),
             author: None,
+            category: None,
+            kind: None,
             globs: Vec::new(),
             triggers: Vec::new(),
             always_apply: false,
@@ -89,6 +175,50 @@ impl Default for SkillFrontmatter {
 
 fn default_version() -> String {
     "1.0.0".to_string()
+}
+
+/// A named collection of related skills that can be loaded into a project as a single cohesive pack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultBundle {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_bundle_category")]
+    pub category: String,
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default = "default_bundle_scope")]
+    pub scope: SkillScope,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
+fn default_bundle_category() -> String {
+    "general".to_string()
+}
+
+fn default_bundle_scope() -> SkillScope {
+    SkillScope::Builtin
+}
+
+impl VaultBundle {
+    /// Checks if this bundle matches a search query across name, description, category, and tags.
+    pub fn matches_query(&self, query_lower: &str) -> bool {
+        if query_lower.is_empty() {
+            return true;
+        }
+        self.name.to_lowercase().contains(query_lower)
+            || self.description.to_lowercase().contains(query_lower)
+            || self.category.to_lowercase().contains(query_lower)
+            || self
+                .tags
+                .iter()
+                .any(|t| t.to_lowercase().contains(query_lower))
+            || self
+                .skills
+                .iter()
+                .any(|s| s.to_lowercase().contains(query_lower))
+    }
 }
 
 /// A fully parsed skill stored in MiniVault.
@@ -105,6 +235,15 @@ pub struct VaultSkill {
 }
 
 impl VaultSkill {
+    /// Returns the functional kind of this skill (Reference Doc vs Behavioral Workflow Skill).
+    pub fn kind(&self) -> SkillKind {
+        self.frontmatter.skill_kind()
+    }
+
+    /// Returns the category of this skill (e.g. 'frontend', 'backend', 'testing', 'security').
+    pub fn category(&self) -> &str {
+        self.frontmatter.category_name()
+    }
     /// Checks if this skill matches a file path based on its globs or always_apply rule.
     pub fn matches_file(&self, workspace_root: &Path, file_path: &Path) -> bool {
         if self.frontmatter.always_apply {
@@ -269,6 +408,20 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                         fm.author = Some(clean.to_string());
                     }
                 }
+                "category" => {
+                    current_list_key = None;
+                    let clean = v.trim_matches('"').trim_matches('\'').trim();
+                    if !clean.is_empty() {
+                        fm.category = Some(clean.to_lowercase());
+                    }
+                }
+                "kind" | "type" => {
+                    current_list_key = None;
+                    let clean = v.trim_matches('"').trim_matches('\'').trim();
+                    if !clean.is_empty() {
+                        fm.kind = Some(clean.to_lowercase());
+                    }
+                }
                 "always_apply" => {
                     current_list_key = None;
                     fm.always_apply = v.eq_ignore_ascii_case("true");
@@ -342,6 +495,12 @@ pub fn format_skill_markdown(fm: &SkillFrontmatter, instructions: &str) -> Strin
     if let Some(author) = &fm.author {
         out.push_str(&format!("author: \"{}\"\n", author));
     }
+    if let Some(category) = &fm.category {
+        out.push_str(&format!("category: \"{}\"\n", category));
+    }
+    if let Some(kind) = &fm.kind {
+        out.push_str(&format!("kind: \"{}\"\n", kind));
+    }
     if fm.always_apply {
         out.push_str("always_apply: true\n");
     }
@@ -400,6 +559,8 @@ Always use `@import "tailwindcss";`.
             description: "React 19 Server Actions and Hooks".to_string(),
             version: "1.0.0".to_string(),
             author: Some("agent".to_string()),
+            category: Some("frontend".to_string()),
+            kind: Some("reference".to_string()),
             globs: vec!["*.tsx".to_string()],
             triggers: vec!["react".to_string()],
             always_apply: true,
@@ -425,5 +586,49 @@ Always use `@import "tailwindcss";`.
         );
         assert_eq!(sanitize_skill_name("  --Tailwind__v4-- "), "tailwind-v4");
         assert_eq!(sanitize_skill_name("graphql_schema!"), "graphql-schema");
+    }
+
+    #[test]
+    fn test_category_and_bundle() {
+        let md = r#"---
+name: "fastapi-auth"
+description: "FastAPI JWT authentication"
+category: "backend"
+kind: "reference"
+triggers: ["auth", "fastapi"]
+---
+Use OAuth2PasswordBearer.
+"#;
+        let (fm, _) = parse_skill_markdown(md, "fallback");
+        assert_eq!(fm.category, Some("backend".to_string()));
+        assert_eq!(fm.category_name(), "backend");
+        assert_eq!(fm.kind, Some("reference".to_string()));
+        assert_eq!(fm.skill_kind(), SkillKind::Reference);
+        assert_eq!(fm.skill_kind().badge(), "Doc");
+
+        // Test workflow skill fallback based on category
+        let wf_md = r#"---
+name: "tdd-workflow"
+description: "TDD Red Green Refactor"
+category: "testing"
+---
+Write tests first.
+"#;
+        let (wf_fm, _) = parse_skill_markdown(wf_md, "fallback");
+        assert_eq!(wf_fm.skill_kind(), SkillKind::Workflow);
+        assert_eq!(wf_fm.skill_kind().badge(), "Skill");
+
+        let bundle = VaultBundle {
+            name: "fullstack-nextjs".to_string(),
+            description: "Fullstack Next.js stack".to_string(),
+            category: "fullstack".to_string(),
+            skills: vec!["react".to_string(), "nextjs".to_string()],
+            tags: vec!["web".to_string()],
+            scope: SkillScope::Builtin,
+            path: None,
+        };
+        assert!(bundle.matches_query("nextjs"));
+        assert!(bundle.matches_query("fullstack"));
+        assert!(!bundle.matches_query("kubernetes"));
     }
 }

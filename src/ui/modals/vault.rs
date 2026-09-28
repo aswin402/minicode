@@ -3,7 +3,7 @@
 use crate::ui::layout_utils::centered_rect;
 use crate::ui::modals::common::compute_scroll_offset;
 use crate::ui::theme::Theme;
-use crate::vault::models::{SkillScope, VaultSkill};
+use crate::vault::models::{SkillKind, SkillScope, VaultBundle, VaultSkill};
 use crate::vault::store::VaultStore;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultTab {
     All,
+    Bundles,
     Project,
     Global,
     Builtin,
@@ -26,6 +27,7 @@ impl VaultTab {
     pub fn all() -> &'static [VaultTab] {
         &[
             VaultTab::All,
+            VaultTab::Bundles,
             VaultTab::Project,
             VaultTab::Global,
             VaultTab::Builtin,
@@ -36,6 +38,7 @@ impl VaultTab {
     pub fn title(&self) -> &'static str {
         match self {
             VaultTab::All => "All Skills",
+            VaultTab::Bundles => "Skill Bundles",
             VaultTab::Project => "Project Active",
             VaultTab::Global => "Global User",
             VaultTab::Builtin => "Built-in Core",
@@ -44,7 +47,8 @@ impl VaultTab {
 
     pub fn next(&self) -> Self {
         match self {
-            VaultTab::All => VaultTab::Project,
+            VaultTab::All => VaultTab::Bundles,
+            VaultTab::Bundles => VaultTab::Project,
             VaultTab::Project => VaultTab::Global,
             VaultTab::Global => VaultTab::Builtin,
             VaultTab::Builtin => VaultTab::All,
@@ -54,7 +58,8 @@ impl VaultTab {
     pub fn prev(&self) -> Self {
         match self {
             VaultTab::All => VaultTab::Builtin,
-            VaultTab::Project => VaultTab::All,
+            VaultTab::Bundles => VaultTab::All,
+            VaultTab::Project => VaultTab::Bundles,
             VaultTab::Global => VaultTab::Project,
             VaultTab::Builtin => VaultTab::Global,
         }
@@ -70,6 +75,7 @@ pub struct VaultModalState {
     pub selected_index: usize,
     pub preview_scroll_offset: usize,
     pub filtered_skills: Vec<VaultSkill>,
+    pub filtered_bundles: Vec<VaultBundle>,
     pub status_message: Option<String>,
 }
 
@@ -82,6 +88,7 @@ impl VaultModalState {
             selected_index: 0,
             preview_scroll_offset: 0,
             filtered_skills: Vec::new(),
+            filtered_bundles: Vec::new(),
             status_message: None,
         };
         state.refresh_filtered();
@@ -89,7 +96,10 @@ impl VaultModalState {
     }
 
     pub fn current_tab_len(&self) -> usize {
-        self.filtered_skills.len()
+        match self.active_tab {
+            VaultTab::Bundles => self.filtered_bundles.len(),
+            _ => self.filtered_skills.len(),
+        }
     }
 
     pub fn next_tab(&mut self) {
@@ -156,14 +166,49 @@ impl VaultModalState {
         self.refresh_filtered();
     }
 
-    /// Toggles loading/unloading of the currently selected skill into the active project.
+    /// Toggles loading/unloading of the currently selected skill or loads selected bundle into the active project.
     pub fn toggle_project_load(&mut self) {
+        let store = VaultStore::new(&self.workspace_root);
+
+        if self.active_tab == VaultTab::Bundles {
+            let selected = match self.filtered_bundles.get(self.selected_index) {
+                Some(b) => b.clone(),
+                None => return,
+            };
+
+            match store.load_bundle_to_project(&selected.name) {
+                Ok((loaded, failed)) => {
+                    if failed.is_empty() {
+                        self.status_message = Some(format!(
+                            "✔ Loaded bundle `{}` ({} skills: {}) into project!",
+                            selected.name,
+                            loaded.len(),
+                            loaded.join(", ")
+                        ));
+                    } else {
+                        self.status_message = Some(format!(
+                            "✔ Loaded bundle `{}` ({} installed, {} failed/skipped).",
+                            selected.name,
+                            loaded.len(),
+                            failed.len()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    self.status_message = Some(format!(
+                        "❌ Failed to load bundle `{}`: {}",
+                        selected.name, e
+                    ));
+                }
+            }
+            self.refresh_filtered();
+            return;
+        }
+
         let selected = match self.filtered_skills.get(self.selected_index) {
             Some(s) => s.clone(),
             None => return,
         };
-
-        let store = VaultStore::new(&self.workspace_root);
 
         if selected.is_active_in_project {
             match store.unload_from_project(&selected.name) {
@@ -196,6 +241,11 @@ impl VaultModalState {
 
     /// Deletes the currently selected custom skill from project or global vault.
     pub fn delete_selected(&mut self) {
+        if self.active_tab == VaultTab::Bundles {
+            self.status_message = Some("ℹ Built-in bundles cannot be deleted.".to_string());
+            return;
+        }
+
         let selected = match self.filtered_skills.get(self.selected_index) {
             Some(s) => s.clone(),
             None => return,
@@ -225,11 +275,56 @@ impl VaultModalState {
     /// Refreshes the filtered list according to active tab and search query.
     pub fn refresh_filtered(&mut self) {
         let store = VaultStore::new(&self.workspace_root);
-        let mut list = if self.search_query.trim().is_empty() {
+
+        if self.active_tab == VaultTab::Bundles {
+            let bundles = store.list_all_bundles();
+            let query = self.search_query.trim();
+            self.filtered_bundles = if query.is_empty() {
+                bundles
+            } else {
+                bundles
+                    .into_iter()
+                    .filter(|b| b.matches_query(query))
+                    .collect()
+            };
+            if self.selected_index >= self.filtered_bundles.len() {
+                self.selected_index = self.filtered_bundles.len().saturating_sub(1);
+            }
+            return;
+        }
+
+        let query_raw = self.search_query.trim();
+        let (kind_filter, search_term) = if let Some(rest) = query_raw
+            .strip_prefix("kind:doc")
+            .or_else(|| query_raw.strip_prefix("type:doc"))
+            .or_else(|| query_raw.strip_prefix("doc:"))
+            .or_else(|| query_raw.strip_prefix("kind:ref"))
+            .or_else(|| query_raw.strip_prefix("type:ref"))
+            .or_else(|| query_raw.strip_prefix("ref:"))
+        {
+            (Some(SkillKind::Reference), rest.trim())
+        } else if let Some(rest) = query_raw
+            .strip_prefix("kind:skill")
+            .or_else(|| query_raw.strip_prefix("type:skill"))
+            .or_else(|| query_raw.strip_prefix("skill:"))
+            .or_else(|| query_raw.strip_prefix("kind:workflow"))
+            .or_else(|| query_raw.strip_prefix("type:workflow"))
+            .or_else(|| query_raw.strip_prefix("workflow:"))
+        {
+            (Some(SkillKind::Workflow), rest.trim())
+        } else {
+            (None, query_raw)
+        };
+
+        let mut list = if search_term.is_empty() {
             store.list_all_skills()
         } else {
-            store.search_skills(&self.search_query)
+            store.search_skills(search_term)
         };
+
+        if let Some(kf) = kind_filter {
+            list.retain(|s| s.kind() == kf);
+        }
 
         match self.active_tab {
             VaultTab::All => {}
@@ -242,6 +337,7 @@ impl VaultModalState {
             VaultTab::Builtin => {
                 list.retain(|s| s.scope == SkillScope::Builtin);
             }
+            VaultTab::Bundles => {}
         }
 
         self.filtered_skills = list;
@@ -260,6 +356,8 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
     let store = VaultStore::new(&state.workspace_root);
     let all = store.list_all_skills();
     let total_count = all.len();
+    let all_bundles = store.list_all_bundles();
+    let bundle_count = all_bundles.len();
     let project_count = all.iter().filter(|s| s.is_active_in_project).count();
     let global_count = all.iter().filter(|s| s.scope == SkillScope::Global).count();
     let builtin_count = all
@@ -280,14 +378,15 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
     // 1. Header & Tabs
     let tabs = [
         (VaultTab::All, format!("1. All ({})", total_count)),
+        (VaultTab::Bundles, format!("2. Bundles ({})", bundle_count)),
         (
             VaultTab::Project,
-            format!("2. Project Active ({})", project_count),
+            format!("3. Project Active ({})", project_count),
         ),
-        (VaultTab::Global, format!("3. Global ({})", global_count)),
+        (VaultTab::Global, format!("4. Global ({})", global_count)),
         (
             VaultTab::Builtin,
-            format!("4. Built-in ({})", builtin_count),
+            format!("5. Built-in ({})", builtin_count),
         ),
     ];
 
@@ -312,7 +411,7 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border))
                 .title(Span::styled(
-                    " 📦 MiniVault Agent Skills Warehouse ",
+                    " 📦 MiniVault Agent Skills & Bundles Warehouse ",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -321,9 +420,15 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
     frame.render_widget(header_widget, chunks[0]);
 
     // 2. Search Bar
+    let search_placeholder = if state.active_tab == VaultTab::Bundles {
+        "Type to search bundles (name, tags, description)..."
+    } else {
+        "Type to search skills (name, triggers, description)..."
+    };
+
     let search_text = if state.search_query.is_empty() {
         Span::styled(
-            "Type to search skills (name, triggers, description)...",
+            search_placeholder,
             Style::default()
                 .fg(theme.muted)
                 .add_modifier(Modifier::ITALIC),
@@ -348,17 +453,19 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
     );
     frame.render_widget(search_widget, chunks[1]);
 
-    // 3. Main Body Split: List (40%) and Preview (60%)
+    // 3. Main Body Split: List (42%) and Preview (58%)
     let body_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(chunks[2]);
 
-    // 3A. Skills List
-    render_skills_list(frame, body_chunks[0], state, theme);
-
-    // 3B. Skill Preview Pane
-    render_skill_preview(frame, body_chunks[1], state, theme);
+    if state.active_tab == VaultTab::Bundles {
+        render_bundles_list(frame, body_chunks[0], state, theme);
+        render_bundle_preview(frame, body_chunks[1], state, theme);
+    } else {
+        render_skills_list(frame, body_chunks[0], state, theme);
+        render_skill_preview(frame, body_chunks[1], state, theme);
+    }
 
     // 4. Footer & Hotkeys
     let status_text = if let Some(msg) = &state.status_message {
@@ -367,6 +474,11 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
+        )
+    } else if state.active_tab == VaultTab::Bundles {
+        Span::styled(
+            "[Space/Enter] Load Bundle to Project   [Tab] Switch Tab   [Esc] Close",
+            Style::default().fg(theme.muted),
         )
     } else {
         Span::styled(
@@ -435,6 +547,21 @@ fn render_skills_list(frame: &mut Frame, area: Rect, state: &VaultModalState, th
                 }
             };
 
+            let kind_badge = match skill.kind() {
+                SkillKind::Reference => Span::styled(
+                    "[Doc] ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                SkillKind::Workflow => Span::styled(
+                    "[Skill] ",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            };
+
             let name_style = if is_selected {
                 Style::default()
                     .fg(theme.brand_accent)
@@ -447,6 +574,7 @@ fn render_skills_list(frame: &mut Frame, area: Rect, state: &VaultModalState, th
                 Span::styled(pointer, Style::default().fg(theme.brand_accent)),
                 active_badge,
                 scope_badge,
+                kind_badge,
                 Span::styled(&skill.name, name_style),
             ]));
         }
@@ -494,6 +622,16 @@ fn render_skill_preview(frame: &mut Frame, area: Rect, state: &VaultModalState, 
             ),
             Span::styled("  •  Scope: ", Style::default().fg(theme.muted)),
             Span::styled(skill.scope.as_str(), Style::default().fg(Color::Cyan)),
+            Span::styled("  •  Type: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("[{}] {}", skill.kind().badge(), skill.kind().as_str()),
+                Style::default()
+                    .fg(match skill.kind() {
+                        SkillKind::Reference => Color::Cyan,
+                        SkillKind::Workflow => Color::Magenta,
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         lines.push(Line::from(vec![
@@ -509,11 +647,18 @@ fn render_skill_preview(frame: &mut Frame, area: Rect, state: &VaultModalState, 
                     .fg(status_color)
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::styled("  •  Category: ", Style::default().fg(theme.muted)),
+            Span::styled(skill.category(), Style::default().fg(Color::Yellow)),
         ]));
 
         lines.push(Line::from(vec![
             Span::styled("Description: ", Style::default().fg(theme.brand_accent)),
             Span::styled(&skill.description, Style::default().fg(theme.text_primary)),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Type Definition: ", Style::default().fg(theme.muted)),
+            Span::styled(skill.kind().description(), Style::default().fg(theme.muted)),
         ]));
 
         if !skill.frontmatter.triggers.is_empty() {
@@ -601,6 +746,200 @@ fn render_skill_preview(frame: &mut Frame, area: Rect, state: &VaultModalState, 
     frame.render_widget(preview_widget, area);
 }
 
+fn render_bundles_list(frame: &mut Frame, area: Rect, state: &VaultModalState, theme: &Theme) {
+    let items_area_height = area.height.saturating_sub(2) as usize;
+    let scroll_offset = compute_scroll_offset(state.selected_index, items_area_height);
+
+    let mut lines = Vec::new();
+
+    if state.filtered_bundles.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " No skill bundles found matching filter.",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    } else {
+        let visible_items = state
+            .filtered_bundles
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(items_area_height);
+
+        for (idx, bundle) in visible_items {
+            let is_selected = idx == state.selected_index;
+            let pointer = if is_selected { "▶ " } else { "  " };
+
+            let scope_badge = match bundle.scope {
+                SkillScope::Project => Span::styled(
+                    "[Proj] ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                SkillScope::Global => Span::styled("[User] ", Style::default().fg(Color::Yellow)),
+                SkillScope::Builtin => {
+                    Span::styled("[Core] ", Style::default().fg(Color::DarkGray))
+                }
+            };
+
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+
+            let count_badge = Span::styled(
+                format!("({} skills)", bundle.skills.len()),
+                Style::default().fg(theme.muted),
+            );
+
+            lines.push(Line::from(vec![
+                Span::styled(pointer, Style::default().fg(theme.brand_accent)),
+                scope_badge,
+                Span::styled(&bundle.name, name_style),
+                Span::styled(" ", Style::default()),
+                count_badge,
+            ]));
+        }
+    }
+
+    let list_widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(Span::styled(
+                format!(" Skill Bundles ({}) ", state.filtered_bundles.len()),
+                Style::default().fg(theme.muted),
+            )),
+    );
+    frame.render_widget(list_widget, area);
+}
+
+fn render_bundle_preview(frame: &mut Frame, area: Rect, state: &VaultModalState, theme: &Theme) {
+    let mut lines = Vec::new();
+
+    if let Some(bundle) = state.filtered_bundles.get(state.selected_index) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Bundle: ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                &bundle.name,
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  •  Scope: ", Style::default().fg(theme.muted)),
+            Span::styled(bundle.scope.as_str(), Style::default().fg(Color::Cyan)),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Category: ", Style::default().fg(theme.brand_accent)),
+            Span::styled(&bundle.category, Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("  •  Constituent Skills: {}", bundle.skills.len()),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled("Description: ", Style::default().fg(theme.brand_accent)),
+            Span::styled(&bundle.description, Style::default().fg(theme.text_primary)),
+        ]));
+
+        if !bundle.tags.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Tags: ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    bundle.tags.join(", "),
+                    Style::default().fg(Color::LightBlue),
+                ),
+            ]));
+        }
+
+        if let Some(path) = &bundle.path {
+            lines.push(Line::from(vec![
+                Span::styled("Path: ", Style::default().fg(theme.muted)),
+                Span::styled(path.display().to_string(), Style::default().fg(theme.muted)),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "────────────────── Included Skills & Status ──────────────────",
+            Style::default().fg(theme.border),
+        )));
+        lines.push(Line::from(""));
+
+        let store = VaultStore::new(&state.workspace_root);
+        for skill_name in &bundle.skills {
+            let (status_icon, status_color, status_text) = match store.get_skill(skill_name) {
+                Ok(s) if s.is_active_in_project => ("✔", theme.success, "Active in project"),
+                Ok(_) => ("○", Color::Yellow, "Available in vault"),
+                Err(_) => ("✖", Color::Red, "Not found"),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", status_icon),
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    skill_name,
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" — {}", status_text),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "💡 Press [Space] or [Enter] to install this entire skill bundle into the project.",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Select a bundle to inspect its constituent skills and status.",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+
+    let preview_area_height = area.height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(preview_area_height);
+    let clamped_offset = state.preview_scroll_offset.min(max_scroll);
+
+    let visible_lines: Vec<Line> = lines.into_iter().skip(clamped_offset).collect();
+
+    let preview_widget = Paragraph::new(visible_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border))
+            .title(Span::styled(
+                " Bundle Preview ",
+                Style::default().fg(theme.brand_accent),
+            )),
+    );
+    frame.render_widget(preview_widget, area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,7 +954,34 @@ mod tests {
         assert_eq!(state.active_tab, VaultTab::All);
         assert!(!state.filtered_skills.is_empty());
 
-        // Tab cycling
+        // Tab cycling: All -> Bundles -> Project -> Global -> Builtin -> All
+        state.next_tab();
+        assert_eq!(state.active_tab, VaultTab::Bundles);
+        assert!(!state.filtered_bundles.is_empty());
+        assert_eq!(state.current_tab_len(), state.filtered_bundles.len());
+
+        // Search filtering in bundles
+        state.handle_char('n');
+        state.handle_char('e');
+        state.handle_char('x');
+        state.handle_char('t');
+        assert_eq!(state.search_query, "next");
+        assert!(state
+            .filtered_bundles
+            .iter()
+            .any(|b| b.name.contains("next") || b.skills.iter().any(|s| s.contains("next"))));
+
+        // Test bundle loading via toggle_project_load
+        state.clear_search();
+        state.selected_index = 0;
+        state.toggle_project_load();
+        assert!(state.status_message.is_some());
+        assert!(state
+            .status_message
+            .as_ref()
+            .unwrap()
+            .contains("Loaded bundle"));
+
         state.next_tab();
         assert_eq!(state.active_tab, VaultTab::Project);
         state.next_tab();
@@ -639,5 +1005,29 @@ mod tests {
         // Toggle load into project
         state.toggle_project_load();
         assert!(state.status_message.is_some());
+
+        // Kind prefix filtering
+        state.clear_search();
+        for c in "doc:".chars() {
+            state.handle_char(c);
+        }
+        assert!(state
+            .filtered_skills
+            .iter()
+            .all(|s| s.kind() == SkillKind::Reference));
+        assert!(state.filtered_skills.iter().any(|s| s.name == "react"));
+
+        state.clear_search();
+        for c in "skill:".chars() {
+            state.handle_char(c);
+        }
+        assert!(state
+            .filtered_skills
+            .iter()
+            .all(|s| s.kind() == SkillKind::Workflow));
+        assert!(state
+            .filtered_skills
+            .iter()
+            .any(|s| s.name == "tdd-workflow"));
     }
 }

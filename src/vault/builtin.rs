@@ -1,6 +1,6 @@
 //! Embedded built-in curated skills catalog for MiniVault (Tier 1).
 
-use crate::vault::models::{parse_skill_markdown, SkillScope, VaultSkill};
+use crate::vault::models::{parse_skill_markdown, SkillScope, VaultBundle, VaultSkill};
 
 pub struct BuiltinSkillDef {
     pub name: &'static str,
@@ -13,6 +13,8 @@ pub const BUILTIN_SKILLS: &[BuiltinSkillDef] = &[
         content: r#"---
 name: "tailwind-v4"
 description: "Modern Tailwind CSS v4 styling rules, container queries, and CSS-first configuration."
+category: "ui-styling"
+kind: "reference"
 globs: ["*.css", "*.tsx", "*.jsx", "*.html", "*.vue", "*.svelte"]
 triggers: ["tailwind", "css", "styling", "ui design", "responsive"]
 always_apply: false
@@ -35,6 +37,8 @@ always_apply: false
         content: r#"---
 name: "frontend-design"
 description: "High-end production UI design, aesthetics, typography, visual hierarchy, whitespace, and micro-interactions."
+category: "frontend"
+kind: "workflow"
 globs: ["*.tsx", "*.jsx", "*.html", "*.css", "*.vue", "*.svelte"]
 triggers: ["landing page", "frontend", "ui", "ux", "card", "hero", "design", "navbar"]
 always_apply: false
@@ -57,6 +61,8 @@ always_apply: false
         content: r#"---
 name: "ui-ux-pro-max"
 description: "Comprehensive UI/UX design tokens, micro-interactions, responsive grids, and accessibility (WCAG AA)."
+category: "ui-styling"
+kind: "workflow"
 globs: ["*.tsx", "*.jsx", "*.html", "*.css"]
 triggers: ["ux", "accessibility", "a11y", "contrast", "tokens", "keyboard"]
 always_apply: false
@@ -76,6 +82,8 @@ always_apply: false
         content: r#"---
 name: "react"
 description: "Modern React 19 patterns, Server Components, hooks, custom hooks, and state management."
+category: "frontend"
+kind: "reference"
 globs: ["*.tsx", "*.jsx", "src/**/*.ts"]
 triggers: ["react", "component", "hook", "useState", "useEffect"]
 always_apply: false
@@ -98,6 +106,8 @@ always_apply: false
         content: r#"---
 name: "nextjs"
 description: "Next.js App Router, React Server Components (RSC), Server Actions, metadata, and routing."
+category: "frontend"
+kind: "reference"
 globs: ["app/**/*.tsx", "app/**/*.ts", "next.config.*"]
 triggers: ["nextjs", "next.js", "app router", "server actions", "rsc"]
 always_apply: false
@@ -117,6 +127,8 @@ always_apply: false
         content: r#"---
 name: "rust-tokio"
 description: "Async Rust, Tokio multi-threaded runtime, channels, bounded tasks, and zero-panic error handling."
+category: "backend"
+kind: "reference"
 globs: ["*.rs", "Cargo.toml"]
 triggers: ["rust", "tokio", "async rust", "cargo", "channel"]
 always_apply: false
@@ -136,6 +148,8 @@ always_apply: false
         content: r#"---
 name: "fastapi"
 description: "Python FastAPI development with Pydantic v2, async endpoints, dependency injection, and OpenAPI."
+category: "backend"
+kind: "reference"
 globs: ["*.py", "requirements.txt", "pyproject.toml"]
 triggers: ["fastapi", "python", "pydantic", "uvicorn"]
 always_apply: false
@@ -155,6 +169,8 @@ always_apply: false
         content: r#"---
 name: "postgres"
 description: "PostgreSQL database schemas, indexing, migrations, JSONB queries, and connection pooling."
+category: "database"
+kind: "reference"
 globs: ["*.sql", "prisma/schema.prisma", "migrations/**/*.sql"]
 triggers: ["postgres", "postgresql", "sql", "migration", "database"]
 always_apply: false
@@ -174,6 +190,8 @@ always_apply: false
         content: r#"---
 name: "docker"
 description: "Production Dockerfiles, multi-stage builds, non-root users, compose files, and container optimization."
+category: "devops"
+kind: "reference"
 globs: ["Dockerfile*", "docker-compose*.yml", ".dockerignore"]
 triggers: ["docker", "container", "dockerfile", "compose"]
 always_apply: false
@@ -193,6 +211,8 @@ always_apply: false
         content: r#"---
 name: "tdd-workflow"
 description: "Test-Driven Development (TDD) workflow: red, green, refactor, and high-coverage assertions."
+category: "testing"
+kind: "workflow"
 globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*"]
 triggers: ["tdd", "test", "unit test", "integration test"]
 always_apply: false
@@ -212,6 +232,8 @@ always_apply: false
         content: r#"---
 name: "systematic-debugging"
 description: "4-phase systematic debugging: reproduce, localize root cause, implement minimal fix, and verify."
+category: "testing"
+kind: "workflow"
 globs: ["**/*"]
 triggers: ["bug", "error", "debug", "crash", "fix", "failure"]
 always_apply: false
@@ -231,6 +253,8 @@ always_apply: false
         content: r#"---
 name: "security-audit"
 description: "Security review guidelines: OWASP Top 10, sanitization, authentication, authorization, and secret safety."
+category: "security"
+kind: "workflow"
 globs: ["**/*"]
 triggers: ["security", "auth", "vulnerability", "token", "password", "sanitize"]
 always_apply: false
@@ -250,6 +274,8 @@ always_apply: false
         content: r#"---
 name: "gsap"
 description: "GSAP animation library, timelines, scroll-driven ScrollTrigger, performance, and clean unmounting."
+category: "ui-styling"
+kind: "reference"
 globs: ["*.tsx", "*.jsx", "*.js", "*.ts", "*.html"]
 triggers: ["gsap", "animation", "scrolltrigger", "motion", "tween"]
 always_apply: false
@@ -268,6 +294,8 @@ always_apply: false
         content: r#"---
 name: "hono"
 description: "Hono modern ultrafast web framework for TypeScript and edge environments."
+category: "backend"
+kind: "reference"
 globs: ["src/**/*.ts", "*.ts"]
 triggers: ["hono", "edge", "cloudflare workers", "bun"]
 always_apply: false
@@ -286,6 +314,8 @@ always_apply: false
         content: r#"---
 name: "vite"
 description: "Vite build tool, dev server, plugins, asset resolution, and environment variables."
+category: "frontend"
+kind: "reference"
 globs: ["vite.config.*", "src/**/*.tsx", "src/**/*.ts"]
 triggers: ["vite", "bundler", "hmr"]
 always_apply: false
@@ -329,6 +359,84 @@ pub fn find_builtin_skill(name: &str) -> Option<VaultSkill> {
         .find(|s| s.name.eq_ignore_ascii_case(&clean))
 }
 
+/// Definition of a built-in curated skill bundle.
+pub struct BuiltinBundleDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub category: &'static str,
+    pub skills: &'static [&'static str],
+    pub tags: &'static [&'static str],
+}
+
+pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
+    BuiltinBundleDef {
+        name: "fullstack-nextjs",
+        description: "Fullstack Next.js App Router with React 19, Tailwind CSS v4, PostgreSQL, and high-end frontend design.",
+        category: "fullstack",
+        skills: &["react", "nextjs", "tailwind-v4", "postgres", "frontend-design"],
+        tags: &["nextjs", "react", "tailwind", "postgres", "fullstack"],
+    },
+    BuiltinBundleDef {
+        name: "rust-systems",
+        description: "High-performance async backend services with Tokio, PostgreSQL, Docker, and TDD workflow.",
+        category: "backend",
+        skills: &["rust-tokio", "postgres", "docker", "tdd-workflow"],
+        tags: &["rust", "tokio", "systems", "backend", "tdd"],
+    },
+    BuiltinBundleDef {
+        name: "fastapi-microservice",
+        description: "Python async REST API microservices with FastAPI, Pydantic v2, PostgreSQL, Docker, and TDD.",
+        category: "backend",
+        skills: &["fastapi", "postgres", "docker", "tdd-workflow"],
+        tags: &["python", "fastapi", "backend", "docker"],
+    },
+    BuiltinBundleDef {
+        name: "frontend-delight",
+        description: "Award-winning landing pages, interactive animations, and design tokens with GSAP and Tailwind.",
+        category: "frontend",
+        skills: &["frontend-design", "ui-ux-pro-max", "tailwind-v4", "gsap"],
+        tags: &["design", "animation", "gsap", "tailwind", "landing-page"],
+    },
+    BuiltinBundleDef {
+        name: "production-hardened",
+        description: "Enterprise engineering rigor: security audits, systematic debugging, TDD workflow, and Docker packaging.",
+        category: "quality",
+        skills: &["security-audit", "systematic-debugging", "tdd-workflow", "docker"],
+        tags: &["security", "debugging", "tdd", "production"],
+    },
+    BuiltinBundleDef {
+        name: "modern-fullstack",
+        description: "Modern edge-ready fullstack web apps with React, Vite, Hono API, Tailwind v4, and PostgreSQL.",
+        category: "fullstack",
+        skills: &["react", "hono", "vite", "tailwind-v4", "postgres"],
+        tags: &["react", "hono", "vite", "edge", "fullstack"],
+    },
+];
+
+/// Returns all built-in bundles as `VaultBundle` items.
+pub fn get_all_builtin_bundles() -> Vec<VaultBundle> {
+    BUILTIN_BUNDLES
+        .iter()
+        .map(|def| VaultBundle {
+            name: def.name.to_string(),
+            description: def.description.to_string(),
+            category: def.category.to_string(),
+            skills: def.skills.iter().map(|s| s.to_string()).collect(),
+            tags: def.tags.iter().map(|t| t.to_string()).collect(),
+            scope: SkillScope::Builtin,
+            path: None,
+        })
+        .collect()
+}
+
+/// Finds a built-in bundle by name.
+pub fn find_builtin_bundle(name: &str) -> Option<VaultBundle> {
+    let clean = name.trim().to_lowercase();
+    get_all_builtin_bundles()
+        .into_iter()
+        .find(|b| b.name.eq_ignore_ascii_case(&clean))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,9 +455,47 @@ mod tests {
 
         let tailwind = find_builtin_skill("tailwind-v4");
         assert!(tailwind.is_some());
-        assert!(tailwind
-            .unwrap()
-            .instructions
-            .contains("@import \"tailwindcss\""));
+        let tw = tailwind.unwrap();
+        assert!(tw.instructions.contains("@import \"tailwindcss\""));
+        assert_eq!(tw.category(), "ui-styling");
+        assert_eq!(tw.kind(), crate::vault::models::SkillKind::Reference);
+
+        // Verify kind distinctions: Reference Doc vs Behavioral Skill
+        let react = find_builtin_skill("react").unwrap();
+        assert_eq!(react.kind(), crate::vault::models::SkillKind::Reference);
+        assert_eq!(react.kind().badge(), "Doc");
+
+        let tdd = find_builtin_skill("tdd-workflow").unwrap();
+        assert_eq!(tdd.kind(), crate::vault::models::SkillKind::Workflow);
+        assert_eq!(tdd.kind().badge(), "Skill");
+    }
+
+    #[test]
+    fn test_builtin_bundles_integrity() {
+        let bundles = get_all_builtin_bundles();
+        assert!(bundles.len() >= 6);
+
+        for bundle in &bundles {
+            assert!(!bundle.name.is_empty());
+            assert!(!bundle.description.is_empty());
+            assert!(!bundle.skills.is_empty());
+            assert_eq!(bundle.scope, SkillScope::Builtin);
+
+            // Verify all skills in bundle exist in built-in skills
+            for skill_name in &bundle.skills {
+                assert!(
+                    find_builtin_skill(skill_name).is_some(),
+                    "Bundle '{}' references non-existent skill '{}'",
+                    bundle.name,
+                    skill_name
+                );
+            }
+        }
+
+        let nextjs_bundle = find_builtin_bundle("fullstack-nextjs");
+        assert!(nextjs_bundle.is_some());
+        let nb = nextjs_bundle.unwrap();
+        assert!(nb.skills.contains(&"react".to_string()));
+        assert!(nb.skills.contains(&"nextjs".to_string()));
     }
 }

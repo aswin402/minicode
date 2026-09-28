@@ -1,9 +1,9 @@
 //! MiniVault storage, multi-tier discovery, and CRUD engine.
 
-use crate::vault::builtin::get_all_builtin_skills;
+use crate::vault::builtin::{get_all_builtin_bundles, get_all_builtin_skills};
 use crate::vault::models::{
     format_skill_markdown, parse_skill_markdown, sanitize_skill_name, Result, SkillFrontmatter,
-    SkillScope, VaultError, VaultSkill,
+    SkillScope, VaultBundle, VaultError, VaultSkill,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -50,6 +50,21 @@ impl VaultStore {
             home.join(".config")
                 .join(crate::constants::CONFIG_DIR_NAME)
                 .join("skills")
+        })
+    }
+
+    /// Primary project bundles directory: `.minicode/bundles`
+    pub fn project_bundles_dir(&self) -> PathBuf {
+        self.workspace_root.join(".minicode").join("bundles")
+    }
+
+    /// Global user bundles directory: `~/.config/minicode/vault/bundles`
+    pub fn global_bundles_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|home| {
+            home.join(".config")
+                .join(crate::constants::CONFIG_DIR_NAME)
+                .join("vault")
+                .join("bundles")
         })
     }
 
@@ -193,18 +208,36 @@ impl VaultStore {
         }
     }
 
-    /// Searches skills by keyword, matching name, triggers, description, and globs.
+    /// Searches skills by keyword, matching name, triggers, description, globs, and category.
     pub fn search_skills(&self, query: &str) -> Vec<VaultSkill> {
+        self.search_skills_categorized(query, None)
+    }
+
+    /// Searches skills with optional category filtering and keyword matching.
+    pub fn search_skills_categorized(
+        &self,
+        query: &str,
+        category: Option<&str>,
+    ) -> Vec<VaultSkill> {
         let q = query.trim().to_lowercase();
-        if q.is_empty() {
-            return self.list_all_skills();
-        }
+        let cat_filter = category.map(|c| c.trim().to_lowercase());
 
         let mut all = self.list_all_skills();
+
+        if let Some(ref cat) = cat_filter {
+            if !cat.is_empty() {
+                all.retain(|s| s.category().eq_ignore_ascii_case(cat));
+            }
+        }
+
+        if q.is_empty() {
+            return all;
+        }
 
         all.retain(|s| {
             s.name.to_lowercase().contains(&q)
                 || s.description.to_lowercase().contains(&q)
+                || s.category().to_lowercase().contains(&q)
                 || s.frontmatter
                     .triggers
                     .iter()
@@ -234,11 +267,14 @@ impl VaultStore {
     }
 
     /// Creates a new skill in the target scope (`Project` or `Global`).
+    #[allow(clippy::too_many_arguments)]
     pub fn create_skill(
         &self,
         scope: SkillScope,
         name: &str,
         description: &str,
+        category: Option<&str>,
+        kind: Option<&str>,
         instructions: &str,
         triggers: Vec<String>,
         globs: Vec<String>,
@@ -277,6 +313,8 @@ impl VaultStore {
             description: description.trim().to_string(),
             version: "1.0.0".to_string(),
             author: Some("minicode".to_string()),
+            category: category.map(|c| c.trim().to_lowercase()),
+            kind: kind.map(|k| k.trim().to_lowercase()),
             globs,
             triggers,
             always_apply: false,
@@ -391,6 +429,8 @@ impl VaultStore {
                     scope,
                     &existing.name,
                     &existing.description,
+                    existing.frontmatter.category.as_deref(),
+                    existing.frontmatter.kind.as_deref(),
                     new_instructions,
                     existing.frontmatter.triggers,
                     existing.frontmatter.globs,
@@ -497,6 +537,8 @@ impl VaultStore {
             target_scope,
             &fm.name,
             &fm.description,
+            fm.category.as_deref(),
+            fm.kind.as_deref(),
             &instructions,
             fm.triggers,
             fm.globs,
@@ -580,11 +622,169 @@ impl VaultStore {
         }
         Ok(())
     }
+
+    // =========================================================================
+    // MiniVault Bundles Engine (Skill Packs / Stacks)
+    // =========================================================================
+
+    /// Discovers all skill bundles across all tiers (Built-in, Global, Project).
+    pub fn list_all_bundles(&self) -> Vec<VaultBundle> {
+        let mut bundle_map: std::collections::BTreeMap<String, VaultBundle> =
+            std::collections::BTreeMap::new();
+
+        // 1. Built-in Core Bundles (Tier 1)
+        for b in get_all_builtin_bundles() {
+            bundle_map.insert(b.name.to_lowercase(), b);
+        }
+
+        // 2. Global User Bundles (Tier 2)
+        if let Some(global_dir) = Self::global_bundles_dir() {
+            self.scan_bundles_directory(&global_dir, SkillScope::Global, &mut bundle_map);
+        }
+
+        // 3. Project Bundles (Tier 3)
+        let proj_dir = self.project_bundles_dir();
+        self.scan_bundles_directory(&proj_dir, SkillScope::Project, &mut bundle_map);
+
+        bundle_map.into_values().collect()
+    }
+
+    fn scan_bundles_directory(
+        &self,
+        dir: &Path,
+        scope: SkillScope,
+        map: &mut std::collections::BTreeMap<String, VaultBundle>,
+    ) {
+        if !dir.exists() {
+            return;
+        }
+
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(mut bundle) = serde_json::from_str::<VaultBundle>(&content) {
+                            bundle.scope = scope;
+                            bundle.path = Some(path);
+                            map.insert(bundle.name.to_lowercase(), bundle);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Finds a bundle by name across all tiers.
+    pub fn get_bundle(&self, name: &str) -> Option<VaultBundle> {
+        let clean = name.trim().to_lowercase();
+        self.list_all_bundles()
+            .into_iter()
+            .find(|b| b.name.eq_ignore_ascii_case(&clean))
+    }
+
+    /// Loads all skills in a bundle into the active project (.minicode/skills/).
+    /// Returns (loaded_skills, failed_skills).
+    pub fn load_bundle_to_project(&self, bundle_name: &str) -> Result<(Vec<String>, Vec<String>)> {
+        let bundle = self.get_bundle(bundle_name).ok_or_else(|| {
+            VaultError::NotFound(format!("Bundle '{}' not found in vault", bundle_name))
+        })?;
+
+        let mut loaded = Vec::new();
+        let mut failed = Vec::new();
+
+        for skill_name in &bundle.skills {
+            match self.load_to_project(skill_name) {
+                Ok(_) => loaded.push(skill_name.clone()),
+                Err(_) => failed.push(skill_name.clone()),
+            }
+        }
+
+        Ok((loaded, failed))
+    }
+
+    /// Unloads all skills in a bundle from the active project.
+    pub fn unload_bundle_from_project(&self, bundle_name: &str) -> Result<Vec<String>> {
+        let bundle = self.get_bundle(bundle_name).ok_or_else(|| {
+            VaultError::NotFound(format!("Bundle '{}' not found in vault", bundle_name))
+        })?;
+
+        let mut unloaded = Vec::new();
+        for skill_name in &bundle.skills {
+            if self.unload_from_project(skill_name).is_ok() {
+                unloaded.push(skill_name.clone());
+            }
+        }
+        Ok(unloaded)
+    }
+
+    /// Creates and saves a custom bundle definition as JSON in Project or Global scope.
+    pub fn create_bundle(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        description: &str,
+        category: &str,
+        skills: Vec<String>,
+        tags: Vec<String>,
+    ) -> Result<VaultBundle> {
+        let clean_name = sanitize_skill_name(name);
+        if clean_name.is_empty() {
+            return Err(VaultError::InvalidSkill(
+                "Bundle name cannot be empty".to_string(),
+            ));
+        }
+
+        let target_dir = match scope {
+            SkillScope::Project => self.project_bundles_dir(),
+            SkillScope::Global => Self::global_bundles_dir().ok_or_else(|| {
+                VaultError::InvalidSkill(
+                    "Cannot resolve user home directory for global vault".to_string(),
+                )
+            })?,
+            SkillScope::Builtin => {
+                return Err(VaultError::InvalidSkill(
+                    "Cannot create custom bundles in immutable Builtin scope".to_string(),
+                ));
+            }
+        };
+
+        fs::create_dir_all(&target_dir).map_err(|e| VaultError::Io {
+            path: target_dir.display().to_string(),
+            source: e,
+        })?;
+
+        let file_path = target_dir.join(format!("{}.json", clean_name));
+        let bundle = VaultBundle {
+            name: clean_name.clone(),
+            description: description.trim().to_string(),
+            category: if category.trim().is_empty() {
+                "general".to_string()
+            } else {
+                category.trim().to_lowercase()
+            },
+            skills,
+            tags,
+            scope,
+            path: Some(file_path.clone()),
+        };
+
+        let json = serde_json::to_string_pretty(&bundle)
+            .map_err(|e| VaultError::InvalidSkill(format!("Failed to serialize bundle: {}", e)))?;
+
+        fs::write(&file_path, json).map_err(|e| VaultError::Io {
+            path: file_path.display().to_string(),
+            source: e,
+        })?;
+
+        Ok(bundle)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::models::SkillKind;
     use tempfile::tempdir;
 
     #[test]
@@ -610,6 +810,8 @@ mod tests {
                 SkillScope::Project,
                 "custom-graphql",
                 "Project specific GraphQL guidelines",
+                Some("api"),
+                Some("reference"),
                 "Always use Apollo Client with cache-and-network.",
                 vec!["graphql".to_string()],
                 vec!["*.graphql".to_string()],
@@ -618,11 +820,17 @@ mod tests {
 
         assert_eq!(custom.name, "custom-graphql");
         assert_eq!(custom.scope, SkillScope::Project);
+        assert_eq!(custom.category(), "api");
+        assert_eq!(custom.kind(), SkillKind::Reference);
 
         // 4. Search
         let search_res = store.search_skills("graphql");
         assert_eq!(search_res.len(), 1);
         assert_eq!(search_res[0].name, "custom-graphql");
+
+        let search_cat = store.search_skills_categorized("", Some("api"));
+        assert_eq!(search_cat.len(), 1);
+        assert_eq!(search_cat[0].name, "custom-graphql");
 
         // 5. Update
         let updated = store
@@ -637,5 +845,50 @@ mod tests {
         // 6. Unload from project
         store.unload_from_project("custom-graphql").unwrap();
         assert!(store.get_skill("custom-graphql").is_err());
+    }
+
+    #[test]
+    fn test_vault_store_bundles_lifecycle() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws);
+
+        // 1. List includes built-in bundles
+        let bundles = store.list_all_bundles();
+        assert!(bundles.len() >= 6);
+        assert!(bundles.iter().any(|b| b.name == "fullstack-nextjs"));
+
+        // 2. Load bundle to project
+        let (loaded, failed) = store.load_bundle_to_project("fullstack-nextjs").unwrap();
+        assert!(failed.is_empty());
+        assert!(loaded.contains(&"react".to_string()));
+        assert!(loaded.contains(&"nextjs".to_string()));
+        assert!(loaded.contains(&"tailwind-v4".to_string()));
+
+        // Check project skills dir
+        assert!(store.project_skills_dir().join("react").exists());
+        assert!(store.project_skills_dir().join("nextjs").exists());
+
+        // 3. Create custom bundle
+        let custom_bundle = store
+            .create_bundle(
+                SkillScope::Project,
+                "custom-stack",
+                "Custom team stack",
+                "team",
+                vec!["react".to_string(), "tailwind-v4".to_string()],
+                vec!["custom".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(custom_bundle.name, "custom-stack");
+        assert_eq!(custom_bundle.scope, SkillScope::Project);
+        assert!(store.get_bundle("custom-stack").is_some());
+
+        // 4. Unload bundle
+        let unloaded = store
+            .unload_bundle_from_project("fullstack-nextjs")
+            .unwrap();
+        assert!(unloaded.contains(&"react".to_string()));
     }
 }
