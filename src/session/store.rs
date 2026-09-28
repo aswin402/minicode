@@ -26,6 +26,8 @@ pub struct SessionMetadata {
 
 pub struct SessionStore {
     sessions_dir: PathBuf,
+    fallback_dir: Option<PathBuf>,
+    workspace_root: Option<PathBuf>,
 }
 
 impl Default for SessionStore {
@@ -45,29 +47,48 @@ impl SessionStore {
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             tracing::warn!(path = %sessions_dir.display(), error = %e, "Failed to create sessions directory");
         }
-        Self { sessions_dir }
+        Self {
+            sessions_dir,
+            fallback_dir: None,
+            workspace_root: None,
+        }
     }
 
     /// Workspace-local session store.
     ///
     /// If `<workspace>/.minicode/` exists, sessions are stored under
     /// `<workspace>/.minicode/sessions/` — scoped to the project, like Codex / Claude Code.
-    /// Falls back to the global `~/.config/minicode/sessions/` otherwise.
+    /// Falls back to the global `~/.config/minicode/sessions/` to discover older sessions.
     pub fn with_workspace(workspace_root: &Path) -> Self {
         let minicode_dir = workspace_root.join(WORKSPACE_DIR_NAME);
-        let sessions_dir = if minicode_dir.exists() {
-            minicode_dir.join(SESSIONS_DIR_NAME)
-        } else if let Some(config_dir) = dirs::config_dir() {
-            config_dir.join(CONFIG_DIR_NAME).join(SESSIONS_DIR_NAME)
+        let global_dir =
+            dirs::config_dir().map(|c| c.join(CONFIG_DIR_NAME).join(SESSIONS_DIR_NAME));
+
+        let (sessions_dir, fallback_dir) = if minicode_dir.exists() {
+            let local_sessions = minicode_dir.join(SESSIONS_DIR_NAME);
+            (local_sessions, global_dir)
+        } else if let Some(g_dir) = global_dir {
+            (g_dir, None)
         } else {
-            PathBuf::from(WORKSPACE_DIR_NAME).join(SESSIONS_DIR_NAME)
+            (
+                PathBuf::from(WORKSPACE_DIR_NAME).join(SESSIONS_DIR_NAME),
+                None,
+            )
         };
 
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             tracing::warn!(path = %sessions_dir.display(), error = %e, "Failed to create sessions directory");
         }
-        tracing::debug!(sessions_dir = %sessions_dir.display(), "Session store initialised");
-        Self { sessions_dir }
+        tracing::debug!(
+            sessions_dir = %sessions_dir.display(),
+            fallback_dir = ?fallback_dir.as_ref().map(|p| p.display()),
+            "Session store initialised"
+        );
+        Self {
+            sessions_dir,
+            fallback_dir,
+            workspace_root: Some(workspace_root.to_path_buf()),
+        }
     }
 
     /// Constructor with an explicit directory, used in tests.
@@ -76,25 +97,39 @@ impl SessionStore {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!(path = %dir.display(), error = %e, "Failed to create sessions directory");
         }
-        Self { sessions_dir: dir }
+        Self {
+            sessions_dir: dir,
+            fallback_dir: None,
+            workspace_root: None,
+        }
     }
 
-    /// Generates a new session ID and initializes the JSONL session file.
-    pub fn create_session(&self, workspace: &Path) -> Result<String> {
-        let session_id = format!(
+    /// Generates a new unique session ID without creating any file on disk.
+    pub fn generate_session_id(&self) -> String {
+        format!(
             "{}-{}",
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
             &uuid::Uuid::new_v4().to_string()[..8]
-        );
+        )
+    }
 
-        let session_path = self.session_file_path(&session_id);
+    /// Initializes the JSONL session file on disk for a given session ID.
+    pub fn init_session_file(&self, session_id: &str, workspace: &Path) -> Result<PathBuf> {
+        self.validate_session_id(session_id)?;
+        let session_path = self.sessions_dir.join(format!("{}.jsonl", session_id));
+
+        if let Some(parent) = session_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         let mut file = OpenOptions::new()
-            .create_new(true)
+            .create(true)
             .write(true)
+            .truncate(true)
             .open(&session_path)?;
 
         let meta = SessionMetadata {
-            id: session_id.clone(),
+            id: session_id.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             workspace: workspace.display().to_string(),
             path: session_path.display().to_string(),
@@ -110,6 +145,13 @@ impl SessionStore {
         file.sync_all()?;
 
         tracing::info!(session_id = %session_id, "Initialized new session store");
+        Ok(session_path)
+    }
+
+    /// Generates a new session ID and initializes the JSONL session file.
+    pub fn create_session(&self, workspace: &Path) -> Result<String> {
+        let session_id = self.generate_session_id();
+        self.init_session_file(&session_id, workspace)?;
         Ok(session_id)
     }
 
@@ -235,46 +277,28 @@ impl SessionStore {
     /// Lists all sessions (fast — only reads first line of each JSONL).
     pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
         let mut sessions = Vec::new();
-        let entries = match std::fs::read_dir(&self.sessions_dir) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
-            Err(e) => return Err(e.into()),
-        };
+        let mut seen_ids = std::collections::HashSet::new();
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-                if let Ok(file) = std::fs::File::open(&path) {
-                    let mut reader = BufReader::new(file);
-                    let mut first_line = String::new();
-                    if reader.read_line(&mut first_line).is_ok() {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first_line) {
-                            if let Some(meta_val) = val.get("session_meta") {
-                                if let Ok(meta) =
-                                    serde_json::from_value::<SessionMetadata>(meta_val.clone())
-                                {
-                                    sessions.push(meta);
-                                    continue;
-                                }
-                            }
-                        }
+        // 1. Scan primary directory
+        let primary_filter = if self.fallback_dir.is_none() {
+            self.workspace_root.as_deref()
+        } else {
+            None
+        };
+        for s in scan_sessions_in_dir(&self.sessions_dir, primary_filter) {
+            seen_ids.insert(s.id.clone());
+            sessions.push(s);
+        }
+
+        // 2. Scan fallback directory (e.g. global ~/.config/minicode/sessions)
+        if let Some(ref fb_dir) = self.fallback_dir {
+            if fb_dir != &self.sessions_dir {
+                for s in scan_sessions_in_dir(fb_dir, self.workspace_root.as_deref()) {
+                    if !seen_ids.contains(&s.id) {
+                        seen_ids.insert(s.id.clone());
+                        sessions.push(s);
                     }
                 }
-
-                // Fallback metadata if first line wasn't session_meta
-                let id = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                sessions.push(SessionMetadata {
-                    id,
-                    created_at: String::new(),
-                    workspace: String::new(),
-                    path: path.display().to_string(),
-                    event_count: 0,
-                    preview: String::new(),
-                });
             }
         }
 
@@ -284,6 +308,7 @@ impl SessionStore {
 
     /// Lists sessions enriched with event_count and preview (reads more of each file).
     /// Used by the /sessions TUI modal.
+    /// Filters out and cleans up empty placeholder 0-event sessions.
     pub fn list_sessions_rich(&self) -> Result<Vec<SessionMetadata>> {
         let mut sessions = self.list_sessions()?;
         for meta in &mut sessions {
@@ -348,11 +373,33 @@ impl SessionStore {
                 }
             }
         }
+
+        // Clean up empty placeholder files from disk and filter them out
+        sessions.retain(|meta| {
+            if meta.event_count == 0 {
+                let _ = std::fs::remove_file(&meta.path);
+                tracing::debug!(path = %meta.path, "Pruned empty 0-event session file");
+                false
+            } else {
+                true
+            }
+        });
+
         Ok(sessions)
     }
 
     pub fn session_file_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir.join(format!("{}.jsonl", session_id))
+        let primary = self.sessions_dir.join(format!("{}.jsonl", session_id));
+        if primary.exists() {
+            return primary;
+        }
+        if let Some(ref fb) = self.fallback_dir {
+            let fb_path = fb.join(format!("{}.jsonl", session_id));
+            if fb_path.exists() {
+                return fb_path;
+            }
+        }
+        primary
     }
 
     /// Computes an in-depth analytical summary for a given session, returning both summary and events.
@@ -672,10 +719,93 @@ impl SessionStore {
                 tracing::info!(session = session_id, "Deleted session file");
                 Ok(true)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(ref fb) = self.fallback_dir {
+                    let fb_path = fb.join(format!("{}.jsonl", session_id));
+                    if std::fs::remove_file(&fb_path).is_ok() {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
             Err(e) => Err(e.into()),
         }
     }
+}
+
+fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<SessionMetadata> {
+    let mut sessions = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return sessions,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            let mut meta_opt = None;
+            if let Ok(file) = std::fs::File::open(&path) {
+                let mut reader = BufReader::new(file);
+                let mut first_line = String::new();
+                if reader.read_line(&mut first_line).is_ok() {
+                    let trimmed = first_line.trim();
+                    if trimmed.starts_with("{\"session_meta\":") {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                            if let Some(meta_val) = val.get("session_meta") {
+                                if let Ok(mut meta) =
+                                    serde_json::from_value::<SessionMetadata>(meta_val.clone())
+                                {
+                                    // Use the actual path where the file was discovered on disk
+                                    meta.path = path.display().to_string();
+                                    meta_opt = Some(meta);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let meta = meta_opt.unwrap_or_else(|| {
+                let id = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                SessionMetadata {
+                    id,
+                    created_at: String::new(),
+                    workspace: String::new(),
+                    path: path.display().to_string(),
+                    event_count: 0,
+                    preview: String::new(),
+                }
+            });
+
+            if let Some(target_ws) = workspace_filter {
+                if !meta.workspace.is_empty() && !is_workspace_match(&meta.workspace, target_ws) {
+                    continue;
+                }
+            }
+
+            sessions.push(meta);
+        }
+    }
+    sessions
+}
+
+fn is_workspace_match(session_workspace: &str, current_workspace: &Path) -> bool {
+    let sess_path = Path::new(session_workspace);
+    if sess_path == current_workspace {
+        return true;
+    }
+    if let (Ok(c1), Ok(c2)) = (sess_path.canonicalize(), current_workspace.canonicalize()) {
+        if c1 == c2 {
+            return true;
+        }
+    }
+    let s1 = sess_path.to_string_lossy();
+    let s2 = current_workspace.to_string_lossy();
+    s1.trim_end_matches('/') == s2.trim_end_matches('/')
 }
 
 /// Truncates a string to at most `max_bytes` without slicing through UTF-8 character boundaries.
@@ -818,5 +948,86 @@ mod tests {
         assert_eq!(events[0], prompt_event);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_empty_sessions_are_pruned_and_filtered() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_prune_test_{}", uuid::Uuid::new_v4()));
+        let store = SessionStore::with_dir(temp_dir.clone());
+
+        // Create empty session (0 events)
+        let empty_id = store.create_session(&temp_dir).unwrap();
+        let empty_path = store.session_file_path(&empty_id);
+        assert!(empty_path.exists());
+
+        // Create active session (1 event)
+        let active_id = store.create_session(&temp_dir).unwrap();
+        let event = AgentEvent::UserPrompt {
+            turn_id: 1,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            prompt: "Hello world".to_string(),
+        };
+        store.append_event(&active_id, &event).unwrap();
+
+        // list_sessions_rich should prune the empty session from disk and return only active_id
+        let rich = store.list_sessions_rich().unwrap();
+        assert_eq!(rich.len(), 1);
+        assert_eq!(rich[0].id, active_id);
+        assert_eq!(rich[0].event_count, 1);
+        assert_eq!(rich[0].preview, "Hello world");
+
+        // Assert empty file was deleted from disk
+        assert!(!empty_path.exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_fallback_dir_discovers_old_sessions() {
+        let base_dir =
+            std::env::temp_dir().join(format!("minicode_fb_test_{}", uuid::Uuid::new_v4()));
+        let ws_dir = base_dir.join("workspace");
+        let minicode_dir = ws_dir.join(".minicode");
+        let fallback_dir = base_dir.join("global_sessions");
+        std::fs::create_dir_all(&minicode_dir).unwrap();
+        std::fs::create_dir_all(&fallback_dir).unwrap();
+
+        // Pre-populate a session in fallback_dir that belongs to ws_dir
+        let old_id = "20260814T100000Z-old12345";
+        let old_path = fallback_dir.join(format!("{}.jsonl", old_id));
+        let meta = SessionMetadata {
+            id: old_id.to_string(),
+            created_at: "2026-08-14T10:00:00Z".to_string(),
+            workspace: ws_dir.display().to_string(),
+            path: old_path.display().to_string(),
+            event_count: 0,
+            preview: String::new(),
+        };
+        let meta_line =
+            serde_json::to_string(&serde_json::json!({ "session_meta": meta })).unwrap();
+        let event = AgentEvent::UserPrompt {
+            turn_id: 1,
+            timestamp: "2026-08-14T10:00:01Z".to_string(),
+            prompt: "Old session prompt".to_string(),
+        };
+        let event_line = serde_json::to_string(&event).unwrap();
+        std::fs::write(&old_path, format!("{}\n{}\n", meta_line, event_line)).unwrap();
+
+        // Construct SessionStore with primary in minicode_dir and fallback_dir
+        let mut store = SessionStore::with_workspace(&ws_dir);
+        store.fallback_dir = Some(fallback_dir);
+
+        let sessions = store.list_sessions_rich().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, old_id);
+        assert_eq!(sessions[0].preview, "Old session prompt");
+
+        // Verify load_session works seamlessly on fallback session
+        let loaded = store.load_session(old_id).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], event);
+
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

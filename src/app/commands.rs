@@ -170,6 +170,7 @@ impl<'a> App<'a> {
 
         if prompt == "/new" {
             self.timeline = crate::ui::TimelineView::new();
+            let _ = control_tx.send(AgentCommand::NewSession);
             self.timeline
                 .add_status("✨ Started a new session".to_string());
             return Ok(CommandAction::Continue);
@@ -2455,6 +2456,8 @@ impl<'a> App<'a> {
             || prompt.starts_with("/resume ")
             || prompt == "/sessions"
             || prompt.starts_with("/sessions ")
+            || prompt == "/session"
+            || prompt.starts_with("/session ")
             || prompt == "/history"
             || prompt.starts_with("/history ")
         {
@@ -2462,6 +2465,8 @@ impl<'a> App<'a> {
             let arg = if let Some(rest) = prompt.strip_prefix("/resume ") {
                 rest.trim()
             } else if let Some(rest) = prompt.strip_prefix("/sessions ") {
+                rest.trim()
+            } else if let Some(rest) = prompt.strip_prefix("/session ") {
                 rest.trim()
             } else if let Some(rest) = prompt.strip_prefix("/history ") {
                 rest.trim()

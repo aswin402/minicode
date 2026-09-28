@@ -172,10 +172,13 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
         || lower == "/history"
         || lower == "/sessions"
         || lower.starts_with("/sessions ")
+        || lower == "/session"
+        || lower.starts_with("/session ")
     {
         let query = trimmed
             .strip_prefix("/resume")
             .or_else(|| trimmed.strip_prefix("/sessions"))
+            .or_else(|| trimmed.strip_prefix("/session"))
             .or_else(|| trimmed.strip_prefix("/history"))
             .unwrap_or("")
             .trim()

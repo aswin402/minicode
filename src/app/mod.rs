@@ -42,6 +42,7 @@ pub enum AgentCommand {
         session_id: String,
         events: Vec<crate::agent::types::AgentEvent>,
     },
+    NewSession,
 }
 
 pub struct App<'a> {
@@ -303,6 +304,9 @@ impl<'a> App<'a> {
                     }
                     AgentCommand::HydrateSession { session_id, events } => {
                         agent.hydrate_from_events(&session_id, &events);
+                    }
+                    AgentCommand::NewSession => {
+                        agent.reset_session();
                     }
                 }
             }
@@ -856,6 +860,7 @@ impl<'a> App<'a> {
                                 // Ctrl+N starts fresh conversation session
                                 if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     self.timeline = crate::ui::TimelineView::new();
+                                    let _ = control_tx.send(AgentCommand::NewSession);
                                     self.timeline.add_status("✨ Started a new session".to_string());
                                     continue;
                                 }

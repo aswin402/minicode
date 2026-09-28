@@ -922,7 +922,7 @@ impl<'a> App<'a> {
                                     }
                                 }
                             }
-                            "/history" | "/sessions" => {
+                            "/history" | "/sessions" | "/session" => {
                                 let store = crate::session::store::SessionStore::with_workspace(
                                     &self.workspace_root,
                                 );

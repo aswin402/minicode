@@ -97,6 +97,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/resume | /resume <session_id> | /resume last",
     },
     CommandCatalogItem {
+        name: "/session",
+        category: "History & Sessions",
+        shortcut: "Ctrl+H",
+        description: "Browse & resume past workspace sessions (/session, /sessions)",
+        example: "/session | /session <session_id> | /session last",
+    },
+    CommandCatalogItem {
         name: "/new",
         category: "History & Sessions",
         shortcut: "Ctrl+N",

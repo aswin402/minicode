@@ -68,6 +68,13 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+H"),
     },
     PaletteCommand {
+        slash_name: "/session",
+        title: "Session History",
+        description: "Browse & resume past workspace sessions",
+        category: CommandCategory::System,
+        shortcut: Some("Ctrl+H"),
+    },
+    PaletteCommand {
         slash_name: "/new",
         title: "New Session",
         description: "Start fresh session & reset conversation",

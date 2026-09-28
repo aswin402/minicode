@@ -23,6 +23,7 @@ pub struct AgentLoop {
     provider: Box<dyn Provider>,
     session_store: SessionStore,
     session_id: String,
+    session_persisted: bool,
     backup_manager: BackupManager,
     mcp_client: McpClientManager,
     /// Composable middleware pipeline applied to every tool result.
@@ -63,22 +64,21 @@ impl AgentLoop {
         resume_session_id: Option<&str>,
     ) -> Self {
         let session_store = SessionStore::with_workspace(workspace_root);
-        let session_id = if let Some(sid) = resume_session_id {
-            sid.to_string()
+        let (session_id, session_persisted, active_guard) = if let Some(sid) = resume_session_id {
+            let session_file = session_store.session_file_path(sid);
+            let guard = crate::logging::register_active_session(
+                sid,
+                workspace_root,
+                &config.provider.default,
+                &config.provider.model,
+                &session_file,
+            )
+            .ok();
+            (sid.to_string(), true, guard)
         } else {
-            session_store
-                .create_session(workspace_root)
-                .unwrap_or_else(|_| "ephemeral-session".to_string())
+            let pending_id = session_store.generate_session_id();
+            (pending_id, false, None)
         };
-        let session_file = session_store.session_file_path(&session_id);
-        let active_guard = crate::logging::register_active_session(
-            &session_id,
-            workspace_root,
-            &config.provider.default,
-            &config.provider.model,
-            &session_file,
-        )
-        .ok();
 
         let mcp_client = McpClientManager::new();
 
@@ -120,6 +120,7 @@ impl AgentLoop {
             provider,
             session_store,
             session_id,
+            session_persisted,
             backup_manager: BackupManager::new(workspace_root),
             mcp_client,
             tool_pipeline: crate::tools::middleware::ToolPipeline::default(),
@@ -364,6 +365,48 @@ impl AgentLoop {
         metrics
     }
 
+    /// Ensures that the persistent session file exists on disk and is registered in the
+    /// runtime session registry. This is called lazily on the first user prompt or turn,
+    /// preventing empty 0-event session files when the user exits from the welcome screen.
+    pub fn ensure_session_persisted(&mut self) -> Result<()> {
+        if !self.session_persisted {
+            let session_file = self
+                .session_store
+                .init_session_file(&self.session_id, &self.workspace_root)?;
+            self._active_guard = crate::logging::register_active_session(
+                &self.session_id,
+                &self.workspace_root,
+                &self.config.provider.default,
+                &self.config.provider.model,
+                &session_file,
+            )
+            .ok();
+            self.session_persisted = true;
+            tracing::info!(session_id = %self.session_id, "Initialized persistent session file on first prompt");
+        }
+        Ok(())
+    }
+
+    /// Resets the conversation history and allocates a fresh, unpersisted session ID.
+    pub fn reset_session(&mut self) {
+        if self.session_persisted {
+            let path = self.session_store.session_file_path(&self.session_id);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+                if non_empty_lines <= 1 {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        self.messages.clear();
+        self.current_turn_id = 0;
+        self.cumulative_tokens_used = 0;
+        self.session_id = self.session_store.generate_session_id();
+        self.session_persisted = false;
+        self._active_guard = None;
+        tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
+    }
+
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
     /// Emits structured `AgentEvent`s over the provided MPSC channel for UI or NDJSON rendering.
     pub async fn execute_turn(
@@ -372,6 +415,8 @@ impl AgentLoop {
         event_sender: mpsc::UnboundedSender<AgentEvent>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Turn> {
+        self.ensure_session_persisted()?;
+
         // Drop stale approval senders from abandoned turns before doing anything else.
         // This prevents the registry from growing unboundedly when hosts disappear
         // or turns get rolled back without draining their approval entries.
@@ -1938,7 +1983,7 @@ impl AgentLoop {
     /// Reconstructs the agent conversation history, turn counter, and working set
     /// from a sequence of recorded `AgentEvent`s loaded from session persistence.
     pub fn hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent]) {
-        if self.session_id != session_id {
+        if self.session_id != session_id && self.session_persisted {
             let old_path = self.session_store.session_file_path(&self.session_id);
             if let Ok(content) = std::fs::read_to_string(&old_path) {
                 let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
@@ -1949,6 +1994,7 @@ impl AgentLoop {
             }
         }
         self.session_id = session_id.to_string();
+        self.session_persisted = true;
         let session_file = self.session_store.session_file_path(&self.session_id);
         self._active_guard = crate::logging::register_active_session(
             &self.session_id,
@@ -2211,6 +2257,21 @@ impl AgentLoop {
     }
 }
 
+impl Drop for AgentLoop {
+    fn drop(&mut self) {
+        if self.session_persisted {
+            let path = self.session_store.session_file_path(&self.session_id);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
+                if non_empty_lines <= 1 {
+                    let _ = std::fs::remove_file(&path);
+                    tracing::debug!(session = %self.session_id, "Cleaned up empty session file on drop");
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2447,6 +2508,34 @@ mod tests {
         // Should have pruned oldest messages down while preserving at least min preserved
         assert!(agent_loop.messages.len() < 20);
         assert!(agent_loop.messages.len() >= CONTEXT_MIN_PRESERVED_MESSAGES);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_lazy_session_creation_deferred_until_prompt() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_lazy_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mut config = Config::default();
+        config.provider.model = "dummy".to_string();
+        let provider = Box::new(DummyProvider);
+
+        // 1. Initializing AgentLoop must NOT create any session file on disk!
+        let agent = AgentLoop::new(&temp_dir, config, provider);
+        let session_file = agent.session_store.session_file_path(agent.session_id());
+        assert!(
+            !session_file.exists(),
+            "Session file must not exist before first prompt"
+        );
+        assert!(!agent.session_persisted);
+
+        // 2. Dropping agent without prompt must leave zero files on disk
+        drop(agent);
+        assert!(
+            !session_file.exists(),
+            "Session file must not exist after drop without prompt"
+        );
+
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
