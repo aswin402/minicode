@@ -351,6 +351,8 @@ pub enum WorkflowArchetype {
     RuntimeDev,
     /// Complex multi-step feature engineering, refactoring, or TDD workflows.
     MultiPhaseEngineering,
+    /// MiniVault skills management (search, show, load, create, update, import_url).
+    VaultSkills,
     /// Standard or single-step task (bugfix, direct file edit, general question).
     Standard,
 }
@@ -373,6 +375,7 @@ impl WorkflowArchetype {
                 ToolCategory::Files,
                 ToolCategory::Exec,
             ],
+            Self::VaultSkills => vec![ToolCategory::Vault, ToolCategory::MiniKit],
             Self::Standard => vec![],
         }
     }
@@ -387,6 +390,30 @@ impl WorkflowRouter {
     /// Classifies user prompt into an execution archetype.
     pub fn classify(prompt: &str) -> WorkflowArchetype {
         let lower = prompt.to_ascii_lowercase();
+
+        // 0. MiniVault Skills Management Archetype
+        if lower.contains("add skill")
+            || lower.contains("load skill")
+            || lower.contains("install skill")
+            || lower.contains("import skill")
+            || lower.contains("create skill")
+            || lower.contains("update skill")
+            || lower.contains("delete skill")
+            || lower.contains("remove skill")
+            || lower.contains("search skill")
+            || lower.contains("list skill")
+            || lower.contains("show skill")
+            || lower.contains("mini_vault")
+            || lower.contains("minivault")
+            || (crate::utils::has_word(&lower, "skill")
+                && (lower.contains("internet")
+                    || lower.contains("github")
+                    || lower.contains("http")
+                    || lower.contains("project")
+                    || lower.contains("global")))
+        {
+            return WorkflowArchetype::VaultSkills;
+        }
 
         // 1. CodeGraph, AST Slicing & Architecture Exploration Archetype
         // Prioritized when prompt specifically asks to locate, trace, or inspect symbols/callers
@@ -530,6 +557,7 @@ impl WorkflowRouter {
             WorkflowArchetype::MultiPhaseEngineering => {
                 Self::enrich_multiphase_engineering(workspace_root, prompt)
             }
+            WorkflowArchetype::VaultSkills => Self::enrich_vault_skills(workspace_root, prompt),
             WorkflowArchetype::Standard => None,
         }
     }
@@ -776,11 +804,62 @@ impl WorkflowRouter {
         out.push_str("</autonomous_engineering_guidance>");
         Some(out)
     }
+
+    fn enrich_vault_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let all_skills = store.list_all_skills();
+        let lower = prompt.to_ascii_lowercase();
+
+        let matched: Vec<_> = all_skills
+            .into_iter()
+            .filter(|s| s.matches_prompt(&lower))
+            .take(6)
+            .collect();
+
+        let mut out = String::from("<minivault_skills_guidance>\n");
+        out.push_str("  MiniVault Tool Suite: `vault_search`, `vault_show`, `vault_load`, `vault_unload`, `vault_create`, `vault_update`, `vault_delete`, `vault_import_url`.\n");
+
+        if !matched.is_empty() {
+            out.push_str("  Matched Skills in MiniVault:\n");
+            for m in matched {
+                let status = if m.is_active_in_project {
+                    "Active in Project"
+                } else {
+                    "Available in Vault"
+                };
+                out.push_str(&format!(
+                    "  • `{}` [{:?} | {}]: {}\n",
+                    m.name, m.scope, status, m.description
+                ));
+            }
+            out.push_str("  Autonomous Action: Call `vault_load(name)` to install into active project, or `vault_show(name)` to inspect full rules.\n");
+        } else {
+            out.push_str("  Autonomous Action: Call `vault_search(query)` to find skills, or `vault_import_url(url)` to download skills from internet/GitHub.\n");
+        }
+        out.push_str("</minivault_skills_guidance>");
+        Some(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_workflow_router_classify_vault_skills() {
+        assert_eq!(
+            WorkflowRouter::classify("Add skill from internet: https://example.com/skill.md"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Load skill tailwind-v4 into this project"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Search skills for react in minivault"),
+            WorkflowArchetype::VaultSkills
+        );
+    }
 
     #[test]
     fn test_workflow_router_classify_ui_design() {

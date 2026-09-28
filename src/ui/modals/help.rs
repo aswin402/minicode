@@ -64,6 +64,13 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
+            Span::styled("  /vault     ", Style::default().fg(theme.success)),
+            Span::styled(
+                "MiniVault agent skills warehouse & project loader (/skills)",
+                Style::default().fg(theme.text_primary),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("  /processes ", Style::default().fg(theme.success)),
             Span::styled(
                 "Process monitor, live logs & watchdog dashboard (F7)",

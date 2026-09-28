@@ -16,3 +16,4 @@ pub mod session;
 pub mod tools;
 pub mod ui;
 pub mod utils;
+pub mod vault;

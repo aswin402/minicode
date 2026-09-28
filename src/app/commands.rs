@@ -312,6 +312,34 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        // MiniVault Agent Skills Warehouse Slash Commands (/vault, /skills, /minivault)
+        if prompt_lower == "/vault"
+            || prompt_lower == "/skills"
+            || prompt_lower == "/minivault"
+            || prompt_lower.starts_with("/vault ")
+            || prompt_lower.starts_with("/skills ")
+            || prompt_lower.starts_with("/minivault ")
+        {
+            let mut vault_modal = ModalState::new_vault(&self.workspace_root);
+            let query = if prompt_lower.starts_with("/minivault ") {
+                prompt_trimmed[11..].trim()
+            } else if prompt_lower.starts_with("/skills ") {
+                prompt_trimmed[8..].trim()
+            } else if prompt_lower.starts_with("/vault ") {
+                prompt_trimmed[7..].trim()
+            } else {
+                ""
+            };
+            if !query.is_empty() {
+                if let ModalState::Vault(ref mut state) = vault_modal {
+                    state.search_query = query.to_string();
+                    state.refresh_filtered();
+                }
+            }
+            self.modal = vault_modal;
+            return Ok(CommandAction::Continue);
+        }
+
         // MiniDev Runtime Orchestrator Slash Commands (/dev, /processes, /serve)
         if prompt_lower == "/dev"
             || prompt_lower == "/processes"

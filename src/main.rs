@@ -16,6 +16,7 @@ mod session;
 mod tools;
 mod ui;
 pub mod utils;
+pub mod vault;
 
 use agent::types::{AgentEvent, StdinCommand};
 use agent::AgentLoop;

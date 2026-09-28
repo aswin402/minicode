@@ -2290,6 +2290,82 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::Vault(state) => match key.code {
+                KeyCode::Tab | KeyCode::Right => {
+                    state.next_tab();
+                }
+                KeyCode::BackTab | KeyCode::Left => {
+                    state.prev_tab();
+                }
+                KeyCode::Char('1') if state.search_query.is_empty() => {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::All;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                    state.refresh_filtered();
+                }
+                KeyCode::Char('2') if state.search_query.is_empty() => {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Project;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                    state.refresh_filtered();
+                }
+                KeyCode::Char('3') if state.search_query.is_empty() => {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Global;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                    state.refresh_filtered();
+                }
+                KeyCode::Char('4') if state.search_query.is_empty() => {
+                    state.active_tab = crate::ui::modals::vault::VaultTab::Builtin;
+                    state.selected_index = 0;
+                    state.preview_scroll_offset = 0;
+                    state.status_message = None;
+                    state.refresh_filtered();
+                }
+                KeyCode::Up => {
+                    state.select_prev();
+                }
+                KeyCode::Down => {
+                    state.select_next();
+                }
+                KeyCode::PageUp => {
+                    state.scroll_preview_up();
+                }
+                KeyCode::PageDown => {
+                    state.scroll_preview_down();
+                }
+                KeyCode::Enter => {
+                    state.toggle_project_load();
+                    if let Some(ref msg) = state.status_message {
+                        self.timeline.add_status(msg.clone());
+                    }
+                }
+                KeyCode::Char(' ') if state.search_query.is_empty() => {
+                    state.toggle_project_load();
+                    if let Some(ref msg) = state.status_message {
+                        self.timeline.add_status(msg.clone());
+                    }
+                }
+                KeyCode::Char('d') if state.search_query.is_empty() => {
+                    state.delete_selected();
+                    if let Some(ref msg) = state.status_message {
+                        self.timeline.add_status(msg.clone());
+                    }
+                }
+                KeyCode::Esc => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Backspace => {
+                    state.handle_backspace();
+                }
+                KeyCode::Char(c) => {
+                    state.handle_char(c);
+                }
+                _ => {}
+            },
             ModalState::Processes(state) => match key.code {
                 KeyCode::Tab | KeyCode::Right if !state.is_searching => {
                     state.next_tab();

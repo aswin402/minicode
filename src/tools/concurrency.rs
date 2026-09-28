@@ -251,6 +251,13 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // MiniDev Runtime Orchestrator
         "mini_dev" | "dev_manager" => ToolSafetyLevel::Mutating,
 
+        // MiniVault Multi-tier Agent Skills & Storage (ReadOnly)
+        "vault_search" | "vault_show" => ToolSafetyLevel::ReadOnly,
+
+        // MiniVault Mutations & Lifecycle
+        "vault_load" | "vault_unload" | "vault_create" | "vault_update" | "vault_delete"
+        | "vault_import_url" => ToolSafetyLevel::Mutating,
+
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,
     }

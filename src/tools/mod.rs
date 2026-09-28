@@ -57,6 +57,7 @@ impl ToolRegistry {
         schemas.extend(registry::explore_tools::get_schemas());
         schemas.extend(registry::block_tools::get_schemas());
         schemas.extend(registry::dev_tools::get_schemas());
+        schemas.extend(registry::vault_tools::get_schemas());
         schemas
     }
 
@@ -275,6 +276,11 @@ impl ToolRegistry {
 
         // 12. MiniDev Runtime Orchestrator Tools
         if let Some(res) = registry::dev_tools::dispatch(tool_name, args, workspace_root).await {
+            return res;
+        }
+
+        // 13. MiniVault Multi-tier Agent Skills & Storage Tools
+        if let Some(res) = registry::vault_tools::dispatch(tool_name, args, workspace_root).await {
             return res;
         }
 

@@ -24,6 +24,8 @@ pub enum ToolCategory {
     Blocks,
     #[serde(alias = "minidev")]
     Dev,
+    #[serde(alias = "minivault")]
+    Vault,
 }
 
 impl ToolCategory {
@@ -32,7 +34,7 @@ impl ToolCategory {
     #[allow(non_upper_case_globals, dead_code)]
     pub const Power: ToolCategory = ToolCategory::MiniPower;
 
-    pub const ALL: [ToolCategory; 12] = [
+    pub const ALL: [ToolCategory; 13] = [
         ToolCategory::Files,
         ToolCategory::Exec,
         ToolCategory::Search,
@@ -45,6 +47,7 @@ impl ToolCategory {
         ToolCategory::MiniPower,
         ToolCategory::Blocks,
         ToolCategory::Dev,
+        ToolCategory::Vault,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -61,6 +64,7 @@ impl ToolCategory {
             Self::MiniPower => "minipower",
             Self::Blocks => "blocks",
             Self::Dev => "dev",
+            Self::Vault => "vault",
         }
     }
 
@@ -78,6 +82,7 @@ impl ToolCategory {
             Self::MiniPower => "MiniPower methodology, verification barrier & worktree tasks (power_status, power_brainstorm, power_plan, power_review, power_verify, power_worktree_task)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Development servers, backends, docker & process orchestration (mini_dev)",
+            Self::Vault => "MiniVault multi-tier agent skills warehouse & lifecycle (vault_search, vault_show, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url)",
         }
     }
 
@@ -96,6 +101,7 @@ impl ToolCategory {
             Self::MiniPower => registry::minipower_tools::get_schemas(),
             Self::Blocks => registry::block_tools::get_schemas(),
             Self::Dev => registry::dev_tools::get_schemas(),
+            Self::Vault => registry::vault_tools::get_schemas(),
         }
     }
 }
@@ -113,12 +119,13 @@ impl FromStr for ToolCategory {
             "kit" | "minikit" | "onpkg" | "stack" | "pkg" | "package" | "dep" | "dependencies" => Ok(Self::MiniKit),
             "codegraph" | "graph" | "explore" | "architecture" => Ok(Self::Codegraph),
             "agent" | "agents" | "swarm" | "subagent" => Ok(Self::Agent),
-            "memory" | "plan" | "wiki" | "skill" | "skills" => Ok(Self::Memory),
+            "memory" | "plan" | "wiki" => Ok(Self::Memory),
             "power" | "minipower" | "superpower" | "superpowers" | "verify" | "verification" | "review" | "brainstorm" | "worktree" | "tdd" => Ok(Self::MiniPower),
             "blocks" | "block" | "miniblocks" | "component" | "components" | "palette" | "palettes" => Ok(Self::Blocks),
             "dev" | "minidev" | "server" | "servers" | "daemon" | "orchestrator" => Ok(Self::Dev),
+            "vault" | "minivault" | "skill" | "skills" => Ok(Self::Vault),
             other => Err(format!(
-                "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, all",
+                "Unknown tool category '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, vault, all",
                 other
             )),
         }

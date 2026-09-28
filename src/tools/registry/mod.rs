@@ -15,4 +15,5 @@ pub mod minipower_tools;
 #[allow(unused_imports)]
 pub use minipower_tools as power_tools;
 pub mod search_tools;
+pub mod vault_tools;
 pub mod web_tools;

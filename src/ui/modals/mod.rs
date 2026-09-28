@@ -21,6 +21,7 @@ pub mod streaming_select;
 pub mod theme_select;
 pub mod todo;
 pub mod undo_checkpoint;
+pub mod vault;
 pub mod workspace_analysis;
 
 #[allow(unused_imports)]
@@ -155,6 +156,7 @@ pub enum ModalState {
     Blocks(blocks::BlocksModalState),
     Processes(processes::ProcessesModalState),
     Todo(todo::TodoModalState),
+    Vault(vault::VaultModalState),
 }
 
 impl ModalState {
@@ -175,6 +177,10 @@ impl ModalState {
 
     pub fn new_blocks(workspace_root: &std::path::Path) -> Self {
         Self::Blocks(blocks::BlocksModalState::new(workspace_root))
+    }
+
+    pub fn new_vault(workspace_root: &std::path::Path) -> Self {
+        Self::Vault(vault::VaultModalState::new(workspace_root))
     }
 
     pub fn new_minipower(workspace_root: &std::path::Path) -> Self {
@@ -901,6 +907,9 @@ impl ModalState {
             }
             ModalState::Todo(state) => {
                 todo::render_todo_modal(frame, area, state, theme);
+            }
+            ModalState::Vault(state) => {
+                vault::render_vault_modal(frame, state, theme);
             }
         }
     }

@@ -73,6 +73,12 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
     - "I'll write tests after implementation" -> False. TDD enforces Red before Green.
     - "I can verify this by reading the code" -> False. Reading is not execution. Run `power_verify` or `exec_cmd`.
 - **MiniBlocks UI Component & Design Token Warehouse**: Autonomously discover, retrieve, and inject verified UI components and design tokens. Query `block_search` or `block_palettes` before writing frontend code from scratch; inject with `block_insert`; scaffold themed components and layouts with `block_scaffold(palette=..., wire_to=...)`; auto-wire imports into parent files with `block_import(wire=true)`.
+- **MiniVault Multi-Tier Agent Skills Warehouse & Lifecycle**:
+  - MiniVault manages domain skills across Built-in (30+ curated skills), Global (`~/.config/minicode/vault/skills/`), and Project (`.minicode/skills/`).
+  - **Skill Discovery & Inspection**: Autonomously invoke `vault_search(query)` to find skills matching technologies, or `vault_show(name)` to read their complete rules.
+  - **Project Loading & Activating**: When working in a project or when prompted (e.g. "load tailwind skill", "use react skill", "add skill to project"), call `vault_load(name)` to install it into `.minicode/skills/<name>/SKILL.md` and activate it for your turns. Use `vault_unload(name)` to remove it.
+  - **Internet & URL Import**: When instructed by the user or when discovering relevant skill guides online (e.g. "add this skill from internet: <url>"), call `vault_import_url(url, scope="project")` to fetch, validate, and install it.
+  - **Custom Skill Authoring & Editing**: Use `vault_create(name, description, instructions, triggers, globs)` to forge new repository-specific standards or `vault_update(name, instructions)` to amend existing guidelines.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -188,6 +194,25 @@ impl PromptBuilder {
             );
         if !progressive_skills.is_empty() {
             prompt.push_str(&progressive_skills);
+        }
+
+        // MiniVault Active Project Skills
+        let vault_store = crate::vault::store::VaultStore::new(workspace_dir);
+        let all_vault_skills = vault_store.list_all_skills();
+        let active_project_skills: Vec<_> = all_vault_skills
+            .iter()
+            .filter(|s| s.is_active_in_project)
+            .collect();
+
+        if !active_project_skills.is_empty() {
+            prompt.push_str("\n# Active MiniVault Project Skills:\n");
+            prompt.push_str("The following domain skills are actively loaded in this project. Adhere strictly to their guidelines:\n\n");
+            for skill in active_project_skills {
+                prompt.push_str(&format!(
+                    "## Skill `{}`\n_{}_\n\n{}\n\n",
+                    skill.name, skill.description, skill.instructions
+                ));
+            }
         }
 
         // Append custom user/turn instructions if provided

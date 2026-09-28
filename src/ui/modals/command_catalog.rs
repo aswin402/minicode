@@ -68,6 +68,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/blocks | /miniblocks",
     },
     CommandCatalogItem {
+        name: "/vault",
+        category: "Workflows & Scaffolding",
+        shortcut: "",
+        description: "Explore, search, and load MiniVault domain skills into the active project",
+        example: "/vault | /skills | /vault <query>",
+    },
+    CommandCatalogItem {
         name: "/processes",
         category: "Agent & Automation",
         shortcut: "F7",
