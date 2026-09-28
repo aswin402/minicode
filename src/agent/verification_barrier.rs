@@ -1,7 +1,5 @@
 use crate::agent::reproducer_guard::{ReproducerGuard, ReproducerPhase};
-use crate::constants::{
-    VERIFICATION_CONFLICT_MARKERS, VERIFICATION_DEBUG_PATTERNS, VERIFICATION_TEST_TIMEOUT_MS,
-};
+use crate::constants::{VERIFICATION_DEBUG_PATTERNS, VERIFICATION_TEST_TIMEOUT_MS};
 use crate::context::syntax_guard::SyntaxGuard;
 use crate::tools::compiler::ScopedCompiler;
 use serde::Serialize;
@@ -389,23 +387,20 @@ impl VerificationBarrier {
             };
 
             for (idx, line) in content.lines().enumerate() {
-                let trimmed = line.trim();
-                for &marker in VERIFICATION_CONFLICT_MARKERS {
-                    if trimmed.starts_with(marker) {
-                        return GateStatus::Failed {
-                            gate_name: "Gate 3: Structural Integrity & Merge Conflicts",
-                            reason: format!(
-                                "Git merge conflict marker `{}` found in `{}` at line {}.",
-                                marker,
-                                file,
-                                idx + 1
-                            ),
-                            actionable_remediation: format!(
-                                "Resolve and remove all merge conflict markers from `{}`.",
-                                file
-                            ),
-                        };
-                    }
+                if let Some(marker) = detect_git_conflict_marker(line) {
+                    return GateStatus::Failed {
+                        gate_name: "Gate 3: Structural Integrity & Merge Conflicts",
+                        reason: format!(
+                            "Git merge conflict marker `{}` found in `{}` at line {}.",
+                            marker,
+                            file,
+                            idx + 1
+                        ),
+                        actionable_remediation: format!(
+                            "Resolve and remove all merge conflict markers from `{}`.",
+                            file
+                        ),
+                    };
                 }
             }
         }
@@ -776,6 +771,30 @@ impl VerificationBarrier {
     }
 }
 
+/// Accurately detects real Git merge conflict markers without false positives on code comments.
+///
+/// In Git:
+/// - `<<<<<<<` at start of line, optionally followed by space and ref/branch label
+/// - `=======` exactly 7 equals signs on its own line (never with trailing characters or 40 equals)
+/// - `>>>>>>>` at start of line, optionally followed by space and ref/branch label
+/// - `|||||||` (diff3 base marker) at start of line, optionally followed by space and commit/ref
+pub(crate) fn detect_git_conflict_marker(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim();
+    if trimmed == "=======" {
+        return Some("=======");
+    }
+    if trimmed == "<<<<<<<" || trimmed.starts_with("<<<<<<< ") {
+        return Some("<<<<<<<");
+    }
+    if trimmed == ">>>>>>>" || trimmed.starts_with(">>>>>>> ") {
+        return Some(">>>>>>>");
+    }
+    if trimmed == "|||||||" || trimmed.starts_with("||||||| ") {
+        return Some("|||||||");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,6 +823,30 @@ mod tests {
                 assert!(reason.contains("conflict marker"));
             }
             _ => panic!("Expected Gate 3 to fail on conflict markers"),
+        }
+    }
+
+    #[test]
+    fn test_gate3_does_not_flag_legitimate_comments() {
+        let temp = tempdir().unwrap();
+        let file_path = temp.path().join("styles.css");
+        std::fs::write(
+            &file_path,
+            "/* ============================================\n   Design Tokens\n   ============================================ */\n// ============================================\n/* -------------------------------------------- */\n",
+        )
+        .unwrap();
+
+        let status = VerificationBarrier::check_gate3_regression_conflicts(
+            temp.path(),
+            &["styles.css".to_string()],
+        );
+
+        match status {
+            GateStatus::Passed => {}
+            _ => panic!(
+                "Gate 3 should pass for legitimate comment banners: {:?}",
+                status
+            ),
         }
     }
 

@@ -445,13 +445,27 @@ impl StuckDetector {
                 && self.history[len - 3].matches_action(b)
             {
                 let mut cycles = 2;
-                if len >= 6
-                    && self.history[len - 6].matches_action(a)
-                    && self.history[len - 5].matches_action(b)
+                while len >= (cycles + 1) * 2
+                    && self.history[len - (cycles + 1) * 2].matches_action(a)
+                    && self.history[len - (cycles + 1) * 2 + 1].matches_action(b)
                 {
-                    cycles = 3;
+                    cycles += 1;
                 }
-                if cycles >= STUCK_OSCILLATION_MIN_CYCLES {
+
+                // Browser Visual QA (e.g. scrolling down multi-fold pages and capturing screenshots)
+                // is healthy inspection behavior and should not trip after just 2 cycles.
+                let is_browser_qa = is_browser_visual_qa(&a.tool_name)
+                    && is_browser_visual_qa(&b.tool_name)
+                    && a.success
+                    && b.success;
+
+                let min_cycles = if is_browser_qa {
+                    8
+                } else {
+                    STUCK_OSCILLATION_MIN_CYCLES
+                };
+
+                if cycles >= min_cycles {
                     return Some(LoopType::PingPongOscillation {
                         tool_a: a.tool_name.clone(),
                         tool_b: b.tool_name.clone(),
@@ -476,21 +490,37 @@ impl StuckDetector {
                 && self.history[len - 4].matches_action(c)
             {
                 let mut cycles = 2;
-                if len >= 9
-                    && self.history[len - 9].matches_action(a)
-                    && self.history[len - 8].matches_action(b)
-                    && self.history[len - 7].matches_action(c)
+                while len >= (cycles + 1) * 3
+                    && self.history[len - (cycles + 1) * 3].matches_action(a)
+                    && self.history[len - (cycles + 1) * 3 + 1].matches_action(b)
+                    && self.history[len - (cycles + 1) * 3 + 2].matches_action(c)
                 {
-                    cycles = 3;
+                    cycles += 1;
                 }
-                return Some(LoopType::TriangularOscillation {
-                    pattern: vec![
-                        a.tool_name.clone(),
-                        b.tool_name.clone(),
-                        c.tool_name.clone(),
-                    ],
-                    cycles,
-                });
+
+                let is_browser_qa = is_browser_visual_qa(&a.tool_name)
+                    && is_browser_visual_qa(&b.tool_name)
+                    && is_browser_visual_qa(&c.tool_name)
+                    && a.success
+                    && b.success
+                    && c.success;
+
+                let min_cycles = if is_browser_qa {
+                    6
+                } else {
+                    STUCK_OSCILLATION_MIN_CYCLES
+                };
+
+                if cycles >= min_cycles {
+                    return Some(LoopType::TriangularOscillation {
+                        pattern: vec![
+                            a.tool_name.clone(),
+                            b.tool_name.clone(),
+                            c.tool_name.clone(),
+                        ],
+                        cycles,
+                    });
+                }
             }
         }
 
@@ -636,6 +666,14 @@ impl StuckDetector {
         canonical.hash(&mut hasher);
         hasher.finish()
     }
+}
+
+/// Returns true if the tool is part of passive browser visual QA and viewport inspection.
+pub(crate) fn is_browser_visual_qa(tool: &str) -> bool {
+    matches!(
+        tool,
+        "browser_scroll" | "browser_screenshot" | "browser_inspect"
+    )
 }
 
 #[cfg(test)]
@@ -843,5 +881,25 @@ mod tests {
         assert!(detector
             .record_and_check("read_file", &args, true)
             .is_none());
+    }
+
+    #[test]
+    fn test_browser_visual_qa_exempt_from_ping_pong_oscillation() {
+        let mut detector = StuckDetector::new();
+        let scroll_args = json!({"direction": "down", "mode": "gui"});
+        let shot_args = json!({"mode": "gui"});
+
+        // 3 alternating cycles of scroll and screenshot (6 calls)
+        for _ in 0..3 {
+            assert!(detector
+                .record_and_check("browser_screenshot", &shot_args, true)
+                .is_none());
+            assert!(detector
+                .record_and_check("browser_scroll", &scroll_args, true)
+                .is_none());
+        }
+
+        // At cycle 3 (6 calls), visual QA still passes without false positive!
+        assert!(!detector.is_tripped());
     }
 }
