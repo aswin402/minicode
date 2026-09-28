@@ -339,8 +339,8 @@ pub const BUDGET_PRESSURE_HIGH_THRESHOLD: f64 = 80.0;
 pub const BUDGET_PRESSURE_MODERATE_THRESHOLD: f64 = 60.0;
 
 // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===
-/// Maximum verification re-prompt attempts before allowing completion fallback
-pub const VERIFICATION_MAX_ATTEMPTS: usize = 2;
+/// Maximum verification re-prompt attempts before triggering Senior Engineer rollback
+pub const VERIFICATION_MAX_ATTEMPTS: usize = 3;
 /// Raw debug statements forbidden in production code (Gate 4)
 pub const VERIFICATION_DEBUG_PATTERNS: &[&str] =
     &["println!", "eprintln!", "console.log(", "debugger;"];
