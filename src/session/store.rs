@@ -56,38 +56,85 @@ impl SessionStore {
 
     /// Workspace-local session store.
     ///
-    /// If `<workspace>/.minicode/` exists, sessions are stored under
-    /// `<workspace>/.minicode/sessions/` — scoped to the project, like Codex / Claude Code.
-    /// Falls back to the global `~/.config/minicode/sessions/` to discover older sessions.
+    /// Strictly stores sessions under `<workspace>/.minicode/sessions/` — scoped
+    /// entirely to the project. Ensures `.minicode/` is protected in `.gitignore`.
+    /// Also migrates any legacy sessions for this workspace from `~/.config/minicode/sessions/`
+    /// directly into `.minicode/sessions/`.
     pub fn with_workspace(workspace_root: &Path) -> Self {
-        let minicode_dir = workspace_root.join(WORKSPACE_DIR_NAME);
-        let global_dir =
-            dirs::config_dir().map(|c| c.join(CONFIG_DIR_NAME).join(SESSIONS_DIR_NAME));
-
-        let (sessions_dir, fallback_dir) = if minicode_dir.exists() {
-            let local_sessions = minicode_dir.join(SESSIONS_DIR_NAME);
-            (local_sessions, global_dir)
-        } else if let Some(g_dir) = global_dir {
-            (g_dir, None)
-        } else {
-            (
-                PathBuf::from(WORKSPACE_DIR_NAME).join(SESSIONS_DIR_NAME),
-                None,
-            )
-        };
+        let sessions_dir = workspace_root
+            .join(WORKSPACE_DIR_NAME)
+            .join(SESSIONS_DIR_NAME);
 
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             tracing::warn!(path = %sessions_dir.display(), error = %e, "Failed to create sessions directory");
         }
+
+        // Auto-ensure .minicode/ is ignored in git
+        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
+
+        // One-time auto-migration: if any old sessions for this workspace exist in ~/.config/minicode/sessions,
+        // move them cleanly into .minicode/sessions/ so all history lives strictly in the project.
+        if let Some(global_dir) =
+            dirs::config_dir().map(|c| c.join(CONFIG_DIR_NAME).join(SESSIONS_DIR_NAME))
+        {
+            if global_dir.exists() && global_dir != sessions_dir {
+                Self::migrate_legacy_sessions(workspace_root, &sessions_dir, &global_dir);
+            }
+        }
+
         tracing::debug!(
             sessions_dir = %sessions_dir.display(),
-            fallback_dir = ?fallback_dir.as_ref().map(|p| p.display()),
             "Session store initialised"
         );
         Self {
             sessions_dir,
-            fallback_dir,
+            fallback_dir: None,
             workspace_root: Some(workspace_root.to_path_buf()),
+        }
+    }
+
+    /// Migrates legacy session files for `workspace_root` from `from_dir` into `to_dir`.
+    pub fn migrate_legacy_sessions(workspace_root: &Path, to_dir: &Path, from_dir: &Path) {
+        let entries = match std::fs::read_dir(from_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let ws_canonical =
+            std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let file = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let mut reader = std::io::BufReader::new(file);
+            let mut first_line = String::new();
+            if std::io::BufRead::read_line(&mut reader, &mut first_line).is_ok() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first_line) {
+                    if let Some(session_meta) = v.get("session_meta") {
+                        if let Some(ws_val) = session_meta.get("workspace").and_then(|w| w.as_str())
+                        {
+                            if is_workspace_match(ws_val, &ws_canonical) {
+                                if let Some(file_name) = path.file_name() {
+                                    let dest = to_dir.join(file_name);
+                                    if !dest.exists() {
+                                        if let Err(e) = std::fs::copy(&path, &dest) {
+                                            tracing::warn!(src = %path.display(), dest = %dest.display(), error = %e, "Failed to migrate legacy session file");
+                                            continue;
+                                        }
+                                    }
+                                    let _ = std::fs::remove_file(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -279,13 +326,8 @@ impl SessionStore {
         let mut sessions = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
-        // 1. Scan primary directory
-        let primary_filter = if self.fallback_dir.is_none() {
-            self.workspace_root.as_deref()
-        } else {
-            None
-        };
-        for s in scan_sessions_in_dir(&self.sessions_dir, primary_filter) {
+        // 1. Scan primary directory (.minicode/sessions)
+        for s in scan_sessions_in_dir(&self.sessions_dir, None) {
             seen_ids.insert(s.id.clone());
             sessions.push(s);
         }
@@ -1027,6 +1069,50 @@ mod tests {
         let loaded = store.load_session(old_id).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0], event);
+
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn test_migrate_legacy_sessions_moves_files_to_workspace() {
+        let base_dir =
+            std::env::temp_dir().join(format!("minicode_mig_test_{}", uuid::Uuid::new_v4()));
+        let ws_dir = base_dir.join("workspace");
+        let legacy_dir = base_dir.join("legacy_global");
+        let dest_sessions_dir = ws_dir.join(".minicode").join("sessions");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::create_dir_all(&dest_sessions_dir).unwrap();
+
+        let old_id = "20260714T120000Z-migrated1";
+        let old_path = legacy_dir.join(format!("{}.jsonl", old_id));
+        let meta = SessionMetadata {
+            id: old_id.to_string(),
+            created_at: "2026-07-14T12:00:00Z".to_string(),
+            workspace: ws_dir.display().to_string(),
+            path: old_path.display().to_string(),
+            event_count: 0,
+            preview: String::new(),
+        };
+        let meta_line =
+            serde_json::to_string(&serde_json::json!({ "session_meta": meta })).unwrap();
+        let event = AgentEvent::UserPrompt {
+            turn_id: 1,
+            timestamp: "2026-07-14T12:00:01Z".to_string(),
+            prompt: "Migrated prompt".to_string(),
+        };
+        let event_line = serde_json::to_string(&event).unwrap();
+        std::fs::write(&old_path, format!("{}\n{}\n", meta_line, event_line)).unwrap();
+
+        // Run migration
+        SessionStore::migrate_legacy_sessions(&ws_dir, &dest_sessions_dir, &legacy_dir);
+
+        // Old file in legacy_dir should be removed
+        assert!(!old_path.exists());
+
+        // New file in dest_sessions_dir should exist
+        let migrated_path = dest_sessions_dir.join(format!("{}.jsonl", old_id));
+        assert!(migrated_path.exists());
 
         let _ = std::fs::remove_dir_all(&base_dir);
     }

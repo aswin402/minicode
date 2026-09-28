@@ -72,6 +72,14 @@ pub fn init_logging(
 }
 
 fn default_log_dir() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        let ws_log = cwd
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::LOGS_DIR_NAME);
+        if ws_log.parent().map(|p| p.exists()).unwrap_or(false) {
+            return ws_log;
+        }
+    }
     if let Some(config_dir) = dirs::config_dir() {
         config_dir
             .join(crate::constants::CONFIG_DIR_NAME)

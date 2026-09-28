@@ -100,7 +100,7 @@ struct Cli {
     #[arg(short = 't', long, global = true)]
     timeout: Option<u64>,
 
-    /// Enable verbose logging to ~/.config/minicode/logs/
+    /// Enable verbose logging to .minicode/logs/
     #[arg(short = 'v', long, global = true)]
     verbose: bool,
 
@@ -647,8 +647,11 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| crate::agent::models::get_model_context_limit(&config.provider.model));
     crate::context::budget::donut::set_active_context_limit(active_limit);
 
-    // 4. Initialize logging subsystem
-    let _log_guard = logging::init_logging(None, &config.logging.level, false)?;
+    // 4. Initialize logging subsystem (strictly project-level .minicode/logs/)
+    let project_log_dir = workspace_canonical
+        .join(crate::constants::WORKSPACE_DIR_NAME)
+        .join(crate::constants::LOGS_DIR_NAME);
+    let _log_guard = logging::init_logging(Some(&project_log_dir), &config.logging.level, false)?;
     tracing::info!(
         workspace = %workspace_canonical.display(),
         provider = %config.provider.default,

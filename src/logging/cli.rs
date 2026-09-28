@@ -4,7 +4,7 @@ use crate::logging::runtime::{
 };
 use crate::logging::tail::LogTailer;
 use crate::session::store::SessionStore;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Command line arguments for `minicode logs`.
 #[derive(Debug, Clone, Default)]
@@ -35,6 +35,7 @@ pub async fn handle_logs_cli(workspace: &Path, args: LogsCliArgs) -> anyhow::Res
     // 2. If --raw was requested, tail raw system tracing logs
     if args.raw {
         return handle_raw_tracing_logs(
+            workspace,
             effective_tail,
             args.follow,
             args.no_color,
@@ -165,18 +166,29 @@ fn handle_list_sessions(workspace: &Path, json: bool, no_color: bool) -> anyhow:
 
 /// Locates and tails the latest raw daily tracing log file.
 async fn handle_raw_tracing_logs(
+    workspace: &Path,
     tail: usize,
     follow: bool,
     no_color: bool,
     json: bool,
     filter: Option<String>,
 ) -> anyhow::Result<()> {
-    let logs_dir = if let Some(config_dir) = dirs::config_dir() {
-        config_dir
+    let local_logs = workspace
+        .join(crate::constants::WORKSPACE_DIR_NAME)
+        .join(crate::constants::LOGS_DIR_NAME);
+    let logs_dir = if local_logs.exists() {
+        local_logs
+    } else if let Some(config_dir) = dirs::config_dir() {
+        let global_logs = config_dir
             .join(crate::constants::CONFIG_DIR_NAME)
-            .join(crate::constants::LOGS_DIR_NAME)
+            .join(crate::constants::LOGS_DIR_NAME);
+        if global_logs.exists() {
+            global_logs
+        } else {
+            local_logs
+        }
     } else {
-        PathBuf::from(crate::constants::WORKSPACE_DIR_NAME).join(crate::constants::LOGS_DIR_NAME)
+        local_logs
     };
 
     let entries = std::fs::read_dir(&logs_dir)?;
