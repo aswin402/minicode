@@ -4,7 +4,7 @@
 //! backends, Docker containers, background scripts, workers, and browser sessions.
 
 use crate::agent::provider::ToolSchema;
-use crate::dev::models::{DevProcessId, DevProcessType, SpawnDevRequest};
+use crate::dev::models::{DevProcessId, DevProcessType, ScheduleRequest, SpawnDevRequest};
 use crate::dev::registry::get_global_dev_registry;
 use crate::error::{DevError, Result, ToolError};
 use crate::tools::param::*;
@@ -17,27 +17,51 @@ use std::time::Duration;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: "minitask".to_string(),
-        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, and browser sessions. Provides full lifecycle CRUD (start, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
+        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, scheduled tasks, and browser sessions. Provides full lifecycle CRUD (start, schedule, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "probe_port", "check_port"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status'/'ps' (inspect active processes), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
+                    "enum": ["start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "probe_port", "check_port"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
                 },
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run (required for 'start', e.g. 'npm run dev', 'cargo run', 'python app.py')"
+                    "description": "Shell command to run (required for 'start', e.g. 'npm run dev', 'cargo run', 'python app.py', or command for 'schedule')"
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Task instructions, prompt, or command alias for 'schedule'"
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional human-readable label for the process (e.g. 'frontend-vite', 'backend-axum', 'auth-service')"
+                    "description": "Optional human-readable label for the process or scheduled task (e.g. 'frontend-vite', 'health-check', 'auth-service')"
                 },
                 "process_type": {
                     "type": "string",
-                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent"],
+                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent", "cron", "timer"],
                     "description": "Category of process (default: 'frontend')"
+                },
+                "interval_seconds": {
+                    "type": "integer",
+                    "description": "Interval in seconds between periodic executions for 'schedule' (default: 60)"
+                },
+                "duration_seconds": {
+                    "type": "integer",
+                    "description": "Delay in seconds before firing a one-shot timer for 'schedule'"
+                },
+                "cron": {
+                    "type": "string",
+                    "description": "Cron expression or description for recurring scheduled tasks"
+                },
+                "cron_expression": {
+                    "type": "string",
+                    "description": "Cron expression alias for 'cron'"
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": "Maximum number of iterations before automatically terminating a scheduled task (unlimited if omitted)"
                 },
                 "id": {
                     "type": "string",
@@ -282,6 +306,64 @@ pub async fn dispatch(
 
                 Ok(msg)
             }
+            "schedule" => {
+                let cmd = opt_str(args, "command")
+                    .or_else(|| opt_str(args, "prompt"))
+                    .ok_or_else(|| {
+                        ToolError::invalid_args(
+                            "minitask",
+                            "Action 'schedule' requires either 'command' or 'prompt'",
+                        )
+                    })?;
+                let name = opt_str(args, "name").map(|s| s.to_string());
+                let interval_seconds = opt_u64(args, "interval_seconds")
+                    .or_else(|| opt_u64(args, "interval"));
+                let duration_seconds = opt_u64(args, "duration_seconds")
+                    .or_else(|| opt_u64(args, "duration"));
+                let cron_expression = opt_str(args, "cron_expression")
+                    .or_else(|| opt_str(args, "cron"))
+                    .map(|s| s.to_string());
+                let max_iterations = opt_u64(args, "max_iterations").map(|n| n as usize);
+
+                let req = ScheduleRequest {
+                    command: cmd.to_string(),
+                    name,
+                    interval_seconds,
+                    duration_seconds,
+                    cron_expression,
+                    max_iterations,
+                };
+
+                let summary = registry.schedule(workspace_root, req).await?;
+                let is_one_shot = summary
+                    .schedule_info
+                    .as_ref()
+                    .map(|s| s.is_one_shot)
+                    .unwrap_or(false);
+                let interval = summary
+                    .schedule_info
+                    .as_ref()
+                    .map(|s| s.interval_secs)
+                    .unwrap_or(60);
+
+                if is_one_shot {
+                    Ok(format!(
+                        "⏱ One-shot timer registered successfully:\n• ID: {}\n• Name: {}\n• Type: {:?}\n• Command: {}\n• Duration: {}s\n• Status: {:?}",
+                        summary.id, summary.name, summary.process_type, cmd, interval, summary.status
+                    ))
+                } else {
+                    let max_str = summary
+                        .schedule_info
+                        .as_ref()
+                        .and_then(|s| s.max_iterations)
+                        .map(|m| format!("{} max", m))
+                        .unwrap_or_else(|| "unlimited".to_string());
+                    Ok(format!(
+                        "⏱ Scheduled task registered successfully:\n• ID: {}\n• Name: {}\n• Type: {:?}\n• Command: {}\n• Cadence: Every {}s\n• Iterations: {}\n• Status: {:?}",
+                        summary.id, summary.name, summary.process_type, cmd, interval, max_str, summary.status
+                    ))
+                }
+            }
             "workers" => {
                 let list = registry.list_workers().await;
                 if list.is_empty() {
@@ -323,8 +405,18 @@ pub async fn dispatch(
                 let mut out = header;
                 for p in list {
                     let url_disp = p.url.as_deref().unwrap_or("-");
+                    let sched_disp = if let Some(ref sched) = p.schedule_info {
+                        if sched.is_one_shot {
+                            format!(" | Timer: {}s (Runs: {})", sched.interval_secs, sched.iteration_count)
+                        } else {
+                            let max_str = sched.max_iterations.map(|m| format!("/{}", m)).unwrap_or_default();
+                            format!(" | Schedule: Every {}s (Runs: {}{})", sched.interval_secs, sched.iteration_count, max_str)
+                        }
+                    } else {
+                        String::new()
+                    };
                     out.push_str(&format!(
-                        "• [{}] {} ({:?}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
+                        "• [{}] {} ({:?}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s{}\n",
                         p.id,
                         p.name,
                         p.process_type,
@@ -334,6 +426,7 @@ pub async fn dispatch(
                         p.cpu_percent,
                         p.memory_rss_mb,
                         p.uptime_secs,
+                        sched_disp,
                     ));
                 }
                 Ok(out)
@@ -352,8 +445,18 @@ pub async fn dispatch(
                         .ok_or_else(|| DevError::NotFound(id_str.to_string()))?;
 
                     let url_disp = summary.url.as_deref().unwrap_or("none");
+                    let sched_disp = if let Some(ref sched) = summary.schedule_info {
+                        if sched.is_one_shot {
+                            format!("\n• Timer Duration: {}s\n• Runs: {}", sched.interval_secs, sched.iteration_count)
+                        } else {
+                            let max_str = sched.max_iterations.map(|m| format!(" (max: {})", m)).unwrap_or_default();
+                            format!("\n• Schedule: Every {}s\n• Runs: {}{}", sched.interval_secs, sched.iteration_count, max_str)
+                        }
+                    } else {
+                        String::new()
+                    };
                     Ok(format!(
-                        "📊 Process Status for '{}':\n• Name: {}\n• Type: {:?}\n• Status: {:?}\n• PID: {}\n• URL: {}\n• Ports: {:?}\n• CPU: {:.1}%\n• Memory RSS: {:.1} MB\n• Uptime: {}s",
+                        "📊 Process Status for '{}':\n• Name: {}\n• Type: {:?}\n• Status: {:?}\n• PID: {}\n• URL: {}\n• Ports: {:?}\n• CPU: {:.1}%\n• Memory RSS: {:.1} MB\n• Uptime: {}s{}",
                         summary.id,
                         summary.name,
                         summary.process_type,
@@ -363,7 +466,8 @@ pub async fn dispatch(
                         summary.ports,
                         summary.cpu_percent,
                         summary.memory_rss_mb,
-                        summary.uptime_secs
+                        summary.uptime_secs,
+                        sched_disp
                     ))
                 } else {
                     // Fall back to listing all processes
@@ -374,8 +478,18 @@ pub async fn dispatch(
                     let mut out = format!("📋 Managed Development Processes ({} active):\n\n", list.len());
                     for p in list {
                         let url_disp = p.url.as_deref().unwrap_or("-");
+                        let sched_disp = if let Some(ref sched) = p.schedule_info {
+                            if sched.is_one_shot {
+                                format!(" | Timer: {}s (Runs: {})", sched.interval_secs, sched.iteration_count)
+                            } else {
+                                let max_str = sched.max_iterations.map(|m| format!("/{}", m)).unwrap_or_default();
+                                format!(" | Schedule: Every {}s (Runs: {}{})", sched.interval_secs, sched.iteration_count, max_str)
+                            }
+                        } else {
+                            String::new()
+                        };
                         out.push_str(&format!(
-                            "• [{}] {} ({:?}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB\n",
+                            "• [{}] {} ({:?}) | Status: {:?} | URL: {} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB{}\n",
                             p.id,
                             p.name,
                             p.process_type,
@@ -384,6 +498,7 @@ pub async fn dispatch(
                             p.pid.unwrap_or(0),
                             p.cpu_percent,
                             p.memory_rss_mb,
+                            sched_disp,
                         ));
                     }
                     Ok(out)
@@ -560,7 +675,7 @@ pub async fn dispatch(
             }
             unknown => Err(ToolError::InvalidArguments {
                 name: "minitask".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all, screenshot, workers", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, probe_port", unknown),
             }.into()),
         }
     }.await)
@@ -745,4 +860,30 @@ mod tests {
         let kill_args = json!({ "action": "kill_all" });
         let _ = dispatch("minitask", &kill_args, temp.path()).await;
     }
+
+    #[tokio::test]
+    async fn test_minitask_schedule_tool_dispatch() {
+        let temp = tempdir().unwrap();
+        let args = json!({
+            "action": "schedule",
+            "command": "echo 'Heartbeat check'",
+            "name": "system-heartbeat",
+            "interval_seconds": 30
+        });
+
+        let res = dispatch("minitask", &args, temp.path()).await.unwrap().unwrap();
+        assert!(res.contains("Scheduled task registered successfully"));
+        assert!(res.contains("30s"));
+
+        // List should include schedule info
+        let list_args = json!({ "action": "list" });
+        let list_res = dispatch("minitask", &list_args, temp.path()).await.unwrap().unwrap();
+        assert!(list_res.contains("system-heartbeat"));
+        assert!(list_res.contains("30s"));
+
+        // Clean up
+        let kill_args = json!({ "action": "kill_all" });
+        let _ = dispatch("minitask", &kill_args, temp.path()).await;
+    }
 }
+
