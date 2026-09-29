@@ -871,13 +871,19 @@ mod tests {
             "interval_seconds": 30
         });
 
-        let res = dispatch("minitask", &args, temp.path()).await.unwrap().unwrap();
+        let res = dispatch("minitask", &args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(res.contains("Scheduled task registered successfully"));
         assert!(res.contains("30s"));
 
         // List should include schedule info
         let list_args = json!({ "action": "list" });
-        let list_res = dispatch("minitask", &list_args, temp.path()).await.unwrap().unwrap();
+        let list_res = dispatch("minitask", &list_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(list_res.contains("system-heartbeat"));
         assert!(list_res.contains("30s"));
 
@@ -886,4 +892,3 @@ mod tests {
         let _ = dispatch("minitask", &kill_args, temp.path()).await;
     }
 }
-

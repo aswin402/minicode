@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 145 MiniTask Manager — Unified Task Orchestration, Daemon Web Server Auto-Migration, Proactive OOM/RAM Watchdog & Zero-Orphan Guarantees (v0.3.41) | **Status:** ✅ Complete (185 Tools)
+> **Current Phase:** Phase 147 MiniTask Dynamic Scheduling, Watchers & Natural Intent Telemetry (v0.3.41) | **Status:** ✅ Complete (185 Tools)
 
 ---
 
@@ -1974,3 +1974,12 @@
 - [x] 146.3: TUI Slash Commands & In-Modal Prompt Consolidation: Streamlined slash commands in `src/app/commands.rs` strictly to `/tasks` and `/minitask`; updated empty-state filter prompts in `src/ui/modals/processes.rs` to cite `minitask`.
 - [x] 146.4: Integration Test Suite Modernization: Migrated all dispatch calls and schema assertions across `tests/integration_minitask_manager.rs`, `tests/integration_minidev_orchestrator.rs`, `tests/integration_minidev_watchdog.rs`, `tests/integration_minidev_workers.rs`, and `tests/integration_zero_orphan_lifecycle.rs` to `minitask`.
 - [x] 146.5: Live Real-World Autonomous Verification: Ran `minicode run -y` in `test_playground/realworld_minicode_agent_task` verifying autonomous code creation, daemon launch via `minitask`, telemetry inspection, and clean zero-orphan process termination.
+
+### Phase 147: MiniTask Dynamic Scheduling, Watchers & Natural Intent Telemetry (v0.3.41)
+- [x] 147.1: Domain Models & Scheduling Types: Implemented `DevProcessType::Cron` and `DevProcessType::Timer` in `src/dev/models.rs`, defined `ScheduleRequest` (with configurable `interval_seconds`, `duration_seconds`, `cron_expression`, and `max_iterations`) and `ScheduleInfo` with run counts and timestamps. Added `schedule_info` to `DevProcessSummary` and `DevProcessHandle`.
+- [x] 147.2: Async Scheduler Engine in `MiniDevRegistry`: Implemented `MiniDevRegistry::schedule()` in `src/dev/registry.rs` using Tokio async interval loops, cancellation handles wired into `DevProcessHandle::cancel_hook`, process output capturing to 1,000-line ring buffers, run count tracking, auto-termination on one-shot timer or `max_iterations`, and clean zero-orphan termination on `stop`, `kill_all`, or minicode shutdown.
+- [x] 147.3: `minitask` Tool Expansion (`action: "schedule"`): Added `schedule` action and parameters (`interval_seconds`, `duration_seconds`, `cron`, `max_iterations`, `prompt`) to the unified Tool 168 `minitask` schema in `src/tools/registry/dev_tools.rs`. Enhanced `list`, `ps`, and `status` to report schedule cadence (`Schedule: Every <N>s (Runs: <K>)` or `Timer: <N>s (Runs: <K>)`). Maintained strict `TOTAL_TOOL_COUNT` = 185 invariant.
+- [x] 147.4: Natural Intent Routing & Context Enrichment: Expanded `WorkflowRouter::classify` in `src/agent/orchestrator.rs` and `src/context/search/intent_filter.rs` to detect natural process inspection queries ("whats happening", "what is running", "status of tasks", "is the server running", "how are background processes doing"). Enhanced `enrich_runtime_dev()` with live process telemetry, schedule intervals, and recent 3-line log output tails so minicode answers background status questions directly.
+- [x] 147.5: In-TUI Process Modal UI Enhancements: Updated `src/ui/modals/processes.rs` so the Workers tab counts and filters `DevProcessType::Cron` and `DevProcessType::Timer`, table displays `Timer (<N>s)` or `Every <N>s` under PORT / URL when ports are empty, and the details card renders schedule description and run metrics.
+- [x] 147.6: Comprehensive Test Suite & Real-World Validation: Created end-to-end integration test suite `tests/integration_minitask_schedule.rs` testing recurring intervals, one-shot timers, natural intent context enrichment, and zero-orphan cancellation. Passed all 13 integration tests, clippy (`-D warnings`), formatting (`cargo fmt --check`), compiled release binary in `~/.local/bin/minicode`, and validated live headless execution in real-world sandbox.
+

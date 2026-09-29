@@ -231,24 +231,24 @@ fn test_process_monitor_ratatui_render_all_tabs() {
 
 #[test]
 fn test_command_catalog_and_help_registrations() {
-    // Assert /processes exists in COMMAND_CATALOG_ITEMS
+    // Assert /tasks or /processes exists in COMMAND_CATALOG_ITEMS
     let catalog_item = COMMAND_CATALOG_ITEMS
         .iter()
-        .find(|item| item.name == "/processes");
+        .find(|item| item.name == "/tasks" || item.name == "/processes");
     assert!(
         catalog_item.is_some(),
-        "/processes must be listed in COMMAND_CATALOG_ITEMS"
+        "/tasks or /processes must be listed in COMMAND_CATALOG_ITEMS"
     );
     let item = catalog_item.expect("catalog_item");
     assert_eq!(item.shortcut, "F7");
 
-    // Assert /processes and /dev exist in PALETTE_COMMANDS
-    let has_processes_palette = PALETTE_COMMANDS
-        .iter()
-        .any(|cmd| cmd.slash_name == "/processes" && cmd.shortcut == Some("F7"));
+    // Assert /tasks or /processes exists in PALETTE_COMMANDS
+    let has_processes_palette = PALETTE_COMMANDS.iter().any(|cmd| {
+        (cmd.slash_name == "/tasks" || cmd.slash_name == "/processes") && cmd.shortcut == Some("F7")
+    });
     assert!(
         has_processes_palette,
-        "/processes with shortcut F7 must be in PALETTE_COMMANDS"
+        "/tasks or /processes with shortcut F7 must be in PALETTE_COMMANDS"
     );
 
     let has_dev_palette = PALETTE_COMMANDS

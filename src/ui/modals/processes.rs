@@ -269,7 +269,10 @@ impl ProcessesModalState {
                     ) || !p.ports.is_empty()
                         || p.url.is_some()
                 }
-                ProcessesTab::Workers => matches!(p.process_type, DevProcessType::Worker),
+                ProcessesTab::Workers => matches!(
+                    p.process_type,
+                    DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
+                ),
             };
 
             if !tab_match {
@@ -421,7 +424,12 @@ fn render_top_tabs_and_search(
                 let cnt = state
                     .processes
                     .iter()
-                    .filter(|p| matches!(p.process_type, DevProcessType::Worker))
+                    .filter(|p| {
+                        matches!(
+                            p.process_type,
+                            DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
+                        )
+                    })
                     .count();
                 format!(" ({})", cnt)
             }
@@ -636,6 +644,12 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
                     .map(|x| x.to_string())
                     .collect::<Vec<_>>()
                     .join(",")
+            } else if let Some(ref sched) = p.schedule_info {
+                if sched.is_one_shot {
+                    format!("Timer ({}s)", sched.interval_secs)
+                } else {
+                    format!("Every {}s", sched.interval_secs)
+                }
             } else {
                 "-".to_string()
             };
@@ -804,7 +818,7 @@ fn render_process_details_card(
         format!("{}s", selected.uptime_secs)
     };
 
-    let info_lines = vec![
+    let mut info_lines = vec![
         Line::from(vec![
             Span::styled(
                 format!("  {} ", selected.name),
@@ -870,6 +884,28 @@ fn render_process_details_card(
             ),
         ]),
     ];
+
+    if let Some(ref sched) = selected.schedule_info {
+        let sched_desc = if sched.is_one_shot {
+            format!(
+                "One-shot timer ({}s delay, runs: {})",
+                sched.interval_secs, sched.iteration_count
+            )
+        } else {
+            let max_str = sched
+                .max_iterations
+                .map(|m| format!("/{}", m))
+                .unwrap_or_default();
+            format!(
+                "Recurring interval (Every {}s, runs: {}{})",
+                sched.interval_secs, sched.iteration_count, max_str
+            )
+        };
+        info_lines.push(Line::from(vec![
+            Span::styled("  Schedule:  ", Style::default().fg(theme.muted)),
+            Span::styled(sched_desc, Style::default().fg(theme.brand_accent)),
+        ]));
+    }
 
     let info_para = Paragraph::new(info_lines);
     frame.render_widget(info_para, chunks[0]);

@@ -7,12 +7,12 @@ use crate::dev::models::{
 };
 use crate::dev::process::{spawn_process_group, DevProcessHandle};
 use crate::error::{DevError, Result};
-use uuid::Uuid;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 static GLOBAL_DEV_REGISTRY: OnceLock<Arc<MiniDevRegistry>> = OnceLock::new();
 
@@ -1156,7 +1156,8 @@ mod tests {
 
         let logs = registry.logs(&summary.id, 10, None).await.expect("logs");
         assert!(
-            logs.iter().any(|l| l.contains("tick_interval") || l.contains("Scheduled execution")),
+            logs.iter()
+                .any(|l| l.contains("tick_interval") || l.contains("Scheduled execution")),
             "Logs must contain scheduled tick output: {:?}",
             logs
         );
@@ -1192,7 +1193,8 @@ mod tests {
 
         let logs = registry.logs(&summary.id, 10, None).await.expect("logs");
         assert!(
-            logs.iter().any(|l| l.contains("timer_done") || l.contains("One-shot timer")),
+            logs.iter()
+                .any(|l| l.contains("timer_done") || l.contains("One-shot timer")),
             "Logs must contain one-shot output: {:?}",
             logs
         );

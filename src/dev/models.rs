@@ -585,9 +585,18 @@ mod tests {
     #[test]
     fn test_dev_process_type_cron_and_timer() {
         assert_eq!(DevProcessType::from_str_loose("cron"), DevProcessType::Cron);
-        assert_eq!(DevProcessType::from_str_loose("schedule"), DevProcessType::Cron);
-        assert_eq!(DevProcessType::from_str_loose("timer"), DevProcessType::Timer);
-        assert_eq!(DevProcessType::from_str_loose("timeout"), DevProcessType::Timer);
+        assert_eq!(
+            DevProcessType::from_str_loose("schedule"),
+            DevProcessType::Cron
+        );
+        assert_eq!(
+            DevProcessType::from_str_loose("timer"),
+            DevProcessType::Timer
+        );
+        assert_eq!(
+            DevProcessType::from_str_loose("timeout"),
+            DevProcessType::Timer
+        );
         assert_eq!(format!("{}", DevProcessType::Cron), "Cron");
         assert_eq!(format!("{}", DevProcessType::Timer), "Timer");
     }

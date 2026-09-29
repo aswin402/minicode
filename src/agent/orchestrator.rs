@@ -891,10 +891,19 @@ impl WorkflowRouter {
                 };
                 let sched_str = if let Some(ref sched) = p.schedule_info {
                     if sched.is_one_shot {
-                        format!(" [Timer: {}s, Runs: {}]", sched.interval_secs, sched.iteration_count)
+                        format!(
+                            " [Timer: {}s, Runs: {}]",
+                            sched.interval_secs, sched.iteration_count
+                        )
                     } else {
-                        let max_str = sched.max_iterations.map(|m| format!("/{}", m)).unwrap_or_default();
-                        format!(" [Schedule: Every {}s, Runs: {}{}]", sched.interval_secs, sched.iteration_count, max_str)
+                        let max_str = sched
+                            .max_iterations
+                            .map(|m| format!("/{}", m))
+                            .unwrap_or_default();
+                        format!(
+                            " [Schedule: Every {}s, Runs: {}{}]",
+                            sched.interval_secs, sched.iteration_count, max_str
+                        )
                     }
                 } else {
                     String::new()
@@ -905,7 +914,14 @@ impl WorkflowRouter {
                     .unwrap_or_else(|| "N/A".to_string());
                 out.push_str(&format!(
                     "  • [{}] `{}` (PID: {}, Status: {}{}{}, RAM: {:.1}MB, CPU: {:.1}%)\n",
-                    p.id, p.name, pid_str, p.status, port_str, sched_str, p.memory_rss_mb, p.cpu_percent
+                    p.id,
+                    p.name,
+                    pid_str,
+                    p.status,
+                    port_str,
+                    sched_str,
+                    p.memory_rss_mb,
+                    p.cpu_percent
                 ));
 
                 if let Ok(recent_logs) = dev_reg.logs(&p.id, 3, None).await {
