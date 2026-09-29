@@ -109,6 +109,147 @@ impl std::str::FromStr for SkillKind {
     }
 }
 
+/// Classification of an external learned source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// Web documentation, official guide, or cheatsheet URL (e.g. docs.rs, nextjs.org)
+    WebDoc,
+    /// Reference repository or local template directory
+    RepoTemplate,
+    /// Software package, library, or crate documentation
+    PackageGuide,
+    /// MCP tool, server integration, or CLI assistant
+    McpTool,
+}
+
+impl SourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WebDoc => "web_doc",
+            Self::RepoTemplate => "repo_template",
+            Self::PackageGuide => "package_guide",
+            Self::McpTool => "mcp_tool",
+        }
+    }
+
+    pub fn badge(&self) -> &'static str {
+        match self {
+            Self::WebDoc => "WebDoc",
+            Self::RepoTemplate => "Repo",
+            Self::PackageGuide => "Pkg",
+            Self::McpTool => "MCP",
+        }
+    }
+}
+
+/// An ingested and bookmarked external knowledge source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LearnedSource {
+    pub id: String,
+    pub uri: String,
+    pub title: String,
+    pub kind: SourceKind,
+    pub summary: String,
+    pub tags: Vec<String>,
+    pub extracted_skill_or_doc: Option<String>,
+    pub created_at: String,
+    pub last_referenced: String,
+}
+
+impl LearnedSource {
+    pub fn matches_query(&self, q: &str) -> bool {
+        let q_lower = q.to_lowercase();
+        let uri_lower = self.uri.to_lowercase();
+        let title_lower = self.title.to_lowercase();
+        let summary_lower = self.summary.to_lowercase();
+
+        if uri_lower.contains(&q_lower)
+            || title_lower.contains(&q_lower)
+            || summary_lower.contains(&q_lower)
+            || self
+                .tags
+                .iter()
+                .any(|t| t.to_lowercase().contains(&q_lower))
+        {
+            return true;
+        }
+
+        // Token-based matching for multi-word queries
+        let tokens: Vec<&str> = q_lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|t| t.trim())
+            .filter(|t| t.len() >= 3)
+            .collect();
+
+        if tokens.is_empty() {
+            return false;
+        }
+
+        tokens.iter().any(|&token| {
+            uri_lower.contains(token)
+                || title_lower.contains(token)
+                || summary_lower.contains(token)
+                || self.tags.iter().any(|t| t.to_lowercase().contains(token))
+        })
+    }
+}
+
+/// A universal, cross-project learned technical trap, compiler gotcha, or negative knowledge invariant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GlobalGotcha {
+    pub id: String,
+    pub trigger: String,
+    pub context_scope: String,
+    pub failed_attempt: String,
+    pub verified_fix: String,
+    pub created_at: String,
+    pub occurrence_count: usize,
+}
+
+impl GlobalGotcha {
+    pub fn matches_query(&self, q: &str) -> bool {
+        let q_lower = q.to_lowercase();
+        let trigger_lower = self.trigger.to_lowercase();
+        let scope_lower = self.context_scope.to_lowercase();
+        let failed_lower = self.failed_attempt.to_lowercase();
+        let fix_lower = self.verified_fix.to_lowercase();
+
+        if trigger_lower.contains(&q_lower)
+            || scope_lower.contains(&q_lower)
+            || failed_lower.contains(&q_lower)
+            || fix_lower.contains(&q_lower)
+        {
+            return true;
+        }
+
+        // Token-based matching for multi-word queries
+        let tokens: Vec<&str> = q_lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|t| t.trim())
+            .filter(|t| t.len() >= 3)
+            .collect();
+
+        if tokens.is_empty() {
+            return false;
+        }
+
+        tokens.iter().any(|&token| {
+            trigger_lower.contains(token)
+                || scope_lower.contains(token)
+                || failed_lower.contains(token)
+                || fix_lower.contains(token)
+        })
+    }
+
+    pub fn format_prompt_block(&self) -> String {
+        format!(
+            "• [{}] Trap: {}\n    Avoid: {}\n    Fix:   {}",
+            self.context_scope, self.trigger, self.failed_attempt, self.verified_fix
+        )
+    }
+}
+
 /// Metadata extracted from the YAML frontmatter of a `SKILL.md` or `.md` file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillFrontmatter {
@@ -630,5 +771,44 @@ Write tests first.
         assert!(bundle.matches_query("nextjs"));
         assert!(bundle.matches_query("fullstack"));
         assert!(!bundle.matches_query("kubernetes"));
+    }
+
+    #[test]
+    fn test_sources_and_gotchas_models() {
+        let source = LearnedSource {
+            id: "src-1".to_string(),
+            uri: "https://docs.rs/tokio".to_string(),
+            title: "Tokio Async Runtime".to_string(),
+            kind: SourceKind::WebDoc,
+            summary: "Async channels and tasks in Rust".to_string(),
+            tags: vec!["rust".to_string(), "async".to_string()],
+            extracted_skill_or_doc: Some("rust-tokio".to_string()),
+            created_at: "2026-09-29T12:00:00Z".to_string(),
+            last_referenced: "2026-09-29T12:00:00Z".to_string(),
+        };
+
+        assert_eq!(source.kind.as_str(), "web_doc");
+        assert_eq!(source.kind.badge(), "WebDoc");
+        assert!(source.matches_query("tokio"));
+        assert!(source.matches_query("rust"));
+        assert!(!source.matches_query("python"));
+
+        let gotcha = GlobalGotcha {
+            id: "gotcha-1".to_string(),
+            trigger: "broadcast channel capacity saturation".to_string(),
+            context_scope: "rust".to_string(),
+            failed_attempt: "Calling send() on unbounded or undersized broadcast channel"
+                .to_string(),
+            verified_fix: "Use bounded channel with Lagged error handling or mpsc".to_string(),
+            created_at: "2026-09-29T12:00:00Z".to_string(),
+            occurrence_count: 2,
+        };
+
+        assert!(gotcha.matches_query("broadcast"));
+        assert!(gotcha.matches_query("rust"));
+        assert!(!gotcha.matches_query("django"));
+        let block = gotcha.format_prompt_block();
+        assert!(block.contains("Avoid: Calling send()"));
+        assert!(block.contains("Fix:   Use bounded channel"));
     }
 }

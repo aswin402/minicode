@@ -86,6 +86,64 @@ impl BrowserManager {
         *guard = Some(Arc::clone(&handle));
         Ok(handle)
     }
+
+    /// Shuts down the pooled live engine, killing the child process, its process group,
+    /// and all child/descendant processes cleanly.
+    pub async fn shutdown_live_engine() -> Result<bool> {
+        let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(engine) = guard.take() {
+            let pid = engine.process.child.id();
+            if let Some(p) = pid {
+                #[cfg(unix)]
+                {
+                    let p_i32 = p as i32;
+                    let descendants = crate::dev::ports::find_all_descendants(p);
+                    unsafe {
+                        let _ = libc::kill(-p_i32, libc::SIGTERM);
+                        let _ = libc::kill(p_i32, libc::SIGTERM);
+                        for &desc in &descendants {
+                            let _ = libc::kill(desc as i32, libc::SIGTERM);
+                            let _ = libc::kill(-(desc as i32), libc::SIGTERM);
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    unsafe {
+                        let _ = libc::kill(-p_i32, libc::SIGKILL);
+                        let _ = libc::kill(p_i32, libc::SIGKILL);
+                        for &desc in &descendants {
+                            let _ = libc::kill(desc as i32, libc::SIGKILL);
+                            let _ = libc::kill(-(desc as i32), libc::SIGKILL);
+                        }
+                    }
+                }
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
+            }
+            tracing::info!("Live browser engine shut down cleanly.");
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Checks if a live browser engine is currently running.
+    pub async fn is_live_engine_running() -> bool {
+        let guard = LIVE_ENGINE.lock().await;
+        guard.is_some()
+    }
+
+    /// Gets summary of current live engine if running: (engine_name, pid, cdp_port).
+    pub async fn get_live_engine_info() -> Option<(String, u32, u16)> {
+        let guard = LIVE_ENGINE.lock().await;
+        if let Some(ref engine) = *guard {
+            let pid = engine.process.child.id().unwrap_or(0);
+            Some((
+                engine.process.config.engine.to_string(),
+                pid,
+                engine.process.cdp_port,
+            ))
+        } else {
+            None
+        }
+    }
 }
 #[derive(Clone, Default)]
 pub struct BrowserManager {
@@ -258,6 +316,14 @@ user_pref("remote.active-protocols", 3);
         #[cfg(unix)]
         {
             cmd.process_group(0);
+        }
+
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(|| {
+                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
         }
 
         // Pass performance budgets for Obscura if applicable

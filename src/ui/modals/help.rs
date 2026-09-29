@@ -71,9 +71,9 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  /processes ", Style::default().fg(theme.success)),
+            Span::styled("  /tasks     ", Style::default().fg(theme.success)),
             Span::styled(
-                "Process monitor, live logs & watchdog dashboard (F7)",
+                "MiniTask Manager, live logs & watchdog dashboard (/processes, F7)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),
@@ -214,7 +214,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from(vec![
             Span::styled("  F7         ", Style::default().fg(theme.warning)),
             Span::styled(
-                "Toggle Process Monitor & Watchdog Supervisor (/processes)",
+                "Toggle MiniTask Manager & Process Supervisor (/tasks)",
                 Style::default().fg(theme.text_primary),
             ),
         ]),

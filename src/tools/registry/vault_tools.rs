@@ -262,6 +262,46 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["name", "description", "skills"]
             }),
         },
+        ToolSchema {
+            name: "vault_ingest_source".to_string(),
+            description: "Ingest and bookmark an external knowledge source (HTTP URL or local directory/repo path) into minivault, registering it in sources.json and synthesizing corresponding documentation or workflow skills.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "HTTP URL (e.g. 'https://docs.rs/tokio') or local repository directory path to ingest"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional human-readable title or skill name override"
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["project", "global"],
+                        "description": "Destination vault scope: 'project' (default) or 'global'"
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "Optional custom markdown instructions or extraction summary"
+                    }
+                },
+                "required": ["uri"]
+            }),
+        },
+        ToolSchema {
+            name: "vault_gotchas_list".to_string(),
+            description: "Search and inspect universal cross-project technical gotchas, compiler traps, and verified fixes learned from past sessions across the machine.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional filter keyword or technology name (e.g. 'tokio', 'react', 'borrow checker')"
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -646,6 +686,68 @@ pub async fn dispatch(
             }
         }.await),
 
+        "vault_ingest_source" => Some(async move {
+            let uri = match require_str(args, "uri", "vault_ingest_source") {
+                Ok(u) => u,
+                Err(e) => return Err(e.into()),
+            };
+            let title = opt_str(args, "title");
+            let instructions = opt_str(args, "instructions");
+            let scope_str = opt_str(args, "scope").unwrap_or("project");
+
+            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
+                SkillScope::Global
+            } else {
+                SkillScope::Project
+            };
+
+            match store.ingest_source(uri, title, target_scope, instructions).await {
+                Ok((source, skill)) => {
+                    let mut msg = format!(
+                        "✔ Successfully ingested external source `{}` as [{}] `{}`!\n",
+                        source.uri,
+                        source.kind.badge(),
+                        source.title
+                    );
+                    msg.push_str(&format!("  • Registered in: `sources.json` (ID: `{}`)\n", source.id));
+                    if let Some(s) = skill {
+                        let path_display = s.path.map(|p| p.display().to_string()).unwrap_or_else(|| s.name.clone());
+                        msg.push_str(&format!(
+                            "  • Synthesized Vault [Doc]: `{}` [{:?}] at `{}`\n",
+                            s.name, s.scope, path_display
+                        ));
+                    }
+                    Ok(msg)
+                }
+                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to ingest source: {}", e)).into()),
+            }
+        }.await),
+
+        "vault_gotchas_list" => Some(async move {
+            let query = opt_query(args).unwrap_or("");
+            let gotchas = store.find_relevant_gotchas(query);
+
+            if gotchas.is_empty() {
+                return Ok(format!(
+                    "ℹ No universal gotchas found matching query '{}'. As compiler checks and auto-heal barriers succeed, hard-won fixes are automatically recorded here.",
+                    query
+                ));
+            }
+
+            let mut out = format!(
+                "💡 **Universal Machine Gotchas & Compiler Traps** ({} found matching '{}'):\n\n",
+                gotchas.len(),
+                query
+            );
+            for g in gotchas {
+                out.push_str(&format!(
+                    "• **[{}]** Trap: `{}` (Encountered {}x)\n  - **Avoid:** {}\n  - **Fix:** {}\n\n",
+                    g.context_scope, g.trigger, g.occurrence_count, g.failed_attempt, g.verified_fix
+                ));
+            }
+            Ok(out)
+        }.await),
+
         _ => None,
     }
 }
@@ -747,5 +849,37 @@ mod tests {
         assert!(bundle_load_res.contains("Successfully loaded skill bundle `fullstack-nextjs`"));
         assert!(bundle_load_res.contains("react"));
         assert!(bundle_load_res.contains("nextjs"));
+
+        // 8. Test vault_ingest_source (local repo)
+        let fake_repo = ws.join("sample-pkg");
+        let _ = std::fs::create_dir_all(&fake_repo);
+        let _ = std::fs::write(
+            fake_repo.join("README.md"),
+            "# Sample Package\n\nFast async queue.",
+        );
+        let ingest_res = dispatch(
+            "vault_ingest_source",
+            &json!({
+                "uri": fake_repo.to_string_lossy(),
+                "title": "sample-pkg",
+                "scope": "project"
+            }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(ingest_res.contains("sample-pkg"));
+        assert!(ingest_res.contains("sources.json"));
+
+        // 9. Test vault_gotchas_list
+        let gotchas_res = dispatch("vault_gotchas_list", &json!({ "query": "" }), ws)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            gotchas_res.contains("Universal Machine Gotchas")
+                || gotchas_res.contains("No universal gotchas found")
+        );
     }
 }

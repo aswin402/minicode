@@ -1217,7 +1217,7 @@ impl<'a> App<'a> {
                                 let display = submission.display.trim().to_string();
                                 match self.handle_command_or_prompt(&prompt, Some(&display), &control_tx).await {
                                     Ok(CommandAction::Continue) => continue,
-                                    Ok(CommandAction::Exit) => return Ok(()),
+                                    Ok(CommandAction::Exit) => break,
                                     Err(e) => {
                                         self.timeline.add_status(format!("✗ Error: {}", e));
                                         continue;
@@ -1241,6 +1241,12 @@ impl<'a> App<'a> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+
+        // Terminate all managed development servers, background tasks, and browser engines
+        let _ = crate::dev::registry::get_global_dev_registry()
+            .kill_all()
+            .await;
+        crate::dev::registry::kill_all_sync();
 
         Ok(())
     }

@@ -187,6 +187,87 @@ pub fn get_process_info(_pid: u32) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
+/// Recursively discovers all descendant process IDs of a given root process on Linux by traversing procfs.
+#[cfg(target_os = "linux")]
+pub fn find_all_descendants(root_pid: u32) -> HashSet<u32> {
+    let mut parent_map: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if let Ok(pid) = name_str.parse::<u32>() {
+                let stat_file = format!("/proc/{}/stat", pid);
+                if let Ok(content) = std::fs::read_to_string(stat_file) {
+                    if let Some(rparen) = content.rfind(')') {
+                        let remainder = &content[rparen + 1..];
+                        let fields: Vec<&str> = remainder.split_whitespace().collect();
+                        // fields[0] is state, fields[1] is ppid
+                        if fields.len() >= 2 {
+                            if let Ok(ppid) = fields[1].parse::<u32>() {
+                                parent_map.entry(ppid).or_default().push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut descendants = HashSet::new();
+    let mut queue = vec![root_pid];
+    while let Some(current) = queue.pop() {
+        if let Some(children) = parent_map.get(&current) {
+            for &child in children {
+                if child != root_pid && descendants.insert(child) {
+                    queue.push(child);
+                }
+            }
+        }
+    }
+
+    descendants
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn find_all_descendants(_root_pid: u32) -> HashSet<u32> {
+    HashSet::new()
+}
+
+/// Checks if an operating system process is actively running (excluding reaped or zombie processes).
+pub fn is_process_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if pid == 0 {
+            return false;
+        }
+        unsafe {
+            if libc::kill(pid as i32, 0) != 0 {
+                return false;
+            }
+        }
+        // On Linux, inspect /proc/<pid>/stat to ensure process is not a zombie ('Z') or dead ('X')
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+                if let Some(rparen) = content.rfind(')') {
+                    let remainder = content[rparen + 1..].trim_start();
+                    if let Some(state_char) = remainder.chars().next() {
+                        if state_char == 'Z' || state_char == 'X' {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 /// Finds the next available TCP port on localhost starting from `start_port`.
 pub fn find_next_available_port(start_port: u16, max_tries: u16) -> Option<u16> {
     for offset in 0..max_tries {
@@ -247,6 +328,18 @@ pub fn detect_requested_port(req: &crate::dev::models::SpawnDevRequest) -> Optio
         }
     }
 
+    // Also detect positional port in python3 -m http.server <port> or SimpleHTTPServer
+    if cmd.contains("http.server") || cmd.contains("SimpleHTTPServer") {
+        for word in cmd.split_whitespace() {
+            if let Ok(p) = word.parse::<u16>() {
+                if (1024..=65535).contains(&p) {
+                    return Some(p);
+                }
+            }
+        }
+        return Some(8000); // Default python http.server port
+    }
+
     None
 }
 
@@ -279,6 +372,13 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
             result = result.replace(pat, rep);
         }
     }
+
+    if (result.contains("http.server") || result.contains("SimpleHTTPServer"))
+        && result.contains(&format!(" {}", old_s))
+    {
+        result = result.replace(&format!(" {}", old_s), &format!(" {}", new_s));
+    }
+
     result
 }
 

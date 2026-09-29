@@ -25,6 +25,7 @@ pub struct MiniDevRegistry {
     docker_containers: Arc<RwLock<HashSet<String>>>,
     browser_pids: Arc<RwLock<HashSet<u32>>>,
     active_pgids: Arc<std::sync::Mutex<HashSet<u32>>>,
+    active_pids: Arc<std::sync::Mutex<HashSet<u32>>>,
 }
 
 impl Default for MiniDevRegistry {
@@ -35,11 +36,107 @@ impl Default for MiniDevRegistry {
 
 impl MiniDevRegistry {
     pub fn new() -> Self {
-        Self {
+        let registry = Self {
             processes: Arc::new(RwLock::new(HashMap::new())),
             docker_containers: Arc::new(RwLock::new(HashSet::new())),
             browser_pids: Arc::new(RwLock::new(HashSet::new())),
             active_pgids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            active_pids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+        };
+        registry.spawn_resource_watchdog();
+        registry
+    }
+
+    /// Spawns an autonomous background resource watchdog loop.
+    /// Every 2 seconds, monitors CPU and RSS memory consumption across all active process trees
+    /// and browser instances. If an OOM spike or runaway memory allocation exceeds the ceiling,
+    /// cleanly terminates the offending process tree to safeguard the host system.
+    fn spawn_resource_watchdog(&self) {
+        let processes = Arc::clone(&self.processes);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+                // Default runaway ceiling in MB: 2048 MB (2 GB) unless specified per process
+                let default_ceiling_mb: f32 = 2048.0;
+
+                loop {
+                    interval.tick().await;
+
+                    // 1. Check managed processes
+                    let handles: Vec<Arc<DevProcessHandle>> = {
+                        let lock = processes.read().await;
+                        lock.values().cloned().collect()
+                    };
+
+                    for handle in handles {
+                        let pid = handle.pid();
+                        if pid == 0 {
+                            continue;
+                        }
+
+                        // Only monitor alive processes
+                        if !crate::dev::ports::is_process_running(pid) {
+                            continue;
+                        }
+
+                        // Sample tree metrics (root + all descendants)
+                        let usage = crate::dev::metrics::sample_process_metrics(pid);
+                        let limit_mb = handle
+                            .max_memory_mb
+                            .map(|m| m as f32)
+                            .unwrap_or(default_ceiling_mb);
+
+                        // Check for RAM spike exceeding ceiling
+                        if usage.memory_rss_mb > limit_mb {
+                            let alert_msg = format!(
+                                "[RESOURCE_WATCHDOG] 🚨 MEMORY SPIKE DETECTED: Process '{}' (PID {}) consumed {:.1} MB, exceeding ceiling of {:.1} MB! Terminating runaway process to prevent system freeze.",
+                                handle.id.as_str(),
+                                pid,
+                                usage.memory_rss_mb,
+                                limit_mb
+                            );
+                            tracing::warn!("{}", alert_msg);
+                            handle.append_log(&alert_msg).await;
+                            handle
+                                .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                                    format!(
+                                        "Killed by OOM Watchdog: {:.1}MB exceeded {:.1}MB ceiling",
+                                        usage.memory_rss_mb, limit_mb
+                                    ),
+                                ))
+                                .await;
+
+                            // Gracefully terminate then kill runaway process group
+                            let _ = handle.terminate().await;
+                        }
+                    }
+
+                    // 2. Check live browser engine
+                    if crate::tools::browser::BrowserManager::is_live_engine_running().await {
+                        if let Some((_engine, browser_pid, _port)) =
+                            crate::tools::browser::BrowserManager::get_live_engine_info().await
+                        {
+                            if browser_pid > 0 && crate::dev::ports::is_process_running(browser_pid)
+                            {
+                                let browser_usage =
+                                    crate::dev::metrics::sample_process_metrics(browser_pid);
+                                // Browser ceiling: 2560 MB (2.5 GB)
+                                if browser_usage.memory_rss_mb > 2560.0 {
+                                    tracing::warn!(
+                                        "[RESOURCE_WATCHDOG] 🚨 Browser engine PID {} consumed {:.1} MB, exceeding 2.5 GB ceiling! Shutting down browser.",
+                                        browser_pid,
+                                        browser_usage.memory_rss_mb
+                                    );
+                                    let _ =
+                                        crate::tools::browser::BrowserManager::shutdown_live_engine(
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -57,6 +154,9 @@ impl MiniDevRegistry {
         let pid = handle_arc.pid();
 
         if let Ok(mut set) = self.active_pgids.lock() {
+            set.insert(pid);
+        }
+        if let Ok(mut set) = self.active_pids.lock() {
             set.insert(pid);
         }
 
@@ -79,7 +179,7 @@ impl MiniDevRegistry {
         filter_type: Option<DevProcessType>,
     ) -> Vec<DevProcessSummary> {
         let lock = self.processes.read().await;
-        let mut summaries = Vec::with_capacity(lock.len());
+        let mut summaries = Vec::with_capacity(lock.len() + 1);
         for handle in lock.values() {
             if let Some(target) = filter_type {
                 if handle.process_type != target {
@@ -88,6 +188,32 @@ impl MiniDevRegistry {
             }
             summaries.push(self.create_summary(handle).await);
         }
+
+        // Include live browser engine if active
+        if (filter_type.is_none() || filter_type == Some(DevProcessType::Chrome))
+            && crate::tools::browser::BrowserManager::is_live_engine_running().await
+        {
+            if let Some((engine, pid, port)) =
+                crate::tools::browser::BrowserManager::get_live_engine_info().await
+            {
+                summaries.push(DevProcessSummary {
+                    id: DevProcessId::from("browser"),
+                    name: format!("browser-{}", engine.to_lowercase()),
+                    process_type: DevProcessType::Chrome,
+                    status: DevProcessStatus::Running,
+                    pid: Some(pid),
+                    ports: vec![port],
+                    url: Some(format!("http://localhost:{}", port)),
+                    cpu_percent: 0.0,
+                    memory_rss_mb: 0.0,
+                    uptime_secs: 0,
+                    restart_count: 0,
+                    restart_policy: crate::dev::models::RestartPolicy::Never,
+                    port_resolution: None,
+                });
+            }
+        }
+
         summaries.sort_by(|a, b| a.name.cmp(&b.name));
         summaries
     }
@@ -104,6 +230,30 @@ impl MiniDevRegistry {
 
     /// Retrieves detailed summary for a specific process ID with flexible prefix matching.
     pub async fn get(&self, id: &DevProcessId) -> Option<DevProcessSummary> {
+        if (id.as_str() == "browser" || id.as_str() == "chrome")
+            && crate::tools::browser::BrowserManager::is_live_engine_running().await
+        {
+            if let Some((engine, pid, port)) =
+                crate::tools::browser::BrowserManager::get_live_engine_info().await
+            {
+                return Some(DevProcessSummary {
+                    id: DevProcessId::from("browser"),
+                    name: format!("browser-{}", engine.to_lowercase()),
+                    process_type: DevProcessType::Chrome,
+                    status: DevProcessStatus::Running,
+                    pid: Some(pid),
+                    ports: vec![port],
+                    url: Some(format!("http://localhost:{}", port)),
+                    cpu_percent: 0.0,
+                    memory_rss_mb: 0.0,
+                    uptime_secs: 0,
+                    restart_count: 0,
+                    restart_policy: crate::dev::models::RestartPolicy::Never,
+                    port_resolution: None,
+                });
+            }
+        }
+
         let lock = self.processes.read().await;
         if let Some(handle) = lock.get(id) {
             Some(self.create_summary(handle).await)
@@ -149,6 +299,13 @@ impl MiniDevRegistry {
 
     /// Stops a managed process or subagent worker by ID with flexible ID matching.
     pub async fn stop(&self, id: &DevProcessId) -> Result<bool> {
+        if id.as_str() == "browser" || id.as_str() == "chrome" {
+            let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
+            if stopped {
+                return Ok(true);
+            }
+        }
+
         let lock = self.processes.read().await;
         let handle = lock
             .get(id)
@@ -163,9 +320,15 @@ impl MiniDevRegistry {
             })
             .ok_or_else(|| DevError::NotFound(id.to_string()))?;
         let current_pgid = handle.pgid();
+        let current_pid = handle.pid();
         if current_pgid > 0 && current_pgid != std::process::id() {
             if let Ok(mut set) = self.active_pgids.lock() {
                 set.remove(&current_pgid);
+            }
+        }
+        if current_pid > 0 && current_pid != std::process::id() {
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.remove(&current_pid);
             }
         }
         handle.terminate().await?;
@@ -202,6 +365,9 @@ impl MiniDevRegistry {
         if let Ok(mut set) = self.active_pgids.lock() {
             set.remove(&old_handle.pid());
         }
+        if let Ok(mut set) = self.active_pids.lock() {
+            set.remove(&old_handle.pid());
+        }
 
         // Spawn new process preserving the canonical ID
         let new_handle =
@@ -210,6 +376,9 @@ impl MiniDevRegistry {
         let new_arc = Arc::new(new_handle);
         let pid = new_arc.pid();
         if let Ok(mut set) = self.active_pgids.lock() {
+            set.insert(pid);
+        }
+        if let Ok(mut set) = self.active_pids.lock() {
             set.insert(pid);
         }
         let summary = self.create_summary(&new_arc).await;
@@ -223,7 +392,13 @@ impl MiniDevRegistry {
     /// Terminates ALL active managed processes, containers, and browser instances.
     /// This is guaranteed to leave zero orphan processes.
     pub async fn kill_all(&self) -> Result<usize> {
+        // 1. Terminate browser engine
+        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+
         if let Ok(mut set) = self.active_pgids.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.active_pids.lock() {
             set.clear();
         }
 
@@ -252,8 +427,12 @@ impl MiniDevRegistry {
             unsafe {
                 let _ = libc::kill(-(pid as i32), libc::SIGTERM);
                 let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+                let _ = libc::kill(pid as i32, libc::SIGKILL);
             }
         }
+
+        // Force synchronous sweep of all remaining processes
+        kill_all_sync();
 
         Ok(count)
     }
@@ -299,6 +478,11 @@ impl MiniDevRegistry {
                 set.insert(pgid);
             }
         }
+        if pid > 0 && pid != std::process::id() {
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.insert(pid);
+            }
+        }
 
         let mut lock = self.processes.write().await;
         lock.insert(id, Arc::clone(&handle));
@@ -313,16 +497,40 @@ impl MiniDevRegistry {
                 set.insert(new_pgid);
             }
         }
+        if let Ok(mut set) = self.active_pids.lock() {
+            set.remove(&old_pgid);
+            if new_pgid > 0 && new_pgid != std::process::id() {
+                set.insert(new_pgid);
+            }
+        }
     }
 
     /// Registers an external child PID (such as Chrome or a background subagent)
     /// to ensure it is terminated on minicode exit.
     pub fn register_external_pid(&self, pid: u32) {
+        if pid > 0 && pid != std::process::id() {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.insert(pid);
+            }
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.insert(pid);
+            }
+            if let Ok(mut browsers) = self.browser_pids.try_write() {
+                browsers.insert(pid);
+            }
+        }
+    }
+
+    /// Unregisters an external child PID that completed its lifecycle cleanly.
+    pub fn unregister_external_pid(&self, pid: u32) {
+        if let Ok(mut set) = self.active_pids.lock() {
+            set.remove(&pid);
+        }
         if let Ok(mut set) = self.active_pgids.lock() {
-            set.insert(pid);
+            set.remove(&pid);
         }
         if let Ok(mut browsers) = self.browser_pids.try_write() {
-            browsers.insert(pid);
+            browsers.remove(&pid);
         }
     }
 
@@ -372,22 +580,103 @@ impl MiniDevRegistry {
     }
 }
 
-/// Synchronously kills all tracked process groups via direct OS signals.
-/// Safe to invoke from panic hooks, signal handlers, and Drop guards.
+/// Synchronously kills all tracked process groups, direct PIDs, and their descendant process trees
+/// via direct OS signals. Safe to invoke from panic hooks, signal handlers, and Drop guards.
 pub fn kill_all_sync() {
-    if let Some(registry) = GLOBAL_DEV_REGISTRY.get() {
-        if let Ok(mut set) = registry.active_pgids.lock() {
-            let my_pid = std::process::id();
-            for &pgid in set.iter() {
-                if pgid > 0 && pgid != my_pid {
-                    #[cfg(unix)]
+    let registry = get_global_dev_registry();
+    let my_pid = std::process::id();
+
+    // 1. Gather all target root PIDs and PGIDs
+    let mut targets = HashSet::new();
+
+    if let Ok(mut set) = registry.active_pgids.lock() {
+        for &pgid in set.iter() {
+            if pgid > 0 && pgid != my_pid {
+                targets.insert(pgid);
+            }
+        }
+        set.clear();
+    }
+
+    if let Ok(mut set) = registry.active_pids.lock() {
+        for &pid in set.iter() {
+            if pid > 0 && pid != my_pid {
+                targets.insert(pid);
+            }
+        }
+        set.clear();
+    }
+
+    if let Ok(mut browsers) = registry.browser_pids.try_write() {
+        for &pid in browsers.iter() {
+            if pid > 0 && pid != my_pid {
+                targets.insert(pid);
+            }
+        }
+        browsers.clear();
+    }
+
+    if targets.is_empty() {
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        // 2. Discover ALL descendant PIDs across all target root processes via /proc
+        let mut all_descendants = HashSet::new();
+        for &target in &targets {
+            let desc = crate::dev::ports::find_all_descendants(target);
+            for d in desc {
+                if d > 0 && d != my_pid {
+                    all_descendants.insert(d);
+                }
+            }
+        }
+
+        // 3. Phase 1: Graceful SIGTERM to process groups, direct PIDs, and descendants
+        unsafe {
+            for &t in &targets {
+                let _ = libc::kill(-(t as i32), libc::SIGTERM);
+                let _ = libc::kill(t as i32, libc::SIGTERM);
+            }
+            for &d in &all_descendants {
+                let _ = libc::kill(d as i32, libc::SIGTERM);
+                let _ = libc::kill(-(d as i32), libc::SIGTERM);
+            }
+        }
+
+        // 4. Brief grace period
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // 5. Phase 2: Forceful SIGKILL to eliminate every remaining process
+        unsafe {
+            for &t in &targets {
+                let _ = libc::kill(-(t as i32), libc::SIGKILL);
+                let _ = libc::kill(t as i32, libc::SIGKILL);
+            }
+            for &d in &all_descendants {
+                let _ = libc::kill(d as i32, libc::SIGKILL);
+                let _ = libc::kill(-(d as i32), libc::SIGKILL);
+            }
+        }
+
+        // 6. Final sweep: catch any late children that spawned during shutdown
+        for &t in &targets {
+            let late_desc = crate::dev::ports::find_all_descendants(t);
+            for ld in late_desc {
+                if ld > 0 && ld != my_pid {
                     unsafe {
-                        let _ = libc::kill(-(pgid as i32), libc::SIGTERM);
-                        let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
+                        let _ = libc::kill(ld as i32, libc::SIGKILL);
+                        let _ = libc::kill(-(ld as i32), libc::SIGKILL);
                     }
                 }
             }
-            set.clear();
+        }
+
+        // 7. Reap any direct child processes that were terminated to release them from zombie state
+        unsafe {
+            let mut status = 0;
+            while libc::waitpid(-1, &mut status, libc::WNOHANG) > 0 {}
         }
     }
 }

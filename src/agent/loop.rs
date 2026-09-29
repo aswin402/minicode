@@ -1742,6 +1742,59 @@ impl AgentLoop {
                             let _ = wm.update_progress(&active_task.title, "completed");
                         }
                         self.emit_current_plan(Some(turn_id), &event_sender);
+
+                        // Autonomous Self-Improvement / Reflexion Hook:
+                        // If this task required heal_attempts > 0 to pass verification,
+                        // extract the hard-won lesson and persist it to universal learned gotchas.
+                        if heal_attempts > 0 {
+                            let tech_scope = turn_files_modified
+                                .first()
+                                .and_then(|f| Path::new(f).extension().and_then(|e| e.to_str()))
+                                .map(|ext| match ext {
+                                    "rs" => "Rust",
+                                    "ts" | "tsx" => "TypeScript/React",
+                                    "js" | "jsx" => "JavaScript",
+                                    "py" => "Python",
+                                    "go" => "Go",
+                                    "toml" | "json" | "yaml" | "yml" => "Config",
+                                    _ => "General",
+                                })
+                                .unwrap_or("General");
+
+                            let trigger = format!(
+                                "Initial modifications to {} failed verification barrier ({} auto-heal iterations)",
+                                turn_files_modified.join(", "),
+                                heal_attempts
+                            );
+                            let failed_attempt = format!(
+                                "Initial code edit did not pass verification gates on {}",
+                                turn_files_modified.join(", ")
+                            );
+                            let verified_fix = format!(
+                                "Auto-healed and verified: all tests, lints, and syntax gates succeeded on {}.",
+                                turn_files_modified.join(", ")
+                            );
+
+                            let gotcha = crate::vault::models::GlobalGotcha {
+                                id: format!("gotcha-{}", uuid::Uuid::new_v4().simple()),
+                                trigger,
+                                context_scope: tech_scope.to_string(),
+                                failed_attempt,
+                                verified_fix,
+                                created_at: chrono::Utc::now().to_rfc3339(),
+                                occurrence_count: 1,
+                            };
+
+                            let store = crate::vault::store::VaultStore::new(&self.workspace_root);
+                            if let Err(e) = store.add_or_update_global_gotcha(gotcha) {
+                                tracing::debug!("Failed to persist auto-learned gotcha: {}", e);
+                            } else {
+                                tracing::info!(
+                                    scope = %tech_scope,
+                                    "Autonomous Reflexion: recorded hard-won lesson into universal vault gotchas"
+                                );
+                            }
+                        }
                     }
                 } else if !turn_files_modified.is_empty()
                     && self.config.agent.auto_heal

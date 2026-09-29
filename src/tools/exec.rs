@@ -160,6 +160,141 @@ fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
     }
 }
 
+/// Determines if a shell command represents a persistent web server, dev daemon, or background process.
+pub fn is_daemon_or_server_command(cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+    if trimmed.ends_with('&') {
+        return true;
+    }
+    let lower = trimmed.to_lowercase();
+    lower.contains("python3 -m http.server")
+        || lower.contains("python -m http.server")
+        || lower.contains("python3 -m simplehttpserver")
+        || lower.contains("python -m simplehttpserver")
+        || lower.contains("npx serve")
+        || lower.contains("npx http-server")
+        || lower.contains("npm run dev")
+        || lower.contains("npm run start")
+        || lower.contains("npm start")
+        || lower.contains("pnpm dev")
+        || lower.contains("pnpm start")
+        || lower.contains("yarn dev")
+        || lower.contains("yarn start")
+        || lower.contains("bun dev")
+        || lower.contains("bun run dev")
+        || lower.contains("vite")
+        || lower.contains("cargo watch")
+        || lower.contains("uvicorn ")
+        || lower.contains("flask run")
+        || lower.contains("fastapi dev")
+        || lower.contains("fastapi run")
+        || lower.contains("docker run")
+        || lower.contains("docker compose up")
+        || lower.contains("docker-compose up")
+}
+
+/// Spawns a persistent background dev server or daemon task under MiniDevRegistry / MiniTask Manager.
+pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> Result<String> {
+    let registry = crate::dev::registry::get_global_dev_registry();
+    let clean_cmd = command_str.trim().trim_end_matches('&').trim();
+    let port_hint = if clean_cmd.contains("http.server") || clean_cmd.contains("SimpleHTTPServer") {
+        clean_cmd
+            .split_whitespace()
+            .find_map(|w| {
+                w.parse::<u16>()
+                    .ok()
+                    .filter(|&p| (1024..=65535).contains(&p))
+            })
+            .or(Some(8000))
+    } else {
+        crate::dev::ports::scan_ports_from_output(command_str)
+            .into_iter()
+            .next()
+    };
+    let lower = clean_cmd.to_lowercase();
+    let name_prefix = if lower.contains("http.server") || lower.contains("simplehttpserver") {
+        "python-webserver"
+    } else if lower.contains("vite") {
+        "vite-dev"
+    } else if lower.contains("cargo watch") {
+        "cargo-watch"
+    } else if lower.contains("uvicorn") || lower.contains("fastapi") || lower.contains("flask") {
+        "backend-api"
+    } else {
+        "bg-task"
+    };
+
+    let req = crate::dev::models::SpawnDevRequest {
+        command: clean_cmd.to_string(),
+        name: Some(name_prefix.to_string()),
+        process_type: crate::dev::models::DevProcessType::from_str_loose(clean_cmd),
+        working_dir: Some(workspace_root.to_path_buf()),
+        extra_env: std::collections::HashMap::new(),
+        port_hint,
+        max_memory_mb: None,
+        port_policy: Some(crate::dev::models::PortConflictPolicy::Fallback),
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+
+    let summary = registry.spawn(workspace_root, req).await?;
+
+    // Wait 800ms for process to initialize or report immediate fast crash
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    // Inspect updated status after startup
+    if let Some(updated) = registry.get(&summary.id).await {
+        if let crate::dev::models::DevProcessStatus::Exited(Some(code)) = updated.status {
+            if code != 0 {
+                let logs = registry
+                    .logs(&summary.id, 20, None)
+                    .await
+                    .unwrap_or_default();
+                return Err(ToolError::CommandExec(format!(
+                    "Background process '{}' (PID {:?}) failed to start (exit code {}):\n{}",
+                    summary.name,
+                    summary.pid,
+                    code,
+                    logs.join("\n")
+                ))
+                .into());
+            }
+        }
+
+        let mut output = String::new();
+        output.push_str(&format!(
+            "🚀 Background task launched successfully and registered with MiniTask Manager:\n• Task ID: {}\n• Name: {}\n• Type: {}\n• PID: {}\n• Status: {}\n",
+            updated.id.as_str(),
+            updated.name,
+            updated.process_type,
+            updated.pid.map(|p| p.to_string()).unwrap_or_else(|| "none".to_string()),
+            updated.status
+        ));
+
+        if let Some(ref url) = updated.url {
+            output.push_str(&format!("• Primary URL: {}\n", url));
+        } else if !updated.ports.is_empty() {
+            output.push_str(&format!(
+                "• Active Ports: {:?}\n• URL: http://localhost:{}\n",
+                updated.ports, updated.ports[0]
+            ));
+        } else if let Some(hint) = port_hint {
+            output.push_str(&format!(
+                "• Expected Port: {}\n• URL: http://localhost:{}\n",
+                hint, hint
+            ));
+        }
+
+        output.push_str("\nProcess is actively running and supervised under MiniTask Manager (with automatic OOM & runaway watchdog).\nUse 'mini_dev' / 'minitask_manager' or '/tasks' in TUI to inspect logs, view telemetry, or stop the task.");
+
+        Ok(output)
+    } else {
+        Ok(format!(
+            "🚀 Background process launched with ID: {}",
+            summary.id.as_str()
+        ))
+    }
+}
+
 /// Executes a shell command inside the sandboxed workspace environment using active context window limit.
 pub async fn exec_cmd(
     workspace_root: &Path,
@@ -176,6 +311,28 @@ pub async fn exec_cmd_with_context(
     timeout_secs: Option<u64>,
     explicit_context: Option<usize>,
 ) -> Result<String> {
+    exec_cmd_full(
+        workspace_root,
+        command_str,
+        timeout_secs,
+        explicit_context,
+        false,
+    )
+    .await
+}
+
+/// Executes a shell command with full control over context limit and background daemon execution.
+pub async fn exec_cmd_full(
+    workspace_root: &Path,
+    command_str: &str,
+    timeout_secs: Option<u64>,
+    explicit_context: Option<usize>,
+    is_daemon: bool,
+) -> Result<String> {
+    if is_daemon || is_daemon_or_server_command(command_str) {
+        return exec_daemon_or_server(workspace_root, command_str).await;
+    }
+
     let timeout = resolve_smart_exec_timeout(command_str, timeout_secs);
 
     let mut std_cmd = build_sanitized_command("sh", workspace_root);
@@ -187,6 +344,7 @@ pub async fn exec_cmd_with_context(
         unsafe {
             use std::os::unix::process::CommandExt;
             std_cmd.pre_exec(move || {
+                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                 apply_landlock_sandbox(&ws, true).map_err(|e| {
                     std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
@@ -210,6 +368,11 @@ pub async fn exec_cmd_with_context(
     let mut child = tokio_cmd
         .spawn()
         .map_err(|e| ToolError::CommandExec(format!("Process spawn error: {}", e)))?;
+
+    let child_pid = child.id().unwrap_or(0);
+    if child_pid > 0 {
+        crate::dev::registry::get_global_dev_registry().register_external_pid(child_pid);
+    }
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -244,23 +407,52 @@ pub async fn exec_cmd_with_context(
     };
 
     let status = match tokio::time::timeout(timeout, run_fut).await {
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => {
+            #[cfg(unix)]
+            if child_pid > 0 {
+                let is_any_alive = unsafe {
+                    libc::kill(-(child_pid as i32), 0) == 0 || libc::kill(child_pid as i32, 0) == 0
+                };
+                if !is_any_alive {
+                    crate::dev::registry::get_global_dev_registry()
+                        .unregister_external_pid(child_pid);
+                }
+            }
+            s
+        }
         Ok(Err(e)) => {
+            #[cfg(unix)]
+            if child_pid > 0 {
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
+            }
             return Err(ToolError::CommandExec(format!("Process execution error: {}", e)).into());
         }
         Err(_) => {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
+            if child_pid > 0 {
+                let p_i32 = child_pid as i32;
+                let descendants = crate::dev::ports::find_all_descendants(child_pid);
                 unsafe {
-                    libc::kill(-(pid as i32), libc::SIGTERM);
+                    let _ = libc::kill(-p_i32, libc::SIGTERM);
+                    let _ = libc::kill(p_i32, libc::SIGTERM);
+                    for &d in &descendants {
+                        let _ = libc::kill(d as i32, libc::SIGTERM);
+                        let _ = libc::kill(-(d as i32), libc::SIGTERM);
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(
                     crate::constants::PROCESS_KILL_GRACE_PERIOD_MS,
                 ))
                 .await;
                 unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
+                    let _ = libc::kill(-p_i32, libc::SIGKILL);
+                    let _ = libc::kill(p_i32, libc::SIGKILL);
+                    for &d in &descendants {
+                        let _ = libc::kill(d as i32, libc::SIGKILL);
+                        let _ = libc::kill(-(d as i32), libc::SIGKILL);
+                    }
                 }
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }
             let _ = child.kill().await;
             return Err(ToolError::CommandTimeout {

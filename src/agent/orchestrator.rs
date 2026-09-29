@@ -416,6 +416,24 @@ impl WorkflowRouter {
             || lower.contains("fullstack bundle")
             || lower.contains("bundled skills")
             || lower.contains("bundled skill")
+            || lower.contains("ingest source")
+            || lower.contains("bookmark")
+            || lower.contains("learn from website")
+            || lower.contains("learn from repo")
+            || lower.contains("learn website")
+            || lower.contains("learn repo")
+            || lower.contains("gotchas")
+            || lower.contains("compiler traps")
+            || lower.contains("self improve")
+            || lower.contains("vault_ingest")
+            || lower.contains("vault_gotchas")
+            || ((lower.contains("http://") || lower.contains("https://"))
+                && (lower.contains("learn")
+                    || lower.contains("ingest")
+                    || lower.contains("doc")
+                    || lower.contains("bookmark")
+                    || lower.contains("save link")
+                    || lower.contains("reference")))
             || (crate::utils::has_word(&lower, "skill")
                 && (lower.contains("internet")
                     || lower.contains("github")
@@ -567,7 +585,7 @@ impl WorkflowRouter {
         prompt: &str,
         archetype: WorkflowArchetype,
     ) -> Option<String> {
-        match archetype {
+        let base_enrichment = match archetype {
             WorkflowArchetype::UiDesign => Self::enrich_ui_design(workspace_root, prompt),
             WorkflowArchetype::CodeExploration => Self::enrich_code_exploration(prompt),
             WorkflowArchetype::RuntimeDev => Self::enrich_runtime_dev().await,
@@ -576,7 +594,40 @@ impl WorkflowRouter {
             }
             WorkflowArchetype::VaultSkills => Self::enrich_vault_skills(workspace_root, prompt),
             WorkflowArchetype::Standard => None,
+        };
+
+        // For engineering workflows (MultiPhaseEngineering or Standard), check if there are
+        // highly relevant universal gotchas learned from past sessions for the active prompt/stack
+        if matches!(
+            archetype,
+            WorkflowArchetype::MultiPhaseEngineering | WorkflowArchetype::Standard
+        ) {
+            let store = crate::vault::store::VaultStore::new(workspace_root);
+            let lower = prompt.to_ascii_lowercase();
+            let relevant_gotchas = store.find_relevant_gotchas(&lower);
+            if !relevant_gotchas.is_empty() {
+                let mut gotcha_block = String::from("\n<universal_learned_gotchas>\n");
+                gotcha_block.push_str("  Known Pitfalls & Invariants (Learned from previous sessions across this machine):\n");
+                for g in relevant_gotchas.iter().take(3) {
+                    gotcha_block.push_str(&format!(
+                        "  {}\n",
+                        g.format_prompt_block().replace('\n', "\n  ")
+                    ));
+                }
+                gotcha_block.push_str("  Directive: Heed these hard-won lessons to prevent repeating previous compiler and runtime errors.\n");
+                gotcha_block.push_str("</universal_learned_gotchas>");
+
+                return match base_enrichment {
+                    Some(mut b) => {
+                        b.push_str(&gotcha_block);
+                        Some(b)
+                    }
+                    None => Some(gotcha_block),
+                };
+            }
         }
+
+        base_enrichment
     }
 
     fn is_empty_workspace(workspace: &Path) -> bool {
@@ -841,7 +892,7 @@ impl WorkflowRouter {
             .collect();
 
         let mut out = String::from("<minivault_skills_guidance>\n");
-        out.push_str("  MiniVault Tool Suite: `vault_search`, `vault_show`, `vault_load`, `vault_unload`, `vault_create`, `vault_update`, `vault_delete`, `vault_import_url`, `vault_bundle_list`, `vault_bundle_load`, `vault_bundle_create`.\n");
+        out.push_str("  MiniVault Tool Suite: `vault_search`, `vault_show`, `vault_load`, `vault_unload`, `vault_create`, `vault_update`, `vault_delete`, `vault_import_url`, `vault_bundle_list`, `vault_bundle_load`, `vault_bundle_create`, `vault_ingest_source`, `vault_gotchas_list`.\n");
 
         if !matched_bundles.is_empty() {
             out.push_str("  Matched Skill Bundles in MiniVault:\n");
@@ -857,7 +908,8 @@ impl WorkflowRouter {
             out.push_str("  Autonomous Action: Call `vault_bundle_load(name)` to install this entire stack into the project.\n");
         }
 
-        if !matched_skills.is_empty() {
+        let has_matched_skills = !matched_skills.is_empty();
+        if has_matched_skills {
             let (docs, workflows): (Vec<_>, Vec<_>) = matched_skills
                 .into_iter()
                 .partition(|s| s.kind() == crate::vault::models::SkillKind::Reference);
@@ -893,8 +945,43 @@ impl WorkflowRouter {
             }
 
             out.push_str("  Autonomous Action: Call `vault_load(name)` to install into active project, or `vault_show(name)` to inspect full rules.\n");
-        } else if matched_bundles.is_empty() {
-            out.push_str("  Autonomous Action: Call `vault_bundle_list()` for curated stacks, `vault_search(query)` to find skills, or `vault_import_url(url)` to download skills from internet/GitHub.\n");
+        }
+
+        let matched_gotchas = store.find_relevant_gotchas(&lower);
+        if !matched_gotchas.is_empty() {
+            out.push_str(
+                "  Universal Machine Gotchas & Compiler Traps (Learned from previous sessions):\n",
+            );
+            for g in &matched_gotchas {
+                out.push_str(&format!(
+                    "  {}\n",
+                    g.format_prompt_block().replace('\n', "\n  ")
+                ));
+            }
+            out.push_str("  Autonomous Action: Call `vault_gotchas_list()` to inspect full negative knowledge.\n");
+        }
+
+        let matched_sources = store.search_sources(&lower);
+        if !matched_sources.is_empty() {
+            out.push_str("  Bookmarked External Knowledge Sources:\n");
+            for s in matched_sources.iter().take(3) {
+                out.push_str(&format!(
+                    "  • [{}] `{}`: {} ({})\n",
+                    s.kind.badge(),
+                    s.title,
+                    s.summary,
+                    s.uri
+                ));
+            }
+            out.push_str("  Autonomous Action: Call `vault_ingest_source(uri)` to bookmark additional docs or repos.\n");
+        }
+
+        if matched_bundles.is_empty()
+            && !has_matched_skills
+            && matched_gotchas.is_empty()
+            && matched_sources.is_empty()
+        {
+            out.push_str("  Autonomous Action: Call `vault_bundle_list()` for curated stacks, `vault_search(query)` to find skills, `vault_ingest_source(uri)` to bookmark URLs/repos, or `vault_import_url(url)` to download skills.\n");
         }
         out.push_str("</minivault_skills_guidance>");
         Some(out)
@@ -925,6 +1012,18 @@ mod tests {
         );
         assert_eq!(
             WorkflowRouter::classify("Show available skill bundles in minivault"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Ingest source from https://docs.rs/tokio into minivault"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Show learned compiler gotchas and traps"),
+            WorkflowArchetype::VaultSkills
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Learn from repo at /path/to/my-repo"),
             WorkflowArchetype::VaultSkills
         );
     }

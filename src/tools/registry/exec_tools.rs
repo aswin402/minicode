@@ -20,6 +20,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "timeout_secs": {
                         "type": "integer",
                         "description": "Optional execution timeout in seconds (default: 30)"
+                    },
+                    "is_daemon": {
+                        "type": "boolean",
+                        "description": "Optional flag: if true (or if running a webserver like 'python3 -m http.server' or 'npm run dev'), executes as a persistent background task under MiniTask Manager instead of waiting synchronously."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Alias for is_daemon. If true, runs the command asynchronously in the background under MiniTask Manager."
                     }
                 },
                 "required": ["command"]
@@ -77,7 +85,10 @@ pub async fn dispatch(
                 let cmd = require_command(args, "exec_cmd")?;
                 let timeout = opt_u64(args, "timeout_secs");
                 let explicit_ctx = opt_u64(args, "context_window").map(|c| c as usize);
-                exec::exec_cmd_with_context(workspace_root, cmd, timeout, explicit_ctx).await
+                let is_daemon = get_bool(args, "is_daemon")
+                    .or_else(|| get_bool(args, "background"))
+                    .unwrap_or(false);
+                exec::exec_cmd_full(workspace_root, cmd, timeout, explicit_ctx, is_daemon).await
             }
             .await,
         ),

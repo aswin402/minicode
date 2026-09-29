@@ -442,20 +442,30 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniDev Runtime Orchestrator Slash Commands (/dev, /processes, /serve)
+        // MiniDev Runtime Orchestrator Slash Commands (/dev, /processes, /serve, /tasks, /minitasks, /task_manager)
         if prompt_lower == "/dev"
             || prompt_lower == "/processes"
             || prompt_lower == "/serve"
+            || prompt_lower == "/tasks"
+            || prompt_lower == "/minitasks"
+            || prompt_lower == "/task_manager"
             || prompt_lower.starts_with("/dev ")
             || prompt_lower.starts_with("/processes ")
             || prompt_lower.starts_with("/serve ")
+            || prompt_lower.starts_with("/tasks ")
+            || prompt_lower.starts_with("/minitasks ")
+            || prompt_lower.starts_with("/task_manager ")
         {
             let sub = if prompt_lower.starts_with("/dev ") {
                 prompt_trimmed[5..].trim()
-            } else if prompt_lower.starts_with("/processes ") {
+            } else if prompt_lower.starts_with("/processes ")
+                || prompt_lower.starts_with("/minitasks ")
+            {
                 prompt_trimmed[11..].trim()
-            } else if prompt_lower.starts_with("/serve ") {
+            } else if prompt_lower.starts_with("/serve ") || prompt_lower.starts_with("/tasks ") {
                 prompt_trimmed[7..].trim()
+            } else if prompt_lower.starts_with("/task_manager ") {
+                prompt_trimmed[14..].trim()
             } else {
                 ""
             };

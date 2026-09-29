@@ -116,7 +116,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
         // Web & Browser Tools
         "search_web" | "fetch_or_browse" | "browser_snapshot" => ToolSafetyLevel::ReadOnly,
-        "browser_navigate" => ToolSafetyLevel::Mutating,
+        "browser_navigate" | "browser_close" => ToolSafetyLevel::Mutating,
 
         // onpkg & MiniKit Scaffolding, Package & Skill Tools
         "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"
@@ -249,10 +249,14 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "miniblock_scaffold" | "block_import" | "miniblock_import" => ToolSafetyLevel::Mutating,
 
         // MiniDev Runtime Orchestrator
-        "mini_dev" | "dev_manager" => ToolSafetyLevel::Mutating,
+        "mini_dev" | "dev_manager" | "minitask" | "minitask_manager" | "task_manager" => {
+            ToolSafetyLevel::Mutating
+        }
 
         // MiniVault Multi-tier Agent Skills & Storage (ReadOnly)
-        "vault_search" | "vault_show" | "vault_bundle_list" => ToolSafetyLevel::ReadOnly,
+        "vault_search" | "vault_show" | "vault_bundle_list" | "vault_gotchas_list" => {
+            ToolSafetyLevel::ReadOnly
+        }
 
         // MiniVault Mutations & Lifecycle
         "vault_load"
@@ -262,7 +266,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "vault_delete"
         | "vault_import_url"
         | "vault_bundle_load"
-        | "vault_bundle_create" => ToolSafetyLevel::Mutating,
+        | "vault_bundle_create"
+        | "vault_ingest_source" => ToolSafetyLevel::Mutating,
 
         // Fail-safe default: treat any unrecognized tool as Mutating barrier
         _ => ToolSafetyLevel::Mutating,

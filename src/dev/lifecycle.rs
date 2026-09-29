@@ -68,6 +68,7 @@ pub fn install_lifecycle_hooks() -> DevLifecycleGuard {
                 }
 
                 let _ = get_global_dev_registry().kill_all().await;
+                kill_all_sync();
             });
         }
     }

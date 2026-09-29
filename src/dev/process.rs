@@ -524,28 +524,62 @@ pub async fn spawn_process_group_with_id(
 }
 
 /// Terminates an entire process tree given its process group ID.
-/// Sends SIGTERM to the process group, waits up to 1,000ms, and falls back to SIGKILL if still alive.
+/// Discovers all descendant processes, sends SIGTERM, polls, and falls back to SIGKILL for zero orphans.
 #[cfg(unix)]
 pub async fn terminate_process_group(pgid: u32) -> Result<()> {
+    if pgid == 0 || pgid == std::process::id() {
+        return Ok(());
+    }
     let pgid_i32 = pgid as i32;
 
-    // Send SIGTERM to the entire process group (-pgid)
+    // 1. Discover all child and grandchild processes in this tree
+    let descendants = crate::dev::ports::find_all_descendants(pgid);
+
+    // 2. Send SIGTERM to the entire process group (-pgid), direct PID, and all descendants
     unsafe {
         let _ = libc::kill(-pgid_i32, libc::SIGTERM);
+        let _ = libc::kill(pgid_i32, libc::SIGTERM);
+        for &desc in &descendants {
+            let _ = libc::kill(desc as i32, libc::SIGTERM);
+            let _ = libc::kill(-(desc as i32), libc::SIGTERM);
+        }
     }
 
-    // Grace period poll: up to 1,000ms in 50ms increments
+    // 3. Grace period poll: up to 1,000ms in 50ms increments
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let is_alive = unsafe { libc::kill(-pgid_i32, 0) == 0 };
-        if !is_alive {
+        let root_alive = unsafe { libc::kill(-pgid_i32, 0) == 0 || libc::kill(pgid_i32, 0) == 0 };
+        let mut any_desc_alive = false;
+        for &desc in &descendants {
+            if unsafe { libc::kill(desc as i32, 0) == 0 } {
+                any_desc_alive = true;
+                break;
+            }
+        }
+        if !root_alive && !any_desc_alive {
             return Ok(());
         }
     }
 
-    // Forceful SIGKILL fallback to eliminate all remaining child nodes
+    // 4. Forceful SIGKILL fallback to eliminate all remaining root and descendant nodes
     unsafe {
         let _ = libc::kill(-pgid_i32, libc::SIGKILL);
+        let _ = libc::kill(pgid_i32, libc::SIGKILL);
+        for &desc in &descendants {
+            let _ = libc::kill(desc as i32, libc::SIGKILL);
+            let _ = libc::kill(-(desc as i32), libc::SIGKILL);
+        }
+    }
+
+    // 5. Final re-scan sweep to catch any late children that spawned during shutdown
+    let late_descendants = crate::dev::ports::find_all_descendants(pgid);
+    for late in late_descendants {
+        if late != std::process::id() {
+            unsafe {
+                let _ = libc::kill(late as i32, libc::SIGKILL);
+                let _ = libc::kill(-(late as i32), libc::SIGKILL);
+            }
+        }
     }
 
     // Wait a brief moment to reap

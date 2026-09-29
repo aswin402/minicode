@@ -261,6 +261,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["query"]
             }),
         },
+        ToolSchema {
+            name: "browser_close".to_string(),
+            description: "Close and terminate the active browser session (Chrome, Firefox, or Obscura) and reap all associated browser processes and background workers.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -275,6 +283,20 @@ pub async fn dispatch(
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
+        "browser_close" => Some(
+            async {
+                let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
+                if stopped {
+                    Ok(
+                        "✔ Browser closed successfully. All browser processes terminated."
+                            .to_string(),
+                    )
+                } else {
+                    Ok("ℹ No active browser session was running.".to_string())
+                }
+            }
+            .await,
+        ),
         "fetch_or_browse" => Some(
             async {
                 let url = require_str(args, "url", "fetch_or_browse")?;

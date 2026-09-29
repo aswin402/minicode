@@ -108,13 +108,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     }]
 }
 
-/// Dispatches execution of the `mini_dev` tool.
+/// Dispatches execution of the `mini_dev` / `minitask_manager` tool.
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    if tool_name != "mini_dev" {
+    if tool_name != "mini_dev"
+        && tool_name != "minitask_manager"
+        && tool_name != "minitask"
+        && tool_name != "task_manager"
+    {
         return None;
     }
 

@@ -76,12 +76,12 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/vault | /skills | /bundles | /vault bundle [list|load <name>]",
     },
     CommandCatalogItem {
-        name: "/processes",
+        name: "/tasks",
         category: "Agent & Automation",
         shortcut: "F7",
         description:
-            "Inspect, manage, and supervise running dev servers, workers, ports & live logs",
-        example: "/processes | /dev | /dev ps | /dev stop <id>",
+            "MiniTask Manager: inspect, manage, and supervise running dev servers, webservers, subagents, background builds & ports",
+        example: "/tasks | /processes | /dev | /tasks stop <id>",
     },
     CommandCatalogItem {
         name: "/review",

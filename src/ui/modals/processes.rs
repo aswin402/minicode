@@ -323,7 +323,7 @@ pub fn render_processes_modal(
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         )
-        .title(" ⚡ MiniDev Process Monitor & Watchdog Supervisor ");
+        .title(" ⚡ MiniTask Manager & Process Supervisor (F7 /tasks) ");
     frame.render_widget(outer_block, modal_area);
 
     let inner = modal_area.inner(Margin {

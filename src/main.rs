@@ -1945,5 +1945,9 @@ async fn run_interactive_mode(
         app.run(agent).await?;
     }
 
+    // Guarantee that all session processes, daemons, workers, and browser sessions are reaped
+    let _ = dev::registry::get_global_dev_registry().kill_all().await;
+    dev::registry::kill_all_sync();
+
     Ok(())
 }

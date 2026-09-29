@@ -2,8 +2,8 @@
 
 use crate::vault::builtin::{get_all_builtin_bundles, get_all_builtin_skills};
 use crate::vault::models::{
-    format_skill_markdown, parse_skill_markdown, sanitize_skill_name, Result, SkillFrontmatter,
-    SkillScope, VaultBundle, VaultError, VaultSkill,
+    format_skill_markdown, parse_skill_markdown, sanitize_skill_name, GlobalGotcha, LearnedSource,
+    Result, SkillFrontmatter, SkillScope, SourceKind, VaultBundle, VaultError, VaultSkill,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct VaultStore {
     workspace_root: PathBuf,
+    custom_global_vault_dir: Option<PathBuf>,
 }
 
 impl VaultStore {
@@ -19,7 +20,14 @@ impl VaultStore {
     pub fn new(workspace_root: &Path) -> Self {
         Self {
             workspace_root: workspace_root.to_path_buf(),
+            custom_global_vault_dir: None,
         }
+    }
+
+    /// Sets an explicit custom directory for the global vault (used for testing or sandboxing).
+    pub fn with_custom_global_vault(mut self, path: PathBuf) -> Self {
+        self.custom_global_vault_dir = Some(path);
+        self
     }
 
     /// Primary project skills directory: `.minicode/skills`
@@ -34,18 +42,33 @@ impl VaultStore {
             .join("skills")
     }
 
-    /// Global user skills directory: `~/.config/minicode/vault/skills`
-    pub fn global_skills_dir() -> Option<PathBuf> {
+    /// Global user vault base directory: `~/.config/minicode/vault` (or custom/env override)
+    pub fn global_vault_dir(&self) -> Option<PathBuf> {
+        if let Some(ref custom) = self.custom_global_vault_dir {
+            return Some(custom.clone());
+        }
+        if let Ok(override_dir) = std::env::var("MINICODE_VAULT_DIR") {
+            if !override_dir.trim().is_empty() {
+                return Some(PathBuf::from(override_dir.trim()));
+            }
+        }
         dirs::home_dir().map(|home| {
             home.join(".config")
                 .join(crate::constants::CONFIG_DIR_NAME)
                 .join("vault")
-                .join("skills")
         })
     }
 
+    /// Global user skills directory: `~/.config/minicode/vault/skills`
+    pub fn global_skills_dir(&self) -> Option<PathBuf> {
+        self.global_vault_dir().map(|v| v.join("skills"))
+    }
+
     /// Legacy global skills directory: `~/.config/minicode/skills`
-    pub fn legacy_global_skills_dir() -> Option<PathBuf> {
+    pub fn legacy_global_skills_dir(&self) -> Option<PathBuf> {
+        if self.custom_global_vault_dir.is_some() {
+            return None;
+        }
         dirs::home_dir().map(|home| {
             home.join(".config")
                 .join(crate::constants::CONFIG_DIR_NAME)
@@ -59,13 +82,345 @@ impl VaultStore {
     }
 
     /// Global user bundles directory: `~/.config/minicode/vault/bundles`
-    pub fn global_bundles_dir() -> Option<PathBuf> {
-        dirs::home_dir().map(|home| {
-            home.join(".config")
-                .join(crate::constants::CONFIG_DIR_NAME)
-                .join("vault")
-                .join("bundles")
-        })
+    pub fn global_bundles_dir(&self) -> Option<PathBuf> {
+        self.global_vault_dir().map(|v| v.join("bundles"))
+    }
+
+    /// Global learned sources file: `~/.config/minicode/vault/sources.json`
+    pub fn global_sources_file(&self) -> Option<PathBuf> {
+        self.global_vault_dir().map(|d| d.join("sources.json"))
+    }
+
+    /// Global learned gotchas file: `~/.config/minicode/vault/gotchas.json`
+    pub fn global_gotchas_file(&self) -> Option<PathBuf> {
+        self.global_vault_dir().map(|d| d.join("gotchas.json"))
+    }
+
+    /// Loads all bookmarked learned sources from `sources.json`.
+    pub fn load_sources(&self) -> Vec<LearnedSource> {
+        let Some(path) = self.global_sources_file() else {
+            return Vec::new();
+        };
+        if !path.exists() {
+            return Vec::new();
+        }
+        let Ok(data) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        serde_json::from_str(&data).unwrap_or_default()
+    }
+
+    /// Saves the learned sources array to `sources.json`.
+    pub fn save_sources(&self, sources: &[LearnedSource]) -> Result<()> {
+        let Some(path) = self.global_sources_file() else {
+            return Err(VaultError::InvalidSkill(
+                "Cannot resolve global vault directory".to_string(),
+            ));
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| VaultError::Io {
+                path: parent.display().to_string(),
+                source: e,
+            })?;
+        }
+        let content = serde_json::to_string_pretty(sources)
+            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
+        fs::write(&path, content).map_err(|e| VaultError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        Ok(())
+    }
+
+    /// Adds or updates a learned source by URI.
+    pub fn add_or_update_source(&self, source: LearnedSource) -> Result<()> {
+        let mut sources = self.load_sources();
+        if let Some(existing) = sources
+            .iter_mut()
+            .find(|s| s.uri.eq_ignore_ascii_case(&source.uri))
+        {
+            existing.title = source.title;
+            existing.summary = source.summary;
+            existing.tags = source.tags;
+            existing.last_referenced = chrono::Utc::now().to_rfc3339();
+            if source.extracted_skill_or_doc.is_some() {
+                existing.extracted_skill_or_doc = source.extracted_skill_or_doc;
+            }
+        } else {
+            sources.push(source);
+        }
+        self.save_sources(&sources)
+    }
+
+    /// Searches bookmarked sources.
+    pub fn search_sources(&self, query: &str) -> Vec<LearnedSource> {
+        let sources = self.load_sources();
+        if query.trim().is_empty() {
+            return sources;
+        }
+        sources
+            .into_iter()
+            .filter(|s| s.matches_query(query))
+            .collect()
+    }
+
+    /// Loads universal cross-project learned gotchas from `gotchas.json`.
+    pub fn load_global_gotchas(&self) -> Vec<GlobalGotcha> {
+        let Some(path) = self.global_gotchas_file() else {
+            return Vec::new();
+        };
+        if !path.exists() {
+            return Vec::new();
+        }
+        let Ok(data) = fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        serde_json::from_str(&data).unwrap_or_default()
+    }
+
+    /// Saves universal gotchas to `gotchas.json`.
+    pub fn save_global_gotchas(&self, gotchas: &[GlobalGotcha]) -> Result<()> {
+        let Some(path) = self.global_gotchas_file() else {
+            return Err(VaultError::InvalidSkill(
+                "Cannot resolve global vault directory".to_string(),
+            ));
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| VaultError::Io {
+                path: parent.display().to_string(),
+                source: e,
+            })?;
+        }
+        let content = serde_json::to_string_pretty(gotchas)
+            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
+        fs::write(&path, content).map_err(|e| VaultError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        Ok(())
+    }
+
+    /// Adds or updates a universal gotcha. Caps at 50 to prevent unbounded bloat.
+    pub fn add_or_update_global_gotcha(&self, mut gotcha: GlobalGotcha) -> Result<()> {
+        let mut gotchas = self.load_global_gotchas();
+        let trigger_lower = gotcha.trigger.trim().to_lowercase();
+        let scope_lower = gotcha.context_scope.trim().to_lowercase();
+
+        if let Some(existing) = gotchas.iter_mut().find(|g| {
+            g.context_scope.eq_ignore_ascii_case(&scope_lower)
+                && (g.trigger.eq_ignore_ascii_case(&trigger_lower)
+                    || g.trigger.to_lowercase().contains(&trigger_lower)
+                    || trigger_lower.contains(&g.trigger.to_lowercase()))
+        }) {
+            existing.failed_attempt = gotcha.failed_attempt;
+            existing.verified_fix = gotcha.verified_fix;
+            existing.occurrence_count = existing.occurrence_count.saturating_add(1);
+        } else {
+            gotcha.occurrence_count = 1;
+            gotchas.push(gotcha);
+        }
+
+        // Keep at most 50 gotchas (sorted by occurrence_count desc, then created_at desc)
+        if gotchas.len() > 50 {
+            gotchas.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count));
+            gotchas.truncate(50);
+        }
+
+        self.save_global_gotchas(&gotchas)
+    }
+
+    /// Finds relevant universal gotchas matching query, framework, or context keywords.
+    pub fn find_relevant_gotchas(&self, query_or_tech: &str) -> Vec<GlobalGotcha> {
+        let gotchas = self.load_global_gotchas();
+        if query_or_tech.trim().is_empty() {
+            return gotchas.into_iter().take(5).collect();
+        }
+        let lower = query_or_tech.to_lowercase();
+        let mut matched: Vec<_> = gotchas
+            .into_iter()
+            .filter(|g| g.matches_query(&lower) || lower.contains(&g.context_scope.to_lowercase()))
+            .collect();
+        matched.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count));
+        matched.truncate(5);
+        matched
+    }
+
+    /// Ingests an external source (HTTP URL or local directory/repo), registers it in `sources.json`,
+    /// and synthesizes a corresponding `[Doc]` or `[Skill]` in the target vault scope.
+    pub async fn ingest_source(
+        &self,
+        uri: &str,
+        title_override: Option<&str>,
+        target_scope: SkillScope,
+        custom_instructions: Option<&str>,
+    ) -> Result<(LearnedSource, Option<VaultSkill>)> {
+        let uri = uri.trim();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        if uri.starts_with("http://") || uri.starts_with("https://") {
+            // Web source
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| VaultError::Network {
+                    url: uri.to_string(),
+                    reason: e.to_string(),
+                })?;
+
+            let resp = client
+                .get(uri)
+                .send()
+                .await
+                .map_err(|e| VaultError::Network {
+                    url: uri.to_string(),
+                    reason: e.to_string(),
+                })?;
+
+            if !resp.status().is_success() {
+                return Err(VaultError::Network {
+                    url: uri.to_string(),
+                    reason: format!("HTTP {}", resp.status()),
+                });
+            }
+
+            let body = resp.text().await.map_err(|e| VaultError::Network {
+                url: uri.to_string(),
+                reason: e.to_string(),
+            })?;
+
+            // Derive name and title
+            let fallback_name = uri
+                .split('/')
+                .rfind(|s| !s.is_empty())
+                .unwrap_or("web-source")
+                .trim_end_matches(".html")
+                .trim_end_matches(".md");
+            let clean_name = sanitize_skill_name(title_override.unwrap_or(fallback_name));
+            let title = title_override.unwrap_or(fallback_name).to_string();
+
+            // Check if body is raw markdown or HTML
+            let instructions = if let Some(custom) = custom_instructions {
+                custom.to_string()
+            } else if body.starts_with("---") || uri.ends_with(".md") {
+                let (_, parsed_body) = parse_skill_markdown(&body, &clean_name);
+                parsed_body
+            } else {
+                // Basic HTML clean-up: extract meaningful text lines
+                let text_lines: Vec<_> = body
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with("//"))
+                    .take(150)
+                    .collect();
+                if text_lines.is_empty() {
+                    format!(
+                        "# Documentation for {}\n\nSource: {}\n\nRefer to {}",
+                        title, uri, uri
+                    )
+                } else {
+                    format!(
+                        "# Documentation for {}\n\nSource: {}\n\n{}",
+                        title,
+                        uri,
+                        text_lines.join("\n")
+                    )
+                }
+            };
+
+            let skill = self.create_skill(
+                target_scope,
+                &clean_name,
+                &format!("Ingested reference documentation for {}", title),
+                Some("reference"),
+                Some("reference"),
+                &instructions,
+                vec![clean_name.clone()],
+                Vec::new(),
+            )?;
+
+            let source = LearnedSource {
+                id: format!("src-{}", uuid::Uuid::new_v4().simple()),
+                uri: uri.to_string(),
+                title,
+                kind: SourceKind::WebDoc,
+                summary: format!("Documentation for {}", clean_name),
+                tags: vec![clean_name.clone(), "web".to_string()],
+                extracted_skill_or_doc: Some(clean_name),
+                created_at: now.clone(),
+                last_referenced: now,
+            };
+
+            self.add_or_update_source(source.clone())?;
+            Ok((source, Some(skill)))
+        } else {
+            // Local path / repo template
+            let path = Path::new(uri);
+            if !path.exists() {
+                return Err(VaultError::InvalidSkill(format!(
+                    "Path '{}' does not exist",
+                    uri
+                )));
+            }
+
+            let fallback_name = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("local-repo");
+            let clean_name = sanitize_skill_name(title_override.unwrap_or(fallback_name));
+            let title = title_override.unwrap_or(fallback_name).to_string();
+
+            let instructions = if let Some(custom) = custom_instructions {
+                custom.to_string()
+            } else {
+                let readme_path = path.join("README.md");
+                let alt_readme = path.join("readme.md");
+                let readme_content = if readme_path.exists() {
+                    fs::read_to_string(&readme_path).ok()
+                } else if alt_readme.exists() {
+                    fs::read_to_string(&alt_readme).ok()
+                } else {
+                    None
+                };
+
+                let readme_snippet = readme_content
+                    .as_deref()
+                    .map(|c| c.lines().take(60).collect::<Vec<_>>().join("\n"))
+                    .unwrap_or_else(|| "No README found in repository.".to_string());
+
+                format!(
+                    "# Architectural Reference: {}\n\nLocal Source: `{}`\n\n## Overview\n{}\n",
+                    title,
+                    path.display(),
+                    readme_snippet
+                )
+            };
+
+            let skill = self.create_skill(
+                target_scope,
+                &clean_name,
+                &format!("Reference architecture pattern from {}", title),
+                Some("architecture"),
+                Some("workflow"),
+                &instructions,
+                vec![clean_name.clone()],
+                Vec::new(),
+            )?;
+
+            let source = LearnedSource {
+                id: format!("src-{}", uuid::Uuid::new_v4().simple()),
+                uri: uri.to_string(),
+                title,
+                kind: SourceKind::RepoTemplate,
+                summary: format!("Local reference repository at {}", path.display()),
+                tags: vec![clean_name.clone(), "repo".to_string()],
+                extracted_skill_or_doc: Some(clean_name),
+                created_at: now.clone(),
+                last_referenced: now,
+            };
+
+            self.add_or_update_source(source.clone())?;
+            Ok((source, Some(skill)))
+        }
     }
 
     /// Discovers all skills across all 3 tiers (Built-in, Global, Project).
@@ -80,10 +435,10 @@ impl VaultStore {
         }
 
         // 2. Global User Skills (Tier 2)
-        if let Some(global_dir) = Self::global_skills_dir() {
+        if let Some(global_dir) = self.global_skills_dir() {
             self.scan_directory_into_map(&global_dir, SkillScope::Global, &mut skill_map);
         }
-        if let Some(legacy_dir) = Self::legacy_global_skills_dir() {
+        if let Some(legacy_dir) = self.legacy_global_skills_dir() {
             self.scan_directory_into_map(&legacy_dir, SkillScope::Global, &mut skill_map);
         }
 
@@ -289,7 +644,7 @@ impl VaultStore {
         let target_dir = match scope {
             SkillScope::Project => self.project_skills_dir().join(&clean_name),
             SkillScope::Global => {
-                let dir = Self::global_skills_dir().ok_or_else(|| {
+                let dir = self.global_skills_dir().ok_or_else(|| {
                     VaultError::InvalidSkill(
                         "Cannot resolve user home directory for global vault".to_string(),
                     )
@@ -463,7 +818,7 @@ impl VaultStore {
         match scope {
             SkillScope::Project => self.unload_from_project(&clean),
             SkillScope::Global => {
-                let dir = Self::global_skills_dir().ok_or_else(|| {
+                let dir = self.global_skills_dir().ok_or_else(|| {
                     VaultError::InvalidSkill("Cannot resolve global vault dir".to_string())
                 })?;
                 let target_dir = dir.join(&clean);
@@ -638,7 +993,7 @@ impl VaultStore {
         }
 
         // 2. Global User Bundles (Tier 2)
-        if let Some(global_dir) = Self::global_bundles_dir() {
+        if let Some(global_dir) = self.global_bundles_dir() {
             self.scan_bundles_directory(&global_dir, SkillScope::Global, &mut bundle_map);
         }
 
@@ -737,7 +1092,7 @@ impl VaultStore {
 
         let target_dir = match scope {
             SkillScope::Project => self.project_bundles_dir(),
-            SkillScope::Global => Self::global_bundles_dir().ok_or_else(|| {
+            SkillScope::Global => self.global_bundles_dir().ok_or_else(|| {
                 VaultError::InvalidSkill(
                     "Cannot resolve user home directory for global vault".to_string(),
                 )
@@ -890,5 +1245,111 @@ mod tests {
             .unload_bundle_from_project("fullstack-nextjs")
             .unwrap();
         assert!(unloaded.contains(&"react".to_string()));
+    }
+
+    #[test]
+    fn test_vault_sources_and_gotchas_lifecycle() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws).with_custom_global_vault(ws.join("test_global_vault"));
+
+        // 1. Sources CRUD
+        let src = LearnedSource {
+            id: "src-1".to_string(),
+            uri: "https://docs.rs/tokio".to_string(),
+            title: "Tokio Async Runtime".to_string(),
+            kind: SourceKind::WebDoc,
+            summary: "Tokio async documentation".to_string(),
+            tags: vec!["tokio".to_string(), "rust".to_string(), "async".to_string()],
+            extracted_skill_or_doc: Some("tokio".to_string()),
+            created_at: "2026-09-29T10:00:00Z".to_string(),
+            last_referenced: "2026-09-29T10:00:00Z".to_string(),
+        };
+
+        store.add_or_update_source(src.clone()).unwrap();
+        let sources = store.load_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].title, "Tokio Async Runtime");
+
+        let search_res = store.search_sources("tokio");
+        assert_eq!(search_res.len(), 1);
+        let search_empty = store.search_sources("nonexistent");
+        assert!(search_empty.is_empty());
+
+        // 2. Gotchas CRUD and Occurrence Bumping
+        let gotcha = GlobalGotcha {
+            id: "gotcha-1".to_string(),
+            trigger: "tokio::spawn inside non-async scope".to_string(),
+            context_scope: "Rust/Tokio".to_string(),
+            failed_attempt: "Calling tokio::spawn without runtime handle".to_string(),
+            verified_fix: "Use tokio::runtime::Handle::current().spawn or mark fn async"
+                .to_string(),
+            occurrence_count: 1,
+            created_at: "2026-09-29T10:00:00Z".to_string(),
+        };
+
+        store.add_or_update_global_gotcha(gotcha.clone()).unwrap();
+        let gotchas = store.load_global_gotchas();
+        assert_eq!(gotchas.len(), 1);
+        assert_eq!(gotchas[0].occurrence_count, 1);
+
+        // Add the exact same trigger again to test automatic occurrence increment
+        let duplicate_gotcha = GlobalGotcha {
+            id: "gotcha-2".to_string(),
+            trigger: "tokio::spawn inside non-async scope".to_string(),
+            context_scope: "Rust/Tokio".to_string(),
+            failed_attempt: "Another failure".to_string(),
+            verified_fix: "Updated fix".to_string(),
+            occurrence_count: 1,
+            created_at: "2026-09-29T11:00:00Z".to_string(),
+        };
+
+        store.add_or_update_global_gotcha(duplicate_gotcha).unwrap();
+        let updated_gotchas = store.load_global_gotchas();
+        assert_eq!(updated_gotchas.len(), 1);
+        assert_eq!(updated_gotchas[0].occurrence_count, 2);
+        assert_eq!(updated_gotchas[0].verified_fix, "Updated fix");
+
+        // Test relevant gotchas retrieval
+        let relevant = store.find_relevant_gotchas("tokio async concurrency");
+        assert_eq!(relevant.len(), 1);
+        assert_eq!(relevant[0].occurrence_count, 2);
+
+        let irrelevant = store.find_relevant_gotchas("react tailwind css");
+        assert!(irrelevant.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_vault_ingest_local_repo() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws).with_custom_global_vault(ws.join("test_global_vault"));
+
+        // Create a fake local repo
+        let repo_dir = dir.path().join("fake-repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+        let readme_content = "# Fake Architecture\n\nThis is a pattern repository.";
+        fs::write(repo_dir.join("README.md"), readme_content).unwrap();
+
+        let (src, skill) = store
+            .ingest_source(
+                &repo_dir.to_string_lossy(),
+                Some("fake-arch"),
+                SkillScope::Project,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(src.kind, SourceKind::RepoTemplate);
+        assert_eq!(src.title, "fake-arch");
+        assert!(skill.is_some());
+        let s = skill.unwrap();
+        assert_eq!(s.name, "fake-arch");
+        assert!(s.instructions.contains("This is a pattern repository."));
+
+        // Verify stored in sources.json
+        let sources = store.load_sources();
+        assert!(sources.iter().any(|s| s.title == "fake-arch"));
     }
 }
