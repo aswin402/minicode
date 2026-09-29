@@ -1409,6 +1409,7 @@ mod tests {
                 restart_count: 0,
                 restart_policy: RestartPolicy::Never,
                 port_resolution: Some(PortResolution::Unchanged { port: 5173 }),
+                schedule_info: None,
             },
             DevProcessSummary {
                 id: DevProcessId::from("backend-api"),
@@ -1434,6 +1435,7 @@ mod tests {
                         suggested_fallback: Some(8080),
                     },
                 }),
+                schedule_info: None,
             },
             DevProcessSummary {
                 id: DevProcessId::from("worker-task"),
@@ -1449,6 +1451,7 @@ mod tests {
                 restart_count: 0,
                 restart_policy: RestartPolicy::Never,
                 port_resolution: None,
+                schedule_info: None,
             },
         ]
     }

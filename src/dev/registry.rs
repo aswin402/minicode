@@ -267,6 +267,7 @@ impl MiniDevRegistry {
                     restart_count: 0,
                     restart_policy: crate::dev::models::RestartPolicy::Never,
                     port_resolution: None,
+                    schedule_info: None,
                 });
             }
         }
@@ -308,6 +309,7 @@ impl MiniDevRegistry {
                     restart_count: 0,
                     restart_policy: crate::dev::models::RestartPolicy::Never,
                     port_resolution: None,
+                    schedule_info: None,
                 });
             }
         }
@@ -547,6 +549,7 @@ impl MiniDevRegistry {
             restart_policy: crate::dev::models::RestartPolicy::Never,
             restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
             port_resolution: Arc::new(RwLock::new(None)),
+            schedule_info: Arc::new(RwLock::new(None)),
         });
 
         if pgid > 0 && pgid != std::process::id() {
@@ -663,6 +666,7 @@ impl MiniDevRegistry {
             restart_count,
             restart_policy: handle.restart_policy.clone(),
             port_resolution,
+            schedule_info: handle.schedule_info.read().await.clone(),
         }
     }
 }

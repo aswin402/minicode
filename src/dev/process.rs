@@ -2,7 +2,7 @@
 
 use crate::dev::models::{
     DevProcessId, DevProcessStatus, DevProcessType, PortConflictPolicy, PortResolution,
-    RestartPolicy, RestartStats, SpawnDevRequest,
+    RestartPolicy, RestartStats, ScheduleInfo, SpawnDevRequest,
 };
 use crate::dev::ports::{
     arbitrate_port, detect_requested_port, rewrite_command_port, scan_ports_from_output,
@@ -57,6 +57,7 @@ pub struct DevProcessHandle {
     pub restart_policy: RestartPolicy,
     pub restart_stats: Arc<RwLock<RestartStats>>,
     pub port_resolution: Arc<RwLock<Option<PortResolution>>>,
+    pub schedule_info: Arc<RwLock<Option<ScheduleInfo>>>,
 }
 
 impl DevProcessHandle {
@@ -522,6 +523,7 @@ pub async fn spawn_process_group_with_id(
         restart_policy,
         restart_stats,
         port_resolution: port_res_lock,
+        schedule_info: Arc::new(RwLock::new(None)),
     })
 }
 

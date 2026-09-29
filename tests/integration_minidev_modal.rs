@@ -31,6 +31,7 @@ fn create_test_processes() -> Vec<DevProcessSummary> {
             restart_count: 0,
             restart_policy: RestartPolicy::Never,
             port_resolution: Some(PortResolution::Unchanged { port: 5173 }),
+            schedule_info: None,
         },
         DevProcessSummary {
             id: DevProcessId::from("axum-backend"),
@@ -56,6 +57,7 @@ fn create_test_processes() -> Vec<DevProcessSummary> {
                     suggested_fallback: Some(8080),
                 },
             }),
+            schedule_info: None,
         },
         DevProcessSummary {
             id: DevProcessId::from("worker-codegen"),
@@ -71,6 +73,7 @@ fn create_test_processes() -> Vec<DevProcessSummary> {
             restart_count: 0,
             restart_policy: RestartPolicy::Never,
             port_resolution: None,
+            schedule_info: None,
         },
     ]
 }

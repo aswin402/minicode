@@ -68,6 +68,10 @@ pub enum DevProcessType {
     Chrome,
     /// Autonomous background subagent or delegated task worker
     Worker,
+    /// Scheduled recurring interval or cron task
+    Cron,
+    /// One-shot countdown timer task
+    Timer,
 }
 
 impl DevProcessType {
@@ -78,6 +82,8 @@ impl DevProcessType {
             "docker" | "container" | "compose" => Self::Docker,
             "chrome" | "browser" | "headless" | "headful" => Self::Chrome,
             "worker" | "subagent" | "task" => Self::Worker,
+            "cron" | "schedule" | "scheduled" | "interval" => Self::Cron,
+            "timer" | "timeout" | "countdown" => Self::Timer,
             _ => Self::Script,
         }
     }
@@ -100,6 +106,8 @@ impl fmt::Display for DevProcessType {
             Self::Docker => write!(f, "Docker"),
             Self::Chrome => write!(f, "Chrome"),
             Self::Worker => write!(f, "Worker"),
+            Self::Cron => write!(f, "Cron"),
+            Self::Timer => write!(f, "Timer"),
         }
     }
 }
@@ -307,6 +315,56 @@ pub struct RestartStats {
     pub last_crash_reason: Option<String>,
 }
 
+/// Detailed scheduling metadata for periodic or one-shot scheduled tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleInfo {
+    /// Scheduled interval in seconds (default: 60)
+    pub interval_secs: u64,
+    /// Whether this is a one-shot countdown timer (true) or recurring interval (false)
+    pub is_one_shot: bool,
+    /// Number of completed execution cycles
+    pub iteration_count: usize,
+    /// Optional limit on the number of iterations
+    pub max_iterations: Option<usize>,
+    /// Epoch timestamp (seconds) of last trigger
+    pub last_run_timestamp: Option<u64>,
+    /// Epoch timestamp (seconds) of next scheduled trigger
+    pub next_run_timestamp: Option<u64>,
+}
+
+/// Request to register a scheduled periodic or one-shot task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleRequest {
+    /// Shell command or script to execute on trigger
+    pub command: String,
+    /// Optional human-readable task name
+    pub name: Option<String>,
+    /// Cadence in seconds between triggers (default: 60 if omitted)
+    pub interval_seconds: Option<u64>,
+    /// One-shot countdown timer in seconds (mutually exclusive with recurring interval)
+    pub duration_seconds: Option<u64>,
+    /// Standard cron expression (optional, e.g. "*/5 * * * *")
+    pub cron_expression: Option<String>,
+    /// Maximum number of triggers before self-terminating
+    pub max_iterations: Option<usize>,
+}
+
+impl ScheduleRequest {
+    /// Returns the effective interval in seconds (duration if one-shot, interval if specified, or default 60s).
+    pub fn effective_interval_secs(&self) -> u64 {
+        if let Some(dur) = self.duration_seconds {
+            dur
+        } else {
+            self.interval_seconds.unwrap_or(60)
+        }
+    }
+
+    /// Whether this is a one-shot countdown timer.
+    pub fn is_one_shot(&self) -> bool {
+        self.duration_seconds.is_some()
+    }
+}
+
 /// High-level summary of a managed process for tables and status views.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DevProcessSummary {
@@ -323,6 +381,8 @@ pub struct DevProcessSummary {
     pub restart_count: u32,
     pub restart_policy: RestartPolicy,
     pub port_resolution: Option<PortResolution>,
+    #[serde(default)]
+    pub schedule_info: Option<ScheduleInfo>,
 }
 
 /// Cumulative resource metrics for all processes managed by minitask.
@@ -405,6 +465,7 @@ mod tests {
             restart_count: 0,
             restart_policy: RestartPolicy::Never,
             port_resolution: Some(PortResolution::Unchanged { port: 5173 }),
+            schedule_info: None,
         };
 
         let json = serde_json::to_string(&summary).unwrap();
@@ -462,5 +523,72 @@ mod tests {
             PortConflictPolicy::from_str_loose("unknown"),
             PortConflictPolicy::Fallback
         );
+    }
+
+    #[test]
+    fn test_schedule_request_default_interval() {
+        let req = ScheduleRequest {
+            command: "cargo check".to_string(),
+            name: Some("periodic-check".to_string()),
+            interval_seconds: None,
+            duration_seconds: None,
+            cron_expression: None,
+            max_iterations: Some(5),
+        };
+        assert_eq!(req.effective_interval_secs(), 60);
+        assert!(!req.is_one_shot());
+    }
+
+    #[test]
+    fn test_schedule_request_custom_interval() {
+        let req = ScheduleRequest {
+            command: "echo test".to_string(),
+            name: None,
+            interval_seconds: Some(15),
+            duration_seconds: None,
+            cron_expression: None,
+            max_iterations: None,
+        };
+        assert_eq!(req.effective_interval_secs(), 15);
+        assert!(!req.is_one_shot());
+    }
+
+    #[test]
+    fn test_schedule_request_one_shot() {
+        let req = ScheduleRequest {
+            command: "echo wake".to_string(),
+            name: None,
+            interval_seconds: None,
+            duration_seconds: Some(10),
+            cron_expression: None,
+            max_iterations: None,
+        };
+        assert_eq!(req.effective_interval_secs(), 10);
+        assert!(req.is_one_shot());
+    }
+
+    #[test]
+    fn test_schedule_info_serialization() {
+        let info = ScheduleInfo {
+            interval_secs: 120,
+            is_one_shot: false,
+            iteration_count: 3,
+            max_iterations: Some(10),
+            last_run_timestamp: Some(1727650000),
+            next_run_timestamp: Some(1727650120),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let decoded: ScheduleInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn test_dev_process_type_cron_and_timer() {
+        assert_eq!(DevProcessType::from_str_loose("cron"), DevProcessType::Cron);
+        assert_eq!(DevProcessType::from_str_loose("schedule"), DevProcessType::Cron);
+        assert_eq!(DevProcessType::from_str_loose("timer"), DevProcessType::Timer);
+        assert_eq!(DevProcessType::from_str_loose("timeout"), DevProcessType::Timer);
+        assert_eq!(format!("{}", DevProcessType::Cron), "Cron");
+        assert_eq!(format!("{}", DevProcessType::Timer), "Timer");
     }
 }
