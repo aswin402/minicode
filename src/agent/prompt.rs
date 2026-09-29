@@ -80,8 +80,9 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
   - **Internet & URL Import**: When instructed by the user or when discovering relevant skill guides online (e.g. "add this skill from internet: <url>"), call `vault_import_url(url, scope="project")` to fetch, validate, and install it.
   - **Custom Skill Authoring & Editing**: Use `vault_create(name, description, instructions, triggers, globs)` to forge new repository-specific standards or `vault_update(name, instructions)` to amend existing guidelines.
 - **MiniTask Manager & Process Vault Orchestration**:
-  - All dev servers, background scripts, workers, and browser sessions are managed via `minitask` (the unified process vault) and supervised under process group isolation with automatic OOM/runaway watchdogs.
-  - **Starting Services**: Use `minitask(action="start", command="...", port=...)` or `exec_cmd` to launch local servers.
+  - All dev servers, background scripts, workers, scheduled tasks, and browser sessions are managed via `minitask` (the unified process vault) and supervised under process group isolation with automatic OOM/runaway watchdogs.
+  - **Starting Services & Schedules**: Use `minitask(action="start", command="...", port=...)` or `exec_cmd` to launch local servers, and `minitask(action="schedule", command="...", interval_seconds=...)` for recurring watchers, periodic tasks, or one-shot timers.
+  - **Inspecting & Reporting Live Status**: When the user asks "what's happening", "what is running", "how are background processes doing", or checks service status, inspect the live `<active_dev_services>` pre-turn context or call `minitask(action="list")` / `minitask(action="status")` / `minitask(action="resources")` to answer accurately with live telemetry and logs.
   - **Stopping & Killing Services**: When the user says "stop that", "kill that", "kill the server", "close the browser", or "stop website", you MUST autonomously terminate the running services using `minitask(action="stop", id="...")` (or `minitask(action="kill_all")`) AND close any active browser session with `browser_close`. Never leave orphaned web servers or open browser windows running when the user has asked to stop.
 "#;
 

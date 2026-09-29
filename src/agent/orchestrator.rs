@@ -515,6 +515,37 @@ impl WorkflowRouter {
             || lower.contains("close website")
             || lower.contains("stop website")
             || lower.contains("kill website")
+            || lower.contains("whats happening")
+            || lower.contains("what's happening")
+            || lower.contains("what is happening")
+            || lower.contains("what is running")
+            || lower.contains("what's running")
+            || lower.contains("whats running")
+            || lower.contains("what are the tasks doing")
+            || lower.contains("how are the tasks doing")
+            || lower.contains("how are background processes doing")
+            || lower.contains("how are the background processes doing")
+            || lower.contains("status of tasks")
+            || lower.contains("status of task")
+            || lower.contains("task status")
+            || lower.contains("process status")
+            || lower.contains("is the server running")
+            || lower.contains("is the server still running")
+            || lower.contains("is server running")
+            || lower.contains("any background tasks")
+            || lower.contains("any background task")
+            || lower.contains("any processes running")
+            || lower.contains("check background tasks")
+            || lower.contains("check background task")
+            || lower.contains("check background processes")
+            || lower.contains("check tasks")
+            || lower.contains("check processes")
+            || lower.contains("active processes")
+            || lower.contains("active tasks")
+            || lower.contains("scheduled task")
+            || lower.contains("scheduled tasks")
+            || lower.contains("periodic check")
+            || lower.contains("one-shot timer")
             || crate::utils::has_word(&lower, "daemon")
             || (crate::utils::has_word(&lower, "server")
                 && (crate::utils::has_word(&lower, "start")
@@ -834,8 +865,9 @@ impl WorkflowRouter {
 
         let mut out = String::from("<active_dev_services>\n");
         if procs.is_empty() && !browser_live {
-            out.push_str("  Managed Runtime Daemons: None currently active.\n");
-            out.push_str("  Autonomous Action: Use `minitask(action=\"start\", command=\"...\", port=...)` to launch dev servers asynchronously.\n");
+            out.push_str("  Managed Runtime Daemons & Tasks: None currently active.\n");
+            out.push_str("  Autonomous Action: Use `minitask(action=\"start\")` to launch dev servers, or `minitask(action=\"schedule\")` for recurring tasks and timers.\n");
+            out.push_str("  Directive: When the user asks what is happening or checks tasks, clearly inform them that no background processes or scheduled watchers are currently running.\n");
         } else {
             out.push_str(&format!(
                 "  Supervised Tasks: {} active (Total RAM: {:.1}MB, CPU: {:.1}%)\n",
@@ -857,15 +889,36 @@ impl WorkflowRouter {
                             .join(", ")
                     )
                 };
+                let sched_str = if let Some(ref sched) = p.schedule_info {
+                    if sched.is_one_shot {
+                        format!(" [Timer: {}s, Runs: {}]", sched.interval_secs, sched.iteration_count)
+                    } else {
+                        let max_str = sched.max_iterations.map(|m| format!("/{}", m)).unwrap_or_default();
+                        format!(" [Schedule: Every {}s, Runs: {}{}]", sched.interval_secs, sched.iteration_count, max_str)
+                    }
+                } else {
+                    String::new()
+                };
                 let pid_str = p
                     .pid
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "N/A".to_string());
                 out.push_str(&format!(
-                    "  • [{}] `{}` (PID: {}, Status: {}{}, RAM: {:.1}MB, CPU: {:.1}%)\n",
-                    p.id, p.name, pid_str, p.status, port_str, p.memory_rss_mb, p.cpu_percent
+                    "  • [{}] `{}` (PID: {}, Status: {}{}{}, RAM: {:.1}MB, CPU: {:.1}%)\n",
+                    p.id, p.name, pid_str, p.status, port_str, sched_str, p.memory_rss_mb, p.cpu_percent
                 ));
+
+                if let Ok(recent_logs) = dev_reg.logs(&p.id, 3, None).await {
+                    if !recent_logs.is_empty() {
+                        out.push_str("    Recent Output:\n");
+                        for line in recent_logs {
+                            out.push_str(&format!("      │ {}\n", line.trim_end()));
+                        }
+                    }
+                }
             }
+            out.push_str("  Status & Inspection Invariant:\n");
+            out.push_str("  • When the user asks what is happening, checks tasks, or requests telemetry, directly explain the current state of active services, scheduled tasks, and recent outputs above. Use `minitask(action=\"resources\")` or `minitask(action=\"status\")` if further live details are needed.\n");
             out.push_str("  Resource / Telemetry Invariant:\n");
             out.push_str("  • If the user asks about resource usage or telemetry, ALWAYS use `minitask(action=\"resources\")` or `minitask(action=\"status\")`. DO NOT execute raw shell commands like `ps`, `top`, or `grep`.\n");
             out.push_str("  Termination & Teardown Invariant:\n");
@@ -1079,6 +1132,30 @@ mod tests {
         );
         assert_eq!(
             WorkflowRouter::classify("Check the server logs with minitask"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("what's happening with the background tasks?"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("whats happening"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("what is running"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("status of tasks"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("is the server running?"),
+            WorkflowArchetype::RuntimeDev
+        );
+        assert_eq!(
+            WorkflowRouter::classify("how are background processes doing"),
             WorkflowArchetype::RuntimeDev
         );
     }
