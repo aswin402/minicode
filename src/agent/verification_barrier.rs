@@ -742,7 +742,7 @@ impl VerificationBarrier {
         None
     }
 
-    /// Checks if any background dev server registered with mini_dev terminated with an error.
+    /// Checks if any background dev server registered with minitask terminated with an error.
     pub async fn check_daemon_health() -> Option<GateStatus> {
         let registry = crate::dev::get_global_dev_registry();
         let procs = registry.list().await;
@@ -760,7 +760,7 @@ impl VerificationBarrier {
                             p.name, pid_str, code
                         ),
                         actionable_remediation: format!(
-                            "Inspect service logs via `mini_dev(action=\"logs\", id=\"{}\")` and resolve startup errors.",
+                            "Inspect service logs via `minitask(action=\"logs\", id=\"{}\")` and resolve startup errors.",
                             p.id
                         ),
                     });

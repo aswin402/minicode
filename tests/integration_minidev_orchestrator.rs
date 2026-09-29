@@ -12,13 +12,13 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn test_tool_registry_includes_mini_dev() {
+async fn test_tool_registry_includes_minitask() {
     let schemas = ToolRegistry::get_tool_schemas();
     assert_eq!(schemas.len(), TOTAL_TOOL_COUNT);
-    let dev_schema = schemas.iter().find(|s| s.name == "mini_dev");
+    let dev_schema = schemas.iter().find(|s| s.name == "minitask");
     assert!(
         dev_schema.is_some(),
-        "mini_dev tool schema must be registered"
+        "minitask tool schema must be registered"
     );
 }
 
@@ -82,10 +82,10 @@ async fn test_minidev_process_lifecycle_and_zero_orphan() {
 }
 
 #[tokio::test]
-async fn test_tool_dispatch_mini_dev_crud() {
+async fn test_tool_dispatch_minitask_crud() {
     let temp = tempdir().expect("tempdir");
 
-    // 1. Dispatch mini_dev start
+    // 1. Dispatch minitask start
     let start_args = json!({
         "action": "start",
         "command": "echo 'API server listening on 127.0.0.1:9099'; sleep 45",
@@ -93,7 +93,7 @@ async fn test_tool_dispatch_mini_dev_crud() {
         "process_type": "backend"
     });
 
-    let res = ToolRegistry::dispatch(temp.path(), "call_1", "mini_dev", &start_args, None, 1).await;
+    let res = ToolRegistry::dispatch(temp.path(), "call_1", "minitask", &start_args, None, 1).await;
 
     assert!(res.success);
     let output = &res.output;
@@ -101,28 +101,28 @@ async fn test_tool_dispatch_mini_dev_crud() {
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // 2. Dispatch mini_dev list
+    // 2. Dispatch minitask list
     let list_args = json!({ "action": "list" });
     let list_res =
-        ToolRegistry::dispatch(temp.path(), "call_2", "mini_dev", &list_args, None, 2).await;
+        ToolRegistry::dispatch(temp.path(), "call_2", "minitask", &list_args, None, 2).await;
 
     assert!(list_res.success);
     let list_out = &list_res.output;
     assert!(list_out.contains("integration-api"));
 
-    // 3. Dispatch mini_dev resources
+    // 3. Dispatch minitask resources
     let res_args = json!({ "action": "resources" });
     let res_eval =
-        ToolRegistry::dispatch(temp.path(), "call_3", "mini_dev", &res_args, None, 3).await;
+        ToolRegistry::dispatch(temp.path(), "call_3", "minitask", &res_args, None, 3).await;
 
     assert!(res_eval.success);
     let res_out = &res_eval.output;
     assert!(res_out.contains("Runtime Resource Telemetry"));
 
-    // 4. Dispatch mini_dev kill_all
+    // 4. Dispatch minitask kill_all
     let kill_args = json!({ "action": "kill_all" });
     let kill_res =
-        ToolRegistry::dispatch(temp.path(), "call_4", "mini_dev", &kill_args, None, 4).await;
+        ToolRegistry::dispatch(temp.path(), "call_4", "minitask", &kill_args, None, 4).await;
 
     assert!(kill_res.success);
     let kill_out = &kill_res.output;

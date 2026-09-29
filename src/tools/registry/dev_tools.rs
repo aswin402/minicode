@@ -1,7 +1,7 @@
-//! MiniDev Runtime Orchestrator Tool (Tool 168: `mini_dev`).
+//! MiniTask Process Vault Tool (Tool 168: `minitask`).
 //! Provides unified lifecycle management (CRUD), port auto-discovery,
 //! process group isolation, and resource telemetry for development servers,
-//! backends, Docker containers, and background scripts.
+//! backends, Docker containers, background scripts, workers, and browser sessions.
 
 use crate::agent::provider::ToolSchema;
 use crate::dev::models::{DevProcessId, DevProcessType, SpawnDevRequest};
@@ -17,7 +17,7 @@ use std::time::Duration;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: "minitask".to_string(),
-        description: "Unified Task & Runtime Process Vault (minitask / minitask_manager / mini_dev). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, and browser sessions. Provides full lifecycle CRUD (start, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
+        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, and browser sessions. Provides full lifecycle CRUD (start, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -116,19 +116,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     }]
 }
 
-/// Dispatches execution of the `mini_dev` / `minitask_manager` tool.
+/// Dispatches execution of the `minitask` tool.
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    if tool_name != "minitask"
-        && tool_name != "minitask_manager"
-        && tool_name != "mini_dev"
-        && tool_name != "task_manager"
-        && tool_name != "manage_tasks"
-        && tool_name != "manage_task"
-    {
+    if tool_name != "minitask" {
         return None;
     }
 
@@ -606,23 +600,23 @@ mod tests {
         // Wait brief moment for logs and ports
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // 2. List via backward-compatible alias "mini_dev"
+        // 2. List
         let list_args = json!({ "action": "list" });
-        let list_res = dispatch("mini_dev", &list_args, temp.path())
+        let list_res = dispatch("minitask", &list_args, temp.path())
             .await
             .unwrap()
             .unwrap();
         assert!(list_res.contains("mock-api"));
 
-        // 3. Resources via alias "minitask_manager"
+        // 3. Resources
         let res_args = json!({ "action": "resources" });
-        let res_output = dispatch("minitask_manager", &res_args, temp.path())
+        let res_output = dispatch("minitask", &res_args, temp.path())
             .await
             .unwrap()
             .unwrap();
         assert!(res_output.contains("Runtime Resource Telemetry"));
 
-        // 4. Kill all via "minitask"
+        // 4. Kill all
         let kill_args = json!({ "action": "kill_all" });
         let kill_res = dispatch("minitask", &kill_args, temp.path())
             .await
@@ -632,7 +626,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mini_dev_workers_dispatch() {
+    async fn test_minitask_workers_dispatch() {
         let temp = tempdir().unwrap();
         let registry = get_global_dev_registry();
 
@@ -658,7 +652,7 @@ mod tests {
 
         // 1. Query via action: "workers"
         let workers_args = json!({ "action": "workers" });
-        let workers_res = dispatch("mini_dev", &workers_args, temp.path())
+        let workers_res = dispatch("minitask", &workers_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -667,7 +661,7 @@ mod tests {
 
         // 2. Query via action: "list", process_type: "worker"
         let list_worker_args = json!({ "action": "list", "process_type": "worker" });
-        let list_worker_res = dispatch("mini_dev", &list_worker_args, temp.path())
+        let list_worker_res = dispatch("minitask", &list_worker_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -675,7 +669,7 @@ mod tests {
 
         // 3. Query logs via raw id
         let logs_args = json!({ "action": "logs", "id": "subagent-test-99" });
-        let logs_res = dispatch("mini_dev", &logs_args, temp.path())
+        let logs_res = dispatch("minitask", &logs_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -683,7 +677,7 @@ mod tests {
 
         // 4. Stop worker
         let stop_args = json!({ "action": "stop", "id": "subagent-test-99" });
-        let stop_res = dispatch("mini_dev", &stop_args, temp.path())
+        let stop_res = dispatch("minitask", &stop_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -692,7 +686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mini_dev_probe_port_dispatch() {
+    async fn test_minitask_probe_port_dispatch() {
         let temp = tempdir().unwrap();
 
         // 1. Probe a high free port
@@ -702,7 +696,7 @@ mod tests {
             "port": free_port
         });
 
-        let probe_res = dispatch("mini_dev", &probe_args, temp.path())
+        let probe_res = dispatch("minitask", &probe_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -716,7 +710,7 @@ mod tests {
             "action": "probe_port",
             "port": bound_port
         });
-        let occ_res = dispatch("mini_dev", &occ_args, temp.path())
+        let occ_res = dispatch("minitask", &occ_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -725,7 +719,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mini_dev_port_conflict_fallback_dispatch() {
+    async fn test_minitask_port_conflict_fallback_dispatch() {
         let temp = tempdir().unwrap();
 
         // Bind port to force conflict
@@ -740,7 +734,7 @@ mod tests {
             "port_policy": "fallback"
         });
 
-        let start_res = dispatch("mini_dev", &start_args, temp.path())
+        let start_res = dispatch("minitask", &start_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -749,6 +743,6 @@ mod tests {
 
         // Clean up
         let kill_args = json!({ "action": "kill_all" });
-        let _ = dispatch("mini_dev", &kill_args, temp.path()).await;
+        let _ = dispatch("minitask", &kill_args, temp.path()).await;
     }
 }

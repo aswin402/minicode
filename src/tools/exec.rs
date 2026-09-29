@@ -299,7 +299,7 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
             ));
         }
 
-        output.push_str("\nProcess is actively running and supervised under MiniTask Manager (with automatic OOM & runaway watchdog).\nUse 'mini_dev' / 'minitask_manager' or '/tasks' in TUI to inspect logs, view telemetry, or stop the task.");
+        output.push_str("\nProcess is actively running and supervised under MiniTask Manager (with automatic OOM & runaway watchdog).\nUse 'minitask' or '/tasks' in TUI to inspect logs, view telemetry, or stop the task.");
 
         Ok(output)
     } else {

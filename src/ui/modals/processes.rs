@@ -542,7 +542,7 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
             )]),
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  Use 'mini_dev start', /dev, or run npm/cargo to launch processes.",
+                "  Use 'minitask start', /tasks, or run npm/cargo to launch processes.",
                 Style::default().fg(theme.muted).add_modifier(Modifier::DIM),
             )]),
         ];

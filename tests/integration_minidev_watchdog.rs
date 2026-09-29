@@ -185,7 +185,7 @@ async fn test_watchdog_crash_loop_protection() {
 }
 
 #[tokio::test]
-async fn test_mini_dev_tool_probe_port_and_auto_restart() {
+async fn test_minitask_tool_probe_port_and_auto_restart() {
     let temp = tempdir().expect("tempdir");
 
     // 1. Probe a bound port via tool
@@ -196,7 +196,7 @@ async fn test_mini_dev_tool_probe_port_and_auto_restart() {
         "action": "probe_port",
         "port": bound_port
     });
-    let probe_out = dispatch("mini_dev", &probe_args, temp.path())
+    let probe_out = dispatch("minitask", &probe_args, temp.path())
         .await
         .expect("dispatch")
         .expect("probe result");
@@ -210,7 +210,7 @@ async fn test_mini_dev_tool_probe_port_and_auto_restart() {
         "name": "auto-restart-service",
         "auto_restart": true
     });
-    let start_out = dispatch("mini_dev", &start_args, temp.path())
+    let start_out = dispatch("minitask", &start_args, temp.path())
         .await
         .expect("dispatch")
         .expect("start result");
@@ -219,7 +219,7 @@ async fn test_mini_dev_tool_probe_port_and_auto_restart() {
 
     // 3. Kill all
     let kill_args = json!({ "action": "kill_all" });
-    let kill_out = dispatch("mini_dev", &kill_args, temp.path())
+    let kill_out = dispatch("minitask", &kill_args, temp.path())
         .await
         .expect("dispatch")
         .expect("kill result");

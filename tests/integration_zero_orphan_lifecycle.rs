@@ -92,14 +92,14 @@ async fn test_browser_close_tool_dispatch() {
 }
 
 #[tokio::test]
-async fn test_mini_dev_browser_stop_dispatch() {
+async fn test_minitask_browser_stop_dispatch() {
     let temp = tempdir().expect("tempdir");
 
-    // Dispatching mini_dev stop with id="browser" cleanly stops browser without error
+    // Dispatching minitask stop with id="browser" cleanly stops browser without error
     let res = ToolRegistry::dispatch(
         temp.path(),
-        "call_mini_dev_stop_browser",
-        "mini_dev",
+        "call_minitask_stop_browser",
+        "minitask",
         &json!({
             "action": "stop",
             "id": "browser"

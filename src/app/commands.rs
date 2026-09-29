@@ -442,34 +442,16 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniDev / MiniTask Runtime Orchestrator Slash Commands (/tasks, /minitask, /minitasks, /dev, /processes, /serve, /task_manager)
-        if prompt_lower == "/dev"
-            || prompt_lower == "/processes"
-            || prompt_lower == "/serve"
-            || prompt_lower == "/tasks"
+        // MiniTask Runtime Orchestrator Slash Commands (/tasks, /minitask)
+        if prompt_lower == "/tasks"
             || prompt_lower == "/minitask"
-            || prompt_lower == "/minitasks"
-            || prompt_lower == "/task_manager"
-            || prompt_lower.starts_with("/dev ")
-            || prompt_lower.starts_with("/processes ")
-            || prompt_lower.starts_with("/serve ")
             || prompt_lower.starts_with("/tasks ")
             || prompt_lower.starts_with("/minitask ")
-            || prompt_lower.starts_with("/minitasks ")
-            || prompt_lower.starts_with("/task_manager ")
         {
-            let sub = if prompt_lower.starts_with("/dev ") {
-                prompt_trimmed[5..].trim()
-            } else if prompt_lower.starts_with("/processes ")
-                || prompt_lower.starts_with("/minitasks ")
-            {
-                prompt_trimmed[11..].trim()
-            } else if prompt_lower.starts_with("/minitask ") {
+            let sub = if prompt_lower.starts_with("/minitask ") {
                 prompt_trimmed[10..].trim()
-            } else if prompt_lower.starts_with("/serve ") || prompt_lower.starts_with("/tasks ") {
+            } else if prompt_lower.starts_with("/tasks ") {
                 prompt_trimmed[7..].trim()
-            } else if prompt_lower.starts_with("/task_manager ") {
-                prompt_trimmed[14..].trim()
             } else {
                 ""
             };
@@ -499,7 +481,7 @@ impl<'a> App<'a> {
                 "list" | "ps" => {
                     let list = registry.list().await;
                     if list.is_empty() {
-                        self.timeline.add_status("ℹ No active development processes running. Use 'mini_dev start' to launch one.".to_string());
+                        self.timeline.add_status("ℹ No active development processes running. Use 'minitask start' or /tasks to launch one.".to_string());
                     } else {
                         let mut msg = format!("🚀 Active Development Processes ({})\n", list.len());
                         for p in list {
@@ -609,7 +591,7 @@ impl<'a> App<'a> {
                                 .add_status(format!("❌ Screenshot failed: {}", e)),
                         }
                     } else {
-                        self.timeline.add_status("ℹ No active server URL found. Start a server with 'mini_dev start' first.".to_string());
+                        self.timeline.add_status("ℹ No active server URL found. Start a server with 'minitask start' or /tasks first.".to_string());
                     }
                 }
                 "workers" | "subagents" => {

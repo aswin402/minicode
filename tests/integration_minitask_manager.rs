@@ -2,7 +2,7 @@
 //! 1. Auto-detection & migration of python3 webservers and daemons in exec_cmd.
 //! 2. Explicit is_daemon background task execution.
 //! 3. Proactive Resource Watchdog terminating runaway / OOM memory spikes.
-//! 4. Unified minitask_manager tool dispatch and alias execution.
+//! 4. Unified minitask tool dispatch and execution.
 
 use minicode::dev::models::{DevProcessStatus, DevProcessType, SpawnDevRequest};
 use minicode::dev::ports::is_process_running;
@@ -181,33 +181,10 @@ async fn test_resource_watchdog_detects_oom_memory_spike() {
 }
 
 #[tokio::test]
-async fn test_minitask_manager_tool_dispatch_alias() {
+async fn test_minitask_tool_dispatch() {
     let temp = tempdir().expect("tempdir");
 
-    // Dispatching via alias 'minitask_manager'
-    let res = ToolRegistry::dispatch(
-        temp.path(),
-        "call_minitask_mgr_list",
-        "minitask_manager",
-        &json!({
-            "action": "list"
-        }),
-        None,
-        1,
-    )
-    .await;
-
-    assert!(
-        res.success,
-        "minitask_manager alias should dispatch successfully"
-    );
-    assert!(
-        res.output.contains("Processes") || res.output.contains("processes"),
-        "List output should mention processes: got {}",
-        res.output
-    );
-
-    // Dispatching via alias 'minitask'
+    // Dispatching via canonical 'minitask'
     let res_task = ToolRegistry::dispatch(
         temp.path(),
         "call_minitask_list",
@@ -220,8 +197,5 @@ async fn test_minitask_manager_tool_dispatch_alias() {
     )
     .await;
 
-    assert!(
-        res_task.success,
-        "minitask alias should dispatch successfully"
-    );
+    assert!(res_task.success, "minitask should dispatch successfully");
 }

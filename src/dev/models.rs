@@ -52,7 +52,7 @@ impl fmt::Display for DevProcessId {
     }
 }
 
-/// Category of running process managed by mini_dev.
+/// Category of running process managed by minitask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DevProcessType {
@@ -325,7 +325,7 @@ pub struct DevProcessSummary {
     pub port_resolution: Option<PortResolution>,
 }
 
-/// Cumulative resource metrics for all processes managed by mini_dev.
+/// Cumulative resource metrics for all processes managed by minitask.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeResourceSummary {
     /// Total count of active, running processes

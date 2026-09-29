@@ -248,10 +248,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "miniblock_update" | "block_delete" | "miniblock_delete" | "block_scaffold"
         | "miniblock_scaffold" | "block_import" | "miniblock_import" => ToolSafetyLevel::Mutating,
 
-        // MiniDev Runtime Orchestrator
-        "mini_dev" | "dev_manager" | "minitask" | "minitask_manager" | "task_manager" => {
-            ToolSafetyLevel::Mutating
-        }
+        // MiniTask Process Vault
+        "minitask" => ToolSafetyLevel::Mutating,
 
         // MiniVault Multi-tier Agent Skills & Storage (ReadOnly)
         "vault_search" | "vault_show" | "vault_bundle_list" | "vault_gotchas_list" => {

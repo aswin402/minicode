@@ -493,7 +493,6 @@ impl WorkflowRouter {
             || lower.contains("manage task")
             || lower.contains("manage tasks")
             || lower.contains("minitask")
-            || lower.contains("mini_dev")
             || lower.contains("listen on port")
             || lower.contains("port ")
             || lower.starts_with("serve")
@@ -1079,7 +1078,7 @@ mod tests {
             WorkflowArchetype::RuntimeDev
         );
         assert_eq!(
-            WorkflowRouter::classify("Check the server logs with mini_dev"),
+            WorkflowRouter::classify("Check the server logs with minitask"),
             WorkflowArchetype::RuntimeDev
         );
     }

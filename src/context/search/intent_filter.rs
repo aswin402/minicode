@@ -242,7 +242,7 @@ impl IntentClassifier {
             categories.insert(ToolCategory::MiniKit);
         }
 
-        // 10. MiniDev Runtime Orchestrator Intent
+        // 10. MiniTask Process Vault Intent
         if lower.contains("dev server")
             || lower.contains("run server")
             || lower.contains("start server")
@@ -256,7 +256,6 @@ impl IntentClassifier {
             || lower.contains("manage tasks")
             || lower.contains("minitask")
             || lower.contains("task manager")
-            || lower.contains("mini_dev")
             || lower.contains("listen on port")
             || lower.contains("port ")
             || lower.starts_with("serve")

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn test_subagent_worker_registration_and_mini_dev_crud() {
+async fn test_subagent_worker_registration_and_minitask_crud() {
     let temp = tempdir().expect("tempdir created");
     let registry = get_global_dev_registry();
 
@@ -38,18 +38,18 @@ async fn test_subagent_worker_registration_and_mini_dev_crud() {
         .await;
     handle.append_log("📝 File modified: src/metrics.rs").await;
 
-    // 2. Query via mini_dev action: "workers"
+    // 2. Query via minitask action: "workers"
     let workers_args = json!({ "action": "workers" });
-    let workers_res = dispatch("mini_dev", &workers_args, temp.path())
+    let workers_res = dispatch("minitask", &workers_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
     assert!(workers_res.contains("Subagent (Coder) - Implement Prometheus metrics"));
     assert!(workers_res.contains("worker-subagent-coder-42"));
 
-    // 3. Query via mini_dev action: "list", process_type: "worker"
+    // 3. Query via minitask action: "list", process_type: "worker"
     let list_args = json!({ "action": "list", "process_type": "worker" });
-    let list_res = dispatch("mini_dev", &list_args, temp.path())
+    let list_res = dispatch("minitask", &list_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
@@ -57,7 +57,7 @@ async fn test_subagent_worker_registration_and_mini_dev_crud() {
 
     // 4. Query logs via raw id (without worker- prefix to verify flexible resolution)
     let logs_args = json!({ "action": "logs", "id": "subagent-coder-42" });
-    let logs_res = dispatch("mini_dev", &logs_args, temp.path())
+    let logs_res = dispatch("minitask", &logs_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
@@ -67,7 +67,7 @@ async fn test_subagent_worker_registration_and_mini_dev_crud() {
 
     // 5. Query status via raw id
     let status_args = json!({ "action": "status", "id": "subagent-coder-42" });
-    let status_res = dispatch("mini_dev", &status_args, temp.path())
+    let status_res = dispatch("minitask", &status_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
@@ -76,15 +76,15 @@ async fn test_subagent_worker_registration_and_mini_dev_crud() {
 
     // 6. Inspect runtime resource telemetry
     let res_args = json!({ "action": "resources" });
-    let res_output = dispatch("mini_dev", &res_args, temp.path())
+    let res_output = dispatch("minitask", &res_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
     assert!(res_output.contains("Runtime Resource Telemetry"));
 
-    // 7. Stop worker via mini_dev action: "stop"
+    // 7. Stop worker via minitask action: "stop"
     let stop_args = json!({ "action": "stop", "id": "subagent-coder-42" });
-    let stop_res = dispatch("mini_dev", &stop_args, temp.path())
+    let stop_res = dispatch("minitask", &stop_args, temp.path())
         .await
         .expect("dispatch handled")
         .expect("success response");
