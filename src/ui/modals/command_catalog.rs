@@ -81,7 +81,7 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         shortcut: "F7",
         description:
             "MiniTask Manager: inspect, manage, and supervise running dev servers, webservers, subagents, background builds & ports",
-        example: "/tasks | /processes | /dev | /tasks stop <id>",
+        example: "/tasks | /minitask | /processes | /dev | /tasks stop <id>",
     },
     CommandCatalogItem {
         name: "/review",

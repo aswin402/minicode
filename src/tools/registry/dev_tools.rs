@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-/// Returns the schema for `mini_dev` (Tool 168).
+/// Returns the schema for `minitask` (Tool 168).
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
-        name: "mini_dev".to_string(),
-        description: "Manage long-running development servers, backend APIs, Docker stacks, scripts, and browsers with full lifecycle CRUD, dynamic port discovery, process group isolation, and real-time resource tracking (CPU/RSS memory). Automatically terminates all managed processes when minicode exits.".to_string(),
+        name: "minitask".to_string(),
+        description: "Unified Task & Runtime Process Vault (minitask / minitask_manager / mini_dev). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, and browser sessions. Provides full lifecycle CRUD (start, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -122,21 +122,23 @@ pub async fn dispatch(
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    if tool_name != "mini_dev"
+    if tool_name != "minitask"
         && tool_name != "minitask_manager"
-        && tool_name != "minitask"
+        && tool_name != "mini_dev"
         && tool_name != "task_manager"
+        && tool_name != "manage_tasks"
+        && tool_name != "manage_task"
     {
         return None;
     }
 
     Some(async move {
-        let action = require_str(args, "action", "mini_dev")?;
+        let action = require_str(args, "action", "minitask")?;
         let registry = get_global_dev_registry();
 
         match action {
             "probe_port" | "check_port" => {
-                let port = require_u64(args, "port", "mini_dev")? as u16;
+                let port = require_u64(args, "port", "minitask")? as u16;
                 let is_listening = crate::dev::ports::is_port_listening(port);
                 let (conflicting_pid, process_name, command_line) = if is_listening {
                     let pid = crate::dev::ports::find_pid_by_port(port);
@@ -191,7 +193,7 @@ pub async fn dispatch(
                 }
             }
             "start" => {
-                let command = require_str(args, "command", "mini_dev")?.to_string();
+                let command = require_str(args, "command", "minitask")?.to_string();
                 let name = opt_str(args, "name").map(|s| s.to_string());
                 let p_type_str = opt_str(args, "process_type").unwrap_or("frontend");
                 let process_type: DevProcessType = p_type_str.parse().unwrap_or(DevProcessType::Frontend);
@@ -398,7 +400,7 @@ pub async fn dispatch(
                     .or_else(|| opt_str(args, "task_id"))
                     .or_else(|| opt_str(args, "process_id"))
                     .or_else(|| opt_str(args, "target"))
-                    .ok_or_else(|| ToolError::invalid_args("mini_dev", "Missing required parameter 'id' or 'task_id'"))?;
+                    .ok_or_else(|| ToolError::invalid_args("minitask", "Missing required parameter 'id' or 'task_id'"))?;
                 let id = DevProcessId::from(id_str);
                 let tail = opt_u64(args, "tail").unwrap_or(50) as usize;
                 let filter = opt_str(args, "filter");
@@ -440,7 +442,7 @@ pub async fn dispatch(
                             }
                             return Ok("ℹ No active development processes or browser sessions to stop.".to_string());
                         } else {
-                            return Err(ToolError::invalid_args("mini_dev", "Multiple processes are active. Please specify 'id' or 'task_id' (or 'all').").into());
+                            return Err(ToolError::invalid_args("minitask", "Multiple processes are active. Please specify 'id' or 'task_id' (or 'all').").into());
                         }
                     }
                 };
@@ -480,7 +482,7 @@ pub async fn dispatch(
                     .or_else(|| opt_str(args, "task_id"))
                     .or_else(|| opt_str(args, "process_id"))
                     .or_else(|| opt_str(args, "target"))
-                    .ok_or_else(|| ToolError::invalid_args("mini_dev", "Missing required parameter 'id' or 'task_id'"))?;
+                    .ok_or_else(|| ToolError::invalid_args("minitask", "Missing required parameter 'id' or 'task_id'"))?;
                 let id = DevProcessId::from(id_str);
                 let summary = registry.restart(workspace_root, &id).await?;
                 Ok(format!(
@@ -532,7 +534,7 @@ pub async fn dispatch(
                         .find_map(|p| p.url)
                         .ok_or_else(|| {
                             ToolError::InvalidArguments {
-                                name: "mini_dev".to_string(),
+                                name: "minitask".to_string(),
                                 reason: "Action 'screenshot' requires either 'url', 'id' of a running process, or an active dev server with an open port.".to_string(),
                             }
                         })?
@@ -563,7 +565,7 @@ pub async fn dispatch(
                 ))
             }
             unknown => Err(ToolError::InvalidArguments {
-                name: "mini_dev".to_string(),
+                name: "minitask".to_string(),
                 reason: format!("Unknown action '{}'. Expected: start, list, status, logs, stop, restart, resources, kill_all, screenshot, workers", unknown),
             }.into()),
         }
@@ -577,17 +579,17 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn test_mini_dev_schema_valid() {
+    async fn test_minitask_schema_valid() {
         let schemas = get_schemas();
         assert_eq!(schemas.len(), 1);
-        assert_eq!(schemas[0].name, "mini_dev");
+        assert_eq!(schemas[0].name, "minitask");
     }
 
     #[tokio::test]
-    async fn test_mini_dev_dispatch_lifecycle() {
+    async fn test_minitask_dispatch_lifecycle() {
         let temp = tempdir().unwrap();
 
-        // 1. Start a mock server
+        // 1. Start a mock server via canonical name "minitask"
         let start_args = json!({
             "action": "start",
             "command": "echo 'Server listening on http://localhost:8765'; sleep 30",
@@ -595,7 +597,7 @@ mod tests {
             "process_type": "backend"
         });
 
-        let start_res = dispatch("mini_dev", &start_args, temp.path())
+        let start_res = dispatch("minitask", &start_args, temp.path())
             .await
             .unwrap()
             .unwrap();
@@ -604,7 +606,7 @@ mod tests {
         // Wait brief moment for logs and ports
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // 2. List
+        // 2. List via backward-compatible alias "mini_dev"
         let list_args = json!({ "action": "list" });
         let list_res = dispatch("mini_dev", &list_args, temp.path())
             .await
@@ -612,17 +614,17 @@ mod tests {
             .unwrap();
         assert!(list_res.contains("mock-api"));
 
-        // 3. Resources
+        // 3. Resources via alias "minitask_manager"
         let res_args = json!({ "action": "resources" });
-        let res_output = dispatch("mini_dev", &res_args, temp.path())
+        let res_output = dispatch("minitask_manager", &res_args, temp.path())
             .await
             .unwrap()
             .unwrap();
         assert!(res_output.contains("Runtime Resource Telemetry"));
 
-        // 4. Kill all
+        // 4. Kill all via "minitask"
         let kill_args = json!({ "action": "kill_all" });
-        let kill_res = dispatch("mini_dev", &kill_args, temp.path())
+        let kill_res = dispatch("minitask", &kill_args, temp.path())
             .await
             .unwrap()
             .unwrap();

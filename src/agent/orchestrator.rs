@@ -764,7 +764,7 @@ impl WorkflowRouter {
         }
 
         out.push_str("  • Development Server Invariant:\n");
-        out.push_str("    To run and test the web application (e.g. `python3 -m http.server 8080 &`), use `exec_cmd` or `mini_dev(action=\"start\")`.\n");
+        out.push_str("    To run and test the web application (e.g. `python3 -m http.server 8080 &`), use `exec_cmd` or `minitask(action=\"start\")`.\n");
 
         out.push_str("</recommended_miniblocks>");
         Some(out)
@@ -836,7 +836,7 @@ impl WorkflowRouter {
         let mut out = String::from("<active_dev_services>\n");
         if procs.is_empty() && !browser_live {
             out.push_str("  Managed Runtime Daemons: None currently active.\n");
-            out.push_str("  Autonomous Action: Use `mini_dev(action=\"start\", command=\"...\", port=...)` to launch dev servers asynchronously.\n");
+            out.push_str("  Autonomous Action: Use `minitask(action=\"start\", command=\"...\", port=...)` to launch dev servers asynchronously.\n");
         } else {
             out.push_str(&format!(
                 "  Supervised Tasks: {} active (Total RAM: {:.1}MB, CPU: {:.1}%)\n",
@@ -868,9 +868,9 @@ impl WorkflowRouter {
                 ));
             }
             out.push_str("  Resource / Telemetry Invariant:\n");
-            out.push_str("  • If the user asks about resource usage or telemetry, ALWAYS use `mini_dev(action=\"resources\")` or `mini_dev(action=\"status\")`. DO NOT execute raw shell commands like `ps`, `top`, or `grep`.\n");
+            out.push_str("  • If the user asks about resource usage or telemetry, ALWAYS use `minitask(action=\"resources\")` or `minitask(action=\"status\")`. DO NOT execute raw shell commands like `ps`, `top`, or `grep`.\n");
             out.push_str("  Termination & Teardown Invariant:\n");
-            out.push_str("  • If the user asks to stop, kill, or close the server, task, or website, ALWAYS call `mini_dev(action=\"stop\", id=\"...\")` (or `mini_dev(action=\"kill_all\")`) AND `browser_close` to terminate both the server process tree and browser engine. DO NOT run raw `pkill` or `kill` commands.\n");
+            out.push_str("  • If the user asks to stop, kill, or close the server, task, or website, ALWAYS call `minitask(action=\"stop\", id=\"...\")` (or `minitask(action=\"kill_all\")`) AND `browser_close` to terminate both the server process tree and browser engine. DO NOT run raw `pkill` or `kill` commands.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)

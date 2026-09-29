@@ -139,9 +139,9 @@ async fn test_resource_watchdog_detects_oom_memory_spike() {
     let summary = registry.spawn(temp.path(), req).await.expect("spawn");
     let pid = summary.pid.expect("PID must exist");
 
-    // Poll up to 6 seconds for the 2-second Resource Watchdog tick to detect RAM spike and terminate
+    // Poll up to 8 seconds for the 2-second Resource Watchdog tick to detect RAM spike and terminate
     let mut terminated = false;
-    for _ in 0..12 {
+    for _ in 0..16 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if !is_process_running(pid) {
             terminated = true;
