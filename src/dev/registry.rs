@@ -3,10 +3,11 @@
 use crate::dev::metrics::{sample_aggregate_metrics, sample_process_metrics};
 use crate::dev::models::{
     DevProcessId, DevProcessStatus, DevProcessSummary, DevProcessType, RuntimeResourceSummary,
-    SpawnDevRequest,
+    ScheduleInfo, ScheduleRequest, SpawnDevRequest,
 };
 use crate::dev::process::{spawn_process_group, DevProcessHandle};
 use crate::error::{DevError, Result};
+use uuid::Uuid;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -569,6 +570,186 @@ impl MiniDevRegistry {
         handle
     }
 
+    /// Schedules a periodic background interval, recurring cron, or one-shot countdown task.
+    pub async fn schedule(
+        &self,
+        workspace_root: &Path,
+        req: ScheduleRequest,
+    ) -> Result<DevProcessSummary> {
+        let is_one_shot = req.is_one_shot();
+        let interval_secs = req.effective_interval_secs().max(1);
+        let process_type = if is_one_shot {
+            DevProcessType::Timer
+        } else {
+            DevProcessType::Cron
+        };
+
+        let short_uuid = &Uuid::new_v4().to_string()[..8];
+        let name_prefix = req
+            .name
+            .as_deref()
+            .unwrap_or(if is_one_shot { "timer" } else { "cron" });
+        let clean_prefix = name_prefix.trim().to_lowercase().replace(' ', "-");
+        let id = DevProcessId::from(format!("sched-{}-{}", clean_prefix, short_uuid));
+        let display_name = req.name.clone().unwrap_or_else(|| {
+            if is_one_shot {
+                format!("Timer ({}s)", interval_secs)
+            } else {
+                format!("Schedule (every {}s)", interval_secs)
+            }
+        });
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let next_epoch = now_epoch + interval_secs;
+
+        let schedule_info = ScheduleInfo {
+            interval_secs,
+            is_one_shot,
+            iteration_count: 0,
+            max_iterations: req.max_iterations,
+            last_run_timestamp: None,
+            next_run_timestamp: Some(next_epoch),
+        };
+
+        let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
+        let cancel_hook = Arc::new(move || {
+            let _ = abort_tx.send(true);
+        });
+
+        let handle = Arc::new(DevProcessHandle {
+            id: id.clone(),
+            name: display_name.clone(),
+            process_type,
+            command: req.command.clone(),
+            working_dir: workspace_root.to_path_buf(),
+            extra_env: HashMap::new(),
+            port_policy: None,
+            max_memory_mb: None,
+            pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            pgid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            started_at: std::time::Instant::now(),
+            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
+            ports: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                crate::dev::process::MAX_RING_BUFFER_LINES,
+            ))),
+            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel_hook: Some(crate::dev::process::CancelHook::new(cancel_hook)),
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
+            port_resolution: Arc::new(RwLock::new(None)),
+            schedule_info: Arc::new(RwLock::new(Some(schedule_info))),
+        });
+
+        let handle_clone = Arc::clone(&handle);
+        let work_dir_buf = workspace_root.to_path_buf();
+        let cmd_str = req.command.clone();
+        let max_iters = req.max_iterations;
+        let cached_active = Arc::clone(&self.cached_active_count);
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // First tick fires immediately in tokio::time::interval; skip it to respect interval_secs delay
+            ticker.tick().await;
+
+            let mut current_iter = 0;
+            loop {
+                tokio::select! {
+                    _ = abort_rx.changed() => {
+                        if *abort_rx.borrow() {
+                            break;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        if *abort_rx.borrow() || handle_clone.is_shutting_down.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        current_iter += 1;
+                        let run_time = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+
+                        let next_time = if is_one_shot { None } else { Some(run_time + interval_secs) };
+                        {
+                            let mut info_lock = handle_clone.schedule_info.write().await;
+                            if let Some(ref mut info) = *info_lock {
+                                info.iteration_count = current_iter;
+                                info.last_run_timestamp = Some(run_time);
+                                info.next_run_timestamp = next_time;
+                            }
+                        }
+
+                        let header = if is_one_shot {
+                            format!("⏰ One-shot timer fired (duration: {}s): {}", interval_secs, cmd_str)
+                        } else {
+                            format!("⏰ Scheduled execution #{} (interval: {}s): {}", current_iter, interval_secs, cmd_str)
+                        };
+                        handle_clone.append_log(header).await;
+
+                        // Execute command in background
+                        let output = tokio::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd_str)
+                            .current_dir(&work_dir_buf)
+                            .output()
+                            .await;
+
+                        match output {
+                            Ok(out) => {
+                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                for line in stdout.lines() {
+                                    handle_clone.append_log(line).await;
+                                }
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                for line in stderr.lines() {
+                                    handle_clone.append_log(format!("⚠ {}", line)).await;
+                                }
+                                if !out.status.success() {
+                                    handle_clone.append_log(format!("✗ Process exited with code {:?}", out.status.code())).await;
+                                }
+                            }
+                            Err(e) => {
+                                handle_clone.append_log(format!("✗ Failed to execute scheduled command: {}", e)).await;
+                            }
+                        }
+
+                        if is_one_shot {
+                            handle_clone.append_log("✔ One-shot timer completed.").await;
+                            let mut st = handle_clone.status.write().await;
+                            *st = DevProcessStatus::Stopped;
+                            let _ = cached_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                                Some(v.saturating_sub(1))
+                            });
+                            break;
+                        }
+
+                        if let Some(max) = max_iters {
+                            if current_iter >= max {
+                                handle_clone.append_log(format!("✔ Completed all {} scheduled iterations.", max)).await;
+                                let mut st = handle_clone.status.write().await;
+                                *st = DevProcessStatus::Stopped;
+                                let _ = cached_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                                    Some(v.saturating_sub(1))
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let mut lock = self.processes.write().await;
+        lock.insert(id, Arc::clone(&handle));
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        let summary = self.create_summary(&handle).await;
+        Ok(summary)
+    }
+
     /// Updates an active PGID when a monitored process is auto-restarted with a new PID/PGID.
     pub fn update_active_pgid(&self, old_pgid: u32, new_pgid: u32) {
         if let Ok(mut set) = self.active_pgids.lock() {
@@ -945,5 +1126,78 @@ mod tests {
         registry.stop(&orig_id).await.expect("stop ok");
         let stopped = registry.get(&orig_id).await.expect("exists");
         assert_eq!(stopped.status, DevProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_interval_execution_and_cancellation() {
+        let registry = MiniDevRegistry::new();
+        let temp = tempdir().expect("tempdir");
+
+        let req = ScheduleRequest {
+            command: "echo 'tick_interval'".to_string(),
+            name: Some("test-timer".to_string()),
+            interval_seconds: Some(1),
+            duration_seconds: None,
+            cron_expression: None,
+            max_iterations: Some(3),
+        };
+
+        let summary = registry.schedule(temp.path(), req).await.expect("schedule");
+        assert_eq!(summary.name, "test-timer");
+        assert!(summary.id.as_str().starts_with("sched-test-timer-"));
+        assert_eq!(summary.process_type, DevProcessType::Cron);
+        assert!(summary.schedule_info.is_some());
+        let s_info = summary.schedule_info.unwrap();
+        assert_eq!(s_info.interval_secs, 1);
+        assert!(!s_info.is_one_shot);
+
+        // Sleep to allow tick to fire
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+
+        let logs = registry.logs(&summary.id, 10, None).await.expect("logs");
+        assert!(
+            logs.iter().any(|l| l.contains("tick_interval") || l.contains("Scheduled execution")),
+            "Logs must contain scheduled tick output: {:?}",
+            logs
+        );
+
+        // Stop scheduled task early
+        let stopped = registry.stop(&summary.id).await.expect("stop");
+        assert!(stopped);
+        let updated = registry.get(&summary.id).await.expect("exists");
+        assert_eq!(updated.status, DevProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_one_shot_timer() {
+        let registry = MiniDevRegistry::new();
+        let temp = tempdir().expect("tempdir");
+
+        let req = ScheduleRequest {
+            command: "echo 'timer_done'".to_string(),
+            name: Some("test-one-shot".to_string()),
+            interval_seconds: None,
+            duration_seconds: Some(1),
+            cron_expression: None,
+            max_iterations: None,
+        };
+
+        let summary = registry.schedule(temp.path(), req).await.expect("schedule");
+        assert_eq!(summary.process_type, DevProcessType::Timer);
+        let s_info = summary.schedule_info.expect("schedule_info");
+        assert!(s_info.is_one_shot);
+
+        // Sleep to allow one-shot timer to fire and complete
+        tokio::time::sleep(Duration::from_millis(1400)).await;
+
+        let logs = registry.logs(&summary.id, 10, None).await.expect("logs");
+        assert!(
+            logs.iter().any(|l| l.contains("timer_done") || l.contains("One-shot timer")),
+            "Logs must contain one-shot output: {:?}",
+            logs
+        );
+
+        let updated = registry.get(&summary.id).await.expect("exists");
+        assert_eq!(updated.status, DevProcessStatus::Stopped);
     }
 }
