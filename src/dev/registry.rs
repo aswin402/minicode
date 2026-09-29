@@ -9,6 +9,7 @@ use crate::dev::process::{spawn_process_group, DevProcessHandle};
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -26,6 +27,9 @@ pub struct MiniDevRegistry {
     browser_pids: Arc<RwLock<HashSet<u32>>>,
     active_pgids: Arc<std::sync::Mutex<HashSet<u32>>>,
     active_pids: Arc<std::sync::Mutex<HashSet<u32>>>,
+    cached_active_count: Arc<AtomicU32>,
+    cached_total_memory_mb: Arc<AtomicU32>,
+    cached_total_cpu_pct: Arc<AtomicU32>,
 }
 
 impl Default for MiniDevRegistry {
@@ -42,6 +46,9 @@ impl MiniDevRegistry {
             browser_pids: Arc::new(RwLock::new(HashSet::new())),
             active_pgids: Arc::new(std::sync::Mutex::new(HashSet::new())),
             active_pids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            cached_active_count: Arc::new(AtomicU32::new(0)),
+            cached_total_memory_mb: Arc::new(AtomicU32::new(0)),
+            cached_total_cpu_pct: Arc::new(AtomicU32::new(0)),
         };
         registry.spawn_resource_watchdog();
         registry
@@ -53,6 +60,10 @@ impl MiniDevRegistry {
     /// cleanly terminates the offending process tree to safeguard the host system.
     fn spawn_resource_watchdog(&self) {
         let processes = Arc::clone(&self.processes);
+        let cached_active_count = Arc::clone(&self.cached_active_count);
+        let cached_total_memory_mb = Arc::clone(&self.cached_total_memory_mb);
+        let cached_total_cpu_pct = Arc::clone(&self.cached_total_cpu_pct);
+
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
@@ -61,6 +72,10 @@ impl MiniDevRegistry {
 
                 loop {
                     interval.tick().await;
+
+                    let mut total_active: u32 = 0;
+                    let mut total_memory_mb: f32 = 0.0;
+                    let mut total_cpu_pct: f32 = 0.0;
 
                     // 1. Check managed processes
                     let handles: Vec<Arc<DevProcessHandle>> = {
@@ -81,6 +96,10 @@ impl MiniDevRegistry {
 
                         // Sample tree metrics (root + all descendants)
                         let usage = crate::dev::metrics::sample_process_metrics(pid);
+                        total_active += 1;
+                        total_memory_mb += usage.memory_rss_mb;
+                        total_cpu_pct += usage.cpu_percent;
+
                         let limit_mb = handle
                             .max_memory_mb
                             .map(|m| m as f32)
@@ -120,6 +139,10 @@ impl MiniDevRegistry {
                             {
                                 let browser_usage =
                                     crate::dev::metrics::sample_process_metrics(browser_pid);
+                                total_active += 1;
+                                total_memory_mb += browser_usage.memory_rss_mb;
+                                total_cpu_pct += browser_usage.cpu_percent;
+
                                 // Browser ceiling: 2560 MB (2.5 GB)
                                 if browser_usage.memory_rss_mb > 2560.0 {
                                     tracing::warn!(
@@ -135,9 +158,36 @@ impl MiniDevRegistry {
                             }
                         }
                     }
+
+                    cached_active_count.store(total_active, Ordering::Relaxed);
+                    cached_total_memory_mb.store(
+                        (total_memory_mb * 10.0).round() as u32,
+                        Ordering::Relaxed,
+                    );
+                    cached_total_cpu_pct.store(
+                        (total_cpu_pct * 10.0).round() as u32,
+                        Ordering::Relaxed,
+                    );
                 }
             });
         }
+    }
+
+    /// Returns an instant, lock-free telemetry snapshot of active background tasks:
+    /// `(active_count, total_memory_rss_mb, total_cpu_percent)`.
+    /// Zero-cost reading suitable for per-frame 60 FPS TUI rendering.
+    pub fn get_telemetry_snapshot(&self) -> (usize, f32, f32) {
+        let mut count = self.cached_active_count.load(Ordering::Relaxed) as usize;
+        if count == 0 {
+            if let Ok(set) = self.active_pgids.lock() {
+                if !set.is_empty() {
+                    count = set.len();
+                }
+            }
+        }
+        let mem_mb = self.cached_total_memory_mb.load(Ordering::Relaxed) as f32 / 10.0;
+        let cpu_pct = self.cached_total_cpu_pct.load(Ordering::Relaxed) as f32 / 10.0;
+        (count, mem_mb, cpu_pct)
     }
 
     /// Spawns and registers a new development daemon or process.
@@ -169,6 +219,7 @@ impl MiniDevRegistry {
 
         let mut lock = self.processes.write().await;
         lock.insert(id, handle_arc);
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(summary)
     }
@@ -332,6 +383,11 @@ impl MiniDevRegistry {
             }
         }
         handle.terminate().await?;
+        let _ = self
+            .cached_active_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.saturating_sub(1))
+            });
         Ok(true)
     }
 
@@ -434,6 +490,10 @@ impl MiniDevRegistry {
         // Force synchronous sweep of all remaining processes
         kill_all_sync();
 
+        self.cached_active_count.store(0, Ordering::Relaxed);
+        self.cached_total_memory_mb.store(0, Ordering::Relaxed);
+        self.cached_total_cpu_pct.store(0, Ordering::Relaxed);
+
         Ok(count)
     }
 
@@ -486,6 +546,7 @@ impl MiniDevRegistry {
 
         let mut lock = self.processes.write().await;
         lock.insert(id, Arc::clone(&handle));
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
         handle
     }
 

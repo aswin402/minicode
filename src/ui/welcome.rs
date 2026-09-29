@@ -167,7 +167,28 @@ pub fn render_welcome_screen(
         .unwrap_or_default();
 
     let full_path_str = format!("{}{}", display_path, git_info);
-    let bot_left = Span::styled(full_path_str, Style::default().fg(theme.muted));
+    let mut left_spans = vec![
+        Span::raw(" "),
+        Span::styled(full_path_str, Style::default().fg(theme.muted)),
+    ];
+
+    let (task_count, task_mem_mb, task_cpu_pct) =
+        crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+    if task_count > 0 {
+        let mem_str = if task_mem_mb < 10.0 {
+            format!("{:.1}MB", task_mem_mb)
+        } else {
+            format!("{:.0}MB", task_mem_mb)
+        };
+        left_spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+        left_spans.push(Span::styled(
+            format!("tasks:{} ({} · {:.1}%)", task_count, mem_str, task_cpu_pct),
+            Style::default()
+                .fg(theme.success)
+                .add_modifier(Modifier::BOLD),
+        ));
+        left_spans.push(Span::styled(" [F7]", Style::default().fg(theme.muted)));
+    }
 
     let provider_display = title_case(ctx.provider);
     let model_display = format_model_name(ctx.model);
@@ -178,7 +199,11 @@ pub fn render_welcome_screen(
     };
     let bot_right = Span::styled(model_str, Style::default().fg(theme.muted));
 
-    let bl_width = (bot_left.content.chars().count() + 2) as u16;
+    let bl_width = (left_spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>()
+        + 1) as u16;
     let br_width = (bot_right.content.chars().count() + 2) as u16;
 
     if area.width >= bl_width + br_width {
@@ -191,10 +216,7 @@ pub fn render_welcome_screen(
             ])
             .split(vert_chunks[5]);
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::raw(" "), bot_left])),
-            bot_chunks[0],
-        );
+        frame.render_widget(Paragraph::new(Line::from(left_spans)), bot_chunks[0]);
         frame.render_widget(
             Paragraph::new(Line::from(vec![bot_right, Span::raw(" ")])).alignment(Alignment::Right),
             bot_chunks[2],

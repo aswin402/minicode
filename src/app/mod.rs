@@ -444,6 +444,10 @@ impl<'a> App<'a> {
                         show_cost: self.config.ui.show_cost,
                         session_cost_usd: self.total_cost_usd,
                         cached_tokens: self.last_turn_cached_tokens,
+                        tasks_summary: Some(
+                            crate::dev::registry::get_global_dev_registry()
+                                .get_telemetry_snapshot(),
+                        ),
                     };
 
                     StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);

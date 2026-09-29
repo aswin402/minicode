@@ -23,6 +23,7 @@ pub struct StatusContext<'a> {
     pub show_cost: bool,
     pub session_cost_usd: f64,
     pub cached_tokens: usize,
+    pub tasks_summary: Option<(usize, f32, f32)>,
 }
 
 pub struct StatusWidgets;
@@ -165,6 +166,35 @@ impl StatusWidgets {
             }
         }
 
+        let (task_count, task_mem_mb, task_cpu_pct) = ctx.tasks_summary.unwrap_or_else(|| {
+            crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot()
+        });
+
+        if task_count > 0 {
+            left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
+
+            let task_color = if task_mem_mb > 1500.0 || task_cpu_pct > 80.0 {
+                ctx.theme.destructive
+            } else if task_mem_mb > 800.0 || task_cpu_pct > 40.0 {
+                ctx.theme.warning
+            } else {
+                ctx.theme.success
+            };
+
+            let mem_str = if task_mem_mb < 10.0 {
+                format!("{:.1}MB", task_mem_mb)
+            } else {
+                format!("{:.0}MB", task_mem_mb)
+            };
+
+            let badge_text = format!("tasks:{} ({} · {:.1}%)", task_count, mem_str, task_cpu_pct);
+            left_spans.push(Span::styled(
+                badge_text,
+                Style::default().fg(task_color).add_modifier(Modifier::BOLD),
+            ));
+            left_spans.push(Span::styled(" [F7]", Style::default().fg(ctx.theme.muted)));
+        }
+
         // Format right context token metrics and dollar cost (e.g., "⚡ $0.0042 • 4.2k / 128k")
         let used_str = Self::format_tokens(ctx.used_tokens);
         let max_str = Self::format_tokens(ctx.max_context);
@@ -232,7 +262,7 @@ impl StatusWidgets {
         let chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Horizontal)
             .constraints([
-                ratatui::layout::Constraint::Min(1), // Left: Provider, Path, Git, MCP
+                ratatui::layout::Constraint::Min(1), // Left: Provider, Path, Git, MCP, Tasks
                 ratatui::layout::Constraint::Length(
                     crate::constants::STATUS_BAR_RIGHT_METRICS_WIDTH,
                 ), // Right: Dollar spend + Token Context
@@ -280,6 +310,7 @@ mod tests {
             show_cost: false,
             session_cost_usd: 0.042,
             cached_tokens: 1200,
+            tasks_summary: None,
         };
         assert!(!ctx_without_cost.show_cost);
 
@@ -288,5 +319,44 @@ mod tests {
             ..ctx_without_cost
         };
         assert!(ctx_with_cost.show_cost);
+    }
+
+    #[test]
+    fn test_status_bar_tasks_badge_rendering() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let theme = Theme::aura_dark();
+        let ws = Path::new("/tmp/test_workspace");
+        let ctx = StatusContext {
+            theme: &theme,
+            workspace: ws,
+            provider: "minimax",
+            model: "MiniMax-M2.7",
+            mcp_count: 2,
+            used_tokens: 1024,
+            max_context: 128000,
+            show_cost: true,
+            session_cost_usd: 0.005,
+            cached_tokens: 512,
+            tasks_summary: Some((3, 142.0, 12.8)),
+        };
+
+        let backend = TestBackend::new(160, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                StatusWidgets::render_bottom_bar(f, f.area(), &ctx);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut line_str = String::new();
+        for x in 0..buffer.area.width {
+            line_str.push_str(buffer[(x, 0)].symbol());
+        }
+
+        assert!(line_str.contains("tasks:3 (142MB · 12.8%) [F7]"));
+        assert!(line_str.contains("mcp:2 active"));
     }
 }
