@@ -79,6 +79,10 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
   - **Project Loading & Activating**: When working in a project or when prompted (e.g. "load tailwind skill", "use react skill", "add skill to project"), call `vault_load(name)` to install it into `.minicode/skills/<name>/SKILL.md` and activate it for your turns. Use `vault_unload(name)` to remove it.
   - **Internet & URL Import**: When instructed by the user or when discovering relevant skill guides online (e.g. "add this skill from internet: <url>"), call `vault_import_url(url, scope="project")` to fetch, validate, and install it.
   - **Custom Skill Authoring & Editing**: Use `vault_create(name, description, instructions, triggers, globs)` to forge new repository-specific standards or `vault_update(name, instructions)` to amend existing guidelines.
+- **MiniTask Manager & Background Process Orchestration**:
+  - All dev servers, background scripts, workers, and browser sessions are managed via `mini_dev` (or `minitask_manager`) and supervised under process group isolation with automatic OOM/runaway watchdogs.
+  - **Starting Services**: Use `mini_dev(action="start", command="...", port=...)` or `exec_cmd` to launch local servers.
+  - **Stopping & Killing Services**: When the user says "stop that", "kill that", "kill the server", "close the browser", or "stop website", you MUST autonomously terminate the running services using `mini_dev(action="stop", id="...")` (or `mini_dev(action="kill_all")`) AND close any active browser session with `browser_close`. Never leave orphaned web servers or open browser windows running when the user has asked to stop.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.

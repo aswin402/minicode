@@ -163,10 +163,25 @@ fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
 /// Determines if a shell command represents a persistent web server, dev daemon, or background process.
 pub fn is_daemon_or_server_command(cmd: &str) -> bool {
     let trimmed = cmd.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Explicitly exclude process management, inspection, or terminating commands
+    if lower.starts_with("kill ")
+        || lower.starts_with("pkill ")
+        || lower.starts_with("killall ")
+        || lower.starts_with("pgrep ")
+        || lower.starts_with("ps ")
+        || lower.starts_with("grep ")
+        || lower.starts_with("echo ")
+        || lower.starts_with("which ")
+        || lower.starts_with("cat ")
+    {
+        return false;
+    }
+
     if trimmed.ends_with('&') {
         return true;
     }
-    let lower = trimmed.to_lowercase();
     lower.contains("python3 -m http.server")
         || lower.contains("python -m http.server")
         || lower.contains("python3 -m simplehttpserver")

@@ -40,6 +40,7 @@ impl EngineProcess {
 pub struct SharedEngine {
     pub process: EngineProcess,
     pub cdp: Arc<CdpClient>,
+    pub started_at: Instant,
 }
 
 static LIVE_ENGINE: tokio::sync::Mutex<Option<Arc<SharedEngine>>> =
@@ -82,7 +83,11 @@ impl BrowserManager {
             }
         };
         tracing::info!(engine = %config.engine, "Browser engine ready (persistent session)");
-        let handle = Arc::new(SharedEngine { process: proc, cdp });
+        let handle = Arc::new(SharedEngine {
+            process: proc,
+            cdp,
+            started_at: Instant::now(),
+        });
         *guard = Some(Arc::clone(&handle));
         Ok(handle)
     }
@@ -124,21 +129,56 @@ impl BrowserManager {
         Ok(false)
     }
 
-    /// Checks if a live browser engine is currently running.
+    /// Checks if a live browser engine is currently running and alive.
     pub async fn is_live_engine_running() -> bool {
-        let guard = LIVE_ENGINE.lock().await;
-        guard.is_some()
+        let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(ref engine) = *guard {
+            let pid = engine.process.child.id().unwrap_or(0);
+            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
+                *guard = None;
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        }
     }
 
     /// Gets summary of current live engine if running: (engine_name, pid, cdp_port).
     pub async fn get_live_engine_info() -> Option<(String, u32, u16)> {
-        let guard = LIVE_ENGINE.lock().await;
+        let mut guard = LIVE_ENGINE.lock().await;
         if let Some(ref engine) = *guard {
             let pid = engine.process.child.id().unwrap_or(0);
+            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
+                *guard = None;
+                return None;
+            }
             Some((
                 engine.process.config.engine.to_string(),
                 pid,
                 engine.process.cdp_port,
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Gets detailed live engine telemetry: (engine_name, pid, cdp_port, uptime_secs).
+    pub async fn get_live_engine_details() -> Option<(String, u32, u16, u64)> {
+        let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(ref engine) = *guard {
+            let pid = engine.process.child.id().unwrap_or(0);
+            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
+                *guard = None;
+                return None;
+            }
+            let uptime = engine.started_at.elapsed().as_secs();
+            Some((
+                engine.process.config.engine.to_string(),
+                pid,
+                engine.process.cdp_port,
+                uptime,
             ))
         } else {
             None

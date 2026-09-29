@@ -36,10 +36,10 @@ impl ProcessesTab {
 
     pub fn title(&self) -> &'static str {
         match self {
-            ProcessesTab::All => "All Processes",
-            ProcessesTab::Servers => "Dev Servers",
+            ProcessesTab::All => "All",
+            ProcessesTab::Servers => "Servers",
             ProcessesTab::Workers => "Workers",
-            ProcessesTab::Logs => "Live Logs",
+            ProcessesTab::Logs => "Logs",
             ProcessesTab::Telemetry => "Telemetry",
         }
     }
@@ -378,11 +378,19 @@ fn render_top_tabs_and_search(
     area: Rect,
     theme: &Theme,
 ) {
+    let search_width = if state.is_searching {
+        24
+    } else if state.search_query.is_empty() {
+        12
+    } else {
+        24
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(70), // Tabs
-            Constraint::Percentage(30), // Search bar
+            Constraint::Min(1),               // Tabs receive all remaining horizontal space
+            Constraint::Length(search_width), // Search bar gets fixed compact width
         ])
         .split(area);
 
@@ -419,7 +427,7 @@ fn render_top_tabs_and_search(
             }
             ProcessesTab::Logs => {
                 if let Some(p) = state.selected_process() {
-                    format!(" ({})", p.name)
+                    format!(" ({})", crate::utils::truncate_ellipsis(&p.name, 10))
                 } else {
                     String::new()
                 }

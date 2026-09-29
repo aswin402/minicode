@@ -139,8 +139,21 @@ async fn test_resource_watchdog_detects_oom_memory_spike() {
     let summary = registry.spawn(temp.path(), req).await.expect("spawn");
     let pid = summary.pid.expect("PID must exist");
 
-    // Wait up to 3.5 seconds for the 2-second Resource Watchdog tick to evaluate RAM usage
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    // Poll up to 6 seconds for the 2-second Resource Watchdog tick to detect RAM spike and terminate
+    let mut terminated = false;
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if !is_process_running(pid) {
+            terminated = true;
+            break;
+        }
+    }
+
+    assert!(
+        terminated,
+        "Runaway process PID {} must have been terminated by watchdog",
+        pid
+    );
 
     // Check updated status: should have been caught and killed by Resource Watchdog
     let updated = registry.get(&summary.id).await;
@@ -148,13 +161,6 @@ async fn test_resource_watchdog_detects_oom_memory_spike() {
 
     let status = updated.unwrap().status;
     println!("Updated status after OOM watchdog check: {:?}", status);
-
-    // Either status is Degraded (with OOM message), Killed, Stopped, or process is dead
-    assert!(
-        !is_process_running(pid),
-        "Runaway process PID {} must have been terminated by watchdog",
-        pid
-    );
 
     match status {
         DevProcessStatus::Degraded(msg) => {

@@ -23,8 +23,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "list", "status", "logs", "stop", "restart", "resources", "kill_all", "screenshot", "workers", "probe_port", "check_port"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status' (inspect active processes), 'logs' (tail output), 'stop' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all' (terminate all active processes), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
+                    "enum": ["start", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "probe_port", "check_port"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'list'/'status'/'ps' (inspect active processes), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
                 },
                 "command": {
                     "type": "string",
@@ -41,7 +41,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Process ID (required for 'status', 'logs', 'stop', 'restart', or target for 'screenshot')"
+                    "description": "Process ID (required for 'status', 'logs', 'stop', 'kill', 'restart', or target for 'screenshot')"
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Process/Task ID alias for 'id' (accepted for 'status', 'logs', 'stop', 'kill', 'restart')"
+                },
+                "process_id": {
+                    "type": "string",
+                    "description": "Process ID alias for 'id'"
                 },
                 "port": {
                     "type": "integer",
@@ -299,7 +307,7 @@ pub async fn dispatch(
                 }
                 Ok(out)
             }
-            "list" => {
+            "list" | "ps" => {
                 let filter_type = opt_str(args, "process_type")
                     .map(DevProcessType::from_str_loose);
                 let list = registry.list_filtered(filter_type).await;
@@ -335,7 +343,12 @@ pub async fn dispatch(
                 Ok(out)
             }
             "status" => {
-                if let Some(id_str) = opt_str(args, "id") {
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"));
+
+                if let Some(id_str) = id_opt {
                     let id = DevProcessId::from(id_str);
                     let summary = registry
                         .get(&id)
@@ -381,7 +394,11 @@ pub async fn dispatch(
                 }
             }
             "logs" => {
-                let id_str = require_str(args, "id", "mini_dev")?;
+                let id_str = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| ToolError::invalid_args("mini_dev", "Missing required parameter 'id' or 'task_id'"))?;
                 let id = DevProcessId::from(id_str);
                 let tail = opt_u64(args, "tail").unwrap_or(50) as usize;
                 let filter = opt_str(args, "filter");
@@ -398,14 +415,56 @@ pub async fn dispatch(
                 }
                 Ok(out)
             }
-            "stop" => {
-                let id_str = require_str(args, "id", "mini_dev")?;
-                let id = DevProcessId::from(id_str);
+            "stop" | "kill" => {
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"));
+
+                if id_opt == Some("all") {
+                    let count = registry.kill_all().await?;
+                    let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                    return Ok(format!("✔ Terminated all {} active development processes and browser sessions.", count));
+                }
+
+                let id_to_stop = match id_opt {
+                    Some(s) => s.to_string(),
+                    None => {
+                        let list = registry.list().await;
+                        if list.len() == 1 {
+                            list[0].id.as_str().to_string()
+                        } else if list.is_empty() {
+                            if crate::tools::browser::BrowserManager::is_live_engine_running().await {
+                                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                                return Ok("✔ Active browser session closed successfully.".to_string());
+                            }
+                            return Ok("ℹ No active development processes or browser sessions to stop.".to_string());
+                        } else {
+                            return Err(ToolError::invalid_args("mini_dev", "Multiple processes are active. Please specify 'id' or 'task_id' (or 'all').").into());
+                        }
+                    }
+                };
+
+                if id_to_stop == "browser" || id_to_stop == "chrome" {
+                    let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
+                    let _ = registry.stop(&DevProcessId::from("browser")).await;
+                    if stopped {
+                        return Ok("✔ Browser session closed successfully.".to_string());
+                    } else {
+                        return Ok("ℹ No active browser session was running.".to_string());
+                    }
+                }
+
+                let id = DevProcessId::from(id_to_stop.clone());
                 registry.stop(&id).await?;
-                Ok(format!("✔ Process/worker '{}' stopped successfully.", id_str))
+                Ok(format!("✔ Process/worker '{}' stopped successfully.", id_to_stop))
             }
             "restart" => {
-                let id_str = require_str(args, "id", "mini_dev")?;
+                let id_str = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| ToolError::invalid_args("mini_dev", "Missing required parameter 'id' or 'task_id'"))?;
                 let id = DevProcessId::from(id_str);
                 let summary = registry.restart(workspace_root, &id).await?;
                 Ok(format!(
@@ -424,9 +483,10 @@ pub async fn dispatch(
                     res.active_ports,
                 ))
             }
-            "kill_all" => {
+            "kill_all" | "stop_all" => {
                 let count = registry.kill_all().await?;
-                Ok(format!("✔ Terminated {} active development processes.", count))
+                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                Ok(format!("✔ Terminated {} active development processes and browser sessions.", count))
             }
             "screenshot" => {
                 let explicit_url = opt_str(args, "url");

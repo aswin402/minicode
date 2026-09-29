@@ -495,6 +495,18 @@ impl WorkflowRouter {
             || lower.contains("port ")
             || lower.starts_with("serve")
             || lower.contains(" serve ")
+            || lower == "stop that"
+            || lower == "kill that"
+            || lower == "stop it"
+            || lower == "kill it"
+            || lower == "stop"
+            || lower == "kill"
+            || lower.contains("close browser")
+            || lower.contains("stop browser")
+            || lower.contains("kill browser")
+            || lower.contains("close website")
+            || lower.contains("stop website")
+            || lower.contains("kill website")
             || crate::utils::has_word(&lower, "daemon")
             || (crate::utils::has_word(&lower, "server")
                 && (crate::utils::has_word(&lower, "start")
@@ -841,6 +853,7 @@ impl WorkflowRouter {
                 ));
             }
             out.push_str("  Autonomous Action: Inspect live output via `mini_dev(action=\"logs\", id=\"...\")` or check health with `mini_dev(action=\"status\")`.\n");
+            out.push_str("  Stopping / Terminating Services: If the user requests to stop or kill the server/task/website or close the browser, call `mini_dev(action=\"stop\", id=\"...\")` or `mini_dev(action=\"kill_all\")` AND `browser_close` to cleanly terminate both the server process tree and browser engine.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)

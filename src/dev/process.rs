@@ -124,7 +124,9 @@ impl DevProcessHandle {
         if current_pgid > 0 && current_pgid != std::process::id() {
             terminate_process_group(current_pgid).await?;
         }
-        *status_lock = DevProcessStatus::Stopped;
+        if !matches!(*status_lock, DevProcessStatus::Degraded(_)) {
+            *status_lock = DevProcessStatus::Stopped;
+        }
         Ok(())
     }
 }

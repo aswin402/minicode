@@ -177,14 +177,7 @@ impl MiniDevRegistry {
     /// `(active_count, total_memory_rss_mb, total_cpu_percent)`.
     /// Zero-cost reading suitable for per-frame 60 FPS TUI rendering.
     pub fn get_telemetry_snapshot(&self) -> (usize, f32, f32) {
-        let mut count = self.cached_active_count.load(Ordering::Relaxed) as usize;
-        if count == 0 {
-            if let Ok(set) = self.active_pgids.lock() {
-                if !set.is_empty() {
-                    count = set.len();
-                }
-            }
-        }
+        let count = self.cached_active_count.load(Ordering::Relaxed) as usize;
         let mem_mb = self.cached_total_memory_mb.load(Ordering::Relaxed) as f32 / 10.0;
         let cpu_pct = self.cached_total_cpu_pct.load(Ordering::Relaxed) as f32 / 10.0;
         (count, mem_mb, cpu_pct)
@@ -237,6 +230,18 @@ impl MiniDevRegistry {
                     continue;
                 }
             }
+            let status = handle.status.read().await.clone();
+            let pid = handle.pid();
+            // Only list processes that are actively alive or degraded (e.g. OOM report)
+            if !status.is_alive() {
+                continue;
+            }
+            if pid > 0
+                && !crate::dev::ports::is_process_running(pid)
+                && !matches!(status, DevProcessStatus::Degraded(_))
+            {
+                continue;
+            }
             summaries.push(self.create_summary(handle).await);
         }
 
@@ -244,9 +249,10 @@ impl MiniDevRegistry {
         if (filter_type.is_none() || filter_type == Some(DevProcessType::Chrome))
             && crate::tools::browser::BrowserManager::is_live_engine_running().await
         {
-            if let Some((engine, pid, port)) =
-                crate::tools::browser::BrowserManager::get_live_engine_info().await
+            if let Some((engine, pid, port, uptime_secs)) =
+                crate::tools::browser::BrowserManager::get_live_engine_details().await
             {
+                let usage = sample_process_metrics(pid);
                 summaries.push(DevProcessSummary {
                     id: DevProcessId::from("browser"),
                     name: format!("browser-{}", engine.to_lowercase()),
@@ -255,9 +261,9 @@ impl MiniDevRegistry {
                     pid: Some(pid),
                     ports: vec![port],
                     url: Some(format!("http://localhost:{}", port)),
-                    cpu_percent: 0.0,
-                    memory_rss_mb: 0.0,
-                    uptime_secs: 0,
+                    cpu_percent: usage.cpu_percent,
+                    memory_rss_mb: usage.memory_rss_mb,
+                    uptime_secs,
                     restart_count: 0,
                     restart_policy: crate::dev::models::RestartPolicy::Never,
                     port_resolution: None,
@@ -284,9 +290,10 @@ impl MiniDevRegistry {
         if (id.as_str() == "browser" || id.as_str() == "chrome")
             && crate::tools::browser::BrowserManager::is_live_engine_running().await
         {
-            if let Some((engine, pid, port)) =
-                crate::tools::browser::BrowserManager::get_live_engine_info().await
+            if let Some((engine, pid, port, uptime_secs)) =
+                crate::tools::browser::BrowserManager::get_live_engine_details().await
             {
+                let usage = sample_process_metrics(pid);
                 return Some(DevProcessSummary {
                     id: DevProcessId::from("browser"),
                     name: format!("browser-{}", engine.to_lowercase()),
@@ -295,9 +302,9 @@ impl MiniDevRegistry {
                     pid: Some(pid),
                     ports: vec![port],
                     url: Some(format!("http://localhost:{}", port)),
-                    cpu_percent: 0.0,
-                    memory_rss_mb: 0.0,
-                    uptime_secs: 0,
+                    cpu_percent: usage.cpu_percent,
+                    memory_rss_mb: usage.memory_rss_mb,
+                    uptime_secs,
                     restart_count: 0,
                     restart_policy: crate::dev::models::RestartPolicy::Never,
                     port_resolution: None,
@@ -353,25 +360,35 @@ impl MiniDevRegistry {
         if id.as_str() == "browser" || id.as_str() == "chrome" {
             let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
             if stopped {
+                let _ = self.cached_active_count.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |v| Some(v.saturating_sub(1)),
+                );
                 return Ok(true);
             }
         }
 
-        let lock = self.processes.read().await;
-        let handle = lock
-            .get(id)
-            .or_else(|| {
-                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
-                lock.get(&alt)
-            })
-            .or_else(|| {
-                id.as_str()
-                    .strip_prefix("worker-")
-                    .and_then(|s| lock.get(&DevProcessId::from(s)))
-            })
-            .ok_or_else(|| DevError::NotFound(id.to_string()))?;
+        let handle = {
+            let lock = self.processes.read().await;
+            lock.get(id)
+                .or_else(|| {
+                    let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
+                    lock.get(&alt)
+                })
+                .or_else(|| {
+                    id.as_str()
+                        .strip_prefix("worker-")
+                        .and_then(|s| lock.get(&DevProcessId::from(s)))
+                })
+                .cloned()
+                .ok_or_else(|| DevError::NotFound(id.to_string()))?
+        };
+
         let current_pgid = handle.pgid();
         let current_pid = handle.pid();
+        handle.terminate().await?;
+
         if current_pgid > 0 && current_pgid != std::process::id() {
             if let Ok(mut set) = self.active_pgids.lock() {
                 set.remove(&current_pgid);
@@ -382,7 +399,6 @@ impl MiniDevRegistry {
                 set.remove(&current_pid);
             }
         }
-        handle.terminate().await?;
         let _ = self
             .cached_active_count
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
@@ -600,8 +616,18 @@ impl MiniDevRegistry {
         let lock = self.processes.read().await;
         let mut pids = Vec::new();
         for handle in lock.values() {
-            if handle.status.read().await.is_alive() {
-                pids.push(handle.pid());
+            let pid = handle.pid();
+            if pid > 0 && crate::dev::ports::is_process_running(pid) {
+                pids.push(pid);
+            }
+        }
+        if crate::tools::browser::BrowserManager::is_live_engine_running().await {
+            if let Some((_engine, pid, _port, _uptime)) =
+                crate::tools::browser::BrowserManager::get_live_engine_details().await
+            {
+                if pid > 0 && crate::dev::ports::is_process_running(pid) {
+                    pids.push(pid);
+                }
             }
         }
         sample_aggregate_metrics(&pids)
