@@ -322,6 +322,20 @@ pub fn assemble_active_tools_with_mcp(
                 active_cats.insert(cat);
             }
 
+            // Automatic Liveness Promotion:
+            // If background tasks or a live browser session are running, ensure Dev and Web tools
+            // are unconditionally available so the LLM can query telemetry, check health, and stop them.
+            let (active_task_count, _, _) =
+                crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+            let browser_active =
+                crate::tools::browser::BrowserManager::is_live_engine_running_sync();
+            if active_task_count > 0 || browser_active {
+                active_cats.insert(ToolCategory::Dev);
+                if browser_active {
+                    active_cats.insert(ToolCategory::Web);
+                }
+            }
+
             for cat in active_cats {
                 for schema in cat.get_schemas() {
                     if !included_names.contains(&schema.name) {

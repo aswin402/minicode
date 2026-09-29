@@ -490,13 +490,22 @@ impl WorkflowRouter {
             || lower.contains("stop server")
             || lower.contains("background process")
             || lower.contains("background task")
+            || lower.contains("manage task")
+            || lower.contains("manage tasks")
+            || lower.contains("minitask")
             || lower.contains("mini_dev")
             || lower.contains("listen on port")
             || lower.contains("port ")
             || lower.starts_with("serve")
             || lower.contains(" serve ")
-            || lower == "stop that"
-            || lower == "kill that"
+            || lower.contains("how much resource")
+            || lower.contains("resource usage")
+            || lower.contains("resources used")
+            || lower.contains("resources taking")
+            || lower.contains("ram usage")
+            || lower.contains("cpu usage")
+            || lower.contains("stop that")
+            || lower.contains("kill that")
             || lower == "stop it"
             || lower == "kill it"
             || lower == "stop"
@@ -513,7 +522,8 @@ impl WorkflowRouter {
                     || crate::utils::has_word(&lower, "run")
                     || crate::utils::has_word(&lower, "status")
                     || crate::utils::has_word(&lower, "logs")
-                    || crate::utils::has_word(&lower, "kill")))
+                    || crate::utils::has_word(&lower, "kill")
+                    || crate::utils::has_word(&lower, "stop")))
         {
             return WorkflowArchetype::RuntimeDev;
         }
@@ -820,16 +830,21 @@ impl WorkflowRouter {
     async fn enrich_runtime_dev() -> Option<String> {
         let dev_reg = crate::dev::get_global_dev_registry();
         let procs = dev_reg.list().await;
+        let (active_count, rss_mb, cpu_pct) = dev_reg.get_telemetry_snapshot();
+        let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
 
         let mut out = String::from("<active_dev_services>\n");
-        if procs.is_empty() {
+        if procs.is_empty() && !browser_live {
             out.push_str("  Managed Runtime Daemons: None currently active.\n");
             out.push_str("  Autonomous Action: Use `mini_dev(action=\"start\", command=\"...\", port=...)` to launch dev servers asynchronously.\n");
         } else {
             out.push_str(&format!(
-                "  Managed Runtime Daemons ({} active):\n",
-                procs.len()
+                "  Supervised Tasks: {} active (Total RAM: {:.1}MB, CPU: {:.1}%)\n",
+                active_count, rss_mb, cpu_pct
             ));
+            if browser_live {
+                out.push_str("  Browser: Live browser session is running.\n");
+            }
             for p in &procs {
                 let port_str = if p.ports.is_empty() {
                     String::new()
@@ -848,12 +863,14 @@ impl WorkflowRouter {
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "N/A".to_string());
                 out.push_str(&format!(
-                    "  • [{}] `{}` (PID: {}, Status: {}{})\n",
-                    p.id, p.name, pid_str, p.status, port_str
+                    "  • [{}] `{}` (PID: {}, Status: {}{}, RAM: {:.1}MB, CPU: {:.1}%)\n",
+                    p.id, p.name, pid_str, p.status, port_str, p.memory_rss_mb, p.cpu_percent
                 ));
             }
-            out.push_str("  Autonomous Action: Inspect live output via `mini_dev(action=\"logs\", id=\"...\")` or check health with `mini_dev(action=\"status\")`.\n");
-            out.push_str("  Stopping / Terminating Services: If the user requests to stop or kill the server/task/website or close the browser, call `mini_dev(action=\"stop\", id=\"...\")` or `mini_dev(action=\"kill_all\")` AND `browser_close` to cleanly terminate both the server process tree and browser engine.\n");
+            out.push_str("  Resource / Telemetry Invariant:\n");
+            out.push_str("  • If the user asks about resource usage or telemetry, ALWAYS use `mini_dev(action=\"resources\")` or `mini_dev(action=\"status\")`. DO NOT execute raw shell commands like `ps`, `top`, or `grep`.\n");
+            out.push_str("  Termination & Teardown Invariant:\n");
+            out.push_str("  • If the user asks to stop, kill, or close the server, task, or website, ALWAYS call `mini_dev(action=\"stop\", id=\"...\")` (or `mini_dev(action=\"kill_all\")`) AND `browser_close` to terminate both the server process tree and browser engine. DO NOT run raw `pkill` or `kill` commands.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)

@@ -457,7 +457,23 @@ pub async fn dispatch(
 
                 let id = DevProcessId::from(id_to_stop.clone());
                 registry.stop(&id).await?;
-                Ok(format!("✔ Process/worker '{}' stopped successfully.", id_to_stop))
+
+                // If no more frontend/backend servers are active, automatically shut down any paired live browser session
+                let mut browser_msg = String::new();
+                let remaining_frontends = registry.list_filtered(Some(DevProcessType::Frontend)).await;
+                let remaining_backends = registry.list_filtered(Some(DevProcessType::Backend)).await;
+                if remaining_frontends.is_empty()
+                    && remaining_backends.is_empty()
+                    && crate::tools::browser::BrowserManager::is_live_engine_running().await
+                {
+                    let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                    browser_msg = " and closed paired browser session".to_string();
+                }
+
+                Ok(format!(
+                    "✔ Process/worker '{}' stopped successfully{}.",
+                    id_to_stop, browser_msg
+                ))
             }
             "restart" => {
                 let id_str = opt_str(args, "id")

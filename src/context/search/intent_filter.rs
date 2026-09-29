@@ -36,6 +36,15 @@ impl IntentClassifier {
             || lower.contains("documentation for")
             || lower.contains("latest docs")
             || lower.contains("online docs")
+            || lower.contains("launch website")
+            || lower.contains("open website")
+            || lower.contains("view website")
+            || lower.contains("close browser")
+            || lower.contains("stop browser")
+            || lower.contains("kill browser")
+            || lower.contains("browser_close")
+            || lower.contains("screenshot")
+            || crate::utils::has_word(&lower, "website")
         {
             categories.insert(ToolCategory::Web);
         }
@@ -243,11 +252,27 @@ impl IntentClassifier {
             || lower.contains("stop server")
             || lower.contains("background process")
             || lower.contains("background task")
+            || lower.contains("manage task")
+            || lower.contains("manage tasks")
+            || lower.contains("minitask")
+            || lower.contains("task manager")
             || lower.contains("mini_dev")
             || lower.contains("listen on port")
             || lower.contains("port ")
             || lower.starts_with("serve")
             || lower.contains(" serve ")
+            || lower.contains("resource")
+            || lower.contains("resources")
+            || lower.contains("ram")
+            || lower.contains("cpu")
+            || lower.contains("telemetry")
+            || lower.contains("memory usage")
+            || lower.contains("stop that")
+            || lower.contains("kill that")
+            || lower == "stop it"
+            || lower == "kill it"
+            || lower == "stop"
+            || lower == "kill"
             || crate::utils::has_word(&lower, "daemon")
             || crate::utils::has_word(&lower, "vite")
             || (crate::utils::has_word(&lower, "server")
@@ -255,7 +280,8 @@ impl IntentClassifier {
                     || crate::utils::has_word(&lower, "run")
                     || crate::utils::has_word(&lower, "status")
                     || crate::utils::has_word(&lower, "logs")
-                    || crate::utils::has_word(&lower, "kill")))
+                    || crate::utils::has_word(&lower, "kill")
+                    || crate::utils::has_word(&lower, "stop")))
         {
             categories.insert(ToolCategory::Dev);
             categories.insert(ToolCategory::Exec);
@@ -422,10 +448,19 @@ mod tests {
         assert!(det_ast.contains(&ToolCategory::Codegraph));
         assert!(det_ast.contains(&ToolCategory::Search));
 
-        // Natural Dev server
+        // Natural Dev server & resource queries
         let det_dev = IntentClassifier::detect("start the dev server on port 3000");
         assert!(det_dev.contains(&ToolCategory::Dev));
         assert!(det_dev.contains(&ToolCategory::Exec));
+
+        let det_res = IntentClassifier::detect("so how much resource its taking");
+        assert!(det_res.contains(&ToolCategory::Dev));
+
+        let det_stop = IntentClassifier::detect("ok stop that");
+        assert!(det_stop.contains(&ToolCategory::Dev));
+
+        let det_browser = IntentClassifier::detect("launch website and close browser");
+        assert!(det_browser.contains(&ToolCategory::Web));
 
         // Natural Engineering / TDD
         let det_eng = IntentClassifier::detect("implement user authentication feature with tests");

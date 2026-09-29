@@ -416,6 +416,25 @@ impl PromptBuilder {
             recency.push_str("  </minipower_verification_barrier>\n");
         }
 
+        // 9. Active Background Tasks & Services (MiniTask Manager & Live Browser)
+        let (active_task_count, total_rss_mb, avg_cpu) =
+            crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+        let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
+        if active_task_count > 0 || browser_live {
+            recency.push_str("  <active_background_tasks>\n");
+            recency.push_str(&format!(
+                "    Status: {} background task(s) supervised under MiniTask Manager (Total RAM: {:.1}MB, CPU: {:.1}%)\n",
+                active_task_count, total_rss_mb, avg_cpu
+            ));
+            if browser_live {
+                recency.push_str("    Browser: Live browser session is running.\n");
+            }
+            recency.push_str("    Task Management Rules:\n");
+            recency.push_str("    • To inspect telemetry or resource usage: ALWAYS call `mini_dev(action=\"resources\")` or `mini_dev(action=\"status\")`. NEVER run raw shell commands like `ps`, `top`, or `grep`.\n");
+            recency.push_str("    • To stop tasks or servers: ALWAYS call `mini_dev(action=\"stop\", id=\"...\")` or `mini_dev(action=\"kill_all\")`. If stopping a web server or web page, ALWAYS also call `browser_close` to terminate the browser window. NEVER run raw `pkill` or `kill` commands.\n");
+            recency.push_str("  </active_background_tasks>\n");
+        }
+
         // 9. Project Blueprint Index (Core Specs in core/ available for on-demand inspection via read_file)
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_dir);
         if core_dir.exists() {

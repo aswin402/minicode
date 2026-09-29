@@ -145,6 +145,20 @@ impl BrowserManager {
         }
     }
 
+    /// Checks synchronously if a live browser engine is currently running and alive.
+    pub fn is_live_engine_running_sync() -> bool {
+        if let Ok(guard) = LIVE_ENGINE.try_lock() {
+            if let Some(ref engine) = *guard {
+                let pid = engine.process.child.id().unwrap_or(0);
+                pid > 0 && crate::dev::ports::is_process_running(pid)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
     /// Gets summary of current live engine if running: (engine_name, pid, cdp_port).
     pub async fn get_live_engine_info() -> Option<(String, u32, u16)> {
         let mut guard = LIVE_ENGINE.lock().await;
