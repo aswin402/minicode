@@ -133,25 +133,50 @@ impl AccessibilityManager {
     pub fn resolve_ref(&self, target_ref: &str) -> Result<&AriaElement> {
         let clean_ref = target_ref.trim();
 
-        // Check if the ref contains a revision prefix (@vX:eY)
+        // 1. Check if the ref contains a revision prefix (@vX:eY)
         if let Some(rev_part) = clean_ref.strip_prefix("@v") {
-            if let Some((rev_str, _)) = rev_part.split_once(':') {
+            if let Some((rev_str, elem_id)) = rev_part.split_once(':') {
                 if let Ok(requested_rev) = rev_str.parse::<u32>() {
-                    if requested_rev != self.revision {
-                        return Err(ToolError::InvalidArguments {
-                            name: "browser_action".to_string(),
-                            reason: format!(
-                                "Stale element reference '{}'. Current page revision is v{}. Please take a fresh browser_snapshot before interacting.",
-                                clean_ref, self.revision
-                            ),
+                    // Check if element with suffix :elem_id exists in current revision
+                    if requested_rev == self.revision {
+                        let suffix = format!(":{}", elem_id);
+                        if let Some(el) = self
+                            .current_elements
+                            .iter()
+                            .find(|el| el.ref_id.ends_with(&suffix))
+                        {
+                            return Ok(el);
                         }
-                        .into());
+                    } else if requested_rev < self.revision {
+                        // Resilient resolution for sequential/parallel form fills within the same turn:
+                        // If active tree has updated elements (@v{self.revision}:) and the element still exists, resolve it
+                        let active_prefix = format!("@v{}:", self.revision);
+                        let suffix = format!(":{}", elem_id);
+                        if let Some(el) = self.current_elements.iter().find(|el| {
+                            el.ref_id.starts_with(&active_prefix) && el.ref_id.ends_with(&suffix)
+                        }) {
+                            tracing::debug!(
+                                requested = %clean_ref,
+                                resolved = %el.ref_id,
+                                "Gracefully resolved element reference across sequential action strokes"
+                            );
+                            return Ok(el);
+                        }
                     }
+
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_action".to_string(),
+                        reason: format!(
+                            "Stale element reference '{}'. Current page revision is v{}. Please take a fresh browser_snapshot before interacting.",
+                            clean_ref, self.revision
+                        ),
+                    }
+                    .into());
                 }
             }
         }
 
-        // Look up element by exact ref_id or flexible suffix match (@e1 -> @vX:e1)
+        // 3. Look up element by flexible suffix match (@e1 -> @vX:e1)
         self.current_elements
             .iter()
             .find(|el| {

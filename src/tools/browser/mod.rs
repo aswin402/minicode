@@ -71,7 +71,10 @@ impl BrowserController {
                 .await;
 
                 if let Ok(html) = cdp_res {
+                    let mut acc_mgr = engine.accessibility.lock().await;
+                    let elements = acc_mgr.update_from_html(&html);
                     let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                    snapshot.interactive_elements = elements;
                     snapshot.engine_used = engine_name;
                     return Ok(snapshot);
                 } else if let Err(e) = cdp_res {
@@ -135,7 +138,7 @@ impl BrowserController {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
         let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
-        let mut acc_mgr = AccessibilityManager::new();
+        let mut acc_mgr = engine.accessibility.lock().await;
         acc_mgr.update_from_html(&current_html);
 
         BrowserInteractor::click_element(&engine.cdp, target_ref, &mut acc_mgr).await
@@ -151,7 +154,7 @@ impl BrowserController {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
         let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
-        let mut acc_mgr = AccessibilityManager::new();
+        let mut acc_mgr = engine.accessibility.lock().await;
         acc_mgr.update_from_html(&current_html);
 
         BrowserInteractor::fill_element(&engine.cdp, target_ref, text, &mut acc_mgr).await

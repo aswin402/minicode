@@ -405,11 +405,12 @@ impl CdpClient {
 
     /// Evaluates arbitrary JavaScript in the page context and returns the stringified result
     pub async fn evaluate_js(&self, script: &str) -> Result<String> {
+        let safe_script = prepare_cdp_script(script);
         let res = self
             .send_command(
                 "Runtime.evaluate",
                 json!({
-                    "expression": script,
+                    "expression": safe_script,
                     "returnByValue": true
                 }),
             )
@@ -448,6 +449,30 @@ impl CdpClient {
     #[allow(dead_code)]
     pub fn page_ws_url(&self) -> &str {
         &self.page_ws_url
+    }
+}
+
+/// Wraps arbitrary JavaScript expressions/statements so Chrome CDP Runtime.evaluate
+/// can evaluate multi-statement scripts, assignments, and returns without syntax errors.
+pub fn prepare_cdp_script(script: &str) -> String {
+    let trimmed = script.trim();
+    if trimmed.starts_with("(()") || trimmed.starts_with("(function") {
+        return script.to_string();
+    }
+    // If it's a simple one-liner with no semicolons and no return:
+    if !trimmed.contains(';') && !trimmed.contains('\n') && !trimmed.contains("return ") {
+        return script.to_string();
+    }
+    // If it explicitly uses `return`:
+    if trimmed.contains("return ") || trimmed.contains("return;") {
+        format!("(() => {{\n{}\n}})()", script)
+    } else {
+        // Multi-statement script without return: wrap so the completion value is returned
+        format!(
+            "(() => {{\n  try {{\n    return eval({});\n  }} catch (_) {{\n    {}\n  }}\n}})()",
+            serde_json::to_string(script).unwrap_or_else(|_| format!("{:?}", script)),
+            script
+        )
     }
 }
 
@@ -505,5 +530,27 @@ mod tests {
         // "Minicode" in base64 is "TWluaWNvZGU="
         let decoded2 = general_base64_decode("TWluaWNvZGU=").unwrap();
         assert_eq!(String::from_utf8(decoded2).unwrap(), "Minicode");
+    }
+
+    #[test]
+    fn test_prepare_cdp_script() {
+        // Single expression passthrough
+        assert_eq!(prepare_cdp_script("document.title"), "document.title");
+
+        // Already wrapped in IIFE
+        let wrapped = "(() => { return 42; })()";
+        assert_eq!(prepare_cdp_script(wrapped), wrapped);
+
+        // Explicit return script
+        let with_return = "const x = 10;\nreturn x * 2;";
+        let prep1 = prepare_cdp_script(with_return);
+        assert!(prep1.starts_with("(() => {"));
+        assert!(prep1.contains("return x * 2;"));
+
+        // Multi-statement script without return
+        let multi = "document.getElementById('email').value = 'test@example.com'; 'Done'";
+        let prep2 = prepare_cdp_script(multi);
+        assert!(prep2.starts_with("(() => {"));
+        assert!(prep2.contains("return eval("));
     }
 }

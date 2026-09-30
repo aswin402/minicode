@@ -1,3 +1,4 @@
+use super::accessibility::AccessibilityManager;
 use super::driver::CdpClient;
 use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
 use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_PROFILES_DIR, BROWSER_STARTUP_TIMEOUT_MS};
@@ -40,6 +41,7 @@ impl EngineProcess {
 pub struct SharedEngine {
     pub process: EngineProcess,
     pub cdp: Arc<CdpClient>,
+    pub accessibility: Arc<tokio::sync::Mutex<AccessibilityManager>>,
     pub started_at: Instant,
 }
 
@@ -86,6 +88,7 @@ impl BrowserManager {
         let handle = Arc::new(SharedEngine {
             process: proc,
             cdp,
+            accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
             started_at: Instant::now(),
         });
         *guard = Some(Arc::clone(&handle));
