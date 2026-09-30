@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 148 Human-in-the-Loop Interactive Clarification, Stepper Inquiry Modal & Tool Suspension (v0.3.42) | **Status:** ✅ Complete (186 Tools)
+> **Current Phase:** Phase 149 Resilient Task Status Normalization, Safe Browser Scrolling & Zero-Config Workspace Auto-Bootstrapping (v0.3.43) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
@@ -1989,4 +1989,13 @@
 - [x] 148.3: Agent Loop Suspension Gate & Headless Auto-Resolution: Wired `ask_user` interception in `src/agent/loop.rs` suspending execution via `InquiryRegistry` channel until user answers in interactive TUI, or automatically resolving recommended defaults without blocking in headless / `-y` non-interactive mode.
 - [x] 148.4: In-TUI Interactive Inquiry Modal & Progressive Multi-Question Stepper: Implemented full-featured interactive inquiry modal (`InquiryModalState`) in `src/ui/modals/inquiry.rs` with Gum/CLI multi-question wizard, radio / checkbox toggles (`Space`), secret masking (`••••••••`), custom write-ins, and keyboard shortcuts (`Enter`, `Tab`, `Esc`, `1-9`).
 - [x] 148.5: Orchestrator Prompt Instructions, Integration Tests & Global Release: Added `<interactive_inquiry>` prompt contract in `src/agent/prompt.rs` directing the LLM to call `ask_user` instead of hallucinating ambiguous requirements; created end-to-end integration test suite `tests/integration_ask_user_inquiry.rs` covering schema sync, headless auto-resolution, oneshot suspension, and masked secrets; verified 0 clippy warnings and clean formatting; bumped version to `v0.3.42`, compiled release binary, and deployed to `~/.local/bin/minicode`.
+
+### Phase 149: Resilient Task Status Normalization, Safe Browser Scrolling & Zero-Config Workspace Auto-Bootstrapping (v0.3.43)
+- [x] 149.1: Flexible Status Normalization: Replaced rigid string comparison in `src/context/memory/working_memory.rs` with semantic normalization stripping separators (spaces, underscores, hyphens) and mapping aliases (`"In Progress"`, `"in-progress"`, `"active"`, `"wip"`, `"done"`, `"closed"`). Replaced "Task step not found" misdirection with descriptive invalid status errors.
+- [x] 149.2: Resilient Leading-Index & Fuzzy Step Matching: Added leading number parsing (`10.`, `10) `, `10: `, `10 - `) and multi-token word overlap fallback in `src/context/memory/working_memory.rs`, eliminating matching failures when LLMs send numbered task titles.
+- [x] 149.3: Guaranteed Canonical `todo.md` Synchronization: Enhanced `init_plan` to always create the parent directory of `canonical_todo_path()` and format tasks with numbered checkboxes, ensuring `minikit_docs/core/todo.md` is always initialized.
+- [x] 149.4: Safe Chrome CDP Viewport Scrolling: Wrapped `browser_scroll` commands in `src/tools/browser/interaction.rs` with immediately invoked function expressions (`(() => { window.scrollBy(...); return 'scrolled_...'; })()`), eliminating CDP `SyntaxError: Unexpected token ';'` under `Runtime.evaluate`. Added unit tests verifying valid IIFE structure across all scroll directions.
+- [x] 149.5: Zero-Config Workspace Auto-Bootstrapping: Implemented `ensure_workspace_bootstrapped()` in `src/main.rs` for `run_headless_task`, `run_interactive_mode`, and `run_ndjson_agent`. Automatically invokes `MiniKitSyncEngine::sync()` on project startup if `minikit_docs/` or `onpkg_docs/` does not exist, creating all 8 canonical `.md` files (`coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `todo.md`, `content.md`), `minikit_docs/skills/miniblocks.md`, `minikit.json`, `onpkg.json`, and `AGENTS.md` without requiring manual user commands.
+- [x] 149.6: Verification & Release Deployment: Passed all 5 `working_memory` tests and 19 `browser` tests, verified tool count invariant (`TOTAL_TOOL_COUNT` = 186), passed clippy with 0 warnings (`cargo clippy -j 1 --bin minicode -- -D warnings`), formatted with `cargo fmt`, compiled release binary, installed to `~/.local/bin/minicode`, and validated autonomous auto-bootstrapping in live sandbox.
+
 
