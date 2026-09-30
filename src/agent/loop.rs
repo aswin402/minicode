@@ -32,6 +32,8 @@ pub struct AgentLoop {
     current_turn_id: usize,
     /// In-flight approval requests: tool_id → oneshot responder.
     pending_approvals: super::types::ApprovalRegistry,
+    /// In-flight inquiry requests: inquiry_id → oneshot responder.
+    pending_inquiries: crate::agent::inquiry::InquiryRegistry,
     /// Whether a live host can answer approval requests (false in headless mode).
     interactive_approvals: bool,
     /// Smart 4-tier progressive context auto-compactor with memory anchor.
@@ -127,6 +129,7 @@ impl AgentLoop {
             messages: Vec::new(),
             current_turn_id: 0,
             pending_approvals: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_inquiries: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             interactive_approvals: true,
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
@@ -148,6 +151,11 @@ impl AgentLoop {
     /// Returns a handle to the in-flight approval registry for hosts (TUI/NDJSON).
     pub fn approval_registry(&self) -> super::types::ApprovalRegistry {
         self.pending_approvals.clone()
+    }
+
+    /// Returns a handle to the in-flight inquiry registry for hosts (TUI/NDJSON).
+    pub fn inquiry_registry(&self) -> crate::agent::inquiry::InquiryRegistry {
+        self.pending_inquiries.clone()
     }
 
     /// Disables blocking approval waits (headless mode): dangerous tools are
@@ -421,6 +429,7 @@ impl AgentLoop {
         // This prevents the registry from growing unboundedly when hosts disappear
         // or turns get rolled back without draining their approval entries.
         self.prune_stale_approvals();
+        self.prune_stale_inquiries();
 
         // Drain any incoming reactive A2A messages into conversation history
         if let Some(ref mb) = self.mailbox {
@@ -1190,6 +1199,133 @@ impl AgentLoop {
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
                                     turn_files_modified.push(path.to_string());
                                 }
+                            }
+
+                            // === Inquiry gate: intercept ask_user tool calls ===
+                            if tool_call.name
+                                == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
+                            {
+                                let mut request: crate::agent::inquiry::InquiryRequest =
+                                    serde_json::from_value(tool_call.arguments.clone())
+                                        .unwrap_or_else(|_| {
+                                            crate::agent::inquiry::InquiryRequest {
+                                                inquiry_id: tool_call.id.clone(),
+                                                title: "User Inquiry".to_string(),
+                                                description: None,
+                                                questions: vec![],
+                                            }
+                                        });
+                                request.inquiry_id = tool_call.id.clone();
+
+                                if !self.interactive_approvals {
+                                    // Non-interactive / headless auto-resolve
+                                    let auto_resp = request.auto_resolve_defaults();
+                                    let output = auto_resp.into_tool_output();
+                                    let res_event = AgentEvent::ToolResult {
+                                        turn_id,
+                                        tool_id: tool_call.id.clone(),
+                                        tool: tool_call.name.clone(),
+                                        success: true,
+                                        output: output.clone(),
+                                        duration_ms: 0,
+                                    };
+                                    if let Err(e) = self
+                                        .session_store
+                                        .append_event(&self.session_id, &res_event)
+                                    {
+                                        tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                    }
+                                    let _ = event_sender.send(res_event);
+                                    self.messages.push(Message::tool_result(
+                                        tool_call.id.clone(),
+                                        tool_call.name.clone(),
+                                        output.clone(),
+                                    ));
+                                    turn_tool_results.push(crate::agent::types::ToolResult {
+                                        tool_id: tool_call.id.clone(),
+                                        tool_name: tool_call.name.clone(),
+                                        success: true,
+                                        output,
+                                        display_output: String::new(),
+                                        duration_ms: 0,
+                                    });
+                                    continue;
+                                }
+
+                                // Interactive suspension gate
+                                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<
+                                    crate::agent::inquiry::InquiryResponse,
+                                >();
+                                self.pending_inquiries
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .insert(tool_call.id.clone(), resp_tx);
+
+                                let inq_event = AgentEvent::UserInquiry {
+                                    turn_id,
+                                    tool_id: tool_call.id.clone(),
+                                    request: request.clone(),
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &inq_event)
+                                {
+                                    tracing::warn!("Failed to persist UserInquiry event: {}", e);
+                                }
+                                let _ = event_sender.send(inq_event);
+
+                                let response = if let Some(cancel) = &cancel_token {
+                                    tokio::select! {
+                                        _ = cancel.cancelled() => None,
+                                        r = resp_rx => r.ok(),
+                                    }
+                                } else {
+                                    resp_rx.await.ok()
+                                };
+
+                                self.pending_inquiries
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .remove(&tool_call.id);
+
+                                let output = match response {
+                                    Some(resp) => resp.into_tool_output(),
+                                    None => serde_json::json!({
+                                        "status": "cancelled",
+                                        "message": "Inquiry cancelled or timed out."
+                                    })
+                                    .to_string(),
+                                };
+
+                                let res_event = AgentEvent::ToolResult {
+                                    turn_id,
+                                    tool_id: tool_call.id.clone(),
+                                    tool: tool_call.name.clone(),
+                                    success: true,
+                                    output: output.clone(),
+                                    duration_ms: 0,
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &res_event)
+                                {
+                                    tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                }
+                                let _ = event_sender.send(res_event);
+                                self.messages.push(Message::tool_result(
+                                    tool_call.id.clone(),
+                                    tool_call.name.clone(),
+                                    output.clone(),
+                                ));
+                                turn_tool_results.push(crate::agent::types::ToolResult {
+                                    tool_id: tool_call.id.clone(),
+                                    tool_name: tool_call.name.clone(),
+                                    success: true,
+                                    output,
+                                    display_output: String::new(),
+                                    duration_ms: 0,
+                                });
+                                continue;
                             }
 
                             // === Approval gate: pause for user decision on dangerous tools ===
@@ -2209,6 +2345,19 @@ impl AgentLoop {
                 "Cleared in-flight approvals during rollback"
             );
         }
+
+        let mut inq_guard = self
+            .pending_inquiries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let inq_count = inq_guard.len();
+        inq_guard.clear();
+        if inq_count > 0 {
+            tracing::debug!(
+                cleared_inquiries = inq_count,
+                "Cleared in-flight inquiries during rollback"
+            );
+        }
     }
 
     /// Removes entries whose sender half has already been dropped (e.g. host closed
@@ -2227,6 +2376,25 @@ impl AgentLoop {
                 pruned = pruned,
                 remaining = guard.len(),
                 "Pruned stale approval senders from registry"
+            );
+        }
+    }
+
+    /// Removes inquiry entries whose sender half has already been dropped. Calling this
+    /// at the start of each turn prevents the inquiry registry from growing unboundedly.
+    pub fn prune_stale_inquiries(&self) {
+        let mut guard = self
+            .pending_inquiries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let before = guard.len();
+        guard.retain(|_id, sender| !sender.is_closed());
+        let pruned = before.saturating_sub(guard.len());
+        if pruned > 0 {
+            tracing::debug!(
+                pruned = pruned,
+                remaining = guard.len(),
+                "Pruned stale inquiry senders from registry"
             );
         }
     }
@@ -2588,6 +2756,276 @@ mod tests {
             !session_file.exists(),
             "Session file must not exist after drop without prompt"
         );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[cfg(test)]
+mod inquiry_tests {
+    use super::*;
+    use crate::agent::inquiry::*;
+    use crate::agent::provider::{
+        ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema,
+    };
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    struct TestToolCallProvider {
+        call: ToolCall,
+        spent: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Provider for TestToolCallProvider {
+        fn name(&self) -> &str {
+            "test-inquiry-provider"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let stream = tokio_stream::iter(vec![Ok(StreamChunk::Done)]);
+                return Ok(Box::pin(stream));
+            }
+            let stream = tokio_stream::iter(vec![
+                Ok(StreamChunk::ToolCallChunk(self.call.clone())),
+                Ok(StreamChunk::Done),
+            ]);
+            Ok(Box::pin(stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inquiry_registry_instantiation() {
+        let registry: InquiryRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (tx, rx) = tokio::sync::oneshot::channel::<InquiryResponse>();
+        registry.lock().unwrap().insert("test-inq".to_string(), tx);
+
+        let sender = registry.lock().unwrap().remove("test-inq");
+        assert!(sender.is_some());
+        let _ = sender.unwrap().send(InquiryResponse {
+            inquiry_id: "test-inq".to_string(),
+            answers: vec![],
+            cancelled: false,
+        });
+
+        let resp = rx.await.unwrap();
+        assert_eq!(resp.inquiry_id, "test-inq");
+        assert!(!resp.cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_inquiry_suspension_interactive_resolution() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_inq_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(TestToolCallProvider {
+            call: ToolCall {
+                id: "call_inq_1".into(),
+                name: "ask_user".into(),
+                arguments: serde_json::json!({
+                    "title": "Choose database",
+                    "questions": [
+                        {
+                            "id": "db",
+                            "question": "Which database?",
+                            "options": [
+                                { "id": "pg", "label": "PostgreSQL", "recommended": true },
+                                { "id": "sqlite", "label": "SQLite" }
+                            ]
+                        }
+                    ]
+                }),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        agent_loop.set_interactive_approvals(true);
+        let inq_reg = agent_loop.inquiry_registry();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let turn_task =
+            tokio::spawn(async move { agent_loop.execute_turn("setup db", tx, None).await });
+
+        // Wait for AgentEvent::UserInquiry
+        let mut captured_inquiry_id = None;
+        for _ in 0..50 {
+            match rx.recv().await {
+                Some(AgentEvent::UserInquiry {
+                    tool_id, request, ..
+                }) => {
+                    assert_eq!(tool_id, "call_inq_1");
+                    assert_eq!(request.title, "Choose database");
+                    captured_inquiry_id = Some(tool_id);
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("event stream ended before UserInquiry"),
+            }
+        }
+        let inquiry_id = captured_inquiry_id.expect("UserInquiry event must be emitted");
+
+        // Verify turn is suspended
+        assert!(
+            !turn_task.is_finished(),
+            "turn must suspend awaiting inquiry response"
+        );
+
+        // Respond via inquiry registry
+        let sender = inq_reg
+            .lock()
+            .unwrap()
+            .remove(&inquiry_id)
+            .expect("inquiry must be in registry");
+
+        let response = InquiryResponse {
+            inquiry_id: inquiry_id.clone(),
+            answers: vec![InquiryAnswer {
+                question_id: "db".to_string(),
+                selected_options: vec!["pg".to_string()],
+                custom_text: None,
+                masked: false,
+            }],
+            cancelled: false,
+        };
+        assert!(sender.send(response).is_ok());
+
+        let turn = turn_task.await.expect("join ok").expect("turn completes");
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(turn.tool_results[0].success);
+        assert!(turn.tool_results[0].output.contains("answered"));
+        assert!(turn.tool_results[0].output.contains("pg"));
+
+        // Registry should now be empty for this inquiry
+        assert!(inq_reg.lock().unwrap().get(&inquiry_id).is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_inquiry_suspension_cancellation() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_inq_cancel_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(TestToolCallProvider {
+            call: ToolCall {
+                id: "call_inq_cancel".into(),
+                name: "ask_user".into(),
+                arguments: serde_json::json!({
+                    "title": "Choose stack",
+                    "questions": []
+                }),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        agent_loop.set_interactive_approvals(true);
+        let inq_reg = agent_loop.inquiry_registry();
+
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel_token.clone();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let turn_task = tokio::spawn(async move {
+            agent_loop
+                .execute_turn("setup stack", tx, Some(cancel_clone))
+                .await
+        });
+
+        // Wait for AgentEvent::UserInquiry
+        for _ in 0..50 {
+            match rx.recv().await {
+                Some(AgentEvent::UserInquiry { tool_id, .. }) => {
+                    assert_eq!(tool_id, "call_inq_cancel");
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("event stream ended before UserInquiry"),
+            }
+        }
+
+        // Cancel while suspended
+        cancel_token.cancel();
+
+        let turn = turn_task.await.expect("join ok").expect("turn completes");
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(turn.tool_results[0].output.contains("cancelled"));
+
+        // Registry must be cleaned up
+        assert!(inq_reg.lock().unwrap().get("call_inq_cancel").is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_inquiry_non_interactive_auto_resolve() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_inq_noninter_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(TestToolCallProvider {
+            call: ToolCall {
+                id: "call_inq_auto".into(),
+                name: "ask_user".into(),
+                arguments: serde_json::json!({
+                    "title": "Pick template",
+                    "questions": [
+                        {
+                            "id": "tmpl",
+                            "question": "Which template?",
+                            "options": [
+                                { "id": "default_tmpl", "label": "Default", "recommended": true },
+                                { "id": "custom_tmpl", "label": "Custom" }
+                            ]
+                        }
+                    ]
+                }),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        // Non-interactive / headless mode (e.g. -y)
+        agent_loop.set_interactive_approvals(false);
+        let inq_reg = agent_loop.inquiry_registry();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Should complete without hanging or suspending
+        let turn = agent_loop
+            .execute_turn("auto template", tx, None)
+            .await
+            .expect("turn completes immediately");
+
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(turn.tool_results[0].success);
+        assert!(turn.tool_results[0].output.contains("answered"));
+        assert!(turn.tool_results[0].output.contains("default_tmpl"));
+
+        // No UserInquiry event should have been emitted in non-interactive mode
+        let mut saw_user_inquiry = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, AgentEvent::UserInquiry { .. }) {
+                saw_user_inquiry = true;
+            }
+        }
+        assert!(
+            !saw_user_inquiry,
+            "UserInquiry event must NOT be emitted in non-interactive mode"
+        );
+
+        // Registry should be empty
+        assert!(inq_reg.lock().unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -1536,6 +1536,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     )?;
     let agent = AgentLoop::new(workspace, config.clone(), provider);
     let approvals = agent.approval_registry();
+    let _inquiries = agent.inquiry_registry();
     let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
 
     let ready_event = AgentEvent::Heartbeat {
