@@ -227,7 +227,10 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 5. Meta-Tool
+    // 5. Human-in-the-loop interactive inquiry (ask_user)
+    core.extend(registry::agent_tools::inquiry::get_schemas());
+
+    // 6. Meta-Tool
     core.push(activate_tools_schema());
 
     core
@@ -397,7 +400,7 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 10);
+        assert!(core.len() >= 8 && core.len() <= 11);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -407,6 +410,7 @@ mod tests {
         assert!(names.contains(&"locate_symbol"));
         assert!(names.contains(&"create_plan"));
         assert!(names.contains(&"update_progress"));
+        assert!(names.contains(&"ask_user"));
         assert!(names.contains(&"activate_tools"));
     }
 
