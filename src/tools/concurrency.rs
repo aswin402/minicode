@@ -183,7 +183,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "verify_reproducer"
         | "execute_dag"
         | "repair_diagnostics"
-        | "update_agent_config" => ToolSafetyLevel::Mutating,
+        | "update_agent_config"
+        | "ask_user" => ToolSafetyLevel::Mutating,
 
         // Memory & Context Inspection (Read-Only)
         "read_plan"

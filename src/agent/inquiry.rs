@@ -68,6 +68,7 @@ pub struct InquiryQuestion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InquiryRequest {
     /// Unique inquiry identifier (e.g. tool call ID).
+    #[serde(default)]
     pub inquiry_id: String,
     /// Dialog title.
     pub title: String,
@@ -216,7 +217,7 @@ impl InquiryResponse {
     }
 
     /// Backwards-compatible alias for `to_tool_output`.
-    pub fn into_tool_output(&self) -> String {
+    pub fn into_tool_output(self) -> String {
         self.to_tool_output()
     }
 }
@@ -372,12 +373,14 @@ mod tests {
             ]
         }"#;
 
-        let parsed: InquiryRequest = serde_json::from_str(json_input).expect("Must parse valid JSON");
+        let parsed: InquiryRequest =
+            serde_json::from_str(json_input).expect("Must parse valid JSON");
         assert_eq!(parsed.inquiry_id, "req-99");
         assert_eq!(parsed.questions[0].input_type, InquiryInputType::Secret);
 
         let serialized = serde_json::to_string(&parsed).expect("Must serialize");
-        let parsed_again: InquiryRequest = serde_json::from_str(&serialized).expect("Must roundtrip");
+        let parsed_again: InquiryRequest =
+            serde_json::from_str(&serialized).expect("Must roundtrip");
         assert_eq!(parsed, parsed_again);
     }
 
