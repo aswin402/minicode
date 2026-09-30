@@ -1,0 +1,247 @@
+/* ===================================
+   NovaCode Landing Page Styles
+   =================================== */
+
+/* CSS Custom Properties */
+:root {
+  --bg-primary: #222831;
+  --bg-surface: #393E46;
+  --accent: #00ADB5;
+  --accent-hover: #00C9D1;
+  --text-primary: #EEEEEE;
+  --text-muted: #9CA3AF;
+  --border-color: #4B5563;
+}
+
+/* Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+/* Navbar Styles */
+#navbar {
+  background-color: transparent;
+}
+
+#navbar.scrolled {
+  background-color: rgba(34, 40, 49, 0.95);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-color);
+}
+
+/* Animation Keyframes */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* Fade In Animation Class */
+.fade-in {
+  opacity: 0;
+  animation: fadeInUp 0.6s ease-out forwards;
+}
+
+/* Scroll Animation Observer */
+.fade-in-section {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+}
+
+.fade-in-section.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Feature Card Hover Effects */
+.feature-card {
+  transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--accent);
+  box-shadow: 0 10px 40px rgba(0, 173, 181, 0.15);
+}
+
+/* Pricing Card Popular Badge Animation */
+.pricing-card.popular {
+  transform: scale(1.02);
+}
+
+/* Code Block Styling */
+.code-block {
+  background: linear-gradient(135deg, #1a1f26 0%, #222831 100%);
+}
+
+/* Gradient Text Effect */
+.gradient-text {
+  background: linear-gradient(135deg, var(--accent) 0%, #00F0FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Button Hover Glow Effect */
+.btn-glow {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-glow::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 0.6s ease, height 0.6s ease;
+}
+
+.btn-glow:hover::before {
+  width: 300px;
+  height: 300px;
+}
+
+/* Testimonial Quote Styling */
+.testimonial-quote {
+  position: relative;
+}
+
+.testimonial-quote::before {
+  content: '"';
+  position: absolute;
+  top: -20px;
+  left: -10px;
+  font-size: 80px;
+  color: var(--accent);
+  opacity: 0.1;
+  font-family: Georgia, serif;
+  line-height: 1;
+}
+
+/* Mobile Menu Animation */
+#mobile-menu {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out;
+}
+
+#mobile-menu.open {
+  max-height: 500px;
+}
+
+/* Smooth Scroll Offset for Fixed Navbar */
+section[id] {
+  scroll-margin-top: 80px;
+}
+
+/* Focus States for Accessibility */
+a:focus,
+button:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Selection Styling */
+::selection {
+  background-color: var(--accent);
+  color: var(--bg-primary);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+
+/* Responsive Adjustments */
+@media (max-width: 640px) {
+  .pricing-card.popular {
+    transform: scale(1);
+  }
+  
+  .fade-in {
+    animation-duration: 0.4s;
+  }
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Print Styles */
+@media print {
+  #navbar,
+  #mobile-menu,
+  .cta-section {
+    display: none !important;
+  }
+  
+  body {
+    background: white;
+    color: black;
+  }
+}

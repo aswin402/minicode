@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="NovaCode - AI-Powered Developer Platform. Code faster with intelligent AI assistance.">
+  <title>NovaCode | AI-Powered Developer Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#222831',
+            surface: '#393E46',
+            accent: '#00ADB5',
+            'accent-hover': '#00C9D1',
+            text: '#EEEEEE',
+            muted: '#9CA3AF',
+            border: '#4B5563'
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif']
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-bg text-text font-sans antialiased">
+  <!-- Navbar -->
+  <nav id="navbar" class="fixed top-0 left-0 right-0 z-50 transition-all duration-300">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 md:h-20">
+        <!-- Logo -->
+        <a href="#" class="flex items-center space-x-2">
+          <div class="w-8 h-8 bg-accent rounded-lg flex items-center justify-center">
+            <svg class="w-5 h-5 text-bg font-bold" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <span class="text-xl font-bold text-text">NovaCode</span>
+        </a>
+        
+        <!-- Desktop Navigation -->
+        <div class="hidden md:flex items-center space-x-8">
+          <a href="#features" class="text-muted hover:text-accent transition-colors">Features</a>
+          <a href="#pricing" class="text-muted hover:text-accent transition-colors">Pricing</a>
+          <a href="#testimonials" class="text-muted hover:text-accent transition-colors">Testimonials</a>
+          <a href="#" class="text-muted hover:text-accent transition-colors">Docs</a>
+        </div>
+        
+        <!-- CTA Buttons -->
+        <div class="hidden md:flex items-center space-x-4">
+          <a href="#" class="text-muted hover:text-accent transition-colors">Sign In</a>
+          <a href="#" class="bg-accent hover:bg-accent-hover text-bg font-semibold px-5 py-2 rounded-lg transition-all">
+            Get Started
+          </a>
+        </div>
+        
+        <!-- Mobile Menu Button -->
+        <button id="mobile-menu-btn" class="md:hidden p-2 text-text" aria-label="Toggle menu">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path id="menu-icon" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    
+    <!-- Mobile Menu -->
+    <div id="mobile-menu" class="md:hidden hidden bg-surface border-t border-border">
+      <div class="px-4 py-4 space-y-3">
+        <a href="#features" class="block text-muted hover:text-accent transition-colors py-2">Features</a>
+        <a href="#pricing" class="block text-muted hover:text-accent transition-colors py-2">Pricing</a>
+        <a href="#testimonials" class="block text-muted hover:text-accent transition-colors py-2">Testimonials</a>
+        <a href="#" class="block text-muted hover:text-accent transition-colors py-2">Docs</a>
+        <hr class="border-border">
+        <a href="#" class="block text-muted hover:text-accent transition-colors py-2">Sign In</a>
+        <a href="#" class="block bg-accent hover:bg-accent-hover text-bg font-semibold px-5 py-3 rounded-lg text-center transition-all">
+          Get Started
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="pt-32 pb-20 md:pt-40 md:pb-32">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex flex-col lg:flex-row items-center gap-12 lg:gap-16">
+        <div class="lg:w-1/2 text-center lg:text-left fade-in">
+          <div class="inline-flex items-center px-4 py-2 bg-surface rounded-full mb-6">
+            <span class="w-2 h-2 bg-accent rounded-full mr-2 animate-pulse"></span>
+            <span class="text-sm text-muted">Powered by Advanced AI</span>
+          </div>
+          <h1 class="text-4xl sm:text-5xl lg:text-6xl font-extrabold leading-tight mb-6">
+            Code Faster with
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-accent to-cyan-400">AI Intelligence</span>
+          </h1>
+          <p class="text-lg md:text-xl text-muted mb-8 max-w-xl mx-auto lg:mx-0">
+            NovaCode uses cutting-edge AI to understand your code context, suggest intelligent completions, and help you ship features 10x faster.
+          </p>
+          <div class="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+            <a href="#" class="inline-flex items-center justify-center bg-accent hover:bg-accent-hover text-bg font-semibold px-8 py-4 rounded-xl text-lg transition-all shadow-lg shadow-accent/25">
+              Start Free Trial
+              <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+              </svg>
+            </a>
+            <a href="#" class="inline-flex items-center justify-center border-2 border-border hover:border-accent text-text font-semibold px-8 py-4 rounded-xl text-lg transition-all">
+              Watch Demo
+            </a>
+          </div>
+          <div class="mt-10 flex items-center gap-6 justify-center lg:justify-start">
+            <div class="flex -space-x-2">
+              <img src="https://i.pravatar.cc/40?img=1" alt="User" class="w-10 h-10 rounded-full border-2 border-bg">
+              <img src="https://i.pravatar.cc/40?img=2" alt="User" class="w-10 h-10 rounded-full border-2 border-bg">
+              <img src="https://i.pravatar.cc/40?img=3" alt="User" class="w-10 h-10 rounded-full border-2 border-bg">
+              <img src="https://i.pravatar.cc/40?img=4" alt="User" class="w-10 h-10 rounded-full border-2 border-bg">
+            </div>
+            <div class="text-left">
+              <div class="text-text font-semibold">50,000+</div>
+              <div class="text-sm text-muted">Developers</div>
+            </div>
+          </div>
+        </div>
+        <div class="lg:w-1/2 fade-in" style="animation-delay: 0.2s;">
+          <div class="relative">
+            <div class="absolute -inset-4 bg-gradient-to-r from-accent/20 to-cyan-400/20 rounded-2xl blur-xl"></div>
+            <div class="relative bg-surface rounded-2xl p-4 shadow-2xl border border-border">
+              <div class="flex items-center gap-2 mb-4">
+                <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                <div class="w-3 h-3 bg-yellow-500 rounded-full"></div>
+                <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                <span class="ml-2 text-sm text-muted">main.js</span>
+              </div>
+              <pre class="text-sm font-mono"><code><span class="text-accent">async function</span> <span class="text-text">fetchUserData</span>(<span class="text-muted">userId</span>) {
+  <span class="text-accent">const</span> <span class="text-muted">response</span> = <span class="text-accent">await</span> <span class="text-text">fetch</span>(<span class="text-green-400">`/api/users/${userId}`</span>);
+  <span class="text-accent">const</span> <span class="text-muted">data</span> = <span class="text-accent">await</span> <span class="text-text">response</span>.<span class="text-text">json</span>();
+  <span class="text-accent">return</span> <span class="text-muted">data</span>;
+}
+<span class="opacity-50">// NovaCode AI suggests intelligent completions...</span></code></pre>
+              <div class="mt-4 p-3 bg-bg rounded-lg border border-accent/30">
+                <div class="flex items-center gap-2 text-sm">
+                  <svg class="w-4 h-4 text-accent" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                  </svg>
+                  <span class="text-accent">AI Suggestion:</span>
+                  <span class="text-muted">Add error handling for network failures</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section id="features" class="py-20 md:py-32 bg-surface/50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-16 fade-in">
+        <h2 class="text-3xl md:text-4xl font-bold mb-4">Everything You Need to Code Smarter</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto">Powerful AI features designed to accelerate your development workflow and boost productivity.</p>
+      </div>
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-8" id="features-grid">
+        <!-- Features loaded via JavaScript -->
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing Section -->
+  <section id="pricing" class="py-20 md:py-32">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-16 fade-in">
+        <h2 class="text-3xl md:text-4xl font-bold mb-4">Simple, Transparent Pricing</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto">Choose the plan that fits your needs. Start free, upgrade anytime.</p>
+      </div>
+      <div class="grid lg:grid-cols-3 gap-8 max-w-5xl mx-auto" id="pricing-grid">
+        <!-- Pricing loaded via JavaScript -->
+      </div>
+    </div>
+  </section>
+
+  <!-- Testimonials Section -->
+  <section id="testimonials" class="py-20 md:py-32 bg-surface/50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-16 fade-in">
+        <h2 class="text-3xl md:text-4xl font-bold mb-4">Loved by Developers Worldwide</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto">See what developers are saying about NovaCode.</p>
+      </div>
+      <div class="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto" id="testimonials-grid">
+        <!-- Testimonials loaded via JavaScript -->
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="py-20 md:py-32">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="bg-gradient-to-r from-accent/20 to-cyan-400/20 rounded-3xl p-12 md:p-16 text-center fade-in border border-accent/20">
+        <h2 class="text-3xl md:text-4xl font-bold mb-4">Ready to Transform Your Coding?</h2>
+        <p class="text-muted text-lg max-w-2xl mx-auto mb-8">Join thousands of developers who are already shipping faster with NovaCode.</p>
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a href="#" class="inline-flex items-center justify-center bg-accent hover:bg-accent-hover text-bg font-semibold px-8 py-4 rounded-xl text-lg transition-all shadow-lg shadow-accent/25">
+            Get Started Free
+            <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+            </svg>
+          </a>
+          <a href="#" class="inline-flex items-center justify-center border-2 border-border hover:border-accent text-text font-semibold px-8 py-4 rounded-xl text-lg transition-all">
+            Schedule Demo
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="bg-surface py-12 md:py-16 border-t border-border">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="grid md:grid-cols-4 gap-8 mb-12">
+        <!-- Logo & Description -->
+        <div class="md:col-span-1">
+          <a href="#" class="flex items-center space-x-2 mb-4">
+            <div class="w-8 h-8 bg-accent rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-bg font-bold" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <span class="text-xl font-bold text-text">NovaCode</span>
+          </a>
+          <p class="text-sm text-muted">AI-powered coding assistant that helps developers ship faster.</p>
+        </div>
+        
+        <!-- Product -->
+        <div>
+          <h4 class="font-semibold mb-4">Product</h4>
+          <ul class="space-y-2 text-sm text-muted">
+            <li><a href="#" class="hover:text-accent transition-colors">Features</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Pricing</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Changelog</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Roadmap</a></li>
+          </ul>
+        </div>
+        
+        <!-- Resources -->
+        <div>
+          <h4 class="font-semibold mb-4">Resources</h4>
+          <ul class="space-y-2 text-sm text-muted">
+            <li><a href="#" class="hover:text-accent transition-colors">Documentation</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">API Reference</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Blog</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Community</a></li>
+          </ul>
+        </div>
+        
+        <!-- Company -->
+        <div>
+          <h4 class="font-semibold mb-4">Company</h4>
+          <ul class="space-y-2 text-sm text-muted">
+            <li><a href="#" class="hover:text-accent transition-colors">About</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Careers</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Contact</a></li>
+            <li><a href="#" class="hover:text-accent transition-colors">Privacy</a></li>
+          </ul>
+        </div>
+      </div>
+      
+      <!-- Bottom Bar -->
+      <div class="pt-8 border-t border-border flex flex-col md:flex-row items-center justify-between gap-4">
+        <p class="text-sm text-muted">© 2025 NovaCode. All rights reserved.</p>
+        <div class="flex items-center gap-4">
+          <a href="#" class="text-muted hover:text-accent transition-colors" aria-label="Twitter">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8.29 20.251c7.547 0 11.675-6.253 11.675-11.675 0-.178 0-.355-.012-.53A8.348 8.348 0 0022 5.92a8.19 8.19 0 01-2.357.646 4.118 4.118 0 001.804-2.27 8.224 8.224 0 01-2.605.996 4.107 4.107 0 00-6.993 3.743 11.65 11.65 0 01-8.457-4.287 4.106 4.106 0 001.27 5.477A4.072 4.072 0 012.8 9.713v.052a4.105 4.105 0 003.292 4.022 4.095 4.095 0 01-1.853.07 4.108 4.108 0 003.834 2.85A8.233 8.233 0 012 18.407a11.616 11.616 0 006.29 1.84"/></svg>
+          </a>
+          <a href="#" class="text-muted hover:text-accent transition-colors" aria-label="GitHub">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+          </a>
+          <a href="#" class="text-muted hover:text-accent transition-colors" aria-label="Discord">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/></svg>
+          </a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
