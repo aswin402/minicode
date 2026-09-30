@@ -197,6 +197,13 @@ pub enum AgentEvent {
         reason: String,
     },
 
+    #[serde(rename = "user_inquiry")]
+    UserInquiry {
+        turn_id: usize,
+        tool_id: String,
+        request: crate::agent::inquiry::InquiryRequest,
+    },
+
     #[serde(rename = "file_modified")]
     FileModified {
         turn_id: usize,

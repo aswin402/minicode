@@ -5,6 +5,7 @@ pub mod council;
 pub mod critic;
 pub mod dag;
 pub mod hypothesis;
+pub mod inquiry;
 pub mod intent;
 pub mod r#loop;
 pub mod minipower;
@@ -37,6 +38,11 @@ pub use council::{
 pub use dag::{
     DagCompiler, DagExecutionReport, DagExecutor, DagNodeResult, DagNodeSpec, DagSpec,
     JsonPathResolver, NodeExecutionStatus,
+};
+#[allow(unused_imports)]
+pub use inquiry::{
+    InquiryAnswer, InquiryInputType, InquiryOption, InquiryQuestion, InquiryRegistry,
+    InquiryRequest, InquiryResponse,
 };
 #[allow(unused_imports)]
 pub use models::{ModelFetcher, ModelInfo};

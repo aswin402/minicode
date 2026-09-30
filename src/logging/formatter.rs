@@ -220,6 +220,25 @@ impl HonoLogFormatter {
                 ))
             }
 
+            AgentEvent::UserInquiry {
+                turn_id: _,
+                tool_id: _,
+                request,
+            } => {
+                let time = current_time_str();
+                Some(format!(
+                    "{}{}  {}???{} {}INQUIRY{} [{} questions: \"{}\"]",
+                    dim,
+                    time,
+                    yellow,
+                    reset,
+                    yellow,
+                    reset,
+                    request.questions.len(),
+                    request.title
+                ))
+            }
+
             AgentEvent::FileModified {
                 turn_id: _,
                 path,
@@ -506,6 +525,14 @@ impl HonoLogFormatter {
                 Some(*turn_id),
                 400,
                 format!("{}: {}", tool, reason),
+            ),
+            AgentEvent::UserInquiry {
+                turn_id, request, ..
+            } => (
+                "user_inquiry",
+                Some(*turn_id),
+                200,
+                format!("{}: {} questions", request.title, request.questions.len()),
             ),
             AgentEvent::FileModified {
                 turn_id,
