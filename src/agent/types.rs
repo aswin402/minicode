@@ -346,6 +346,15 @@ pub enum StdinCommand {
         reason: Option<String>,
     },
 
+    #[serde(rename = "inquiry_response")]
+    InquiryResponse {
+        inquiry_id: String,
+        #[serde(default)]
+        answers: Vec<crate::agent::inquiry::InquiryAnswer>,
+        #[serde(default)]
+        cancelled: bool,
+    },
+
     #[serde(rename = "abort")]
     Abort {},
 
@@ -411,6 +420,23 @@ mod tests {
                 assert_eq!(action, "approve");
             }
             _ => panic!("Expected ToolResponse"),
+        }
+
+        let inq_json = r#"{"method":"inquiry_response","params":{"inquiry_id":"inq_999","answers":[{"question_id":"db","selected_options":["postgres"],"custom_text":null,"masked":false}],"cancelled":false}}"#;
+        let inq_cmd: StdinCommand = serde_json::from_str(inq_json).unwrap();
+        match inq_cmd {
+            StdinCommand::InquiryResponse {
+                inquiry_id,
+                answers,
+                cancelled,
+            } => {
+                assert_eq!(inquiry_id, "inq_999");
+                assert_eq!(answers.len(), 1);
+                assert_eq!(answers[0].question_id, "db");
+                assert_eq!(answers[0].selected_options, vec!["postgres"]);
+                assert!(!cancelled);
+            }
+            _ => panic!("Expected InquiryResponse"),
         }
     }
 }

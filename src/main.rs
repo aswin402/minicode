@@ -1536,7 +1536,7 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     )?;
     let agent = AgentLoop::new(workspace, config.clone(), provider);
     let approvals = agent.approval_registry();
-    let _inquiries = agent.inquiry_registry();
+    let inquiries = agent.inquiry_registry();
     let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
 
     let ready_event = AgentEvent::Heartbeat {
@@ -1726,6 +1726,29 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                     },
                     None => {
                         tracing::warn!(action = %action, "Unknown ToolResponse action");
+                    }
+                }
+            }
+            StdinCommand::InquiryResponse {
+                inquiry_id,
+                answers,
+                cancelled,
+            } => {
+                let response = crate::agent::inquiry::InquiryResponse {
+                    inquiry_id: inquiry_id.clone(),
+                    answers,
+                    cancelled,
+                };
+                match inquiries
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&inquiry_id)
+                {
+                    Some(sender) => {
+                        let _ = sender.send(response);
+                    }
+                    None => {
+                        tracing::warn!(inquiry_id = %inquiry_id, "InquiryResponse for unknown inquiry_id");
                     }
                 }
             }

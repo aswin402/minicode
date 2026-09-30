@@ -23,6 +23,7 @@ pub enum InquiryInputType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InquiryOption {
     /// Identifier for option (defaults to label if omitted).
+    #[serde(default)]
     pub id: String,
     /// Human-readable label for option.
     pub label: String,
@@ -34,10 +35,22 @@ pub struct InquiryOption {
     pub recommended: bool,
 }
 
+impl InquiryOption {
+    /// Returns the option identifier, falling back to `label` if `id` was omitted.
+    pub fn resolved_id(&self) -> &str {
+        if self.id.is_empty() {
+            &self.label
+        } else {
+            &self.id
+        }
+    }
+}
+
 /// A single question to ask the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InquiryQuestion {
     /// Unique identifier for this question (e.g., "framework", "api_key").
+    #[serde(default)]
     pub id: String,
     /// The prompt question text.
     pub question: String,
@@ -62,6 +75,19 @@ pub struct InquiryQuestion {
     /// List of pre-defined options.
     #[serde(default)]
     pub options: Vec<InquiryOption>,
+}
+
+impl InquiryQuestion {
+    /// Returns the question identifier, falling back to `header` or `question` if `id` was omitted.
+    pub fn resolved_id(&self) -> &str {
+        if !self.id.is_empty() {
+            &self.id
+        } else if let Some(h) = &self.header {
+            h
+        } else {
+            &self.question
+        }
+    }
 }
 
 /// Structured inquiry request emitted by the agent loop or `ask_user` tool.
@@ -92,37 +118,37 @@ impl InquiryRequest {
                     .options
                     .iter()
                     .filter(|o| o.recommended)
-                    .map(|o| o.id.clone())
+                    .map(|o| o.resolved_id().to_string())
                     .collect();
                 if !recs.is_empty() {
                     selected = recs;
                 } else if let Some(def) = &q.default_value {
-                    if q.options.iter().any(|o| &o.id == def) {
+                    if q.options.iter().any(|o| o.resolved_id() == def) {
                         selected.push(def.clone());
                     } else {
                         custom = Some(def.clone());
                     }
                 } else if let Some(first) = q.options.first() {
-                    selected.push(first.id.clone());
+                    selected.push(first.resolved_id().to_string());
                 } else {
                     custom = Some("(default: not specified)".to_string());
                 }
             } else if let Some(rec) = q.options.iter().find(|o| o.recommended) {
-                selected.push(rec.id.clone());
+                selected.push(rec.resolved_id().to_string());
             } else if let Some(def) = &q.default_value {
-                if q.options.iter().any(|o| &o.id == def) {
+                if q.options.iter().any(|o| o.resolved_id() == def) {
                     selected.push(def.clone());
                 } else {
                     custom = Some(def.clone());
                 }
             } else if let Some(first) = q.options.first() {
-                selected.push(first.id.clone());
+                selected.push(first.resolved_id().to_string());
             } else {
                 custom = Some("(default: not specified)".to_string());
             }
 
             answers.push(InquiryAnswer {
-                question_id: q.id.clone(),
+                question_id: q.resolved_id().to_string(),
                 selected_options: selected,
                 custom_text: custom,
                 masked: q.input_type == InquiryInputType::Secret,

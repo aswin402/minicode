@@ -90,7 +90,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 }
                             }
                         },
-                        "required": ["id", "question"]
+                        "required": ["question"]
                     }
                 }
             },
@@ -112,8 +112,17 @@ pub async fn dispatch(
     let parsed_req: std::result::Result<InquiryRequest, _> = serde_json::from_value(args.clone());
     match parsed_req {
         Ok(req) => {
-            let auto_resp = req.auto_resolve_defaults();
-            Some(Ok(auto_resp.into_tool_output()))
+            if req.questions.is_empty() {
+                Some(Err(crate::error::ToolError::InvalidArguments {
+                    name: ASK_USER_TOOL_NAME.to_string(),
+                    reason: "ask_user requires at least one question in the 'questions' array."
+                        .to_string(),
+                }
+                .into()))
+            } else {
+                let auto_resp = req.auto_resolve_defaults();
+                Some(Ok(auto_resp.into_tool_output()))
+            }
         }
         Err(e) => Some(Err(crate::error::ToolError::InvalidArguments {
             name: ASK_USER_TOOL_NAME.to_string(),

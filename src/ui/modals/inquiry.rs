@@ -140,6 +140,37 @@ impl InquiryModalState {
         }
     }
 
+    pub fn handle_delete(&mut self) {
+        if self.custom_cursor < self.custom_input_buffer.len() {
+            if let Some((_, c)) = self.custom_input_buffer[self.custom_cursor..]
+                .char_indices()
+                .next()
+            {
+                self.custom_input_buffer
+                    .drain(self.custom_cursor..self.custom_cursor + c.len_utf8());
+            }
+        }
+    }
+
+    pub fn cursor_home(&mut self) {
+        self.custom_cursor = 0;
+    }
+
+    pub fn cursor_end(&mut self) {
+        self.custom_cursor = self.custom_input_buffer.len();
+    }
+
+    pub fn clear_line(&mut self) {
+        self.custom_input_buffer.clear();
+        self.custom_cursor = 0;
+    }
+
+    pub fn kill_to_end(&mut self) {
+        if self.custom_cursor < self.custom_input_buffer.len() {
+            self.custom_input_buffer.truncate(self.custom_cursor);
+        }
+    }
+
     pub fn confirm_selection(&mut self) -> Option<InquiryResponse> {
         let q = match self.current_question() {
             Some(q) => q.clone(),
@@ -166,19 +197,25 @@ impl InquiryModalState {
                 val
             };
             InquiryAnswer {
-                question_id: q.id.clone(),
+                question_id: q.resolved_id().to_string(),
                 selected_options: vec![],
                 custom_text: Some(final_val),
                 masked: q.input_type == InquiryInputType::Secret,
             }
         } else if q.is_multi_select {
-            let selected: Vec<String> = self
+            let mut selected: Vec<String> = self
                 .selected_multi_indices
                 .iter()
-                .filter_map(|&idx| q.options.get(idx).map(|o| o.id.clone()))
+                .filter_map(|&idx| q.options.get(idx).map(|o| o.resolved_id().to_string()))
                 .collect();
+            // If user did not toggle any boxes with Space, use currently highlighted option as fallback
+            if selected.is_empty() {
+                if let Some(opt) = q.options.get(self.selected_option_idx) {
+                    selected.push(opt.resolved_id().to_string());
+                }
+            }
             InquiryAnswer {
-                question_id: q.id.clone(),
+                question_id: q.resolved_id().to_string(),
                 selected_options: selected,
                 custom_text: None,
                 masked: false,
@@ -187,10 +224,10 @@ impl InquiryModalState {
             let selected = q
                 .options
                 .get(self.selected_option_idx)
-                .map(|o| o.id.clone())
+                .map(|o| o.resolved_id().to_string())
                 .unwrap_or_else(|| "default".to_string());
             InquiryAnswer {
-                question_id: q.id.clone(),
+                question_id: q.resolved_id().to_string(),
                 selected_options: vec![selected],
                 custom_text: None,
                 masked: false,
@@ -234,8 +271,8 @@ pub fn render_inquiry_modal(
     theme: &Theme,
     area: Rect,
 ) {
-    let width = 74.min(area.width.saturating_sub(4));
-    let height = 24.min(area.height.saturating_sub(4));
+    let width = 76.min(area.width.saturating_sub(4)).max(48);
+    let height = 28.min(area.height.saturating_sub(2)).max(14);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let modal_area = Rect::new(x, y, width, height);
@@ -261,6 +298,7 @@ pub fn render_inquiry_modal(
     );
 
     let mut lines = Vec::new();
+    let mut target_line = 0;
 
     // Contextual description
     if let Some(desc) = &state.request.description {
@@ -332,6 +370,9 @@ pub fn render_inquiry_modal(
         if q.input_type == InquiryInputType::Choice && !q.options.is_empty() {
             for (idx, opt) in q.options.iter().enumerate() {
                 let is_selected = idx == state.selected_option_idx;
+                if is_selected {
+                    target_line = lines.len();
+                }
                 let cursor = if is_selected { "❯ " } else { "  " };
                 let num_key = if idx < 9 {
                     format!("[{}] ", idx + 1)
@@ -403,6 +444,9 @@ pub fn render_inquiry_modal(
             if q.allow_custom {
                 let custom_idx = q.options.len();
                 let is_selected = custom_idx == state.selected_option_idx;
+                if is_selected {
+                    target_line = lines.len();
+                }
                 let cursor = if is_selected { "❯ " } else { "  " };
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -435,6 +479,7 @@ pub fn render_inquiry_modal(
             || q.input_type == InquiryInputType::Text
             || q.input_type == InquiryInputType::Secret
         {
+            target_line = lines.len() + 2;
             lines.push(Line::from(""));
             let input_title = if q.input_type == InquiryInputType::Secret {
                 "Enter Secret / API Key (Masked)"
@@ -443,7 +488,7 @@ pub fn render_inquiry_modal(
             };
             let box_width = (inner.width as usize)
                 .saturating_sub(2)
-                .min(52)
+                .min(54)
                 .max(input_title.len() + 6);
             let top_fill = box_width.saturating_sub(input_title.len() + 5);
             lines.push(Line::from(Span::styled(
@@ -451,31 +496,76 @@ pub fn render_inquiry_modal(
                 Style::default().fg(theme.info),
             )));
 
-            let display_text = if q.input_type == InquiryInputType::Secret {
-                "•".repeat(state.custom_input_buffer.len())
-            } else if state.custom_input_buffer.is_empty() {
-                q.placeholder
-                    .clone()
-                    .unwrap_or_else(|| "Type answer here...".to_string())
-            } else {
-                state.custom_input_buffer.clone()
-            };
+            if state.custom_input_buffer.is_empty() && q.input_type != InquiryInputType::Secret {
+                let default_hint;
+                let placeholder = if let Some(ph) = &q.placeholder {
+                    ph.as_str()
+                } else if let Some(def) = &q.default_value {
+                    default_hint = format!("(default: {})", def);
+                    default_hint.as_str()
+                } else {
+                    "Type answer here..."
+                };
+                let placeholder_budget = box_width.saturating_sub(7);
+                let ph_chars: String = placeholder.chars().take(placeholder_budget).collect();
+                let pad_len = placeholder_budget.saturating_sub(ph_chars.chars().count());
 
-            let text_style = if state.custom_input_buffer.is_empty()
-                && q.input_type != InquiryInputType::Secret
-            {
-                Style::default().fg(theme.muted)
+                lines.push(Line::from(vec![
+                    Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
+                    Span::styled("█", Style::default().fg(theme.highlight)),
+                    Span::styled(
+                        format!(" {}{}", ph_chars, " ".repeat(pad_len)),
+                        Style::default().fg(theme.muted),
+                    ),
+                    Span::styled("│", Style::default().fg(theme.info)),
+                ]));
             } else {
-                Style::default()
+                let raw_text = if q.input_type == InquiryInputType::Secret {
+                    "•".repeat(state.custom_input_buffer.chars().count())
+                } else {
+                    state.custom_input_buffer.clone()
+                };
+                let char_cursor = state
+                    .custom_input_buffer
+                    .get(..state.custom_cursor.min(state.custom_input_buffer.len()))
+                    .map(|s| s.chars().count())
+                    .unwrap_or(0);
+
+                let content_max = box_width.saturating_sub(6);
+                let window_start = if char_cursor >= content_max {
+                    char_cursor + 1 - content_max
+                } else {
+                    0
+                };
+                let visible_chars: Vec<char> = raw_text
+                    .chars()
+                    .skip(window_start)
+                    .take(content_max)
+                    .collect();
+                let cursor_rel = char_cursor
+                    .saturating_sub(window_start)
+                    .min(visible_chars.len());
+
+                let prefix: String = visible_chars[..cursor_rel].iter().collect();
+                let suffix: String = visible_chars[cursor_rel..].iter().collect();
+                let pad_len = content_max.saturating_sub(visible_chars.len());
+
+                let text_style = Style::default()
                     .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD)
-            };
+                    .add_modifier(Modifier::BOLD);
 
-            lines.push(Line::from(vec![
-                Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
-                Span::styled(display_text, text_style),
-                Span::styled(" █", Style::default().fg(theme.highlight)),
-            ]));
+                lines.push(Line::from(vec![
+                    Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
+                    Span::styled(prefix, text_style),
+                    Span::styled("█", Style::default().fg(theme.highlight)),
+                    Span::styled(suffix, text_style),
+                    Span::styled(
+                        format!("{}│", " ".repeat(pad_len)),
+                        Style::default().fg(theme.info),
+                    ),
+                ]));
+            }
+
             lines.push(Line::from(Span::styled(
                 format!("└{}┘", "─".repeat(box_width.saturating_sub(2))),
                 Style::default().fg(theme.info),
@@ -485,12 +575,20 @@ pub fn render_inquiry_modal(
 
     // Footer instructions
     let footer_text = if state.is_typing_custom {
-        "[Enter] Submit  [Esc] Back to options"
+        "[Enter] Submit  [Esc] Back  [Home/End] Jump  [Ctrl+U] Clear"
     } else {
-        "[↑/↓] Navigate  [1-9] Fast pick  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
+        "[↑/↓/j/k] Navigate  [1-9] Fast pick  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
     };
 
-    let p = Paragraph::new(lines);
+    let visible_height = inner.height.saturating_sub(1) as usize;
+    let scroll_y = if target_line >= visible_height {
+        (target_line + 3).saturating_sub(visible_height) as u16
+    } else {
+        0
+    };
+    let p = Paragraph::new(lines)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((scroll_y, 0));
     frame.render_widget(
         p,
         Rect::new(
@@ -779,5 +877,82 @@ mod tests {
         assert_eq!(state.custom_cursor, 3);
         state.cursor_right(); // bounded
         assert_eq!(state.custom_cursor, 3);
+    }
+
+    #[test]
+    fn test_buffer_delete_home_end_clear_kill() {
+        let req = dummy_request();
+        let mut state = InquiryModalState::from_request(1, "tool-edit", req);
+        state.is_typing_custom = true;
+        for c in "hello world".chars() {
+            state.handle_char(c);
+        }
+        assert_eq!(state.custom_input_buffer, "hello world");
+        assert_eq!(state.custom_cursor, 11);
+
+        state.cursor_home();
+        assert_eq!(state.custom_cursor, 0);
+
+        // Delete 'h'
+        state.handle_delete();
+        assert_eq!(state.custom_input_buffer, "ello world");
+        assert_eq!(state.custom_cursor, 0);
+
+        // Move to ' '
+        for _ in 0..4 {
+            state.cursor_right();
+        }
+        assert_eq!(state.custom_cursor, 4);
+
+        // Kill to end removes " world"
+        state.kill_to_end();
+        assert_eq!(state.custom_input_buffer, "ello");
+
+        state.cursor_end();
+        assert_eq!(state.custom_cursor, 4);
+
+        state.clear_line();
+        assert_eq!(state.custom_input_buffer, "");
+        assert_eq!(state.custom_cursor, 0);
+    }
+
+    #[test]
+    fn test_multi_select_fallback_to_highlighted() {
+        let req = InquiryRequest {
+            inquiry_id: "inq_multi".to_string(),
+            title: "Multi test".to_string(),
+            description: None,
+            questions: vec![InquiryQuestion {
+                id: "features".to_string(),
+                question: "Select features".to_string(),
+                header: None,
+                input_type: InquiryInputType::Choice,
+                is_multi_select: true,
+                allow_custom: false,
+                placeholder: None,
+                default_value: None,
+                options: vec![
+                    InquiryOption {
+                        id: "auth".to_string(),
+                        label: "Authentication".to_string(),
+                        description: None,
+                        recommended: false,
+                    },
+                    InquiryOption {
+                        id: "db".to_string(),
+                        label: "Database".to_string(),
+                        description: None,
+                        recommended: false,
+                    },
+                ],
+            }],
+        };
+
+        let mut state = InquiryModalState::from_request(1, "tool-multi", req);
+        state.selected_option_idx = 1; // Highlight "db"
+                                       // User didn't toggle Space, just pressed Enter
+        let resp = state.confirm_selection().unwrap();
+        assert_eq!(resp.answers.len(), 1);
+        assert_eq!(resp.answers[0].selected_options, vec!["db"]);
     }
 }

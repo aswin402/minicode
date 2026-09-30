@@ -736,6 +736,13 @@ impl<'a> App<'a> {
                                         let sanitized = pasted_text.trim().replace(['\r', '\n'], "");
                                         input.insert_str(*cursor, &sanitized);
                                         *cursor += sanitized.len();
+                                    } else if let ModalState::Inquiry(ref mut inq_state) = self.modal {
+                                        if inq_state.is_typing_custom {
+                                            let sanitized = pasted_text.trim().replace(['\r', '\n'], "");
+                                            for c in sanitized.chars() {
+                                                inq_state.handle_char(c);
+                                            }
+                                        }
                                     }
                                     continue;
                                 }

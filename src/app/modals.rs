@@ -1451,6 +1451,16 @@ impl<'a> App<'a> {
                         inq_state.next_option();
                     }
                 }
+                KeyCode::Tab => {
+                    if !inq_state.is_typing_custom {
+                        inq_state.next_option();
+                    }
+                }
+                KeyCode::BackTab => {
+                    if !inq_state.is_typing_custom {
+                        inq_state.prev_option();
+                    }
+                }
                 KeyCode::Left => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_left();
@@ -1459,6 +1469,46 @@ impl<'a> App<'a> {
                 KeyCode::Right => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_right();
+                    }
+                }
+                KeyCode::Home => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_home();
+                    }
+                }
+                KeyCode::End => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_end();
+                    }
+                }
+                KeyCode::Delete => {
+                    if inq_state.is_typing_custom {
+                        inq_state.handle_delete();
+                    }
+                }
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_home();
+                    }
+                }
+                KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_end();
+                    }
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.clear_line();
+                    }
+                }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.kill_to_end();
+                    }
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.handle_delete();
                     }
                 }
                 KeyCode::Char(c) => {
@@ -1482,6 +1532,10 @@ impl<'a> App<'a> {
                         }
                     } else if c == ' ' {
                         inq_state.toggle_multi();
+                    } else if c == 'j' || c == 'J' {
+                        inq_state.next_option();
+                    } else if c == 'k' || c == 'K' {
+                        inq_state.prev_option();
                     } else if c == 'o' || c == 'O' {
                         if let Some(q) = inq_state.current_question() {
                             if q.allow_custom {

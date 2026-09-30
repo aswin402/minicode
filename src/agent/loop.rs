@@ -1217,6 +1217,42 @@ impl AgentLoop {
                                         });
                                 request.inquiry_id = tool_call.id.clone();
 
+                                if request.questions.is_empty() {
+                                    let err_output = serde_json::json!({
+                                        "error": "ask_user requires at least one question in the 'questions' array."
+                                    })
+                                    .to_string();
+                                    let res_event = AgentEvent::ToolResult {
+                                        turn_id,
+                                        tool_id: tool_call.id.clone(),
+                                        tool: tool_call.name.clone(),
+                                        success: false,
+                                        output: err_output.clone(),
+                                        duration_ms: 0,
+                                    };
+                                    if let Err(e) = self
+                                        .session_store
+                                        .append_event(&self.session_id, &res_event)
+                                    {
+                                        tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                    }
+                                    let _ = event_sender.send(res_event);
+                                    self.messages.push(Message::tool_result(
+                                        tool_call.id.clone(),
+                                        tool_call.name.clone(),
+                                        err_output.clone(),
+                                    ));
+                                    turn_tool_results.push(crate::agent::types::ToolResult {
+                                        tool_id: tool_call.id.clone(),
+                                        tool_name: tool_call.name.clone(),
+                                        success: false,
+                                        output: err_output,
+                                        display_output: String::new(),
+                                        duration_ms: 0,
+                                    });
+                                    continue;
+                                }
+
                                 if !self.interactive_approvals {
                                     // Non-interactive / headless auto-resolve
                                     let auto_resp = request.auto_resolve_defaults();
@@ -2923,7 +2959,15 @@ mod inquiry_tests {
                 name: "ask_user".into(),
                 arguments: serde_json::json!({
                     "title": "Choose stack",
-                    "questions": []
+                    "questions": [
+                        {
+                            "id": "stack",
+                            "question": "Which stack?",
+                            "options": [
+                                { "id": "react", "label": "React" }
+                            ]
+                        }
+                    ]
                 }),
             },
             spent: std::sync::atomic::AtomicBool::new(false),
@@ -3026,6 +3070,42 @@ mod inquiry_tests {
 
         // Registry should be empty
         assert!(inq_reg.lock().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_inquiry_empty_questions_fails_fast() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_inq_empty_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(TestToolCallProvider {
+            call: ToolCall {
+                id: "call_inq_empty".into(),
+                name: "ask_user".into(),
+                arguments: serde_json::json!({
+                    "title": "Empty Questions Inquiry",
+                    "questions": []
+                }),
+            },
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        agent_loop.set_interactive_approvals(true);
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let turn = agent_loop
+            .execute_turn("test empty inquiry", tx, None)
+            .await
+            .expect("turn completes");
+
+        assert_eq!(turn.tool_results.len(), 1);
+        assert!(!turn.tool_results[0].success);
+        assert!(turn.tool_results[0]
+            .output
+            .contains("requires at least one question"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
