@@ -103,15 +103,24 @@ impl BrowserInteractor {
         Ok(format!("{}{}", confirmation, report))
     }
 
+    /// Builds the Chrome CDP evaluation script for viewport scrolling
+    pub fn build_scroll_js(direction: &str) -> &'static str {
+        match direction.to_lowercase().as_str() {
+            "up" | "pageup" => {
+                "(() => { window.scrollBy(0, -window.innerHeight * 0.75); return 'scrolled_up'; })()"
+            }
+            "down" | "pagedown" => {
+                "(() => { window.scrollBy(0, window.innerHeight * 0.75); return 'scrolled_down'; })()"
+            }
+            "top" => "(() => { window.scrollTo(0, 0); return 'scrolled_top'; })()",
+            "bottom" => "(() => { window.scrollTo(0, document.body.scrollHeight); return 'scrolled_bottom'; })()",
+            _ => "(() => { window.scrollBy(0, 500); return 'scrolled_down'; })()",
+        }
+    }
+
     /// Scrolls the viewport in the specified direction ("up", "down", "top", "bottom")
     pub async fn scroll_page(cdp: &CdpClient, direction: &str) -> Result<String> {
-        let scroll_js = match direction.to_lowercase().as_str() {
-            "up" | "pageup" => "window.scrollBy(0, -window.innerHeight * 0.75); 'scrolled_up'",
-            "down" | "pagedown" => "window.scrollBy(0, window.innerHeight * 0.75); 'scrolled_down'",
-            "top" => "window.scrollTo(0, 0); 'scrolled_top'",
-            "bottom" => "window.scrollTo(0, document.body.scrollHeight); 'scrolled_bottom'",
-            _ => "window.scrollBy(0, 500); 'scrolled_down'",
-        };
+        let scroll_js = Self::build_scroll_js(direction);
 
         cdp.evaluate_js(scroll_js).await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -214,4 +223,19 @@ fn format_updated_tree(revision: u32, elements: &[AriaElement]) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scroll_js_is_valid_iife() {
+        for dir in &["up", "down", "top", "bottom", "pageup", "pagedown", "other"] {
+            let js = BrowserInteractor::build_scroll_js(dir);
+            assert!(js.starts_with("(() => {"));
+            assert!(js.ends_with("})()"));
+            assert!(js.contains("return 'scrolled_"));
+        }
+    }
 }

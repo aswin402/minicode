@@ -219,17 +219,16 @@ impl WorkingMemory {
         // Also synchronize with canonical `todo.md` if minikit docs are active
         let todo_path = self.canonical_todo_path();
         if let Some(parent) = todo_path.parent() {
-            if parent.exists() {
-                let mut todo_content = format!(
-                    "# Tasks & Todo: {}\n\n> Initialized: {}\n\n",
-                    title, timestamp
-                );
-                for step in steps {
-                    let clean = Self::sanitize_step_title(step);
-                    todo_content.push_str(&format!("- [ ] {}\n", clean));
-                }
-                let _ = fs::write(&todo_path, todo_content);
+            let _ = fs::create_dir_all(parent);
+            let mut todo_content = format!(
+                "# Tasks & Todo: {}\n\n> Initialized: {}\n\n",
+                title, timestamp
+            );
+            for (idx, step) in steps.iter().enumerate() {
+                let clean = Self::sanitize_step_title(step);
+                todo_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
             }
+            let _ = fs::write(&todo_path, todo_content);
         }
 
         let initial_progress = format!(
@@ -518,18 +517,47 @@ impl WorkingMemory {
         file.write_all(entry.as_bytes())
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        let is_done = status.eq_ignore_ascii_case("completed")
-            || status.eq_ignore_ascii_case("done")
-            || status.eq_ignore_ascii_case("closed");
-        let is_active = status.eq_ignore_ascii_case("in_progress")
-            || status.eq_ignore_ascii_case("active")
-            || status.eq_ignore_ascii_case("started");
-        let is_pending = status.eq_ignore_ascii_case("pending")
-            || status.eq_ignore_ascii_case("todo")
-            || status.eq_ignore_ascii_case("reset");
+        let status_clean = status
+            .trim()
+            .to_ascii_lowercase()
+            .replace([' ', '-', '_'], "");
+        let (is_done, is_active, is_pending) = match status_clean.as_str() {
+            "completed" | "complete" | "done" | "closed" | "finished" | "resolved" | "success"
+            | "pass" | "passed" | "x" | "check" => (true, false, false),
+            "inprogress" | "active" | "started" | "running" | "wip" | "doing" | "current" | ">"
+            | "/" => (false, true, false),
+            "pending" | "todo" | "open" | "queued" | "reset" | "unstarted" | "backlog" | " " => {
+                (false, false, true)
+            }
+            other => {
+                if other.starts_with("complete")
+                    || other.starts_with("done")
+                    || other.starts_with("finish")
+                {
+                    (true, false, false)
+                } else if other.starts_with("inprog")
+                    || other.starts_with("active")
+                    || other.starts_with("start")
+                    || other.starts_with("work")
+                {
+                    (false, true, false)
+                } else if other.starts_with("pend")
+                    || other.starts_with("todo")
+                    || other.starts_with("queue")
+                {
+                    (false, false, true)
+                } else {
+                    return Err(ContextError::Memory(format!(
+                        "Invalid task status '{}'. Supported: completed, in_progress, pending",
+                        status
+                    ))
+                    .into());
+                }
+            }
+        };
 
         let step_trimmed = step.trim();
-        // Check for numeric index: "1", "2", or "step 1", "task 1", "step #1"
+        // Check for numeric index: "1", "2", or "step 1", "task 1", "step #1", "10.", "10. Test and verify...", "10: ..."
         let target_index: Option<usize> = if let Ok(n) = step_trimmed.parse::<usize>() {
             Some(n)
         } else {
@@ -539,9 +567,28 @@ impl WorkingMemory {
                 .or_else(|| lower.strip_prefix("task"))
             {
                 let num_str = rest.trim().trim_start_matches('#').trim();
-                num_str.parse::<usize>().ok()
+                let digits: String = num_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+                digits.parse::<usize>().ok()
             } else {
-                None
+                let digits: String = step_trimmed
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !digits.is_empty() {
+                    let remainder = &step_trimmed[digits.len()..];
+                    if remainder.starts_with('.')
+                        || remainder.starts_with(')')
+                        || remainder.starts_with(':')
+                        || remainder.starts_with('-')
+                        || remainder.starts_with(' ')
+                    {
+                        digits.parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
         };
 
@@ -598,6 +645,21 @@ impl WorkingMemory {
                     .position(|(_, item)| {
                         let item_title = item.title.to_ascii_lowercase();
                         item_title.contains(&clean_needle) || clean_needle.contains(&item_title)
+                    })
+                    .or_else(|| {
+                        // Word-overlap / token similarity match if substring didn't match directly
+                        let needle_words: std::collections::HashSet<&str> =
+                            clean_needle.split_whitespace().collect();
+                        if needle_words.is_empty() {
+                            return None;
+                        }
+                        parsed_items.iter().position(|(_, item)| {
+                            let title_lower = item.title.to_ascii_lowercase();
+                            let item_words: std::collections::HashSet<&str> =
+                                title_lower.split_whitespace().collect();
+                            let common = needle_words.intersection(&item_words).count();
+                            common * 2 >= needle_words.len()
+                        })
                     })
                     .or_else(|| {
                         parsed_items.iter().position(|(l_idx, _)| {
@@ -1135,6 +1197,60 @@ mod tests {
         assert!(err.is_err());
         let err_msg = err.unwrap_err().to_string();
         assert!(err_msg.contains("No matching task step found"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_update_progress_space_normalization_and_leading_index() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_norm_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Research components".to_string(),
+            "Set up structure".to_string(),
+            "Build navbar".to_string(),
+            "Build hero".to_string(),
+            "Build features".to_string(),
+            "Build pricing".to_string(),
+            "Build testimonials".to_string(),
+            "Build contact".to_string(),
+            "Add footer".to_string(),
+            "Test and verify all components render correctly".to_string(),
+        ];
+        wm.init_plan("NovaCode Landing", &steps).unwrap();
+
+        // Verify canonical todo.md was created in minikit_docs/core/todo.md
+        let canonical_todo = temp_dir.join("minikit_docs").join("core").join("todo.md");
+        assert!(canonical_todo.exists());
+
+        // 1. Update with status "In Progress" (with space) on "10. Test and verify all components render correctly"
+        wm.update_progress(
+            "10. Test and verify all components render correctly",
+            "In Progress",
+        )
+        .unwrap();
+
+        let tasks = wm.read_parsed_tasks();
+        assert_eq!(tasks.len(), 10);
+        assert_eq!(tasks[9].status, TaskItemStatus::InProgress);
+
+        // 2. Update with status "Completed"
+        wm.update_progress(
+            "10. Test and verify all components render correctly",
+            "Completed",
+        )
+        .unwrap();
+        let tasks2 = wm.read_parsed_tasks();
+        assert_eq!(tasks2[9].status, TaskItemStatus::Completed);
+
+        // 3. Test invalid status produces clear error
+        let err = wm.update_progress("1", "unknown_bogus_status");
+        assert!(err.is_err());
+        let err_msg = err.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid task status"));
 
         fs::remove_dir_all(temp_dir).ok();
     }
