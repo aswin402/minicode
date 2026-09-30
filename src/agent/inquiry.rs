@@ -86,12 +86,36 @@ impl InquiryRequest {
             let mut selected = Vec::new();
             let mut custom = None;
 
-            if let Some(rec) = q.options.iter().find(|o| o.recommended) {
+            if q.is_multi_select {
+                let recs: Vec<String> = q
+                    .options
+                    .iter()
+                    .filter(|o| o.recommended)
+                    .map(|o| o.id.clone())
+                    .collect();
+                if !recs.is_empty() {
+                    selected = recs;
+                } else if let Some(def) = &q.default_value {
+                    if q.options.iter().any(|o| &o.id == def) {
+                        selected.push(def.clone());
+                    } else {
+                        custom = Some(def.clone());
+                    }
+                } else if let Some(first) = q.options.first() {
+                    selected.push(first.id.clone());
+                } else {
+                    custom = Some("(default: not specified)".to_string());
+                }
+            } else if let Some(rec) = q.options.iter().find(|o| o.recommended) {
                 selected.push(rec.id.clone());
+            } else if let Some(def) = &q.default_value {
+                if q.options.iter().any(|o| &o.id == def) {
+                    selected.push(def.clone());
+                } else {
+                    custom = Some(def.clone());
+                }
             } else if let Some(first) = q.options.first() {
                 selected.push(first.id.clone());
-            } else if let Some(def) = &q.default_value {
-                custom = Some(def.clone());
             } else {
                 custom = Some("(default: not specified)".to_string());
             }
@@ -163,8 +187,7 @@ pub struct InquiryResponse {
 
 impl InquiryResponse {
     /// Formats the response as a JSON string for tool output.
-    #[allow(clippy::wrong_self_convention)]
-    pub fn into_tool_output(&self) -> String {
+    pub fn to_tool_output(&self) -> String {
         if self.cancelled {
             return serde_json::json!({
                 "status": "cancelled",
@@ -190,6 +213,11 @@ impl InquiryResponse {
             "answers": map
         })
         .to_string()
+    }
+
+    /// Backwards-compatible alias for `to_tool_output`.
+    pub fn into_tool_output(&self) -> String {
+        self.to_tool_output()
     }
 }
 
@@ -246,9 +274,111 @@ mod tests {
         );
 
         // Output JSON serialization
-        let output_json = auto_response.into_tool_output();
+        let output_json = auto_response.to_tool_output();
         assert!(output_json.contains("\"status\":\"answered\""));
         assert!(output_json.contains("\"framework\""));
+    }
+
+    #[test]
+    fn test_inquiry_default_value_and_multiselect_resolution() {
+        let q_default = InquiryQuestion {
+            id: "db".to_string(),
+            question: "Pick database".to_string(),
+            header: None,
+            input_type: InquiryInputType::Choice,
+            is_multi_select: false,
+            allow_custom: false,
+            placeholder: None,
+            default_value: Some("sqlite".to_string()),
+            options: vec![
+                InquiryOption {
+                    id: "postgres".to_string(),
+                    label: "PostgreSQL".to_string(),
+                    description: None,
+                    recommended: false,
+                },
+                InquiryOption {
+                    id: "sqlite".to_string(),
+                    label: "SQLite".to_string(),
+                    description: None,
+                    recommended: false,
+                },
+            ],
+        };
+
+        let q_multi = InquiryQuestion {
+            id: "features".to_string(),
+            question: "Pick features".to_string(),
+            header: None,
+            input_type: InquiryInputType::Choice,
+            is_multi_select: true,
+            allow_custom: false,
+            placeholder: None,
+            default_value: None,
+            options: vec![
+                InquiryOption {
+                    id: "auth".to_string(),
+                    label: "Auth".to_string(),
+                    description: None,
+                    recommended: true,
+                },
+                InquiryOption {
+                    id: "logging".to_string(),
+                    label: "Logging".to_string(),
+                    description: None,
+                    recommended: true,
+                },
+                InquiryOption {
+                    id: "billing".to_string(),
+                    label: "Billing".to_string(),
+                    description: None,
+                    recommended: false,
+                },
+            ],
+        };
+
+        let req = InquiryRequest {
+            inquiry_id: "inq-priority".to_string(),
+            title: "Setup".to_string(),
+            description: None,
+            questions: vec![q_default, q_multi],
+        };
+
+        let resp = req.auto_resolve_defaults();
+        assert_eq!(resp.answers[0].selected_options, vec!["sqlite".to_string()]);
+        assert_eq!(
+            resp.answers[1].selected_options,
+            vec!["auth".to_string(), "logging".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_serde_roundtrip_for_inquiry_models() {
+        let json_input = r#"{
+            "inquiry_id": "req-99",
+            "title": "API Key Prompt",
+            "description": "Enter your key",
+            "questions": [
+                {
+                    "id": "key",
+                    "question": "Enter Anthropic API key",
+                    "header": "Auth",
+                    "input_type": "secret",
+                    "is_multi_select": false,
+                    "allow_custom": false,
+                    "placeholder": "sk-ant-...",
+                    "options": []
+                }
+            ]
+        }"#;
+
+        let parsed: InquiryRequest = serde_json::from_str(json_input).expect("Must parse valid JSON");
+        assert_eq!(parsed.inquiry_id, "req-99");
+        assert_eq!(parsed.questions[0].input_type, InquiryInputType::Secret);
+
+        let serialized = serde_json::to_string(&parsed).expect("Must serialize");
+        let parsed_again: InquiryRequest = serde_json::from_str(&serialized).expect("Must roundtrip");
+        assert_eq!(parsed, parsed_again);
     }
 
     #[test]
