@@ -118,6 +118,28 @@ impl InquiryModalState {
         }
     }
 
+    pub fn cursor_left(&mut self) {
+        if self.custom_cursor > 0 && self.custom_cursor <= self.custom_input_buffer.len() {
+            if let Some((idx, _)) = self.custom_input_buffer[..self.custom_cursor]
+                .char_indices()
+                .last()
+            {
+                self.custom_cursor = idx;
+            }
+        }
+    }
+
+    pub fn cursor_right(&mut self) {
+        if self.custom_cursor < self.custom_input_buffer.len() {
+            if let Some((idx, c)) = self.custom_input_buffer[self.custom_cursor..]
+                .char_indices()
+                .next()
+            {
+                self.custom_cursor += idx + c.len_utf8();
+            }
+        }
+    }
+
     pub fn confirm_selection(&mut self) -> Option<InquiryResponse> {
         let q = match self.current_question() {
             Some(q) => q.clone(),
@@ -419,8 +441,13 @@ pub fn render_inquiry_modal(
             } else {
                 "Enter Custom Answer"
             };
+            let box_width = (inner.width as usize)
+                .saturating_sub(2)
+                .min(52)
+                .max(input_title.len() + 6);
+            let top_fill = box_width.saturating_sub(input_title.len() + 5);
             lines.push(Line::from(Span::styled(
-                format!("┌─ {} ───────────────────────┐", input_title),
+                format!("┌─ {} {}┐", input_title, "─".repeat(top_fill)),
                 Style::default().fg(theme.info),
             )));
 
@@ -450,7 +477,7 @@ pub fn render_inquiry_modal(
                 Span::styled(" █", Style::default().fg(theme.highlight)),
             ]));
             lines.push(Line::from(Span::styled(
-                "└──────────────────────────────────────────────┘",
+                format!("└{}┘", "─".repeat(box_width.saturating_sub(2))),
                 Style::default().fg(theme.info),
             )));
         }
@@ -723,5 +750,34 @@ mod tests {
                 render_inquiry_modal(f, &state_typing, &theme, area);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn test_cursor_navigation_in_buffer() {
+        let req = dummy_request();
+        let mut state = InquiryModalState::from_request(1, "tool-cursor", req);
+        state.is_typing_custom = true;
+        state.handle_char('a');
+        state.handle_char('b');
+        state.handle_char('c');
+        assert_eq!(state.custom_cursor, 3);
+
+        state.cursor_left();
+        assert_eq!(state.custom_cursor, 2);
+        state.cursor_left();
+        assert_eq!(state.custom_cursor, 1);
+        state.cursor_left();
+        assert_eq!(state.custom_cursor, 0);
+        state.cursor_left(); // bounded
+        assert_eq!(state.custom_cursor, 0);
+
+        state.cursor_right();
+        assert_eq!(state.custom_cursor, 1);
+        state.cursor_right();
+        assert_eq!(state.custom_cursor, 2);
+        state.cursor_right();
+        assert_eq!(state.custom_cursor, 3);
+        state.cursor_right(); // bounded
+        assert_eq!(state.custom_cursor, 3);
     }
 }

@@ -1451,17 +1451,28 @@ impl<'a> App<'a> {
                         inq_state.next_option();
                     }
                 }
+                KeyCode::Left => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_left();
+                    }
+                }
+                KeyCode::Right => {
+                    if inq_state.is_typing_custom {
+                        inq_state.cursor_right();
+                    }
+                }
                 KeyCode::Char(c) => {
                     if inq_state.is_typing_custom {
                         inq_state.handle_char(c);
                     } else if ('1'..='9').contains(&c) {
                         let num = (c as u8 - b'1') as usize;
-                        if num < inq_state.total_options_count() {
+                        let (is_multi, options_len) = inq_state
+                            .current_question()
+                            .map(|q| (q.is_multi_select, q.options.len()))
+                            .unwrap_or((false, 0));
+                        if num < options_len {
                             inq_state.selected_option_idx = num;
-                            if inq_state
-                                .current_question()
-                                .is_some_and(|q| q.is_multi_select)
-                            {
+                            if is_multi {
                                 inq_state.toggle_multi();
                             } else if let Some(resp) = inq_state.confirm_selection() {
                                 let tid = inq_state.tool_id.clone();
