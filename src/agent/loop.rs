@@ -1908,10 +1908,15 @@ impl AgentLoop {
                         let wm = crate::context::working_memory::WorkingMemory::new(
                             &self.workspace_root,
                         );
-                        if let Some(active_task) = wm.read_parsed_tasks().into_iter().find(|t| {
-                            t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
-                        }) {
-                            let _ = wm.update_progress(&active_task.title, "completed");
+                        let tasks = wm.read_parsed_tasks();
+                        let target_task = tasks
+                            .iter()
+                            .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
+                            .or_else(|| {
+                                tasks.iter().find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::Pending)
+                            });
+                        if let Some(task) = target_task {
+                            let _ = wm.update_progress(&task.title, "completed");
                         }
                         self.emit_current_plan(Some(turn_id), &event_sender);
 

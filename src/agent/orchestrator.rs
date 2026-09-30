@@ -587,6 +587,29 @@ impl WorkflowRouter {
                 && crate::utils::has_word(&lower, "milestones"))
             || crate::utils::has_word(&lower, "tdd")
             || crate::utils::has_word(&lower, "milestone")
+            || lower.contains("make a website")
+            || lower.contains("make website")
+            || lower.contains("create a website")
+            || lower.contains("create website")
+            || lower.contains("build a website")
+            || lower.contains("build website")
+            || lower.contains("make a portfolio")
+            || lower.contains("make portfolio")
+            || lower.contains("create a portfolio")
+            || lower.contains("create portfolio")
+            || lower.contains("build a portfolio")
+            || lower.contains("build portfolio")
+            || lower.contains("detailed plan")
+            || lower.contains("create app")
+            || lower.contains("make app")
+            || ((crate::utils::has_word(&lower, "create")
+                || crate::utils::has_word(&lower, "make")
+                || crate::utils::has_word(&lower, "build"))
+                && (crate::utils::has_word(&lower, "website")
+                    || crate::utils::has_word(&lower, "portfolio")
+                    || crate::utils::has_word(&lower, "webapp")
+                    || crate::utils::has_word(&lower, "project")
+                    || crate::utils::has_word(&lower, "application")))
         {
             return WorkflowArchetype::MultiPhaseEngineering;
         }
@@ -682,6 +705,7 @@ impl WorkflowRouter {
         base_enrichment
     }
 
+    #[allow(dead_code)]
     fn is_empty_workspace(workspace: &Path) -> bool {
         let Ok(entries) = std::fs::read_dir(workspace) else {
             return false;
@@ -788,13 +812,17 @@ impl WorkflowRouter {
         out.push_str("    Decompose frontend applications into separate modular files (`index.html`, `styles.css`, `app.js` or components) from turn 1.\n");
 
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
-        if !core_dir.exists() && Self::is_empty_workspace(workspace_root) {
+        if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
             out.push_str("  • Bootstrap & Scaffolding Invariant:\n");
-            out.push_str("    This workspace is empty. Run `kit_sync` or ensure `minikit_docs/core/` (prd.md, design.md, todo.md) is initialized to anchor architecture and tasks before writing code.\n");
+            out.push_str("    Task plan is missing. Run `kit_sync` or `create_plan` to initialize `minikit_docs/core/todo.md` (with prd.md, design.md) to anchor architecture and tasks before modifying code.\n");
         }
 
+        out.push_str("  • UI Component Warehouse Invariant:\n");
+        out.push_str("    ALWAYS query MiniBlocks (`block_search`, `block_palettes`) BEFORE creating UI components or themes from scratch.\n");
+        out.push_str("    Use `block_insert` or `block_scaffold` to insert verified, production-grade components into the project rather than hand-coding JSX/TSX from scratch.\n");
+
         out.push_str("  • Development Server Invariant:\n");
-        out.push_str("    To run and test the web application (e.g. `python3 -m http.server 8080 &`), use `exec_cmd` or `minitask(action=\"start\")`.\n");
+        out.push_str("    To run and test the web application, use `minitask(action=\"start\")` or `exec_cmd`. Do NOT launch multiple competing servers. Cleanly close test servers and browser sessions when finished.\n");
 
         out.push_str("</recommended_miniblocks>");
         Some(out)
@@ -967,6 +995,17 @@ impl WorkflowRouter {
         out.push_str(
             "  6. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd`.\n",
         );
+
+        let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
+        if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
+            out.push_str(&format!(
+                "  • Bootstrap Invariant: Run `kit_sync` or `create_plan` to initialize `{}/core/todo.md` and anchor milestones before creating source files.\n",
+                docs_name
+            ));
+        }
+        out.push_str("  • UI Invariant: For frontend/UI tasks, query MiniBlocks (`block_search`, `block_palettes`) before writing components from scratch.\n");
+        out.push_str("  • Plan Progress Invariant: Update tasks via `update_progress` as you complete each milestone to keep the Live Execution Plan in sync.\n");
+
         out.push_str("</autonomous_engineering_guidance>");
         Some(out)
     }
@@ -1198,6 +1237,18 @@ mod tests {
             WorkflowRouter::classify(
                 "Refactor the database architecture layer with acceptance criteria"
             ),
+            WorkflowArchetype::MultiPhaseEngineering
+        );
+        assert_eq!(
+            WorkflowRouter::classify("make an website for syed and give detailed plan"),
+            WorkflowArchetype::MultiPhaseEngineering
+        );
+        assert_eq!(
+            WorkflowRouter::classify("create a portfolio website for my projects"),
+            WorkflowArchetype::MultiPhaseEngineering
+        );
+        assert_eq!(
+            WorkflowRouter::classify("build a website with vite and react"),
             WorkflowArchetype::MultiPhaseEngineering
         );
     }

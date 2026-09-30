@@ -190,6 +190,51 @@ impl MiniDevRegistry {
         workspace_root: &Path,
         req: SpawnDevRequest,
     ) -> Result<DevProcessSummary> {
+        // Singleton Frontend Dev Server Invariant:
+        // A single workspace directory should only run one active frontend development server at a time.
+        // If an active frontend server already exists in the same target directory, terminate the previous
+        // server first to prevent orphan zombie cascades and port collisions.
+        if req.process_type == DevProcessType::Frontend {
+            let target_dir = req
+                .working_dir
+                .as_ref()
+                .map(|p| workspace_root.join(p))
+                .unwrap_or_else(|| workspace_root.to_path_buf());
+
+            let mut to_terminate = Vec::new();
+            {
+                let lock = self.processes.read().await;
+                for (id, handle) in lock.iter() {
+                    if handle.process_type == DevProcessType::Frontend
+                        && handle.working_dir == target_dir
+                        && handle.status.read().await.is_alive()
+                    {
+                        to_terminate.push((id.clone(), Arc::clone(handle)));
+                    }
+                }
+            }
+
+            for (old_id, old_handle) in to_terminate {
+                tracing::info!(
+                    id = %old_id,
+                    dir = %target_dir.display(),
+                    "Replacing existing frontend dev server with new instance"
+                );
+                let _ = old_handle.terminate().await;
+                if let Ok(mut set) = self.active_pgids.lock() {
+                    set.remove(&old_handle.pgid());
+                }
+                if let Ok(mut set) = self.active_pids.lock() {
+                    set.remove(&old_handle.pid());
+                }
+                let _ = self.cached_active_count.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |v| Some(v.saturating_sub(1)),
+                );
+            }
+        }
+
         let is_docker =
             req.process_type == DevProcessType::Docker || req.command.contains("docker run");
         let handle = spawn_process_group(workspace_root, req).await?;

@@ -84,6 +84,18 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
   - **Starting Services & Schedules**: Use `minitask(action="start", command="...", port=...)` or `exec_cmd` to launch local servers, and `minitask(action="schedule", command="...", interval_seconds=...)` for recurring watchers, periodic tasks, or one-shot timers.
   - **Inspecting & Reporting Live Status**: When the user asks "what's happening", "what is running", "how are background processes doing", or checks service status, inspect the live `<active_dev_services>` pre-turn context or call `minitask(action="list")` / `minitask(action="status")` / `minitask(action="resources")` to answer accurately with live telemetry and logs.
   - **Stopping & Killing Services**: When the user says "stop that", "kill that", "kill the server", "close the browser", or "stop website", you MUST autonomously terminate the running services using `minitask(action="stop", id="...")` (or `minitask(action="kill_all")`) AND close any active browser session with `browser_close`. Never leave orphaned web servers or open browser windows running when the user has asked to stop.
+- **Plan Execution & Live Progress Tracking Invariant**:
+  - When working on multi-step tasks or milestones:
+    - As you complete each step, ALWAYS update the task state using `update_progress(step="1", status="completed")` (or pass the step title, or `step="active"`).
+    - Alternatively, update `minikit_docs/core/todo.md` directly by changing `- [ ]` to `- [x]`.
+    - Never conclude a turn without advancing completed tasks. Keeping the plan updated synchronizes the live TUI execution plan and displays actual progress to the user.
+- **Dev Server Singleton & Browser Lifecycle Invariant**:
+  - **Singleton Dev Server**: A project workspace must run at most ONE active frontend development server at a time. Do not spawn multiple competing servers on different ports. If switching commands or ports, terminate the existing server first with `minitask(action="stop")`.
+  - **Ephemeral Verification Teardown**: When you launch a browser session (`browser_navigate`, `browser_snapshot`) or dev server solely for testing or visual inspection, cleanly close the browser with `browser_close` and terminate ephemeral test servers when verification is finished. Never leak orphan browser windows or background servers across turns.
+- **Static vs Dynamic File Serving Invariant**:
+  - When testing or serving frontend applications (Vite, React, Vue, Svelte):
+    - NEVER run `python3 -m http.server` directly against the uncompiled source root containing raw `.tsx`, `.jsx`, or `.ts` files! Browsers cannot execute raw TypeScript/JSX and will display a blank white page or fail to load.
+    - Always run the project's native dev server (`npm run dev` or `npm run preview`), OR compile first (`npm run build`) and point the static file server specifically to the compiled distribution directory (e.g. `dist/` or `build/`).
 - **Interactive User Clarification & Structured Inquiry (`ask_user`)**:
   <interactive_inquiry>
   When a user prompt or task is broad, underspecified, or has multiple viable architectures, stacks, frameworks, themes, or design patterns (e.g. "make a website", "add auth", "create a dashboard"), or when configuration credentials (API keys, connection strings, auth tokens) are needed:

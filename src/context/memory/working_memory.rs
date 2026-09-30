@@ -170,6 +170,33 @@ impl WorkingMemory {
         }
     }
 
+    /// Strips leading numbers, markdown bullets, and checkbox brackets from a task step string.
+    pub fn sanitize_step_title(raw: &str) -> String {
+        let mut s = raw.trim();
+        // Strip leading list numbering like "1. ", "2) ", "10. "
+        if let Some(pos) = s.find(['.', ')']) {
+            if s[..pos].chars().all(|c| c.is_ascii_digit()) && pos + 1 < s.len() {
+                s = s[pos + 1..].trim();
+            }
+        }
+        // Strip markdown bullets
+        s = s.trim_start_matches(['-', '*', '+', ' ']);
+        // Strip brackets like "[ ] ", "[>] ", "[x] ", "[X] ", "[/] "
+        for marker in &["[ ]", "[>]", "[/]", "[x]", "[X]"] {
+            if s.starts_with(marker) {
+                s = s[marker.len()..].trim();
+                break;
+            }
+        }
+        // Secondary pass for nested redundant numbers e.g. "1. [ ] 1. Task"
+        if let Some(pos) = s.find(['.', ')']) {
+            if s[..pos].chars().all(|c| c.is_ascii_digit()) && pos + 1 < s.len() {
+                s = s[pos + 1..].trim();
+            }
+        }
+        s.trim().to_string()
+    }
+
     /// Initializes a new task plan with structured steps.
     pub fn init_plan(&self, title: &str, steps: &[String]) -> Result<()> {
         let dir = self.plan_dir();
@@ -182,7 +209,8 @@ impl WorkingMemory {
             title, timestamp
         );
         for (idx, step) in steps.iter().enumerate() {
-            plan_content.push_str(&format!("{}. [ ] {}\n", idx + 1, step));
+            let clean = Self::sanitize_step_title(step);
+            plan_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
         }
 
         fs::write(self.task_plan_path(), &plan_content)
@@ -197,7 +225,8 @@ impl WorkingMemory {
                     title, timestamp
                 );
                 for step in steps {
-                    todo_content.push_str(&format!("- [ ] {}\n", step));
+                    let clean = Self::sanitize_step_title(step);
+                    todo_content.push_str(&format!("- [ ] {}\n", clean));
                 }
                 let _ = fs::write(&todo_path, todo_content);
             }
@@ -250,55 +279,42 @@ impl WorkingMemory {
 
     /// Parses a single task line into a TaskItem if it contains a task marker.
     pub fn parse_task_line(idx: usize, trimmed: &str) -> Option<TaskItem> {
-        if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
-            let title = trimmed[5..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::Completed,
-                title,
-            })
-        } else if trimmed.starts_with("- [>]")
-            || trimmed.starts_with("* [>]")
-            || trimmed.starts_with("- [/]")
-            || trimmed.starts_with("* [/]")
-        {
-            let title = trimmed[5..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::InProgress,
-                title,
-            })
-        } else if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
-            let title = trimmed[5..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::Pending,
-                title,
-            })
-        } else if let Some(bracket) = trimmed.find("[ ]") {
-            let title = trimmed[bracket + 3..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::Pending,
-                title,
-            })
-        } else if let Some(bracket) = trimmed.find("[>]").or_else(|| trimmed.find("[/]")) {
-            let title = trimmed[bracket + 3..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::InProgress,
-                title,
-            })
-        } else if let Some(bracket) = trimmed.find("[x]") {
-            let title = trimmed[bracket + 3..].trim().to_string();
-            Some(TaskItem {
-                line_index: idx,
-                status: TaskItemStatus::Completed,
-                title,
-            })
-        } else {
-            None
+        let markers = [
+            ("[x]", TaskItemStatus::Completed),
+            ("[X]", TaskItemStatus::Completed),
+            ("[>]", TaskItemStatus::InProgress),
+            ("[/]", TaskItemStatus::InProgress),
+            ("[ ]", TaskItemStatus::Pending),
+        ];
+
+        for (marker, status) in markers {
+            if let Some(pos) = trimmed.find(marker) {
+                let prefix = &trimmed[..pos];
+                // Prefix must be a list marker: e.g. "", "-", "*", "+", "1.", "1)", or whitespace
+                let is_valid_prefix = prefix.chars().all(|c| {
+                    c.is_ascii_whitespace()
+                        || c.is_ascii_digit()
+                        || c == '-'
+                        || c == '*'
+                        || c == '+'
+                        || c == '.'
+                        || c == ')'
+                });
+
+                if is_valid_prefix {
+                    let raw_title = &trimmed[pos + marker.len()..];
+                    let clean_title = Self::sanitize_step_title(raw_title);
+                    if !clean_title.is_empty() {
+                        return Some(TaskItem {
+                            line_index: idx,
+                            status,
+                            title: clean_title,
+                        });
+                    }
+                }
+            }
         }
+        None
     }
 
     /// Parses all discrete task items from the active plan.
@@ -484,6 +500,8 @@ impl WorkingMemory {
     }
 
     /// Updates the progress status of a task step in both `task_plan.md` and `todo.md`.
+    /// Supports step selection by 1-based index (e.g. "1", "step 1"), special keywords ("active", "current", "next"),
+    /// or title substring. Automatically promotes the next pending task to InProgress when a task is completed.
     pub fn update_progress(&self, step: &str, status: &str) -> Result<()> {
         let dir = self.plan_dir();
         fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
@@ -500,51 +518,197 @@ impl WorkingMemory {
         file.write_all(entry.as_bytes())
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        let is_done =
-            status.eq_ignore_ascii_case("completed") || status.eq_ignore_ascii_case("done");
-        let is_active =
-            status.eq_ignore_ascii_case("in_progress") || status.eq_ignore_ascii_case("active");
+        let is_done = status.eq_ignore_ascii_case("completed")
+            || status.eq_ignore_ascii_case("done")
+            || status.eq_ignore_ascii_case("closed");
+        let is_active = status.eq_ignore_ascii_case("in_progress")
+            || status.eq_ignore_ascii_case("active")
+            || status.eq_ignore_ascii_case("started");
+        let is_pending = status.eq_ignore_ascii_case("pending")
+            || status.eq_ignore_ascii_case("todo")
+            || status.eq_ignore_ascii_case("reset");
 
         let step_trimmed = step.trim();
+        // Check for numeric index: "1", "2", or "step 1", "task 1", "step #1"
+        let target_index: Option<usize> = if let Ok(n) = step_trimmed.parse::<usize>() {
+            Some(n)
+        } else {
+            let lower = step_trimmed.to_ascii_lowercase();
+            if let Some(rest) = lower
+                .strip_prefix("step")
+                .or_else(|| lower.strip_prefix("task"))
+            {
+                let num_str = rest.trim().trim_start_matches('#').trim();
+                num_str.parse::<usize>().ok()
+            } else {
+                None
+            }
+        };
+
+        let is_target_active = step_trimmed.eq_ignore_ascii_case("active")
+            || step_trimmed.eq_ignore_ascii_case("current");
+        let is_target_next = step_trimmed.eq_ignore_ascii_case("next");
+        let clean_needle = Self::sanitize_step_title(step_trimmed).to_ascii_lowercase();
 
         // Helper to update a target markdown plan file
-        let update_file = |path: &Path| {
+        let update_file = |path: &Path| -> bool {
             if !path.exists() {
-                return;
+                return false;
             }
-            if let Ok(content) = fs::read_to_string(path) {
-                let mut updated_lines = Vec::new();
-                let mut modified = false;
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if !modified && trimmed.contains(step_trimmed) {
-                        if is_done {
-                            if trimmed.contains("[ ]") {
-                                updated_lines.push(line.replacen("[ ]", "[x]", 1));
-                                modified = true;
-                                continue;
-                            } else if trimmed.contains("[>]") {
-                                updated_lines.push(line.replacen("[>]", "[x]", 1));
-                                modified = true;
-                                continue;
-                            }
-                        } else if is_active && trimmed.contains("[ ]") {
+            let Ok(content) = fs::read_to_string(path) else {
+                return false;
+            };
+
+            // First pass: identify all parsed task items with their line indices
+            let mut parsed_items = Vec::new();
+            for (line_idx, line) in content.lines().enumerate() {
+                if let Some(item) = Self::parse_task_line(line_idx, line.trim()) {
+                    parsed_items.push((line_idx, item));
+                }
+            }
+
+            if parsed_items.is_empty() {
+                return false;
+            }
+
+            // Determine matching item index in parsed_items
+            let matched_idx = if let Some(idx) = target_index {
+                if idx >= 1 && idx <= parsed_items.len() {
+                    Some(idx - 1)
+                } else {
+                    None
+                }
+            } else if is_target_active {
+                parsed_items
+                    .iter()
+                    .position(|(_, item)| item.status == TaskItemStatus::InProgress)
+                    .or_else(|| {
+                        parsed_items
+                            .iter()
+                            .position(|(_, item)| item.status == TaskItemStatus::Pending)
+                    })
+            } else if is_target_next {
+                parsed_items
+                    .iter()
+                    .position(|(_, item)| item.status == TaskItemStatus::Pending)
+            } else {
+                // Match by title substring or line substring
+                parsed_items
+                    .iter()
+                    .position(|(_, item)| {
+                        let item_title = item.title.to_ascii_lowercase();
+                        item_title.contains(&clean_needle) || clean_needle.contains(&item_title)
+                    })
+                    .or_else(|| {
+                        parsed_items.iter().position(|(l_idx, _)| {
+                            let line = content.lines().nth(*l_idx).unwrap_or("");
+                            line.contains(step_trimmed)
+                        })
+                    })
+            };
+
+            let Some(target_pos) = matched_idx else {
+                return false;
+            };
+
+            let target_line_idx = parsed_items[target_pos].0;
+            let mut updated_lines: Vec<String> = Vec::new();
+            let mut modified = false;
+
+            // Check if any other item in the file is already InProgress
+            let has_other_active = parsed_items.iter().enumerate().any(|(pos, (_, item))| {
+                pos != target_pos && item.status == TaskItemStatus::InProgress
+            });
+
+            let mut auto_advanced = false;
+
+            for (line_idx, line) in content.lines().enumerate() {
+                if line_idx == target_line_idx {
+                    if is_done {
+                        if line.contains("[ ]") {
+                            updated_lines.push(line.replacen("[ ]", "[x]", 1));
+                            modified = true;
+                            continue;
+                        } else if line.contains("[>]") {
+                            updated_lines.push(line.replacen("[>]", "[x]", 1));
+                            modified = true;
+                            continue;
+                        } else if line.contains("[/]") {
+                            updated_lines.push(line.replacen("[/]", "[x]", 1));
+                            modified = true;
+                            continue;
+                        }
+                    } else if is_active {
+                        if line.contains("[ ]") {
                             updated_lines.push(line.replacen("[ ]", "[>]", 1));
+                            modified = true;
+                            continue;
+                        } else if line.contains("[x]") {
+                            updated_lines.push(line.replacen("[x]", "[>]", 1));
+                            modified = true;
+                            continue;
+                        }
+                    } else if is_pending {
+                        if line.contains("[x]") {
+                            updated_lines.push(line.replacen("[x]", "[ ]", 1));
+                            modified = true;
+                            continue;
+                        } else if line.contains("[>]") {
+                            updated_lines.push(line.replacen("[>]", "[ ]", 1));
                             modified = true;
                             continue;
                         }
                     }
-                    updated_lines.push(line.to_string());
                 }
-                if modified {
-                    let updated = updated_lines.join("\n");
-                    let _ = fs::write(path, updated);
+
+                // Dynamic Auto-Advancement Invariant:
+                // If a task was marked completed, and no other task is active,
+                // automatically advance the very next pending task to InProgress ([>])!
+                if is_done
+                    && modified
+                    && !has_other_active
+                    && !auto_advanced
+                    && line_idx > target_line_idx
+                    && line.contains("[ ]")
+                {
+                    updated_lines.push(line.replacen("[ ]", "[>]", 1));
+                    auto_advanced = true;
+                    continue;
                 }
+
+                updated_lines.push(line.to_string());
+            }
+
+            if modified {
+                let updated = updated_lines.join("\n");
+                let _ = fs::write(path, updated);
+                true
+            } else {
+                false
             }
         };
 
-        update_file(&self.task_plan_path());
-        update_file(&self.canonical_todo_path());
+        let updated_plan = update_file(&self.task_plan_path());
+        let updated_todo = update_file(&self.canonical_todo_path());
+
+        if !updated_plan && !updated_todo {
+            let available_tasks = self.read_parsed_tasks();
+            let pending_list = if available_tasks.is_empty() {
+                "  (No tasks found in active plan)".to_string()
+            } else {
+                available_tasks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("  {}. [{:?}] {}", i + 1, t.status, t.title))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            return Err(ContextError::Memory(format!(
+                "No matching task step found for '{}'. Available tasks:\n{}",
+                step, pending_list
+            ))
+            .into());
+        }
 
         Ok(())
     }
@@ -925,6 +1089,52 @@ mod tests {
         let (phase_label_done, active_tasks_done) = wm.read_active_phase_tasks();
         assert_eq!(phase_label_done, None);
         assert!(active_tasks_done.is_empty());
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_update_progress_index_matching_and_auto_advancement() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_adv_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "1. Setup environment".to_string(),
+            "2. Implement backend service".to_string(),
+            "3. Verify endpoints".to_string(),
+        ];
+        wm.init_plan("Test Service Pipeline", &steps).unwrap();
+
+        let tasks = wm.read_parsed_tasks();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].title, "Setup environment");
+        assert_eq!(tasks[0].status, TaskItemStatus::Pending);
+
+        // 1. Update by 1-based index "1" to completed -> should auto-advance step 2 to InProgress!
+        wm.update_progress("1", "completed").unwrap();
+        let tasks_after_1 = wm.read_parsed_tasks();
+        assert_eq!(tasks_after_1[0].status, TaskItemStatus::Completed);
+        assert_eq!(tasks_after_1[1].status, TaskItemStatus::InProgress);
+        assert_eq!(tasks_after_1[2].status, TaskItemStatus::Pending);
+
+        // 2. Update by keyword "active" to completed -> should auto-advance step 3 to InProgress!
+        wm.update_progress("active", "completed").unwrap();
+        let tasks_after_2 = wm.read_parsed_tasks();
+        assert_eq!(tasks_after_2[1].status, TaskItemStatus::Completed);
+        assert_eq!(tasks_after_2[2].status, TaskItemStatus::InProgress);
+
+        // 3. Update by title substring to completed
+        wm.update_progress("Verify endpoints", "completed").unwrap();
+        let tasks_after_3 = wm.read_parsed_tasks();
+        assert_eq!(tasks_after_3[2].status, TaskItemStatus::Completed);
+
+        // 4. Update non-existent step -> must return helpful error
+        let err = wm.update_progress("non_existent_step_xyz", "completed");
+        assert!(err.is_err());
+        let err_msg = err.unwrap_err().to_string();
+        assert!(err_msg.contains("No matching task step found"));
 
         fs::remove_dir_all(temp_dir).ok();
     }

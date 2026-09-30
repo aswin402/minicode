@@ -382,6 +382,96 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
     result
 }
 
+/// Forcefully reclaims a port by terminating the conflicting process, its process group, and all descendants.
+#[cfg(unix)]
+pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
+    let mut target_pids = std::collections::HashSet::new();
+    if let Some(pid) = initial_pid {
+        if pid > 0 && pid != std::process::id() {
+            target_pids.insert(pid);
+            for desc in find_all_descendants(pid) {
+                if desc > 0 && desc != std::process::id() {
+                    target_pids.insert(desc);
+                }
+            }
+        }
+    }
+
+    if let Some(p) = find_pid_by_port(port) {
+        if p > 0 && p != std::process::id() {
+            target_pids.insert(p);
+            for desc in find_all_descendants(p) {
+                if desc > 0 && desc != std::process::id() {
+                    target_pids.insert(desc);
+                }
+            }
+        }
+    }
+
+    if target_pids.is_empty() {
+        return !is_port_listening(port);
+    }
+
+    // Step 1: Send SIGTERM to all target PIDs and their PGIDs
+    for &p in &target_pids {
+        unsafe {
+            let pgid = libc::getpgid(p as i32);
+            if pgid > 0 && pgid != std::process::id() as i32 {
+                let _ = libc::kill(-pgid, libc::SIGTERM);
+            }
+            let _ = libc::kill(p as i32, libc::SIGTERM);
+        }
+    }
+
+    // Poll up to 400ms in 50ms intervals
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if !is_port_listening(port) {
+            return true;
+        }
+    }
+
+    // Step 2: Send SIGKILL to all target PIDs and their PGIDs
+    for &p in &target_pids {
+        unsafe {
+            let pgid = libc::getpgid(p as i32);
+            if pgid > 0 && pgid != std::process::id() as i32 {
+                let _ = libc::kill(-pgid, libc::SIGKILL);
+            }
+            let _ = libc::kill(p as i32, libc::SIGKILL);
+        }
+    }
+
+    // Poll up to 300ms in 50ms intervals
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if !is_port_listening(port) {
+            return true;
+        }
+    }
+
+    // Final sweep: check if any late process took over
+    if let Some(lp) = find_pid_by_port(port) {
+        if lp > 0 && lp != std::process::id() {
+            unsafe {
+                let pgid = libc::getpgid(lp as i32);
+                if pgid > 0 && pgid != std::process::id() as i32 {
+                    let _ = libc::kill(-pgid, libc::SIGKILL);
+                }
+                let _ = libc::kill(lp as i32, libc::SIGKILL);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    !is_port_listening(port)
+}
+
+#[cfg(not(unix))]
+pub async fn force_reclaim_port(_port: u16, _initial_pid: Option<u32>) -> bool {
+    false
+}
+
 /// Evaluates requested port availability against the selected conflict policy.
 pub async fn arbitrate_port(
     requested_port: u16,
@@ -435,23 +525,12 @@ pub async fn arbitrate_port(
             suggested: suggested_fallback,
         }),
         PortConflictPolicy::Kill => {
-            if let Some(pid) = conflicting_pid {
-                #[cfg(unix)]
-                unsafe {
-                    let _ = libc::kill(pid as i32, libc::SIGTERM);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if is_port_listening(requested_port) {
-                    #[cfg(unix)]
-                    unsafe {
-                        let _ = libc::kill(pid as i32, libc::SIGKILL);
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                if !is_port_listening(requested_port) {
+            #[cfg(unix)]
+            {
+                if force_reclaim_port(requested_port, conflicting_pid).await {
                     return Ok(PortResolution::Reclaimed {
                         port: requested_port,
-                        killed_pid: Some(pid),
+                        killed_pid: conflicting_pid,
                     });
                 }
             }
