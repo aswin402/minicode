@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Todo Quest — Turn Tasks Into Adventures</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Ambient background decoration -->
+  <div class="bg-ornament bg-ornament-1" aria-hidden="true"></div>
+  <div class="bg-ornament bg-ornament-2" aria-hidden="true"></div>
+  <div class="bg-ornament bg-ornament-3" aria-hidden="true"></div>
+
+  <div class="app-container">
+
+    <!-- ============ HEADER ============ -->
+    <header class="app-header">
+      <div class="header-title-row">
+        <div class="header-crest" aria-hidden="true">
+          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <polygon points="20,2 38,38 2,38" stroke="var(--accent)" stroke-width="2" fill="none"/>
+            <polygon points="20,8 33,35 7,35" stroke="var(--accent)" stroke-width="1" fill="none" opacity="0.5"/>
+            <circle cx="20" cy="24" r="5" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+            <line x1="20" y1="19" x2="20" y2="29" stroke="var(--accent)" stroke-width="1" opacity="0.6"/>
+          </svg>
+        </div>
+        <h1 class="app-title">Todo Quest</h1>
+        <p class="app-subtitle">Forge your legend, one quest at a time</p>
+      </div>
+
+      <!-- Level & XP Display -->
+      <div class="level-xp-bar">
+        <div class="level-badge" id="levelBadge">
+          <span class="level-number" id="levelNumber">Lv 1</span>
+          <span class="level-title" id="levelTitle">Novice Adventurer</span>
+        </div>
+        <div class="xp-section">
+          <div class="xp-text">
+            <span id="xpCurrent">0</span> / <span id="xpNext">100</span> XP
+          </div>
+          <div class="xp-bar-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+            <div class="xp-bar-fill" id="xpBarFill" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============ STATS ROW ============ -->
+    <section class="stats-row" aria-label="Player Stats">
+      <div class="stat-card stat-streak">
+        <span class="stat-icon flame-icon" id="streakFlame" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <path d="M12 2C12 2 7 7 7 12C7 14.76 8.79 17.14 11 18.18C10.27 16.82 10 15.22 10.5 13.5C10.8 14.2 11.5 14.7 12.5 14.7C13.5 14.7 14.2 14.2 14.5 13.5C14.8 14.2 15.5 14.7 16.5 14.7C17.5 14.7 18.2 14.2 18.5 13.5C19 15.22 18.73 16.82 18 18.18C20.21 17.14 22 14.76 22 12C22 7 17 2 17 2" stroke="var(--streak-flame)" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+            <path d="M12 22C8.13 22 5 18.87 5 15C5 13.18 5.77 11.53 7 10.26C7 10.26 7 10.26 7 10.26C6.68 11.26 7.37 12.26 8.5 12.26C9.37 12.26 10.04 11.59 10.04 10.72C10.04 9.85 9.37 9.18 8.5 9.18C8.08 9.18 7.72 9.35 7.47 9.61C8.28 8.45 9.63 7.65 11.15 7.52C11.63 6.32 12.82 5.5 14.2 5.5C16.16 5.5 17.75 7.09 17.75 9.05C17.75 10.01 17.38 10.9 16.78 11.57C17.24 11.71 17.54 11.88 17.54 11.88C17.54 11.88 17.54 11.88 17.54 11.88C18.37 11.88 19.03 12.54 19.03 13.37C19.03 14.2 18.37 14.86 17.54 14.86C16.71 14.86 16.05 14.2 16.05 13.37C16.05 13.08 16.12 12.81 16.25 12.57" stroke="var(--streak-flame)" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.7"/>
+          </svg>
+        </span>
+        <div class="stat-info">
+          <span class="stat-value" id="streakCount">0</span>
+          <span class="stat-label">Day Streak</span>
+        </div>
+      </div>
+
+      <div class="stat-card stat-quests">
+        <span class="stat-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <path d="M9 12l2 2 4-4" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+            <rect x="3" y="4" width="18" height="18" rx="3" stroke="var(--accent)" stroke-width="1.5"/>
+          </svg>
+        </span>
+        <div class="stat-info">
+          <span class="stat-value" id="totalQuests">0</span>
+          <span class="stat-label">Quests Done</span>
+        </div>
+      </div>
+
+      <div class="stat-card stat-best-streak">
+        <span class="stat-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+          </svg>
+        </span>
+        <div class="stat-info">
+          <span class="stat-value" id="bestStreak">0</span>
+          <span class="stat-label">Best Streak</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ QUEST BOARD ============ -->
+    <main class="quest-board" id="questBoard">
+      <div class="quest-board-header">
+        <h2 class="board-title">Quest Board</h2>
+        <span class="quest-count-label" id="questCountLabel">0 active quests</span>
+      </div>
+
+      <!-- Quest Input -->
+      <form class="quest-input-form" id="questForm" autocomplete="off">
+        <div class="quest-input-wrapper">
+          <svg class="input-icon" viewBox="0 0 24 24" fill="none" width="18" height="18" aria-hidden="true">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input
+            type="text"
+            id="questInput"
+            class="quest-input"
+            placeholder="Enter your quest..."
+            maxlength="120"
+            autocomplete="off"
+            aria-label="New quest title"
+          />
+        </div>
+        <button type="submit" class="accept-btn" id="acceptBtn">
+          <svg viewBox="0 0 24 24" fill="none" width="16" height="16" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          Accept Quest
+        </button>
+      </form>
+
+      <!-- Quest List -->
+      <div class="quest-list" id="questList" role="list" aria-label="Active quests">
+        <!-- Quests rendered by app.js -->
+      </div>
+
+      <!-- Empty State -->
+      <div class="empty-state" id="emptyState">
+        <svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" width="80" height="80" aria-hidden="true">
+          <circle cx="40" cy="40" r="35" stroke="var(--surface-raised)" stroke-width="2" stroke-dasharray="6 4"/>
+          <path d="M28 40h24M40 28v24" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="40" cy="40" r="8" stroke="var(--text-muted)" stroke-width="1.5"/>
+        </svg>
+        <p class="empty-title">No active quests</p>
+        <p class="empty-subtitle">Your quest board awaits. Accept your first quest above!</p>
+      </div>
+    </main>
+
+    <!-- ============ BADGES SECTION ============ -->
+    <section class="badges-section" id="badgesSection" aria-label="Achievements">
+      <h3 class="badges-title">
+        <svg viewBox="0 0 24 24" fill="none" width="16" height="16" aria-hidden="true">
+          <path d="M12 2l2.09 6.26L20 9.27l-5 4.87 1.18 6.88L12 17.77l-4.18 3.25L9 14.14 4 9.27l5.91-1.01L12 2z" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+        </svg>
+        Achievements
+      </h3>
+      <div class="badges-grid" id="badgesGrid">
+        <!-- Badges rendered by app.js -->
+      </div>
+    </section>
+
+    <!-- ============ FOOTER ============ -->
+    <footer class="app-footer">
+      <p class="footer-lore" id="footerLore">"A journey of a thousand miles begins with a single quest."</p>
+      <button class="reset-btn" id="resetBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M3 3v5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        Reset Progress
+      </button>
+    </footer>
+  </div>
+
+  <!-- ============ CELEBRATION OVERLAY (hidden by default) ============ -->
+  <div class="celebration-overlay" id="celebrationOverlay" aria-live="polite" aria-atomic="true">
+    <div class="celebration-content" id="celebrationContent">
+      <div class="celebration-icon" id="celebrationIcon"></div>
+      <h2 class="celebration-title" id="celebrationTitle"></h2>
+      <p class="celebration-subtitle" id="celebrationSubtitle"></p>
+    </div>
+  </div>
+
+  <!-- ============ LEVEL UP MODAL ============ -->
+  <div class="levelup-modal" id="levelupModal" role="dialog" aria-modal="true" aria-labelledby="levelupTitle">
+    <div class="levelup-backdrop"></div>
+    <div class="levelup-card">
+      <div class="levelup-glow"></div>
+      <div class="levelup-star" aria-hidden="true">
+        <svg viewBox="0 0 60 60" fill="none" xmlns="http://www.w3.org/2000/svg" width="60" height="60">
+          <polygon points="30,2 37,22 58,22 41,35 48,56 30,43 12,56 19,35 2,22 23,22" stroke="var(--accent-bright)" stroke-width="2" fill="var(--accent-bright)" opacity="0.2"/>
+        </svg>
+      </div>
+      <h2 class="levelup-title" id="levelupTitle">Level Up!</h2>
+      <p class="levelup-level" id="levelupLevelDisplay">Level 2</p>
+      <p class="levelup-new-title" id="levelupNewTitle">Apprentice</p>
+      <p class="levelup-xp-info" id="levelupXpInfo">+100 XP earned</p>
+      <button class="levelup-close-btn" id="levelupCloseBtn" type="button">Continue Adventure</button>
+    </div>
+  </div>
+
+  <!-- XP Fly-up Animation Container -->
+  <div class="xp-flyups" id="xpFlyups" aria-hidden="true"></div>
+
+  <!-- Particle Canvas for Streak Celebration -->
+  <canvas class="particle-canvas" id="particleCanvas" aria-hidden="true"></canvas>
+
+  <script src="audio.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
