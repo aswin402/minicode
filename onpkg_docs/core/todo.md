@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 147 MiniTask Dynamic Scheduling, Watchers & Natural Intent Telemetry (v0.3.41) | **Status:** ✅ Complete (185 Tools)
+> **Current Phase:** Phase 148 Human-in-the-Loop Interactive Clarification, Stepper Inquiry Modal & Tool Suspension (v0.3.42) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
@@ -1982,4 +1982,11 @@
 - [x] 147.4: Natural Intent Routing & Context Enrichment: Expanded `WorkflowRouter::classify` in `src/agent/orchestrator.rs` and `src/context/search/intent_filter.rs` to detect natural process inspection queries ("whats happening", "what is running", "status of tasks", "is the server running", "how are background processes doing"). Enhanced `enrich_runtime_dev()` with live process telemetry, schedule intervals, and recent 3-line log output tails so minicode answers background status questions directly.
 - [x] 147.5: In-TUI Process Modal UI Enhancements: Updated `src/ui/modals/processes.rs` so the Workers tab counts and filters `DevProcessType::Cron` and `DevProcessType::Timer`, table displays `Timer (<N>s)` or `Every <N>s` under PORT / URL when ports are empty, and the details card renders schedule description and run metrics.
 - [x] 147.6: Comprehensive Test Suite & Real-World Validation: Created end-to-end integration test suite `tests/integration_minitask_schedule.rs` testing recurring intervals, one-shot timers, natural intent context enrichment, and zero-orphan cancellation. Passed all 13 integration tests, clippy (`-D warnings`), formatting (`cargo fmt --check`), compiled release binary in `~/.local/bin/minicode`, and validated live headless execution in real-world sandbox.
+
+### Phase 148: Human-in-the-Loop Interactive Clarification, Stepper Inquiry Modal & Tool Suspension (v0.3.42)
+- [x] 148.1: Domain Models, Protocol Types & Asynchronous Inquiry Registry: Implemented `InquiryInputType` (`Choice`, `Text`, `Secret`), `InquiryOption`, `InquiryQuestion`, `InquiryRequest`, `InquiryAnswer`, `InquiryResponse`, and thread-safe `InquiryRegistry` oneshot cancellation/suspension map in `src/agent/inquiry.rs`.
+- [x] 148.2: Tool 186 `ask_user` Registration & Total Tool Count Invariant: Implemented `ask_user` schema with structured parameters (`inquiry_id`, `title`, `description`, `questions`) in `src/tools/registry/agent_tools/inquiry.rs`, registered in `src/tools/registry/mod.rs`, classified concurrency in `src/tools/concurrency.rs`, and updated `TOTAL_TOOL_COUNT` = 186 across `src/constants.rs` and all registry assertions.
+- [x] 148.3: Agent Loop Suspension Gate & Headless Auto-Resolution: Wired `ask_user` interception in `src/agent/loop.rs` suspending execution via `InquiryRegistry` channel until user answers in interactive TUI, or automatically resolving recommended defaults without blocking in headless / `-y` non-interactive mode.
+- [x] 148.4: In-TUI Interactive Inquiry Modal & Progressive Multi-Question Stepper: Implemented full-featured interactive inquiry modal (`InquiryModalState`) in `src/ui/modals/inquiry.rs` with Gum/CLI multi-question wizard, radio / checkbox toggles (`Space`), secret masking (`••••••••`), custom write-ins, and keyboard shortcuts (`Enter`, `Tab`, `Esc`, `1-9`).
+- [x] 148.5: Orchestrator Prompt Instructions, Integration Tests & Global Release: Added `<interactive_inquiry>` prompt contract in `src/agent/prompt.rs` directing the LLM to call `ask_user` instead of hallucinating ambiguous requirements; created end-to-end integration test suite `tests/integration_ask_user_inquiry.rs` covering schema sync, headless auto-resolution, oneshot suspension, and masked secrets; verified 0 clippy warnings and clean formatting; bumped version to `v0.3.42`, compiled release binary, and deployed to `~/.local/bin/minicode`.
 
