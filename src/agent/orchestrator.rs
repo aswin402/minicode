@@ -392,79 +392,70 @@ impl WorkflowRouter {
         let lower = prompt.to_ascii_lowercase();
 
         // 0. MiniVault Skills Management Archetype
-        if lower.contains("add skill")
-            || lower.contains("load skill")
-            || lower.contains("install skill")
-            || lower.contains("import skill")
-            || lower.contains("create skill")
-            || lower.contains("update skill")
-            || lower.contains("delete skill")
-            || lower.contains("remove skill")
-            || lower.contains("search skill")
-            || lower.contains("list skill")
-            || lower.contains("show skill")
-            || lower.contains("mini_vault")
+        let has_vault_term = lower.contains("vault")
             || lower.contains("minivault")
-            || lower.contains("skill bundle")
-            || lower.contains("skill bundles")
-            || lower.contains("load bundle")
-            || lower.contains("install bundle")
-            || lower.contains("create bundle")
-            || lower.contains("list bundles")
-            || lower.contains("list bundle")
-            || lower.contains("bundle list")
-            || lower.contains("fullstack bundle")
-            || lower.contains("bundled skills")
-            || lower.contains("bundled skill")
-            || lower.contains("ingest source")
-            || lower.contains("bookmark")
-            || lower.contains("learn from website")
-            || lower.contains("learn from repo")
-            || lower.contains("learn website")
-            || lower.contains("learn repo")
-            || lower.contains("gotchas")
-            || lower.contains("compiler traps")
-            || lower.contains("self improve")
-            || lower.contains("vault_ingest")
-            || lower.contains("vault_gotchas")
-            || ((lower.contains("http://") || lower.contains("https://"))
-                && (lower.contains("learn")
-                    || lower.contains("ingest")
-                    || lower.contains("doc")
-                    || lower.contains("bookmark")
-                    || lower.contains("save link")
-                    || lower.contains("reference")))
-            || (crate::utils::has_word(&lower, "skill")
-                && (lower.contains("internet")
-                    || lower.contains("github")
-                    || lower.contains("http")
-                    || lower.contains("project")
-                    || lower.contains("global")))
-            || (crate::utils::has_word(&lower, "bundle")
-                && (lower.contains("vault")
-                    || lower.contains("stack")
-                    || lower.contains("load")
-                    || lower.contains("install")
-                    || lower.contains("skills")))
-        {
+            || lower.contains("gotcha")
+            || lower.contains("compiler trap");
+
+        let has_skill_action = (crate::utils::has_word(&lower, "skill")
+            || crate::utils::has_word(&lower, "skills"))
+            && (lower.contains("add")
+                || lower.contains("load")
+                || lower.contains("install")
+                || lower.contains("import")
+                || lower.contains("create")
+                || lower.contains("update")
+                || lower.contains("delete")
+                || lower.contains("remove")
+                || lower.contains("search")
+                || lower.contains("list")
+                || lower.contains("show")
+                || lower.contains("internet")
+                || lower.contains("github")
+                || lower.contains("project")
+                || lower.contains("global"));
+
+        let has_bundle_action = (crate::utils::has_word(&lower, "bundle")
+            || crate::utils::has_word(&lower, "bundles"))
+            && (lower.contains("skill")
+                || lower.contains("load")
+                || lower.contains("install")
+                || lower.contains("create")
+                || lower.contains("list")
+                || lower.contains("show")
+                || lower.contains("stack")
+                || lower.contains("fullstack"));
+
+        let has_learn_ingest = (lower.contains("http://")
+            || lower.contains("https://")
+            || crate::utils::has_word(&lower, "repo")
+            || lower.contains("website"))
+            && (lower.contains("learn")
+                || lower.contains("ingest")
+                || lower.contains("bookmark")
+                || lower.contains("save link")
+                || lower.contains("reference"));
+
+        if has_vault_term || has_skill_action || has_bundle_action || has_learn_ingest {
             return WorkflowArchetype::VaultSkills;
         }
 
         // 1. CodeGraph, AST Slicing & Architecture Exploration Archetype
-        // Prioritized when prompt specifically asks to locate, trace, or inspect symbols/callers
-        if lower.contains("blast radius")
+        let has_graph_keyword = lower.contains("blast radius")
             || lower.contains("code graph")
             || lower.contains("codegraph")
-            || lower.contains("code_explore")
-            || lower.contains("diff_impact")
-            || lower.contains("code_explain")
-            || lower.contains("call trace")
-            || lower.contains("trace flow")
-            || lower.contains("who calls")
             || lower.contains("call hierarchy")
             || lower.contains("dependency graph")
             || lower.contains("repo map")
             || lower.contains("repomap")
+            || lower.contains("code_explore")
+            || lower.contains("diff_impact")
+            || lower.contains("code_explain")
+            || lower.contains("code_trace");
+
+        let has_trace_query = lower.contains("who calls")
+            || lower.contains("call trace")
+            || lower.contains("trace flow")
             || lower.contains("impact of")
             || crate::utils::has_word(&lower, "callers")
             || crate::utils::has_word(&lower, "callees")
@@ -475,142 +466,119 @@ impl WorkflowRouter {
                 && (crate::utils::has_word(&lower, "call")
                     || crate::utils::has_word(&lower, "function")
                     || crate::utils::has_word(&lower, "symbol")
-                    || crate::utils::has_word(&lower, "flow")))
-        {
+                    || crate::utils::has_word(&lower, "flow")));
+
+        if has_graph_keyword || has_trace_query {
             return WorkflowArchetype::CodeExploration;
         }
 
         // 2. Runtime Dev & Process Orchestration Archetype
-        if lower.contains("dev server")
-            || lower.contains("run server")
-            || lower.contains("start server")
-            || lower.contains("launch server")
-            || lower.contains("restart server")
-            || lower.contains("kill server")
-            || lower.contains("stop server")
+        let has_process_term = lower.contains("dev server")
+            || lower.contains("minitask")
             || lower.contains("background process")
             || lower.contains("background task")
-            || lower.contains("manage task")
-            || lower.contains("manage tasks")
-            || lower.contains("minitask")
+            || lower.contains("scheduled task")
+            || lower.contains("one-shot timer")
+            || lower.contains("periodic check")
             || lower.contains("listen on port")
-            || lower.contains("port ")
-            || lower.starts_with("serve")
-            || lower.contains(" serve ")
-            || lower.contains("how much resource")
-            || lower.contains("resource usage")
+            || crate::utils::has_word(&lower, "daemon");
+
+        let has_server_action = crate::utils::has_word(&lower, "server")
+            && (crate::utils::has_word(&lower, "start")
+                || crate::utils::has_word(&lower, "run")
+                || crate::utils::has_word(&lower, "launch")
+                || crate::utils::has_word(&lower, "serve")
+                || crate::utils::has_word(&lower, "status")
+                || crate::utils::has_word(&lower, "logs")
+                || crate::utils::has_word(&lower, "kill")
+                || crate::utils::has_word(&lower, "stop")
+                || crate::utils::has_word(&lower, "restart"));
+
+        let has_resource_query = lower.contains("resource usage")
             || lower.contains("resources used")
             || lower.contains("resources taking")
+            || lower.contains("how much resource")
             || lower.contains("ram usage")
-            || lower.contains("cpu usage")
-            || lower.contains("stop that")
-            || lower.contains("kill that")
+            || lower.contains("cpu usage");
+
+        let has_status_inspection = lower.contains("whats happening")
+            || lower.contains("what's happening")
+            || lower.contains("what is happening")
+            || lower.contains("what is running")
+            || lower.contains("what's running")
+            || lower.contains("whats running")
+            || lower.contains("status of task")
+            || lower.contains("task status")
+            || lower.contains("process status")
+            || lower.contains("is the server running")
+            || lower.contains("is server running")
+            || lower.contains("how are background processes")
+            || lower.contains("how are the background processes")
+            || lower.contains("how are the tasks")
+            || lower.contains("how are tasks")
+            || lower.contains("check background")
+            || lower.contains("active processes")
+            || lower.contains("active tasks");
+
+        let has_teardown_command = lower == "stop"
+            || lower == "kill"
             || lower == "stop it"
             || lower == "kill it"
-            || lower == "stop"
-            || lower == "kill"
+            || lower.contains("stop that")
+            || lower.contains("kill that")
             || lower.contains("close browser")
             || lower.contains("stop browser")
             || lower.contains("kill browser")
             || lower.contains("close website")
             || lower.contains("stop website")
             || lower.contains("kill website")
-            || lower.contains("whats happening")
-            || lower.contains("what's happening")
-            || lower.contains("what is happening")
-            || lower.contains("what is running")
-            || lower.contains("what's running")
-            || lower.contains("whats running")
-            || lower.contains("what are the tasks doing")
-            || lower.contains("how are the tasks doing")
-            || lower.contains("how are background processes doing")
-            || lower.contains("how are the background processes doing")
-            || lower.contains("status of tasks")
-            || lower.contains("status of task")
-            || lower.contains("task status")
-            || lower.contains("process status")
-            || lower.contains("is the server running")
-            || lower.contains("is the server still running")
-            || lower.contains("is server running")
-            || lower.contains("any background tasks")
-            || lower.contains("any background task")
-            || lower.contains("any processes running")
-            || lower.contains("check background tasks")
-            || lower.contains("check background task")
-            || lower.contains("check background processes")
-            || lower.contains("check tasks")
-            || lower.contains("check processes")
-            || lower.contains("active processes")
-            || lower.contains("active tasks")
-            || lower.contains("scheduled task")
-            || lower.contains("scheduled tasks")
-            || lower.contains("periodic check")
-            || lower.contains("one-shot timer")
-            || crate::utils::has_word(&lower, "daemon")
-            || (crate::utils::has_word(&lower, "server")
-                && (crate::utils::has_word(&lower, "start")
-                    || crate::utils::has_word(&lower, "run")
-                    || crate::utils::has_word(&lower, "status")
-                    || crate::utils::has_word(&lower, "logs")
-                    || crate::utils::has_word(&lower, "kill")
-                    || crate::utils::has_word(&lower, "stop")))
+            || lower.contains("manage task");
+
+        if has_process_term
+            || has_server_action
+            || has_resource_query
+            || has_status_inspection
+            || has_teardown_command
+            || lower.starts_with("serve ")
+            || lower.contains(" port ")
         {
             return WorkflowArchetype::RuntimeDev;
         }
 
         // 3. Multi-Phase Engineering, Planning & TDD Archetype
-        if lower.contains("power plan")
+        let has_planning_token = lower.contains("power plan")
             || lower.contains("superpower")
             || lower.contains("minipower")
             || lower.contains("acceptance criteria")
-            || lower.contains("end-to-end")
             || lower.contains("verification barrier")
-            || (crate::utils::has_word(&lower, "implement")
-                && (crate::utils::has_word(&lower, "feature")
-                    || crate::utils::has_word(&lower, "module")
-                    || crate::utils::has_word(&lower, "system")
-                    || crate::utils::has_word(&lower, "service")
-                    || crate::utils::has_word(&lower, "api")
-                    || crate::utils::has_word(&lower, "with")))
-            || (crate::utils::has_word(&lower, "refactor")
-                && (crate::utils::has_word(&lower, "codebase")
-                    || crate::utils::has_word(&lower, "layer")
-                    || crate::utils::has_word(&lower, "architecture")
-                    || crate::utils::has_word(&lower, "system")
-                    || crate::utils::has_word(&lower, "module")))
-            || (crate::utils::has_word(&lower, "build")
-                && (crate::utils::has_word(&lower, "app")
-                    || crate::utils::has_word(&lower, "fullstack")
-                    || crate::utils::has_word(&lower, "feature")
-                    || crate::utils::has_word(&lower, "system")))
-            || (crate::utils::has_word(&lower, "plan")
-                && crate::utils::has_word(&lower, "milestones"))
+            || lower.contains("detailed plan")
             || crate::utils::has_word(&lower, "tdd")
             || crate::utils::has_word(&lower, "milestone")
-            || lower.contains("make a website")
-            || lower.contains("make website")
-            || lower.contains("create a website")
-            || lower.contains("create website")
-            || lower.contains("build a website")
-            || lower.contains("build website")
-            || lower.contains("make a portfolio")
-            || lower.contains("make portfolio")
-            || lower.contains("create a portfolio")
-            || lower.contains("create portfolio")
-            || lower.contains("build a portfolio")
-            || lower.contains("build portfolio")
-            || lower.contains("detailed plan")
-            || lower.contains("create app")
-            || lower.contains("make app")
-            || ((crate::utils::has_word(&lower, "create")
-                || crate::utils::has_word(&lower, "make")
-                || crate::utils::has_word(&lower, "build"))
-                && (crate::utils::has_word(&lower, "website")
-                    || crate::utils::has_word(&lower, "portfolio")
-                    || crate::utils::has_word(&lower, "webapp")
-                    || crate::utils::has_word(&lower, "project")
-                    || crate::utils::has_word(&lower, "application")))
-        {
+            || crate::utils::has_word(&lower, "milestones");
+
+        let has_construction_intent = (crate::utils::has_word(&lower, "implement")
+            || crate::utils::has_word(&lower, "build")
+            || crate::utils::has_word(&lower, "create")
+            || crate::utils::has_word(&lower, "make")
+            || crate::utils::has_word(&lower, "refactor"))
+            && (crate::utils::has_word(&lower, "feature")
+                || crate::utils::has_word(&lower, "module")
+                || crate::utils::has_word(&lower, "system")
+                || crate::utils::has_word(&lower, "service")
+                || crate::utils::has_word(&lower, "api")
+                || crate::utils::has_word(&lower, "architecture")
+                || crate::utils::has_word(&lower, "codebase")
+                || crate::utils::has_word(&lower, "layer")
+                || crate::utils::has_word(&lower, "website")
+                || crate::utils::has_word(&lower, "portfolio")
+                || crate::utils::has_word(&lower, "webapp")
+                || crate::utils::has_word(&lower, "app")
+                || crate::utils::has_word(&lower, "application")
+                || crate::utils::has_word(&lower, "fullstack")
+                || (crate::utils::has_word(&lower, "project")
+                    && !crate::utils::has_word(&lower, "into")));
+
+        if has_planning_token || has_construction_intent {
             return WorkflowArchetype::MultiPhaseEngineering;
         }
 
@@ -660,6 +628,11 @@ impl WorkflowRouter {
         prompt: &str,
         archetype: WorkflowArchetype,
     ) -> Option<String> {
+        let dev_reg = crate::dev::get_global_dev_registry();
+        let (active_task_count, _, _) = dev_reg.get_telemetry_snapshot();
+        let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
+        let has_live_runtime = active_task_count > 0 || browser_live;
+
         let base_enrichment = match archetype {
             WorkflowArchetype::UiDesign => Self::enrich_ui_design(workspace_root, prompt),
             WorkflowArchetype::CodeExploration => Self::enrich_code_exploration(prompt),
@@ -669,6 +642,27 @@ impl WorkflowRouter {
             }
             WorkflowArchetype::VaultSkills => Self::enrich_vault_skills(workspace_root, prompt),
             WorkflowArchetype::Standard => None,
+        };
+
+        // State-Grounded Runtime Injection:
+        // If background tasks or browser session are actively running and archetype was not RuntimeDev,
+        // prepend the live dev services block so the agent is ALWAYS aware of its active runtime environment.
+        let combined_enrichment = match base_enrichment {
+            Some(mut b) => {
+                if has_live_runtime && archetype != WorkflowArchetype::RuntimeDev {
+                    if let Some(runtime_block) = Self::enrich_runtime_dev().await {
+                        b = format!("{}\n\n{}", runtime_block, b);
+                    }
+                }
+                Some(b)
+            }
+            None => {
+                if has_live_runtime && archetype != WorkflowArchetype::RuntimeDev {
+                    Self::enrich_runtime_dev().await
+                } else {
+                    None
+                }
+            }
         };
 
         // For engineering workflows (MultiPhaseEngineering or Standard), check if there are
@@ -692,7 +686,7 @@ impl WorkflowRouter {
                 gotcha_block.push_str("  Directive: Heed these hard-won lessons to prevent repeating previous compiler and runtime errors.\n");
                 gotcha_block.push_str("</universal_learned_gotchas>");
 
-                return match base_enrichment {
+                return match combined_enrichment {
                     Some(mut b) => {
                         b.push_str(&gotcha_block);
                         Some(b)
@@ -702,7 +696,7 @@ impl WorkflowRouter {
             }
         }
 
-        base_enrichment
+        combined_enrichment
     }
 
     #[allow(dead_code)]
@@ -729,47 +723,73 @@ impl WorkflowRouter {
         };
 
         let lower = prompt.to_ascii_lowercase();
-        let candidates = [
-            "navbar",
-            "hero",
-            "card",
-            "pricing",
-            "testimonial",
-            "feature",
-            "faq",
-            "footer",
-            "sidebar",
-            "form",
-            "modal",
-            "table",
-            "button",
-            "input",
-            "tabs",
-            "accordion",
-            "avatar",
-            "badge",
-            "dropdown",
-            "slider",
-            "cta",
-            "auth",
-            "dashboard",
-        ];
 
-        let matched_queries: Vec<&str> = candidates
-            .iter()
-            .copied()
-            .filter(|&c| crate::utils::has_word(&lower, c))
+        // Extract meaningful candidate tokens from the prompt (length >= 3, skipping common noise/action words)
+        let stop_words: std::collections::HashSet<&'static str> = [
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "create",
+            "make",
+            "build",
+            "style",
+            "page",
+            "modern",
+            "responsive",
+            "using",
+            "into",
+            "this",
+            "that",
+            "user",
+            "app",
+            "application",
+            "mode",
+            "dark",
+            "light",
+            "give",
+            "detailed",
+            "plan",
+        ]
+        .into_iter()
+        .collect();
+
+        let prompt_tokens: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|s| s.trim())
+            .filter(|s| s.len() >= 3 && !stop_words.contains(s))
             .collect();
 
-        let primary_query = matched_queries.first().copied();
+        // Query components for the most salient tokens or overall prompt
+        let mut components = Vec::new();
+        let mut matched_queries = Vec::new();
 
-        let filter = crate::blocks::BlockSearchFilter {
-            query: primary_query.map(|q| q.to_string()),
-            limit: 4,
-            ..Default::default()
-        };
+        for token in &prompt_tokens {
+            let filter = crate::blocks::BlockSearchFilter {
+                query: Some((*token).to_string()),
+                limit: 3,
+                ..Default::default()
+            };
+            let results = store.search_components(&filter);
+            if !results.is_empty() {
+                matched_queries.push(*token);
+                for r in results {
+                    if !components.iter().any(
+                        |existing: &crate::blocks::store::BlockSearchResult| existing.id == r.id,
+                    ) {
+                        components.push(r);
+                    }
+                    if components.len() >= 4 {
+                        break;
+                    }
+                }
+            }
+            if components.len() >= 4 {
+                break;
+            }
+        }
 
-        let components = store.search_components(&filter);
         let palettes = store.list_palettes();
 
         let mut out = String::from("<recommended_miniblocks>\n");
