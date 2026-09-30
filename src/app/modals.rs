@@ -1424,6 +1424,80 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             },
+            ModalState::Inquiry(ref mut inq_state) => match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let resp = inq_state.cancel();
+                    let tid = inq_state.tool_id.clone();
+                    self.resolve_inquiry(&tid, resp);
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Esc => {
+                    if inq_state.is_typing_custom && inq_state.total_options_count() > 0 {
+                        inq_state.is_typing_custom = false;
+                    } else {
+                        let resp = inq_state.cancel();
+                        let tid = inq_state.tool_id.clone();
+                        self.resolve_inquiry(&tid, resp);
+                        self.modal = ModalState::None;
+                    }
+                }
+                KeyCode::Up => {
+                    if !inq_state.is_typing_custom {
+                        inq_state.prev_option();
+                    }
+                }
+                KeyCode::Down => {
+                    if !inq_state.is_typing_custom {
+                        inq_state.next_option();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if inq_state.is_typing_custom {
+                        inq_state.handle_char(c);
+                    } else if ('1'..='9').contains(&c) {
+                        let num = (c as u8 - b'1') as usize;
+                        if num < inq_state.total_options_count() {
+                            inq_state.selected_option_idx = num;
+                            if inq_state
+                                .current_question()
+                                .is_some_and(|q| q.is_multi_select)
+                            {
+                                inq_state.toggle_multi();
+                            } else if let Some(resp) = inq_state.confirm_selection() {
+                                let tid = inq_state.tool_id.clone();
+                                self.resolve_inquiry(&tid, resp);
+                                self.modal = ModalState::None;
+                            }
+                        }
+                    } else if c == ' ' {
+                        inq_state.toggle_multi();
+                    } else if c == 'o' || c == 'O' {
+                        if let Some(q) = inq_state.current_question() {
+                            if q.allow_custom {
+                                inq_state.selected_option_idx = q.options.len();
+                                if let Some(resp) = inq_state.confirm_selection() {
+                                    let tid = inq_state.tool_id.clone();
+                                    self.resolve_inquiry(&tid, resp);
+                                    self.modal = ModalState::None;
+                                }
+                            }
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if inq_state.is_typing_custom {
+                        inq_state.handle_backspace();
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(resp) = inq_state.confirm_selection() {
+                        let tid = inq_state.tool_id.clone();
+                        self.resolve_inquiry(&tid, resp);
+                        self.modal = ModalState::None;
+                    }
+                }
+                _ => {}
+            },
             ModalState::WorkspaceAnalysis {
                 workspace_path: _,
                 is_indexed,

@@ -10,6 +10,7 @@ pub mod context_diagnostics;
 pub mod exit_confirm;
 pub mod git_diff;
 pub mod help;
+pub mod inquiry;
 pub mod minipower;
 pub mod model_select;
 pub mod processes;
@@ -157,6 +158,7 @@ pub enum ModalState {
     Processes(processes::ProcessesModalState),
     Todo(todo::TodoModalState),
     Vault(vault::VaultModalState),
+    Inquiry(inquiry::InquiryModalState),
 }
 
 impl ModalState {
@@ -910,6 +912,9 @@ impl ModalState {
             }
             ModalState::Vault(state) => {
                 vault::render_vault_modal(frame, state, theme);
+            }
+            ModalState::Inquiry(ref state) => {
+                inquiry::render_inquiry_modal(frame, state, theme, area);
             }
         }
     }

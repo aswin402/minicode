@@ -66,6 +66,8 @@ pub struct App<'a> {
     total_cost_usd: f64,
     /// Handle to the agent's in-flight approval requests.
     approvals: crate::agent::types::ApprovalRegistry,
+    /// Handle to the agent's in-flight inquiry requests.
+    pub inquiries: crate::agent::inquiry::InquiryRegistry,
     pub should_exit: bool,
     pub last_ctrl_c: Option<Instant>,
     pub pending_submission: Option<PendingSubmission>,
@@ -112,6 +114,7 @@ impl<'a> App<'a> {
             cumulative_tokens: 0,
             total_cost_usd: 0.0,
             approvals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            inquiries: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             should_exit: false,
             last_ctrl_c: None,
             pending_submission: None,
@@ -267,8 +270,9 @@ impl<'a> App<'a> {
         let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
-        // Bind to the live agent's approval registry before it moves into the actor.
+        // Bind to the live agent's approval and inquiry registries before it moves into the actor.
         self.approvals = agent.approval_registry();
+        self.inquiries = agent.inquiry_registry();
         // Spawn background non-blocking Agent actor
         let agent_task = tokio::spawn(async move {
             while let Some(cmd) = control_rx.recv().await {
@@ -605,6 +609,19 @@ impl<'a> App<'a> {
                                     self.modal =
                                         crate::ui::modal::ModalState::Approval(approval_state);
                                 }
+                            }
+                            AgentEvent::UserInquiry {
+                                turn_id,
+                                tool_id,
+                                request,
+                            } => {
+                                let inq_state =
+                                    crate::ui::modals::inquiry::InquiryModalState::from_request(
+                                        turn_id,
+                                        &tool_id,
+                                        request,
+                                    );
+                                self.modal = ModalState::Inquiry(inq_state);
                             }
                             AgentEvent::ContextCompacted {
                                 tier,
@@ -1264,6 +1281,18 @@ impl<'a> App<'a> {
             .remove(tool_id)
         {
             let _ = sender.send(decision);
+        }
+    }
+
+    /// Resolves a pending inquiry by tool_id, if one is registered.
+    pub fn resolve_inquiry(&self, tool_id: &str, resp: crate::agent::inquiry::InquiryResponse) {
+        if let Some(sender) = self
+            .inquiries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(tool_id)
+        {
+            let _ = sender.send(resp);
         }
     }
 
