@@ -1,0 +1,28 @@
+{
+  "name": "worker2-backend",
+  "version": "1.0.0",
+  "description": "REST backend API for inventory and order management system",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc && node dist/server.js",
+    "test": "NODE_ENV=test node --test src/__tests__/*.test.ts"
+  },
+  "keywords": [
+    "api",
+    "inventory",
+    "orders",
+    "rest"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^20.19.43",
+    "supertest": "^6.3.3",
+    "typescript": "^5.9.3"
+  }
+}
