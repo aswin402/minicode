@@ -155,7 +155,9 @@ pub async fn dispatch(
                     .or(swarm_task_env.as_deref())
                     .unwrap_or("worker");
 
-                let to = param::opt_str(args, "to_worker_id").filter(|s| !s.is_empty());
+                let to = param::opt_str(args, "to_worker_id")
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty());
                 let topic = param::require_str(args, "topic", "send_worker_message")?;
                 let payload = param::require_str(args, "payload", "send_worker_message")?;
 
