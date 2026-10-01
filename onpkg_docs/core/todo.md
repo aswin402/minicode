@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 149 Resilient Task Status Normalization, Safe Browser Scrolling & Zero-Config Workspace Auto-Bootstrapping (v0.3.43) | **Status:** ✅ Complete (186 Tools)
+> **Current Phase:** Phase 150 Native Autonomous Multi-Agent Swarm Orchestrator (`minicode swarm`) (v0.3.43) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
