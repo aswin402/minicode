@@ -129,10 +129,10 @@ impl MergeArbitrator {
             }
         }
 
-        let cmd_args = match check_cmd {
+        let (mut cmd, command_str) = match check_cmd {
             Some(custom) => {
-                let parts: Vec<String> = custom.split_whitespace().map(|s| s.to_string()).collect();
-                if parts.is_empty() {
+                let trimmed = custom.trim();
+                if trimmed.is_empty() {
                     return Ok(ValidationReport {
                         success: true,
                         command: String::new(),
@@ -142,10 +142,28 @@ impl MergeArbitrator {
                         duration_ms: 0,
                     });
                 }
-                parts
+                #[cfg(windows)]
+                {
+                    let mut c = Command::new("cmd");
+                    c.args(["/C", trimmed]);
+                    (c, trimmed.to_string())
+                }
+                #[cfg(not(windows))]
+                {
+                    let mut c = Command::new("sh");
+                    c.args(["-c", trimmed]);
+                    (c, trimmed.to_string())
+                }
             }
             None => match Self::detect_project_validation_cmd(worktree_path) {
-                Some(detected) => detected,
+                Some(detected) => {
+                    let cmd_str = detected.join(" ");
+                    let mut c = Command::new(&detected[0]);
+                    if detected.len() > 1 {
+                        c.args(&detected[1..]);
+                    }
+                    (c, cmd_str)
+                }
                 None => {
                     return Ok(ValidationReport {
                         success: true,
@@ -159,14 +177,8 @@ impl MergeArbitrator {
             },
         };
 
-        let command_str = cmd_args.join(" ");
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(60);
-
-        let mut cmd = Command::new(&cmd_args[0]);
-        if cmd_args.len() > 1 {
-            cmd.args(&cmd_args[1..]);
-        }
         cmd.current_dir(worktree_path);
 
         let output_res = run_command_with_timeout(cmd, timeout);
