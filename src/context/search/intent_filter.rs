@@ -154,6 +154,12 @@ impl IntentClassifier {
                 "delegate",
                 "fanout",
                 "scratchpad",
+                "send_worker_message",
+                "worker_message",
+                "peer",
+                "coordination",
+                "publish_contract",
+                "query_interface",
             ],
         ) {
             categories.insert(ToolCategory::Agent);

@@ -339,6 +339,16 @@ pub fn assemble_active_tools_with_mcp(
                 }
             }
 
+            // Swarm Worker Promotion:
+            // If running inside a swarm worker process, ensure Agent tools (send_worker_message)
+            // are unconditionally available for inter-worker coordination.
+            if std::env::var("MINICODE_SWARM_DIR")
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+            {
+                active_cats.insert(ToolCategory::Agent);
+            }
+
             for cat in active_cats {
                 for schema in cat.get_schemas() {
                     if !included_names.contains(&schema.name) {

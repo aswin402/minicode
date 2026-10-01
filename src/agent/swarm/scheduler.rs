@@ -336,6 +336,8 @@ impl SwarmScheduler {
             }
         }
 
+        let peers_str = Self::compute_active_peers(active_wave_peers, &task.id);
+
         // 4. Construct enriched worker prompt
         let mut enriched_prompt = task.prompt.clone();
         if !task.instructions.is_empty() {
@@ -354,6 +356,15 @@ impl SwarmScheduler {
                 task.file_boundaries.join("`, `")
             ));
         }
+        if !peers_str.is_empty() {
+            enriched_prompt.push_str(&format!(
+                "\n\n### SWARM PEER COORDINATION:\nYou are worker `{}` running in swarm `{}`.\nConcurrent peers active in this wave: `{}`.\nTo coordinate interfaces, types, or dependencies with peers, call the `send_worker_message` tool (`publish_contract`, `query_interface`, `coordination_note`). When you call `send_worker_message`, your message is placed onto the durable swarm bus and automatically delivered to peers at turn start.\n",
+                task.id, plan.id, peers_str
+            ));
+        }
+        enriched_prompt.push_str(
+            "\n\nConstraint: Do NOT modify shared project documentation, task trackers, or scaffolding manifests (e.g. minikit.json, onpkg.json, AGENTS.md, minikit_docs/). Confine all changes strictly to your assigned code and test files to guarantee clean mergeability.",
+        );
 
         // 5. Spawn child minicode process
         let current_exe = match std::env::current_exe() {
@@ -386,8 +397,6 @@ impl SwarmScheduler {
         if let Some(max_iter) = task.max_iterations {
             cmd.arg("--max-iterations").arg(max_iter.to_string());
         }
-
-        let peers_str = Self::compute_active_peers(active_wave_peers, &task.id);
 
         cmd.env("MINICODE_SWARM_ID", &plan.id);
         cmd.env("MINICODE_SWARM_DIR", swarm_dir);
