@@ -14,13 +14,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "from_worker_id": {
-                        "type": "string",
-                        "description": "Sender worker ID"
-                    },
                     "to_worker_id": {
                         "type": "string",
                         "description": "Recipient worker ID (omit or leave empty to broadcast to all swarm workers)"
+                    },
+                    "intent": {
+                        "type": "string",
+                        "enum": [
+                            "publish_contract",
+                            "query_interface",
+                            "coordination_note"
+                        ],
+                        "description": "Typed intent of the message (default: coordination_note)"
                     },
                     "topic": {
                         "type": "string",
@@ -28,10 +33,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "payload": {
                         "type": "string",
-                        "description": "Message content payload"
+                        "description": "Message content payload (max 800 characters)"
+                    },
+                    "from_worker_id": {
+                        "type": "string",
+                        "description": "Sender worker ID (inferred from MINICODE_SWARM_TASK_ID if omitted)"
                     }
                 },
-                "required": ["from_worker_id", "topic", "payload"]
+                "required": ["topic", "payload"]
             }),
         },
         ToolSchema {
@@ -130,21 +139,78 @@ pub async fn dispatch(
     match tool_name {
         "send_worker_message" => Some(
             async {
-                let from = param::require_str(args, "from_worker_id", "send_worker_message")?;
+                let swarm_dir_env = std::env::var("MINICODE_SWARM_DIR")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+                let swarm_task_env = std::env::var("MINICODE_SWARM_TASK_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+                let swarm_id_env = std::env::var("MINICODE_SWARM_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "swarm-standalone".to_string());
+
+                let from = param::opt_str(args, "from_worker_id")
+                    .filter(|s| !s.trim().is_empty())
+                    .or(swarm_task_env.as_deref())
+                    .unwrap_or("worker");
+
                 let to = param::opt_str(args, "to_worker_id").filter(|s| !s.is_empty());
                 let topic = param::require_str(args, "topic", "send_worker_message")?;
                 let payload = param::require_str(args, "payload", "send_worker_message")?;
 
-                let bus = crate::agent::subagent::get_global_message_bus();
-                let msg = bus.send_message(from, to, topic, payload);
+                let intent_str = param::opt_str(args, "intent").unwrap_or("coordination_note");
+                let intent = match intent_str {
+                    "publish_contract" => {
+                        crate::agent::swarm::bus::SwarmMessageIntent::PublishContract
+                    }
+                    "query_interface" => {
+                        crate::agent::swarm::bus::SwarmMessageIntent::QueryInterface
+                    }
+                    _ => crate::agent::swarm::bus::SwarmMessageIntent::CoordinationNote,
+                };
 
-                let dest = to
-                    .map(|t| format!("to worker `{}`", t))
-                    .unwrap_or_else(|| "as swarm broadcast".to_string());
-                Ok(format!(
-                    "✔ Message `{}` posted {} on topic `{}`.",
-                    msg.id, dest, msg.topic
-                ))
+                if let Some(swarm_dir_str) = swarm_dir_env {
+                    let bus = crate::agent::swarm::bus::SwarmMessageBus::new(std::path::Path::new(
+                        &swarm_dir_str,
+                    ))
+                    .map_err(|e| ToolError::CommandExec(e.to_string()))?;
+
+                    let msg = crate::agent::swarm::bus::SwarmMessage::new(
+                        swarm_id_env,
+                        from,
+                        to,
+                        intent,
+                        topic,
+                        payload,
+                    );
+
+                    bus.post_message(msg.clone())
+                        .map_err(|e| ToolError::CommandExec(e.to_string()))?;
+
+                    let dest = to
+                        .map(|t| format!("to peer worker `{}`", t))
+                        .unwrap_or_else(|| "as wave broadcast".to_string());
+
+                    Ok(format!(
+                        "✔ Message `{}` posted {} [{}]: `{}`",
+                        msg.id,
+                        dest,
+                        intent.badge(),
+                        msg.topic
+                    ))
+                } else {
+                    // Fallback to in-memory bus for standalone non-swarm executions
+                    let bus = crate::agent::subagent::get_global_message_bus();
+                    let msg = bus.send_message(from, to, topic, payload);
+                    let dest = to
+                        .map(|t| format!("to worker `{}`", t))
+                        .unwrap_or_else(|| "as swarm broadcast".to_string());
+                    Ok(format!(
+                        "✔ Message `{}` posted {} on topic `{}`.",
+                        msg.id, dest, msg.topic
+                    ))
+                }
             }
             .await,
         ),
@@ -268,6 +334,232 @@ pub fn parse_fanout_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_send_worker_message_schema() {
+        let schemas = get_schemas();
+        let tool = schemas
+            .iter()
+            .find(|s| s.name == "send_worker_message")
+            .unwrap();
+        assert!(tool.parameters["properties"]["intent"].is_object());
+        assert!(tool.parameters["properties"]["payload"].is_object());
+        assert!(tool.parameters["properties"]["topic"].is_object());
+        assert!(tool.parameters["properties"]["to_worker_id"].is_object());
+        assert!(tool.parameters["properties"]["from_worker_id"].is_object());
+
+        let required = tool.parameters["required"].as_array().unwrap();
+        assert!(required.iter().any(|v| v == "topic"));
+        assert!(required.iter().any(|v| v == "payload"));
+        assert!(!required.iter().any(|v| v == "from_worker_id"));
+
+        let intent_enums = tool.parameters["properties"]["intent"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(intent_enums.iter().any(|v| v == "publish_contract"));
+        assert!(intent_enums.iter().any(|v| v == "query_interface"));
+        assert!(intent_enums.iter().any(|v| v == "coordination_note"));
+    }
+
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvGuard {
+        vars: Vec<&'static str>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: Vec<&'static str>) -> Self {
+            Self { vars }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for var in &self.vars {
+                std::env::remove_var(var);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_worker_message_standalone_dispatch() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::new(vec![
+            "MINICODE_SWARM_DIR",
+            "MINICODE_SWARM_TASK_ID",
+            "MINICODE_SWARM_ID",
+        ]);
+        std::env::remove_var("MINICODE_SWARM_DIR");
+        std::env::remove_var("MINICODE_SWARM_TASK_ID");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        let args = json!({
+            "from_worker_id": "scout_1",
+            "topic": "findings",
+            "payload": "Architecture looks solid"
+        });
+
+        let res = dispatch("send_worker_message", &args, root)
+            .await
+            .expect("handled");
+        assert!(res.is_ok());
+        let msg = res.unwrap();
+        assert!(msg.contains("✔ Message"));
+        assert!(msg.contains("as swarm broadcast"));
+        assert!(msg.contains("on topic `findings`"));
+    }
+
+    #[tokio::test]
+    async fn test_send_worker_message_swarm_broadcast_dispatch() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::new(vec![
+            "MINICODE_SWARM_DIR",
+            "MINICODE_SWARM_TASK_ID",
+            "MINICODE_SWARM_ID",
+        ]);
+
+        let temp_swarm = tempfile::tempdir().expect("swarm tempdir");
+        std::env::set_var("MINICODE_SWARM_DIR", temp_swarm.path().to_str().unwrap());
+        std::env::set_var("MINICODE_SWARM_TASK_ID", "t1_backend");
+        std::env::set_var("MINICODE_SWARM_ID", "swarm-test-1");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        let args = json!({
+            "intent": "publish_contract",
+            "topic": "Auth Types",
+            "payload": "export type Token = string;"
+        });
+
+        let res = dispatch("send_worker_message", &args, root)
+            .await
+            .expect("handled");
+        assert!(res.is_ok());
+        let msg = res.unwrap();
+        assert!(msg.contains("✔ Message"));
+        assert!(msg.contains("as wave broadcast"));
+        assert!(msg.contains("📜 Contract"));
+        assert!(msg.contains("Auth Types"));
+
+        // Verify it was written to bus.jsonl
+        let bus = crate::agent::swarm::bus::SwarmMessageBus::new(temp_swarm.path()).unwrap();
+        let messages = bus.all_messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].from_task, "t1_backend");
+        assert_eq!(messages[0].to_task, None);
+        assert_eq!(
+            messages[0].intent,
+            crate::agent::swarm::bus::SwarmMessageIntent::PublishContract
+        );
+        assert_eq!(messages[0].topic, "Auth Types");
+        assert_eq!(messages[0].payload, "export type Token = string;");
+    }
+
+    #[tokio::test]
+    async fn test_send_worker_message_swarm_direct_dispatch() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::new(vec![
+            "MINICODE_SWARM_DIR",
+            "MINICODE_SWARM_TASK_ID",
+            "MINICODE_SWARM_ID",
+        ]);
+
+        let temp_swarm = tempfile::tempdir().expect("swarm tempdir");
+        std::env::set_var("MINICODE_SWARM_DIR", temp_swarm.path().to_str().unwrap());
+        std::env::set_var("MINICODE_SWARM_TASK_ID", "t2_frontend");
+        std::env::set_var("MINICODE_SWARM_ID", "swarm-test-1");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        let args = json!({
+            "to_worker_id": "t1_backend",
+            "intent": "query_interface",
+            "topic": "Token Refresh Route",
+            "payload": "What is the token refresh path?"
+        });
+
+        let res = dispatch("send_worker_message", &args, root)
+            .await
+            .expect("handled");
+        assert!(res.is_ok());
+        let msg = res.unwrap();
+        assert!(msg.contains("✔ Message"));
+        assert!(msg.contains("to peer worker `t1_backend`"));
+        assert!(msg.contains("❓ Query"));
+        assert!(msg.contains("Token Refresh Route"));
+
+        let bus = crate::agent::swarm::bus::SwarmMessageBus::new(temp_swarm.path()).unwrap();
+        let messages = bus.all_messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].from_task, "t2_frontend");
+        assert_eq!(messages[0].to_task.as_deref(), Some("t1_backend"));
+        assert_eq!(
+            messages[0].intent,
+            crate::agent::swarm::bus::SwarmMessageIntent::QueryInterface
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_worker_message_swarm_quota_and_payload_bounds() {
+        let _lock = TEST_MUTEX.lock().unwrap();
+        let _guard = EnvGuard::new(vec![
+            "MINICODE_SWARM_DIR",
+            "MINICODE_SWARM_TASK_ID",
+            "MINICODE_SWARM_ID",
+        ]);
+
+        let temp_swarm = tempfile::tempdir().expect("swarm tempdir");
+        std::env::set_var("MINICODE_SWARM_DIR", temp_swarm.path().to_str().unwrap());
+        std::env::set_var("MINICODE_SWARM_TASK_ID", "t1_worker");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        // 1. Payload > 800 chars
+        let long_payload = "X".repeat(801);
+        let oversized_args = json!({
+            "topic": "Too big",
+            "payload": long_payload
+        });
+        let res_oversized = dispatch("send_worker_message", &oversized_args, root)
+            .await
+            .expect("handled");
+        assert!(res_oversized.is_err());
+        assert!(res_oversized
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 800 characters"));
+
+        // 2. Post 3 valid messages
+        for i in 1..=3 {
+            let valid_args = json!({
+                "topic": format!("Note {}", i),
+                "payload": format!("Valid message {}", i)
+            });
+            let res = dispatch("send_worker_message", &valid_args, root)
+                .await
+                .expect("handled");
+            assert!(res.is_ok());
+        }
+
+        // 3. 4th message should fail quota
+        let quota_exceeded_args = json!({
+            "topic": "Note 4",
+            "payload": "Quota check"
+        });
+        let res_quota = dispatch("send_worker_message", &quota_exceeded_args, root)
+            .await
+            .expect("handled");
+        assert!(res_quota.is_err());
+        assert!(res_quota
+            .unwrap_err()
+            .to_string()
+            .contains("limit of 3 messages"));
+    }
 
     #[test]
     fn test_fanout_subagents_schema_structure() {
