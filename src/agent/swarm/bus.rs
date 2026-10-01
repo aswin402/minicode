@@ -35,6 +35,14 @@ impl SwarmMessageIntent {
             Self::CoordinationNote => "📢 Note",
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PublishContract => "publish_contract",
+            Self::QueryInterface => "query_interface",
+            Self::CoordinationNote => "coordination_note",
+        }
+    }
 }
 
 /// A structured peer message exchanged between workers in a swarm wave.
@@ -85,7 +93,7 @@ impl SwarmMessage {
             self.id,
             self.from_task,
             recipient_str,
-            serde_json::to_string(&self.intent).unwrap_or_default().trim_matches('"'),
+            self.intent.as_str(),
             self.topic,
             self.timestamp,
             self.payload.trim()
@@ -112,8 +120,9 @@ impl SwarmMessageBus {
 
     /// Appends a new message atomically to the bus with strict quota and size validation.
     pub fn post_message(&self, msg: SwarmMessage) -> Result<(), SwarmError> {
-        if msg.payload.len() > MAX_SWARM_MESSAGE_PAYLOAD_LEN {
-            return Err(SwarmError::MessagePayloadTooLarge(msg.payload.len()));
+        let char_count = msg.payload.chars().count();
+        if char_count > MAX_SWARM_MESSAGE_PAYLOAD_LEN {
+            return Err(SwarmError::MessagePayloadTooLarge(char_count));
         }
 
         if let Some(ref recipient) = msg.to_task {
@@ -196,8 +205,11 @@ impl SwarmMessageBus {
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(msg) = serde_json::from_str::<SwarmMessage>(trimmed) {
-                messages.push(msg);
+            match serde_json::from_str::<SwarmMessage>(trimmed) {
+                Ok(msg) => messages.push(msg),
+                Err(err) => {
+                    tracing::warn!(error = %err, line = %trimmed, "Malformed swarm bus message skipped");
+                }
             }
         }
 
@@ -237,6 +249,53 @@ mod tests {
         // Sender t1_backend should not receive its own message
         let unread_sender = bus.read_unread("t1_backend", None).unwrap();
         assert_eq!(unread_sender.len(), 0);
+    }
+
+    #[test]
+    fn test_bus_broadcast_delivery() {
+        let dir = tempdir().unwrap();
+        let bus = SwarmMessageBus::new(dir.path()).unwrap();
+
+        let bcast = SwarmMessage::new(
+            "swarm-123",
+            "t1_backend",
+            None, // Broadcast
+            SwarmMessageIntent::CoordinationNote,
+            "Shared Port",
+            "Server running on port 8080",
+        );
+        bus.post_message(bcast).unwrap();
+
+        // Both t2 and t3 should receive the broadcast
+        let unread_t2 = bus.read_unread("t2_frontend", None).unwrap();
+        assert_eq!(unread_t2.len(), 1);
+        assert_eq!(unread_t2[0].topic, "Shared Port");
+
+        let unread_t3 = bus.read_unread("t3_tester", None).unwrap();
+        assert_eq!(unread_t3.len(), 1);
+
+        // t1 (author) should not see it in unread
+        let unread_t1 = bus.read_unread("t1_backend", None).unwrap();
+        assert_eq!(unread_t1.len(), 0);
+    }
+
+    #[test]
+    fn test_format_for_prompt() {
+        let msg = SwarmMessage::new(
+            "swarm-123",
+            "t1_backend",
+            Some("t2_frontend"),
+            SwarmMessageIntent::PublishContract,
+            "User Schema",
+            "export interface User { id: string; }",
+        );
+        let prompt_block = msg.format_for_prompt();
+        assert!(prompt_block.contains("<peer_message"));
+        assert!(prompt_block.contains("from=\"t1_backend\""));
+        assert!(prompt_block.contains("to=\"t2_frontend\""));
+        assert!(prompt_block.contains("intent=\"publish_contract\""));
+        assert!(prompt_block.contains("export interface User { id: string; }"));
+        assert!(prompt_block.contains("</peer_message>"));
     }
 
     #[test]
