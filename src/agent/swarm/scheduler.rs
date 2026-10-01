@@ -469,6 +469,21 @@ impl SwarmScheduler {
         };
 
         // 7. Collect modified files from git worktree and commit them to the worker branch
+        // Ensure common ephemeral/compiled artifacts are ignored to prevent index pollution
+        let gitignore_path = target_dir.join(".gitignore");
+        let ignore_rules =
+            "\n__pycache__/\n*.py[cod]\n*$py.class\nnode_modules/\ntarget/\n.minicode/\n";
+        if gitignore_path.exists() {
+            if let Ok(mut content) = fs::read_to_string(&gitignore_path) {
+                if !content.contains("__pycache__") {
+                    content.push_str(ignore_rules);
+                    let _ = fs::write(&gitignore_path, content);
+                }
+            }
+        } else {
+            let _ = fs::write(&gitignore_path, ignore_rules);
+        }
+
         let modified_files = match std::process::Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&target_dir)
