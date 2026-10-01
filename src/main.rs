@@ -1507,6 +1507,8 @@ async fn handle_swarm_cli(
                 max_workers,
                 auto_merge,
                 json_stream: json,
+                model: Some(active_model),
+                provider: Some(config.provider.default.clone()),
             };
 
             let cancel_token = tokio_util::sync::CancellationToken::new();

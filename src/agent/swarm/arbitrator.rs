@@ -129,6 +129,12 @@ impl SwarmArbitrator {
                                 task.id, branch_name, hash_str
                             ));
                             successfully_merged += 1;
+
+                            // Cleanly delete the temporary worker branch after successful merge
+                            let _ = std::process::Command::new("git")
+                                .args(["branch", "-D", branch_name])
+                                .current_dir(workspace_root)
+                                .output();
                         }
                         Err(e) => {
                             error!(task_id = %task.id, error = %e, "Git merge execution error");

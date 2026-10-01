@@ -31,6 +31,8 @@ pub struct SwarmRunOptions {
     pub auto_merge: bool,
     #[allow(dead_code)]
     pub json_stream: bool,
+    pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 impl Default for SwarmRunOptions {
@@ -39,6 +41,8 @@ impl Default for SwarmRunOptions {
             max_workers: 4,
             auto_merge: true,
             json_stream: false,
+            model: None,
+            provider: None,
         }
     }
 }
@@ -74,6 +78,7 @@ impl SwarmScheduler {
         let concurrency = options.max_workers.clamp(1, 16);
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let state = Arc::new(Mutex::new(SwarmExecutionState::new(&plan)));
+        let run_options = Arc::new(options.clone());
 
         info!(
             swarm_id = %plan.id,
@@ -125,11 +130,13 @@ impl SwarmScheduler {
                 let sem = Arc::clone(&semaphore);
                 let token = cancel_token.clone();
                 let plan_ref = plan.clone();
+                let opts = Arc::clone(&run_options);
 
                 join_set.spawn(async move {
-                    let outcome =
-                        Self::run_worker_task(&ws_root, &art_root, &plan_ref, task, sem, token)
-                            .await;
+                    let outcome = Self::run_worker_task(
+                        &ws_root, &art_root, &plan_ref, task, sem, token, opts,
+                    )
+                    .await;
                     outcome
                 });
             }
@@ -209,6 +216,11 @@ impl SwarmScheduler {
             None
         };
 
+        // Clean up ephemeral worktrees if auto-merge was active
+        if options.auto_merge {
+            let _ = GitWorktreeManager::cleanup_stale_worktrees(workspace_root);
+        }
+
         // Save state and executive report
         let state_json = serde_json::to_string_pretty(&final_state)?;
         fs::write(swarm_dir.join("state.json"), state_json)?;
@@ -238,6 +250,7 @@ impl SwarmScheduler {
         task: SwarmTaskSpec,
         semaphore: Arc<Semaphore>,
         cancel_token: CancellationToken,
+        options: Arc<SwarmRunOptions>,
     ) -> SwarmTaskOutcome {
         let task_start = Instant::now();
 
@@ -262,15 +275,15 @@ impl SwarmScheduler {
 
         // 2. Setup isolated workspace worktree
         let agent_id = AgentId::new_subagent(&task.id);
-        let branch_name = format!("swarm/{}/{}", plan.id, task.id);
 
-        let (worktree_handle, target_dir) = match GitWorktreeManager::create_worktree(
+        let (worktree_handle, target_dir, active_branch) = match GitWorktreeManager::create_worktree(
             workspace_root,
             &agent_id,
         ) {
             Ok(handle) => {
                 let path = handle.worktree_path.clone();
-                (Some(handle), path)
+                let bname = handle.branch_name.clone();
+                (Some(handle), path, Some(bname))
             }
             Err(e) => {
                 warn!(
@@ -278,7 +291,7 @@ impl SwarmScheduler {
                     error = %e,
                     "Failed to create Git worktree for swarm worker; falling back to shared workspace"
                 );
-                (None, workspace_root.to_path_buf())
+                (None, workspace_root.to_path_buf(), None)
             }
         };
 
@@ -344,6 +357,13 @@ impl SwarmScheduler {
         cmd.arg("-d").arg(&target_dir);
         cmd.arg("-y");
         cmd.arg("--json-stream");
+
+        if let Some(ref m) = options.model {
+            cmd.arg("-m").arg(m);
+        }
+        if let Some(ref p) = options.provider {
+            cmd.arg("-p").arg(p);
+        }
 
         if let Some(max_iter) = task.max_iterations {
             cmd.arg("--max-iterations").arg(max_iter.to_string());
@@ -448,7 +468,7 @@ impl SwarmScheduler {
             None => (worker_success, None),
         };
 
-        // 7. Collect modified files from git worktree
+        // 7. Collect modified files from git worktree and commit them to the worker branch
         let modified_files = match std::process::Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&target_dir)
@@ -467,6 +487,21 @@ impl SwarmScheduler {
                 .collect(),
             _ => Vec::new(),
         };
+
+        if !modified_files.is_empty() && worktree_handle.is_some() {
+            let _ = std::process::Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(&target_dir)
+                .output();
+            let commit_msg = format!(
+                "feat(swarm/{}): worker `{}` ({})",
+                plan.id, task.id, task.title
+            );
+            let _ = std::process::Command::new("git")
+                .args(["commit", "-m", &commit_msg])
+                .current_dir(&target_dir)
+                .output();
+        }
 
         // 8. Publish expected artifacts to artifacts root
         let mut published_artifacts = HashMap::new();
@@ -500,7 +535,7 @@ impl SwarmScheduler {
             tokens_used: 0,
             files_modified: modified_files,
             worktree_path: Some(target_dir),
-            branch_name: Some(branch_name),
+            branch_name: active_branch,
             verification_command: verif_cmd_str,
             verification_passed,
             summary: full_output
