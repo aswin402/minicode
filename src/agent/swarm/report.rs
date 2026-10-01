@@ -171,7 +171,8 @@ impl SwarmReporter {
                     let target = msg.to_task.as_deref().unwrap_or("Wave Broadcast");
                     let time_fmt = msg.timestamp.split('T').nth(1).unwrap_or(&msg.timestamp);
                     let clean_time = time_fmt.split('.').next().unwrap_or(time_fmt);
-                    let preview = msg.payload.replace('\n', " ");
+                    let clean_topic = msg.topic.replace('|', "\\|");
+                    let preview = msg.payload.replace('\n', " ").replace('`', "'");
                     let truncated_preview = if preview.chars().count() > 60 {
                         let mut s: String = preview.chars().take(57).collect();
                         s.push_str("...");
@@ -180,12 +181,12 @@ impl SwarmReporter {
                         preview
                     };
                     doc.push_str(&format!(
-                        "| `{}` | `{}` | `{}` | {} | {} | `{}` |\n",
+                        "| `{}` | `{}` | `{}` | {} | `{}` | `{}` |\n",
                         clean_time,
                         msg.from_task,
                         target,
                         msg.intent.badge(),
-                        msg.topic,
+                        clean_topic,
                         truncated_preview
                     ));
                 }
