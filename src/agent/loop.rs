@@ -496,25 +496,29 @@ impl AgentLoop {
 
         // 2. Build Tri-Zone context:
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
-        let mut system_prompt =
-            PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+        let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
 
         // Swarm Turn-Start Ingestion: Check for unread peer messages
+        let mut peer_messages_block = String::new();
         if let (Ok(swarm_dir_str), Ok(task_id)) = (
             std::env::var("MINICODE_SWARM_DIR"),
             std::env::var("MINICODE_SWARM_TASK_ID"),
         ) {
-            let swarm_dir = std::path::Path::new(&swarm_dir_str);
-            if let Ok(bus) = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir) {
-                if let Ok(unread) =
-                    bus.read_unread(&task_id, self.last_seen_swarm_msg_id.as_deref())
-                {
-                    if !unread.is_empty() {
-                        if let Some(newest) = unread.last() {
-                            self.last_seen_swarm_msg_id = Some(newest.id.clone());
+            let swarm_dir_trimmed = swarm_dir_str.trim();
+            let task_id_trimmed = task_id.trim();
+            if !swarm_dir_trimmed.is_empty() && !task_id_trimmed.is_empty() {
+                let swarm_dir = std::path::Path::new(swarm_dir_trimmed);
+                if let Ok(bus) = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir) {
+                    if let Ok(unread) =
+                        bus.read_unread(task_id_trimmed, self.last_seen_swarm_msg_id.as_deref())
+                    {
+                        if !unread.is_empty() {
+                            if let Some(newest) = unread.last() {
+                                self.last_seen_swarm_msg_id = Some(newest.id.clone());
+                            }
+                            peer_messages_block =
+                                crate::agent::prompt::format_peer_messages_prompt(&unread);
                         }
-                        let peer_block = crate::agent::prompt::format_peer_messages_prompt(&unread);
-                        system_prompt.push_str(&peer_block);
                     }
                 }
             }
@@ -575,7 +579,7 @@ impl AgentLoop {
             workflow_enrichment.as_deref(),
         );
 
-        let prompt_with_context = if recency_block.trim().is_empty() {
+        let mut prompt_with_context = if recency_block.trim().is_empty() {
             format!("<user_request>\n{}\n</user_request>", user_prompt.trim())
         } else {
             format!(
@@ -584,6 +588,12 @@ impl AgentLoop {
                 user_prompt.trim()
             )
         };
+
+        if !peer_messages_block.is_empty() {
+            prompt_with_context =
+                format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
+        }
+
         self.messages.push(Message::user(prompt_with_context));
 
         if let Some(metrics) = compaction_metrics {
