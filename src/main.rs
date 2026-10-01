@@ -324,6 +324,63 @@ enum Commands {
         #[arg(long)]
         filter: Option<String>,
     },
+
+    /// Orchestrate autonomous multi-agent swarms with dynamic DAG scheduling and worktree isolation
+    Swarm {
+        #[command(subcommand)]
+        action: SwarmCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SwarmCommands {
+    /// Execute an autonomous multi-agent swarm against a high-level goal
+    Run {
+        /// High-level engineering objective or prompt for the swarm to execute
+        goal: String,
+
+        /// Maximum concurrent workers (default: 4)
+        #[arg(short = 'w', long, default_value = "4")]
+        max_workers: usize,
+
+        /// Automatically arbitrate and merge passing worker branches into the current branch
+        #[arg(long, default_value = "true")]
+        auto_merge: bool,
+
+        /// Only synthesize and display the dynamic SwarmPlan DAG without executing workers
+        #[arg(long)]
+        plan_only: bool,
+
+        /// Output machine-readable JSON status stream
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect active or historical swarm runs
+    Status {
+        /// Swarm run ID to inspect (defaults to latest swarm in current workspace)
+        id: Option<String>,
+
+        /// Output in machine-readable JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Terminate an active swarm and all child worker processes cleanly (zero orphans)
+    Stop {
+        /// Swarm ID or worker ID to terminate (defaults to all active workers)
+        id: Option<String>,
+    },
+
+    /// Tail or view logs from a specific swarm worker
+    Logs {
+        /// Worker task ID to tail logs for
+        worker_id: String,
+
+        /// Follow live logs continuously (tail -f)
+        #[arg(short = 'f', long)]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -795,6 +852,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Power { action, json }) => {
             handle_power_cli(&workspace_canonical, &config, action, json, cli.json_stream).await?;
+        }
+        Some(Commands::Swarm { action }) => {
+            handle_swarm_cli(&workspace_canonical, &config, action).await?;
         }
         Some(Commands::History { json }) => {
             let store = session::store::SessionStore::with_workspace(&workspace_canonical);
@@ -1341,6 +1401,215 @@ async fn handle_power_cli(
                 println!("{}", serde_json::to_string_pretty(&json_out)?);
             } else {
                 println!("{}", report);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_swarm_cli(
+    workspace_root: &Path,
+    config: &Config,
+    action: SwarmCommands,
+) -> anyhow::Result<()> {
+    match action {
+        SwarmCommands::Run {
+            goal,
+            max_workers,
+            auto_merge,
+            plan_only,
+            json,
+        } => {
+            println!("🐝 Initializing Swarm Orchestrator for: \"{}\"\n", goal);
+
+            // Step 1: Dynamic DAG Planning
+            let api_key = config.get_api_key(&config.provider.default);
+            let custom_url = config
+                .provider
+                .custom_endpoints
+                .get(&config.provider.default)
+                .cloned();
+            let (provider, _) = agent::create_provider_or_fallback(
+                &config.provider.default,
+                api_key,
+                custom_url.as_deref(),
+            );
+            let active_model = config.provider.model.clone();
+
+            let plan = match agent::swarm::SwarmPlanner::plan_with_provider(
+                workspace_root,
+                &goal,
+                provider.as_ref(),
+                &active_model,
+            )
+            .await
+            {
+                Ok(p) => {
+                    let waves_count = p.calculate_waves().map(|w| w.len()).unwrap_or(1);
+                    println!(
+                        "✔ Dynamic SwarmPlan DAG synthesized ({} tasks across {} waves)\n",
+                        p.tasks.len(),
+                        waves_count
+                    );
+                    p
+                }
+                Err(e) => {
+                    eprintln!(
+                        "⚠ LLM planning failed ({}); utilizing heuristic task decomposition\n",
+                        e
+                    );
+                    agent::swarm::SwarmPlanner::generate_fallback_plan(&goal)
+                }
+            };
+
+            // Display DAG
+            println!("┌─────────────────────────────────────────────────────────────┐");
+            println!(
+                "│ Plan: {:<53} │",
+                plan.title.chars().take(53).collect::<String>()
+            );
+            println!("│ Swarm ID: {:<49} │", plan.id);
+            println!("└─────────────────────────────────────────────────────────────┘");
+
+            if let Ok(waves) = plan.calculate_waves() {
+                for (wave_idx, task_ids) in waves.iter().enumerate() {
+                    println!(
+                        "  🌊 Wave {} (Parallel Concurrency: {}):",
+                        wave_idx + 1,
+                        task_ids.len()
+                    );
+                    for tid in task_ids {
+                        if let Some(task) = plan.get_task(tid) {
+                            let check = task.check_command.as_deref().unwrap_or("none");
+                            println!(
+                                "     • [{}] {} — {} (Check: `{}`)",
+                                task.id, task.title, task.role_title, check
+                            );
+                        }
+                    }
+                }
+                println!();
+            }
+
+            if plan_only {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&plan)?);
+                }
+                return Ok(());
+            }
+
+            // Step 2: Topological Execution
+            println!(
+                "🚀 Launching Swarm Workers (Max Concurrency: {}, Auto-Merge: {})...\n",
+                max_workers, auto_merge
+            );
+            let options = agent::swarm::SwarmRunOptions {
+                max_workers,
+                auto_merge,
+                json_stream: json,
+            };
+
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            let (state, report_path) = agent::swarm::SwarmScheduler::execute_plan(
+                workspace_root,
+                plan,
+                options,
+                cancel_token,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Swarm execution failed: {}", e))?;
+
+            // Step 3: Print Executive Summary
+            let duration_secs = state
+                .total_duration_ms
+                .map(|ms| ms as f64 / 1000.0)
+                .unwrap_or(0.0);
+            println!("\n🏁 Swarm Finished in {:.2}s!", duration_secs);
+            let completed = state.count_by_status(agent::swarm::SwarmTaskStatus::Completed);
+            let failed = state.count_by_status(agent::swarm::SwarmTaskStatus::Failed);
+            let blocked = state.count_by_status(agent::swarm::SwarmTaskStatus::Blocked);
+            println!(
+                "   ✔ Completed: {}  |  ✖ Failed: {}  |  ⊘ Blocked: {}",
+                completed, failed, blocked
+            );
+            println!("   📄 Executive Report: {}", report_path.display());
+            if state.auto_merged {
+                println!("   🔀 Git Worktrees: Successfully merged into active branch.");
+            }
+        }
+        SwarmCommands::Status { id, json } => {
+            let swarms_dir = workspace_root.join(".minicode").join("swarms");
+            if !swarms_dir.exists() {
+                println!("No swarm executions found in current workspace.");
+                return Ok(());
+            }
+
+            let target_swarm_dir = if let Some(swarm_id) = id {
+                swarms_dir.join(swarm_id)
+            } else {
+                let mut entries: Vec<_> = std::fs::read_dir(&swarms_dir)?
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .collect();
+                entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+                match entries.pop() {
+                    Some(e) => e.path(),
+                    None => {
+                        println!("No swarm runs found.");
+                        return Ok(());
+                    }
+                }
+            };
+
+            let state_file = target_swarm_dir.join("state.json");
+            if state_file.exists() {
+                let content = std::fs::read_to_string(&state_file)?;
+                if json {
+                    println!("{}", content);
+                } else {
+                    let state: agent::swarm::SwarmExecutionState = serde_json::from_str(&content)?;
+                    println!("🐝 Swarm Status: `{}`", state.swarm_id);
+                    println!("   Title: {}", state.title);
+                    println!("   Objective: {}", state.objective);
+                    println!(
+                        "   Duration: {:.2}s",
+                        state.total_duration_ms.unwrap_or(0) as f64 / 1000.0
+                    );
+                    println!("   Tasks:");
+                    for (tid, status) in &state.task_statuses {
+                        println!("     - [{}] {}", tid, status.badge());
+                    }
+                }
+            } else {
+                println!(
+                    "Swarm directory `{}` has no state.json",
+                    target_swarm_dir.display()
+                );
+            }
+        }
+        SwarmCommands::Stop { id } => {
+            let dev_registry = dev::registry::get_global_dev_registry();
+            if let Some(target_id) = id {
+                let dev_id = dev::models::DevProcessId::from(format!("swarm-worker-{}", target_id));
+                dev_registry.stop(&dev_id).await?;
+                println!("✔ Stopped swarm worker process `{}`", target_id);
+            } else {
+                dev_registry.kill_all().await?;
+                println!("✔ Terminated all active swarm workers and background processes");
+            }
+        }
+        SwarmCommands::Logs {
+            worker_id,
+            follow: _,
+        } => {
+            let dev_registry = dev::registry::get_global_dev_registry();
+            let dev_id = dev::models::DevProcessId::from(format!("swarm-worker-{}", worker_id));
+            if let Ok(lines) = dev_registry.logs(&dev_id, 100, None).await {
+                for line in lines {
+                    println!("{}", line);
+                }
+            } else {
+                println!("No logs found for swarm worker `{}`", worker_id);
             }
         }
     }

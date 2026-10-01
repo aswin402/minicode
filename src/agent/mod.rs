@@ -24,6 +24,7 @@ pub mod sequential_thinking;
 pub mod speculative;
 pub mod stuck_detector;
 pub mod subagent;
+pub mod swarm;
 pub mod task_dag;
 pub mod types;
 pub mod verification_barrier;
