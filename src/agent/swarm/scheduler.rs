@@ -640,8 +640,8 @@ impl SwarmScheduler {
     pub fn compute_active_peers(all_peers: &[String], current_task_id: &str) -> String {
         all_peers
             .iter()
-            .filter(|id| *id != current_task_id)
-            .cloned()
+            .filter(|id| id.as_str() != current_task_id)
+            .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -678,5 +678,14 @@ mod tests {
             SwarmScheduler::compute_active_peers(&task_ids, "t3"),
             "t1,t2"
         );
+
+        // Single worker wave
+        assert_eq!(
+            SwarmScheduler::compute_active_peers(&["t1".to_string()], "t1"),
+            ""
+        );
+
+        // Empty list
+        assert_eq!(SwarmScheduler::compute_active_peers(&[], "t1"), "");
     }
 }
