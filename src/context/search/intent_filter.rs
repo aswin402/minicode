@@ -4,314 +4,350 @@ use std::collections::HashSet;
 /// High-speed, zero-allocation intent classifier for dynamic tool gating.
 pub struct IntentClassifier;
 
+#[inline]
+fn contains_any(text: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|&p| text.contains(p))
+}
+
+#[inline]
+fn has_any_word(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|&w| crate::utils::has_word(text, w))
+}
+
 impl IntentClassifier {
     /// Detects relevant tool categories from user prompt text.
-    /// Runs in < 0.1ms using lowercase keyword matching.
+    /// Runs in < 0.1ms using structured semantic intent signals.
     pub fn detect(prompt: &str) -> HashSet<ToolCategory> {
         let mut categories = HashSet::new();
         let lower = prompt.to_ascii_lowercase();
 
         // 1. Git Intent
-        if lower.contains("git ")
-            || lower.contains("commit")
-            || lower.contains("branch")
-            || lower.contains(" diff")
-            || lower.contains("stash")
-            || lower.contains("merge")
+        let has_git_term = lower.starts_with("git")
+            || lower.contains("git ")
             || lower.contains("pull request")
-            || lower.contains(" pr ")
-            || lower.starts_with("git")
-        {
+            || has_any_word(
+                &lower,
+                &["git", "commit", "branch", "diff", "stash", "merge", "pr"],
+            );
+
+        if has_git_term {
             categories.insert(ToolCategory::Git);
         }
 
         // 2. Web & Browser Intent
-        if lower.contains("http://")
-            || lower.contains("https://")
-            || lower.contains("search web")
-            || lower.contains("web search")
-            || lower.contains("browser")
-            || lower.contains("browse")
-            || lower.contains("crawl")
-            || lower.contains("documentation for")
-            || lower.contains("latest docs")
-            || lower.contains("online docs")
-            || lower.contains("launch website")
-            || lower.contains("open website")
-            || lower.contains("view website")
-            || lower.contains("close browser")
-            || lower.contains("stop browser")
-            || lower.contains("kill browser")
-            || lower.contains("browser_close")
-            || lower.contains("screenshot")
-            || crate::utils::has_word(&lower, "website")
-        {
+        let has_web_url = contains_any(&lower, &["http://", "https://"]);
+        let has_web_search = contains_any(
+            &lower,
+            &[
+                "search web",
+                "web search",
+                "online docs",
+                "latest docs",
+                "documentation for",
+            ],
+        );
+        let has_browser_action =
+            contains_any(&lower, &["browser", "browse", "crawl", "screenshot"])
+                || crate::utils::has_word(&lower, "website");
+
+        if has_web_url || has_web_search || has_browser_action {
             categories.insert(ToolCategory::Web);
         }
 
         // 3. MiniKit Architecture Stacks, Dependencies & Skills Intent
-        if lower.contains("minikit")
-            || lower.contains("kit ")
-            || lower.contains("kit_")
-            || lower.contains("onpkg")
-            || lower.contains("stack")
-            || lower.contains("scaffold")
-            || lower.contains("template")
-            || lower.contains("bootstrap")
-            || lower.contains("add pkg")
-            || lower.contains("add package")
-            || lower.contains("install package")
-            || lower.contains("install pkg")
-            || lower.contains("add dependency")
-            || lower.contains("add dep")
-            || lower.contains("dependencies")
-            || lower.contains("dependency")
-            || lower.contains("package")
-            || lower.contains("packages")
-            || lower.contains("library")
-            || lower.contains("libraries")
-            || lower.contains("npm i")
-            || lower.contains("npm install")
-            || lower.contains("yarn add")
-            || lower.contains("pnpm add")
-            || lower.contains("bun add")
-            || lower.contains("cargo add")
-            || lower.contains("pip install")
-            || lower.contains("uv add")
-            || lower.contains("flutter pub")
-            || lower.contains("drift")
-            || lower.contains("self-heal")
-            || lower.contains("skill")
-            || lower.contains("skills")
-        {
+        let has_minikit_term = contains_any(
+            &lower,
+            &[
+                "minikit",
+                "kit ",
+                "kit_",
+                "onpkg",
+                "scaffold",
+                "template",
+                "bootstrap",
+                "drift",
+                "self-heal",
+            ],
+        );
+        let has_package_management = contains_any(
+            &lower,
+            &[
+                "package",
+                "pkg",
+                "dependency",
+                "dependencies",
+                "add dep",
+                "install dep",
+                "librar",
+                "npm",
+                "yarn add",
+                "pnpm",
+                "bun add",
+                "cargo add",
+                "pip install",
+                "uv add",
+                "flutter pub",
+            ],
+        );
+        let has_kit_word = has_any_word(&lower, &["stack", "skill", "skills"]);
+
+        if has_minikit_term || has_package_management || has_kit_word {
             categories.insert(ToolCategory::MiniKit);
         }
 
         // 4. CodeGraph & Architecture Intent
-        if lower.contains("architecture")
-            || lower.contains("blast radius")
-            || lower.contains("callers")
-            || lower.contains("callees")
-            || lower.contains("code graph")
-            || lower.contains("codegraph")
-            || lower.contains("code_explore")
-            || lower.contains("diff_impact")
-            || lower.contains("code_explain")
-            || lower.contains("code_trace")
-            || lower.contains("code_impact")
-            || lower.contains("explain symbol")
-            || lower.contains("trace flow")
-            || lower.contains("call trace")
-            || lower.contains("trace execution")
-            || lower.contains("dependency graph")
-            || lower.contains("impact analysis")
-            || lower.contains("repo_map")
-            || lower.contains("repomap")
-            || lower.contains("who calls")
-            || lower.contains("where is")
-            || lower.contains("how does")
-            || lower.contains("call hierarchy")
-            || lower.contains("impact of")
-            || (crate::utils::has_word(&lower, "trace")
-                && (crate::utils::has_word(&lower, "call")
-                    || crate::utils::has_word(&lower, "function")
-                    || crate::utils::has_word(&lower, "symbol")
-                    || crate::utils::has_word(&lower, "flow")))
-        {
+        let has_graph_term = contains_any(
+            &lower,
+            &[
+                "architecture",
+                "blast radius",
+                "call hierarchy",
+                "dependency graph",
+                "impact analysis",
+                "impact of",
+                "code graph",
+                "codegraph",
+                "repo_map",
+                "repomap",
+                "code_explore",
+                "diff_impact",
+                "code_explain",
+                "code_trace",
+                "code_impact",
+            ],
+        );
+        let has_ast_query = contains_any(
+            &lower,
+            &[
+                "who calls",
+                "callers",
+                "callees",
+                "explain symbol",
+                "call trace",
+                "trace flow",
+                "trace execution",
+                "where is",
+                "how does",
+            ],
+        );
+        let has_trace_flow = crate::utils::has_word(&lower, "trace")
+            && (crate::utils::has_word(&lower, "call")
+                || crate::utils::has_word(&lower, "function")
+                || crate::utils::has_word(&lower, "symbol")
+                || crate::utils::has_word(&lower, "flow"));
+
+        if has_graph_term || has_ast_query || has_trace_flow {
             categories.insert(ToolCategory::Codegraph);
             categories.insert(ToolCategory::Memory);
             categories.insert(ToolCategory::Search);
         }
 
         // 5. Multi-Agent & Swarm Intent
-        if lower.contains("subagent")
-            || lower.contains("swarm")
-            || lower.contains("council")
-            || lower.contains("consensus")
-            || lower.contains("hypotheses")
-            || lower.contains("hypothesis")
-            || lower.contains("delegate")
-            || lower.contains("fanout")
-            || lower.contains("scratchpad")
-        {
+        if contains_any(
+            &lower,
+            &[
+                "subagent",
+                "swarm",
+                "council",
+                "consensus",
+                "hypothes",
+                "delegate",
+                "fanout",
+                "scratchpad",
+            ],
+        ) {
             categories.insert(ToolCategory::Agent);
         }
 
         // 6. AST & Deep Search Intent
-        if lower.contains("ast")
-            || lower.contains("syntax tree")
-            || lower.contains("lsp")
-            || lower.contains("goto definition")
-            || lower.contains("find references")
-            || lower.contains("hybrid search")
-            || lower.contains("hybrid_search")
-            || lower.contains("semantic search")
-            || lower.contains("semantic_search")
-            || lower.contains("locate_fault")
-            || lower.contains("fault")
-        {
+        let has_search_term = contains_any(
+            &lower,
+            &[
+                "syntax tree",
+                "goto definition",
+                "find references",
+                "hybrid search",
+                "hybrid_search",
+                "semantic search",
+                "semantic_search",
+                "locate_fault",
+                "fault",
+            ],
+        );
+        let has_search_word = has_any_word(&lower, &["ast", "lsp"]);
+
+        if has_search_term || has_search_word {
             categories.insert(ToolCategory::Search);
         }
 
         // 7. Context, Memory, Architecture & Analysis Intent
-        if lower.contains("wiki")
-            || lower.contains("skill")
-            || lower.contains("remember")
-            || lower.contains("forget fact")
-            || lower.contains("memory")
-            || lower.contains("plan")
-            || lower.contains("progress")
-            || lower.contains("repo_map")
-            || lower.contains("repomap")
-            || lower.contains("code map")
-            || lower.contains("skeleton")
-            || lower.contains("smell")
-            || lower.contains("code_smells")
-            || lower.contains("dead_code")
-            || lower.contains("dead code")
-            || lower.contains("invariant")
-            || lower.contains("coverage gap")
-            || lower.contains("prune")
-            || lower.contains("token budget")
-        {
+        let has_memory_term = contains_any(
+            &lower,
+            &[
+                "wiki",
+                "remember",
+                "forget fact",
+                "memory",
+                "plan",
+                "progress",
+                "repo_map",
+                "repomap",
+                "code map",
+                "skeleton",
+                "smell",
+                "code_smells",
+                "dead code",
+                "dead_code",
+                "invariant",
+                "coverage gap",
+                "prune",
+                "token budget",
+            ],
+        );
+        let has_memory_word = has_any_word(&lower, &["skill", "skills"]);
+
+        if has_memory_term || has_memory_word {
             categories.insert(ToolCategory::Memory);
         }
 
         // 8. MiniPower Autonomous Methodology & Verification Intent
-        if lower.contains("power")
-            || lower.contains("minipower")
-            || lower.contains("superpower")
-            || lower.contains("verify")
-            || lower.contains("verification")
-            || lower.contains("barrier")
-            || lower.contains("review")
-            || lower.contains("brainstorm")
-            || lower.contains("socratic")
-            || lower.contains("tdd")
-            || lower.contains("red flag")
-            || lower.contains("worktree")
-            || lower.contains("compliance")
-            || lower.contains("acceptance criteria")
-            || lower.contains("end-to-end")
-            || crate::utils::has_word(&lower, "implement")
-            || crate::utils::has_word(&lower, "refactor")
-            || crate::utils::has_word(&lower, "feature")
-            || crate::utils::has_word(&lower, "milestone")
-        {
+        let has_power_term = contains_any(
+            &lower,
+            &[
+                "power",
+                "minipower",
+                "superpower",
+                "verify",
+                "verification",
+                "barrier",
+                "review",
+                "brainstorm",
+                "socratic",
+                "tdd",
+                "red flag",
+                "worktree",
+                "compliance",
+                "acceptance criteria",
+                "end-to-end",
+            ],
+        );
+        let has_engineering_word =
+            has_any_word(&lower, &["implement", "refactor", "feature", "milestone"]);
+
+        if has_power_term || has_engineering_word {
             categories.insert(ToolCategory::MiniPower);
             categories.insert(ToolCategory::Memory);
         }
 
         // 9. MiniBlocks UI Component & Design Warehouse Intent
-        if lower.contains("block")
-            || lower.contains("miniblock")
-            || lower.contains("miniblocks")
-            || lower.contains("component")
-            || lower.contains("components")
-            || lower.contains("palette")
-            || lower.contains("palettes")
-            || lower.contains("gradient")
-            || lower.contains("gradients")
-            || lower.contains("navbar")
-            || lower.contains("hero")
-            || lower.contains("ui design")
-            || lower.contains("design token")
-            || lower.contains("landing page")
-            || lower.contains("landing")
-            || lower.contains("dashboard")
-            || lower.contains("sidebar")
-            || lower.contains("pricing")
-            || lower.contains("modal")
-            || lower.contains("dialog")
-            || lower.contains("tailwind")
-            || lower.contains("dark mode")
-            || lower.contains("light mode")
-            || lower.contains("responsive")
-            || crate::utils::has_word(&lower, "ui")
-            || crate::utils::has_word(&lower, "frontend")
-            || crate::utils::has_word(&lower, "css")
-            || crate::utils::has_word(&lower, "styling")
-            || crate::utils::has_word(&lower, "button")
-            || crate::utils::has_word(&lower, "card")
-            || crate::utils::has_word(&lower, "table")
-            || crate::utils::has_word(&lower, "footer")
-            || crate::utils::has_word(&lower, "header")
-            || crate::utils::has_word(&lower, "wireframe")
-        {
+        let has_block_term = contains_any(
+            &lower,
+            &[
+                "block",
+                "component",
+                "palette",
+                "gradient",
+                "navbar",
+                "hero",
+                "ui design",
+                "design token",
+                "landing",
+                "dashboard",
+                "sidebar",
+                "pricing",
+                "modal",
+                "dialog",
+                "tailwind",
+                "dark mode",
+                "light mode",
+                "responsive",
+            ],
+        );
+        let has_ui_word = has_any_word(
+            &lower,
+            &[
+                "ui",
+                "frontend",
+                "css",
+                "styling",
+                "button",
+                "card",
+                "table",
+                "footer",
+                "header",
+                "wireframe",
+            ],
+        );
+
+        if has_block_term || has_ui_word {
             categories.insert(ToolCategory::Blocks);
             categories.insert(ToolCategory::MiniKit);
         }
 
         // 10. MiniTask Process Vault Intent
-        if lower.contains("dev server")
-            || lower.contains("run server")
-            || lower.contains("start server")
-            || lower.contains("launch server")
-            || lower.contains("restart server")
-            || lower.contains("kill server")
-            || lower.contains("stop server")
-            || lower.contains("background process")
-            || lower.contains("background task")
-            || lower.contains("manage task")
-            || lower.contains("manage tasks")
-            || lower.contains("minitask")
-            || lower.contains("task manager")
-            || lower.contains("listen on port")
-            || lower.contains("port ")
+        let has_process_term = contains_any(
+            &lower,
+            &[
+                "dev server",
+                "minitask",
+                "task manager",
+                "background process",
+                "background task",
+                "scheduled task",
+                "one-shot timer",
+                "periodic check",
+                "listen on port",
+            ],
+        ) || crate::utils::has_word(&lower, "daemon")
+            || crate::utils::has_word(&lower, "vite")
             || lower.starts_with("serve")
             || lower.contains(" serve ")
-            || lower.contains("resource")
-            || lower.contains("resources")
-            || lower.contains("ram")
-            || lower.contains("cpu")
-            || lower.contains("telemetry")
-            || lower.contains("memory usage")
-            || lower.contains("stop that")
-            || lower.contains("kill that")
-            || lower == "stop it"
-            || lower == "kill it"
-            || lower == "stop"
-            || lower == "kill"
-            || lower.contains("whats happening")
-            || lower.contains("what's happening")
-            || lower.contains("what is happening")
-            || lower.contains("what is running")
-            || lower.contains("what's running")
-            || lower.contains("whats running")
-            || lower.contains("what are the tasks doing")
-            || lower.contains("how are the tasks doing")
-            || lower.contains("how are background processes doing")
-            || lower.contains("how are the background processes doing")
-            || lower.contains("status of tasks")
-            || lower.contains("status of task")
-            || lower.contains("task status")
-            || lower.contains("process status")
-            || lower.contains("is the server running")
-            || lower.contains("is the server still running")
-            || lower.contains("is server running")
-            || lower.contains("any background tasks")
-            || lower.contains("any background task")
-            || lower.contains("any processes running")
-            || lower.contains("check background tasks")
-            || lower.contains("check background task")
-            || lower.contains("check background processes")
-            || lower.contains("check tasks")
-            || lower.contains("check processes")
-            || lower.contains("active processes")
-            || lower.contains("active tasks")
-            || lower.contains("scheduled task")
-            || lower.contains("scheduled tasks")
-            || lower.contains("periodic check")
-            || lower.contains("one-shot timer")
-            || crate::utils::has_word(&lower, "daemon")
-            || crate::utils::has_word(&lower, "vite")
-            || (crate::utils::has_word(&lower, "server")
-                && (crate::utils::has_word(&lower, "start")
-                    || crate::utils::has_word(&lower, "run")
-                    || crate::utils::has_word(&lower, "status")
-                    || crate::utils::has_word(&lower, "logs")
-                    || crate::utils::has_word(&lower, "kill")
-                    || crate::utils::has_word(&lower, "stop")))
+            || lower.contains("port ");
+
+        let has_server_action = crate::utils::has_word(&lower, "server")
+            && has_any_word(
+                &lower,
+                &[
+                    "start", "run", "launch", "serve", "status", "logs", "kill", "stop", "restart",
+                ],
+            );
+
+        let has_resource_telemetry = contains_any(
+            &lower,
+            &["resource", "telemetry", "memory usage", "ram", "cpu"],
+        );
+
+        let has_status_inspection = contains_any(
+            &lower,
+            &[
+                "whats happening",
+                "what's happening",
+                "what is happening",
+                "what is running",
+                "what's running",
+                "whats running",
+                "status of task",
+                "task status",
+                "process status",
+                "is the server running",
+                "is server running",
+                "active processes",
+                "active tasks",
+                "check tasks",
+                "check processes",
+                "check background",
+            ],
+        ) || (contains_any(&lower, &["how are", "what are"])
+            && contains_any(&lower, &["tasks", "background processes"]));
+
+        let has_teardown_command = matches!(lower.trim(), "stop" | "kill" | "stop it" | "kill it")
+            || contains_any(&lower, &["stop that", "kill that", "manage task"]);
+
+        if has_process_term
+            || has_server_action
+            || has_resource_telemetry
+            || has_status_inspection
+            || has_teardown_command
         {
             categories.insert(ToolCategory::Dev);
             categories.insert(ToolCategory::Exec);
@@ -348,39 +384,25 @@ impl IntentClassifier {
             // 2. Domain keyword matching
             match s_lower.as_str() {
                 "figma" => {
-                    if lower.contains("frame")
-                        || lower.contains("component")
-                        || lower.contains("canvas")
-                        || lower.contains("design system")
-                        || lower.contains("ui design")
-                    {
+                    if contains_any(
+                        &lower,
+                        &["frame", "component", "canvas", "design system", "ui design"],
+                    ) {
                         matched.insert(s_ref.to_string());
                     }
                 }
                 "github" | "gh" => {
-                    if lower.contains("pull request")
-                        || lower.contains(" pr ")
-                        || lower.contains("issue")
-                        || lower.contains("repo")
-                    {
+                    if contains_any(&lower, &["pull request", " pr ", "issue", "repo"]) {
                         matched.insert(s_ref.to_string());
                     }
                 }
                 "postgres" | "mysql" | "sqlite" | "database" | "db" | "sql" => {
-                    if lower.contains("sql")
-                        || lower.contains("query")
-                        || lower.contains("database")
-                        || lower.contains("migration")
-                        || lower.contains("schema")
-                    {
+                    if contains_any(&lower, &["sql", "query", "database", "migration", "schema"]) {
                         matched.insert(s_ref.to_string());
                     }
                 }
                 "docker" => {
-                    if lower.contains("container")
-                        || lower.contains("dockerfile")
-                        || lower.contains("compose")
-                    {
+                    if contains_any(&lower, &["container", "dockerfile", "compose"]) {
                         matched.insert(s_ref.to_string());
                     }
                 }
