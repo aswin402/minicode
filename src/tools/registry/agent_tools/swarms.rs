@@ -173,12 +173,7 @@ pub async fn dispatch(
                 };
 
                 if let Some(swarm_dir_str) = swarm_dir_env {
-                    let bus = crate::agent::swarm::bus::SwarmMessageBus::new(std::path::Path::new(
-                        &swarm_dir_str,
-                    ))
-                    .map_err(|e| ToolError::CommandExec(e.to_string()))?;
-
-                    let msg = crate::agent::swarm::bus::SwarmMessage::new(
+                    let msg_to_post = crate::agent::swarm::bus::SwarmMessage::new(
                         swarm_id_env,
                         from,
                         to,
@@ -186,9 +181,19 @@ pub async fn dispatch(
                         topic,
                         payload,
                     );
+                    let msg_id = msg_to_post.id.clone();
+                    let msg_topic = msg_to_post.topic.clone();
 
-                    bus.post_message(msg.clone())
-                        .map_err(|e| ToolError::CommandExec(e.to_string()))?;
+                    let post_res = tokio::task::spawn_blocking(move || {
+                        let bus = crate::agent::swarm::bus::SwarmMessageBus::new(
+                            std::path::Path::new(&swarm_dir_str),
+                        )?;
+                        bus.post_message(msg_to_post)
+                    })
+                    .await
+                    .map_err(|e| ToolError::CommandExec(e.to_string()))?;
+
+                    post_res.map_err(|e| ToolError::CommandExec(e.to_string()))?;
 
                     let dest = to
                         .map(|t| format!("to peer worker `{}`", t))
@@ -196,10 +201,10 @@ pub async fn dispatch(
 
                     Ok(format!(
                         "✔ Message `{}` posted {} [{}]: `{}`",
-                        msg.id,
+                        msg_id,
                         dest,
                         intent.badge(),
-                        msg.topic
+                        msg_topic
                     ))
                 } else {
                     // Fallback to in-memory bus for standalone non-swarm executions

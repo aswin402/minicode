@@ -504,21 +504,24 @@ impl AgentLoop {
             std::env::var("MINICODE_SWARM_DIR"),
             std::env::var("MINICODE_SWARM_TASK_ID"),
         ) {
-            let swarm_dir_trimmed = swarm_dir_str.trim();
-            let task_id_trimmed = task_id.trim();
+            let swarm_dir_trimmed = swarm_dir_str.trim().to_string();
+            let task_id_trimmed = task_id.trim().to_string();
             if !swarm_dir_trimmed.is_empty() && !task_id_trimmed.is_empty() {
-                let swarm_dir = std::path::Path::new(swarm_dir_trimmed);
-                if let Ok(bus) = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir) {
-                    if let Ok(unread) =
-                        bus.read_unread(task_id_trimmed, self.last_seen_swarm_msg_id.as_deref())
-                    {
-                        if !unread.is_empty() {
-                            if let Some(newest) = unread.last() {
-                                self.last_seen_swarm_msg_id = Some(newest.id.clone());
-                            }
-                            peer_messages_block =
-                                crate::agent::prompt::format_peer_messages_prompt(&unread);
+                let last_seen = self.last_seen_swarm_msg_id.clone();
+                let unread_res = tokio::task::spawn_blocking(move || {
+                    let swarm_dir = std::path::Path::new(&swarm_dir_trimmed);
+                    let bus = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir)?;
+                    bus.read_unread(&task_id_trimmed, last_seen.as_deref())
+                })
+                .await;
+
+                if let Ok(Ok(unread)) = unread_res {
+                    if !unread.is_empty() {
+                        if let Some(newest) = unread.last() {
+                            self.last_seen_swarm_msg_id = Some(newest.id.clone());
                         }
+                        peer_messages_block =
+                            crate::agent::prompt::format_peer_messages_prompt(&unread);
                     }
                 }
             }
