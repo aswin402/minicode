@@ -52,6 +52,16 @@ impl ArchitecturalLayer {
     }
 }
 
+#[inline]
+fn contains_any(text: &str, phrases: &[&str]) -> bool {
+    phrases.iter().any(|&p| text.contains(p))
+}
+
+#[inline]
+fn ends_with_any(text: &str, suffixes: &[&str]) -> bool {
+    suffixes.iter().any(|&s| text.ends_with(s))
+}
+
 /// Classifier engine that categorizes file paths and AST symbols into architectural layers
 pub struct LayerClassifier;
 
@@ -66,74 +76,76 @@ impl LayerClassifier {
             .to_lowercase();
 
         // 1. UI & Presentation
-        if path_str.contains("/ui/")
-            || path_str.contains("/presentation/")
-            || path_str.contains("/views/")
-            || path_str.contains("/components/")
-            || path_str.contains("/templates/")
-            || path_str.contains("/widgets/")
-            || file_name.ends_with(".tsx")
-            || file_name.ends_with(".jsx")
-            || file_name.ends_with(".vue")
-            || file_name.ends_with(".svelte")
-            || file_name.ends_with(".css")
-            || file_name.ends_with(".scss")
-            || file_name == "view.rs"
-            || file_name == "modal.rs"
-            || file_name == "input.rs"
-            || file_name == "theme.rs"
-            || file_name == "diff_view.rs"
+        const UI_PATHS: &[&str] = &[
+            "/ui/",
+            "/presentation/",
+            "/views/",
+            "/components/",
+            "/templates/",
+            "/widgets/",
+        ];
+        const UI_EXTS: &[&str] = &[".tsx", ".jsx", ".vue", ".svelte", ".css", ".scss"];
+        const UI_FILES: &[&str] = &[
+            "view.rs",
+            "modal.rs",
+            "input.rs",
+            "theme.rs",
+            "diff_view.rs",
+        ];
+
+        if contains_any(&path_str, UI_PATHS)
+            || ends_with_any(&file_name, UI_EXTS)
+            || UI_FILES.contains(&file_name.as_str())
         {
             return ArchitecturalLayer::Ui;
         }
 
         // 2. API & Protocols
-        if path_str.contains("/api/")
-            || path_str.contains("/routes/")
-            || path_str.contains("/controllers/")
-            || path_str.contains("/endpoints/")
-            || path_str.contains("/server/")
-            || path_str.contains("/rpc/")
-            || file_name == "main.rs"
-            || file_name == "server.rs"
-            || file_name == "routes.rs"
-            || file_name == "protocol.rs"
-            || path_str.contains("/protocol/")
-        {
+        const API_PATHS: &[&str] = &[
+            "/api/",
+            "/routes/",
+            "/controllers/",
+            "/endpoints/",
+            "/server/",
+            "/rpc/",
+            "/protocol/",
+        ];
+        const API_FILES: &[&str] = &["main.rs", "server.rs", "routes.rs", "protocol.rs"];
+
+        if contains_any(&path_str, API_PATHS) || API_FILES.contains(&file_name.as_str()) {
             return ArchitecturalLayer::Api;
         }
 
         // 3. Data & Persistence
-        if path_str.contains("/data/")
-            || path_str.contains("/models/")
-            || path_str.contains("/db/")
-            || path_str.contains("/database/")
-            || path_str.contains("/schema/")
-            || path_str.contains("/session/")
-            || path_str.contains("/store/")
-            || path_str.contains("/storage/")
-            || path_str.contains("/memory/")
-            || path_str.contains("/repository/")
-            || file_name == "store.rs"
-            || file_name == "db.rs"
-            || file_name == "schema.rs"
-            || file_name == "graph.rs"
-            || file_name == "repomap.rs"
-        {
+        const DATA_PATHS: &[&str] = &[
+            "/data/",
+            "/models/",
+            "/db/",
+            "/database/",
+            "/schema/",
+            "/session/",
+            "/store/",
+            "/storage/",
+            "/memory/",
+            "/repository/",
+        ];
+        const DATA_FILES: &[&str] = &["store.rs", "db.rs", "schema.rs", "graph.rs", "repomap.rs"];
+
+        if contains_any(&path_str, DATA_PATHS) || DATA_FILES.contains(&file_name.as_str()) {
             return ArchitecturalLayer::Data;
         }
 
         // 4. Utility & Support
-        if path_str.contains("/utils/")
-            || path_str.contains("/util/")
-            || path_str.contains("/helpers/")
-            || path_str.contains("/common/")
-            || file_name == "error.rs"
-            || file_name == "constants.rs"
-            || file_name == "types.rs"
-            || file_name == "config.rs"
-            || file_name == "format.rs"
-        {
+        const UTIL_PATHS: &[&str] = &["/utils/", "/util/", "/helpers/", "/common/"];
+        const UTIL_FILES: &[&str] = &[
+            "error.rs",
+            "constants.rs",
+            "types.rs",
+            "config.rs",
+            "format.rs",
+        ];
+
+        if contains_any(&path_str, UTIL_PATHS) || UTIL_FILES.contains(&file_name.as_str()) {
             return ArchitecturalLayer::Utility;
         }
 
@@ -146,42 +158,25 @@ impl LayerClassifier {
         let sym_lower = symbol_name.to_lowercase();
 
         // Specific symbol name overrides
-        if sym_lower.contains("widget")
-            || sym_lower.contains("view")
-            || sym_lower.contains("render")
-            || sym_lower.contains("modal")
-            || sym_lower.contains("component")
-        {
+        const UI_SYMS: &[&str] = &["widget", "view", "render", "modal", "component"];
+        if contains_any(&sym_lower, UI_SYMS) {
             return ArchitecturalLayer::Ui;
         }
 
-        if sym_lower.contains("route")
-            || sym_lower.contains("handler")
-            || sym_lower.contains("endpoint")
-            || sym_lower.contains("api")
-            || sym_lower.contains("rpc")
-            || sym_lower.contains("webhook")
-        {
+        const API_SYMS: &[&str] = &["route", "handler", "endpoint", "api", "rpc", "webhook"];
+        if contains_any(&sym_lower, API_SYMS) {
             return ArchitecturalLayer::Api;
         }
 
-        if sym_lower.ends_with("error")
-            || sym_lower.contains("helper")
-            || sym_lower.contains("format_")
-            || sym_lower.contains("constant")
-            || sym_lower.contains("util")
-        {
+        const UTIL_SYMS: &[&str] = &["helper", "format_", "constant", "util"];
+        if sym_lower.ends_with("error") || contains_any(&sym_lower, UTIL_SYMS) {
             return ArchitecturalLayer::Utility;
         }
 
-        if sym_lower.contains("store")
-            || sym_lower.contains("model")
-            || sym_lower.contains("schema")
-            || sym_lower.contains("table")
-            || sym_lower.contains("record")
-            || sym_lower.contains("entity")
-            || sym_lower.contains("query")
-        {
+        const DATA_SYMS: &[&str] = &[
+            "store", "model", "schema", "table", "record", "entity", "query",
+        ];
+        if contains_any(&sym_lower, DATA_SYMS) {
             return ArchitecturalLayer::Data;
         }
 
@@ -216,6 +211,27 @@ mod tests {
         assert_eq!(
             LayerClassifier::classify_path(&PathBuf::from("src/agent/loop.rs")),
             ArchitecturalLayer::Service
+        );
+    }
+
+    #[test]
+    fn test_symbol_classification() {
+        let p = PathBuf::from("src/arbitrary.rs");
+        assert_eq!(
+            LayerClassifier::classify_symbol(&p, "render_card_view", "fn"),
+            ArchitecturalLayer::Ui
+        );
+        assert_eq!(
+            LayerClassifier::classify_symbol(&p, "handle_login_endpoint", "fn"),
+            ArchitecturalLayer::Api
+        );
+        assert_eq!(
+            LayerClassifier::classify_symbol(&p, "user_account_schema", "struct"),
+            ArchitecturalLayer::Data
+        );
+        assert_eq!(
+            LayerClassifier::classify_symbol(&p, "format_iso_time", "fn"),
+            ArchitecturalLayer::Utility
         );
     }
 }
