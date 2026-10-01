@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 150 Native Autonomous Multi-Agent Swarm Orchestrator (`minicode swarm`) (v0.3.43) | **Status:** ✅ Complete (186 Tools)
+> **Current Phase:** Phase 152 Swarm Cross-Worker Inter-Agent Messaging (v0.3.43) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
@@ -2005,5 +2005,13 @@
 - [x] 150.4: Git Worktree Merge Arbitration & Executive Reporting: Implemented `SwarmArbitrator` in `src/agent/swarm/arbitrator.rs` for topological branch merging and conflict detection; implemented `SwarmReporter` in `src/agent/swarm/report.rs` generating Mermaid DAG diagrams (`graph TD`), worker task scorecards, and markdown reports saved to `.minicode/swarms/<swarm_id>/REPORT.md`.
 - [x] 150.5: Native CLI Subcommand `minicode swarm`: Added `Commands::Swarm` with `run` (flags: `--max-workers`, `--auto-merge`, `--plan-only`, `--json`), `status`, `stop`, and `logs` in `src/main.rs`.
 - [x] 150.6: Verification & Release Deployment: Created comprehensive integration test suite `tests/integration_swarm_orchestrator.rs` covering plan validation, topological waves, dynamic JSON parsing, dependency unblocking, failure propagation, and Mermaid reporting; verified 0 clippy warnings (`cargo clippy -j 1 --bin minicode -- -D warnings`); verified formatting (`cargo fmt --check`); verified tool count invariant (186); compiled release binary and deployed to `~/.local/bin/minicode`.
+
+### Phase 152: Swarm Cross-Worker Inter-Agent Messaging (v0.3.43)
+- [x] 152.1: Domain Models & Process-Safe Durable Bus: Implemented `SwarmMessageIntent` (`PublishContract`, `QueryInterface`, `CoordinationNote`), `SwarmMessage`, and `SwarmMessageBus` in `src/agent/swarm/bus.rs` using append-only `bus.jsonl` with fsync durability, unread tracking, and anti-chatter bounds (800 char limit, max 3 messages per worker).
+- [x] 152.2: Swarm Environment Propagation & Scheduler Peer Tracking: Implemented `compute_active_peers()` in `src/agent/swarm/scheduler.rs` and propagated `MINICODE_SWARM_ID`, `MINICODE_SWARM_DIR`, `MINICODE_SWARM_TASK_ID`, and `MINICODE_SWARM_PEERS` environment variables to isolated worker child processes.
+- [x] 152.3: Turn-Start Peer Message Ingestion in Agent Loop: Integrated zero-polling autonomous peer message ingestion in `src/agent/loop.rs` injecting `<peer_messages>` context blocks at turn start with read tracking.
+- [x] 152.4: Upgrade `send_worker_message` Tool with Typed Intents: Upgraded `send_worker_message` in `src/tools/registry/agent_tools/swarm.rs` to validate recipients, enforce quotas and payload limits, and write to `SwarmMessageBus`.
+- [x] 152.5: Swarm Reporter Log Integration & End-to-End Integration Suite: Added `## 💬 Inter-Worker Coordination Log` table rendering to `SwarmReporter` in `src/agent/swarm/report.rs`, implemented comprehensive integration tests in `tests/integration_swarm_messaging.rs`, and verified 0 warnings.
+
 
 
