@@ -68,6 +68,9 @@ impl SwarmScheduler {
             .join(&plan.id);
         fs::create_dir_all(&swarm_dir)?;
 
+        // Initialize SwarmMessageBus
+        let _bus = crate::agent::swarm::bus::SwarmMessageBus::new(&swarm_dir)?;
+
         let artifacts_root = swarm_dir.join("artifacts");
         fs::create_dir_all(&artifacts_root)?;
 
@@ -123,18 +126,30 @@ impl SwarmScheduler {
                     .collect()
             };
 
+            let ready_ids_list = ready_tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+
             // Spawn ready tasks into JoinSet
             for task in ready_tasks {
                 let ws_root = workspace_root.to_path_buf();
                 let art_root = artifacts_root.clone();
+                let sw_dir = swarm_dir.clone();
                 let sem = Arc::clone(&semaphore);
                 let token = cancel_token.clone();
                 let plan_ref = plan.clone();
                 let opts = Arc::clone(&run_options);
+                let wave_peers = ready_ids_list.clone();
 
                 join_set.spawn(async move {
                     let outcome = Self::run_worker_task(
-                        &ws_root, &art_root, &plan_ref, task, sem, token, opts,
+                        &ws_root,
+                        &sw_dir,
+                        &art_root,
+                        &plan_ref,
+                        task,
+                        &wave_peers,
+                        sem,
+                        token,
+                        opts,
                     )
                     .await;
                     outcome
@@ -243,11 +258,14 @@ impl SwarmScheduler {
     }
 
     /// Executes an individual worker task inside an isolated Git worktree.
+    #[allow(clippy::too_many_arguments)]
     async fn run_worker_task(
         workspace_root: &Path,
+        swarm_dir: &Path,
         artifacts_root: &Path,
         plan: &SwarmPlan,
         task: SwarmTaskSpec,
+        active_wave_peers: &[String],
         semaphore: Arc<Semaphore>,
         cancel_token: CancellationToken,
         options: Arc<SwarmRunOptions>,
@@ -368,6 +386,13 @@ impl SwarmScheduler {
         if let Some(max_iter) = task.max_iterations {
             cmd.arg("--max-iterations").arg(max_iter.to_string());
         }
+
+        let peers_str = Self::compute_active_peers(active_wave_peers, &task.id);
+
+        cmd.env("MINICODE_SWARM_ID", &plan.id);
+        cmd.env("MINICODE_SWARM_DIR", swarm_dir);
+        cmd.env("MINICODE_SWARM_TASK_ID", &task.id);
+        cmd.env("MINICODE_SWARM_PEERS", &peers_str);
 
         cmd.arg(&enriched_prompt);
         cmd.stdin(Stdio::null());
@@ -608,5 +633,50 @@ impl SwarmScheduler {
             error: Some(error_msg),
             generated_artifacts: HashMap::new(),
         }
+    }
+
+    /// Computes comma-delimited active peer task IDs for a given task within a wave.
+    #[allow(dead_code)]
+    pub fn compute_active_peers(all_peers: &[String], current_task_id: &str) -> String {
+        all_peers
+            .iter()
+            .filter(|id| *id != current_task_id)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_active_peers() {
+        let task_ids = vec!["t1".to_string(), "t2".to_string(), "t3".to_string()];
+        let peers_for_t1 = task_ids
+            .iter()
+            .filter(|id| *id != "t1")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(peers_for_t1, "t2,t3");
+    }
+
+    #[test]
+    fn test_compute_active_peers_helper() {
+        let task_ids = vec!["t1".to_string(), "t2".to_string(), "t3".to_string()];
+        assert_eq!(
+            SwarmScheduler::compute_active_peers(&task_ids, "t1"),
+            "t2,t3"
+        );
+        assert_eq!(
+            SwarmScheduler::compute_active_peers(&task_ids, "t2"),
+            "t1,t3"
+        );
+        assert_eq!(
+            SwarmScheduler::compute_active_peers(&task_ids, "t3"),
+            "t1,t2"
+        );
     }
 }
