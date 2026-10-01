@@ -19,6 +19,7 @@ pub mod session_browser;
 pub mod settings;
 pub mod stack_select;
 pub mod streaming_select;
+pub mod swarm_deck;
 pub mod theme_select;
 pub mod todo;
 pub mod undo_checkpoint;
