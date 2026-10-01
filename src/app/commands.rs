@@ -1651,7 +1651,43 @@ impl<'a> App<'a> {
                 &self.config.ui.theme,
                 &self.config.ui.animation,
                 &self.config.ui.todo_style,
+                &self.config.ui.swarm_style,
             );
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt == "/swarm-style" || prompt.starts_with("/swarm-style ") {
+            let arg = prompt.strip_prefix("/swarm-style").unwrap_or("").trim();
+            if arg.is_empty() {
+                let options_desc = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS
+                    .iter()
+                    .map(|o| format!("  • {} - {}", o.id, o.name))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.timeline.add_status(format!(
+                    "Current swarm flight deck style: '{}'\nAvailable styles:\n{}",
+                    self.config.ui.swarm_style, options_desc
+                ));
+            } else {
+                let lower = arg.to_lowercase();
+                if let Some(opt) = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_lowercase().contains(&lower))
+                {
+                    self.config.ui.swarm_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.timeline.add_status(format!(
+                        "✔ Swarm flight deck style switched to '{}' ({}) and saved to config",
+                        opt.name, opt.id
+                    ));
+                } else {
+                    self.timeline.add_status(format!(
+                        "⚠️ Unknown style '{}'. Available: stylish, gitgraph, modern, minimal, cockpit",
+                        arg
+                    ));
+                }
+            }
             return Ok(CommandAction::Continue);
         }
 

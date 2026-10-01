@@ -345,6 +345,47 @@ impl TodoWidgetStyle {
     }
 }
 
+/// Visual layout aesthetic for the Swarm Flight Deck in MiniTask.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SwarmDashboardStyle {
+    /// Minimal + Stylish (Nordic neo-TUI with sleek meters and accent badges) - Default
+    #[default]
+    Stylish,
+    /// Minimal + GitGraph Pipeline (Topological branch DAG nodes with inline comms)
+    GitGraph,
+    /// Clean Modernist (Floating card boxes with status pills)
+    Modern,
+    /// Ultra-Minimalist (Zero-border clean whitespace with muted guide lines)
+    Minimal,
+    /// High-Density Cockpit (3-column split view: Workers, Message Bus, Live Logs)
+    Cockpit,
+}
+
+#[allow(dead_code)]
+impl SwarmDashboardStyle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stylish => "stylish",
+            Self::GitGraph => "gitgraph",
+            Self::Modern => "modern",
+            Self::Minimal => "minimal",
+            Self::Cockpit => "cockpit",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "gitgraph" | "git" | "dag" | "pipeline" => Self::GitGraph,
+            "modern" | "cards" | "floating" => Self::Modern,
+            "minimal" | "clean" | "tree" => Self::Minimal,
+            "cockpit" | "dense" | "mission" => Self::Cockpit,
+            _ => Self::Stylish,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -355,6 +396,9 @@ pub struct UiConfig {
 
     #[serde(default = "default_todo_style")]
     pub todo_style: String,
+
+    #[serde(default = "default_swarm_style")]
+    pub swarm_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -375,6 +419,11 @@ impl UiConfig {
             _ => TodoWidgetStyle::Tree,
         }
     }
+
+    #[allow(dead_code)]
+    pub fn swarm_style_enum(&self) -> SwarmDashboardStyle {
+        SwarmDashboardStyle::from_str_loose(&self.swarm_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -383,6 +432,7 @@ impl Default for UiConfig {
             theme: default_theme(),
             animation: default_animation(),
             todo_style: default_todo_style(),
+            swarm_style: default_swarm_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -396,6 +446,10 @@ fn default_theme() -> String {
 
 fn default_animation() -> String {
     "dual_pillars".to_string()
+}
+
+fn default_swarm_style() -> String {
+    "stylish".to_string()
 }
 
 fn default_todo_style() -> String {

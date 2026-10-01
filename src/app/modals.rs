@@ -395,9 +395,11 @@ impl<'a> App<'a> {
                 ref mut theme_selected_index,
                 ref mut animation_selected_index,
                 ref mut todo_style_selected_index,
+                ref mut swarm_style_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
                 ref mut active_todo_style,
+                ref mut active_swarm_style,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
@@ -411,6 +413,9 @@ impl<'a> App<'a> {
                             crate::ui::modals::ThemeModalTab::TodoStyles
                         }
                         crate::ui::modals::ThemeModalTab::TodoStyles => {
+                            crate::ui::modals::ThemeModalTab::SwarmStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::SwarmStyles => {
                             crate::ui::modals::ThemeModalTab::Themes
                         }
                     };
@@ -418,13 +423,16 @@ impl<'a> App<'a> {
                 KeyCode::BackTab | KeyCode::Left => {
                     *active_tab = match *active_tab {
                         crate::ui::modals::ThemeModalTab::Themes => {
-                            crate::ui::modals::ThemeModalTab::TodoStyles
+                            crate::ui::modals::ThemeModalTab::SwarmStyles
                         }
                         crate::ui::modals::ThemeModalTab::Animations => {
                             crate::ui::modals::ThemeModalTab::Themes
                         }
                         crate::ui::modals::ThemeModalTab::TodoStyles => {
                             crate::ui::modals::ThemeModalTab::Animations
+                        }
+                        crate::ui::modals::ThemeModalTab::SwarmStyles => {
+                            crate::ui::modals::ThemeModalTab::TodoStyles
                         }
                     };
                 }
@@ -437,6 +445,9 @@ impl<'a> App<'a> {
                 KeyCode::Char('3') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::TodoStyles;
                 }
+                KeyCode::Char('4') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::SwarmStyles;
+                }
                 KeyCode::Up => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
@@ -446,6 +457,9 @@ impl<'a> App<'a> {
                     }
                     crate::ui::modals::ThemeModalTab::TodoStyles => {
                         *todo_style_selected_index = todo_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::SwarmStyles => {
+                        *swarm_style_selected_index = swarm_style_selected_index.saturating_sub(1);
                     }
                 },
                 KeyCode::Down => match *active_tab {
@@ -463,6 +477,12 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS.len();
                         if *todo_style_selected_index + 1 < total {
                             *todo_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::SwarmStyles => {
+                        let total = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS.len();
+                        if *swarm_style_selected_index + 1 < total {
+                            *swarm_style_selected_index += 1;
                         }
                     }
                 },
@@ -557,6 +577,36 @@ impl<'a> App<'a> {
                                 self.timeline.add_status(format!(
                                     "✔ Todo widget style switched to '{}' and saved to config",
                                     chosen_name
+                                ));
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::SwarmStyles => {
+                            let options = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS;
+                            if !options.is_empty() && *swarm_style_selected_index < options.len() {
+                                let chosen = &options[*swarm_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.swarm_style = chosen_id.clone();
+                                *active_swarm_style = chosen_id;
+
+                                // Persist to configuration file (workspace and global)
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save swarm style setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save swarm style setting to global config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.timeline.add_status(format!(
+                                    "✔ Swarm flight deck style switched to '{}' ({}) and saved to config",
+                                    chosen_name, chosen.id
                                 ));
                             }
                         }
@@ -903,6 +953,7 @@ impl<'a> App<'a> {
                                     &self.config.ui.theme,
                                     &self.config.ui.animation,
                                     &self.config.ui.todo_style,
+                                    &self.config.ui.swarm_style,
                                 );
                             }
                             "/explore" => {
