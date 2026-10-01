@@ -50,6 +50,8 @@ pub struct AgentLoop {
     pub intent_ledger: Option<crate::context::memory::intent::IntentLedger>,
     /// Reactive agent-to-agent FIFO mailbox for receiving subagent coordination messages.
     pub mailbox: Option<crate::agent::subagent::mailbox::AgentMailbox>,
+    /// Last seen swarm message ID for reactive turn-start ingestion.
+    pub last_seen_swarm_msg_id: Option<String>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -138,6 +140,7 @@ impl AgentLoop {
             cumulative_tokens_used: 0,
             intent_ledger,
             mailbox,
+            last_seen_swarm_msg_id: None,
             _active_guard: active_guard,
         }
     }
@@ -411,6 +414,7 @@ impl AgentLoop {
         self.cumulative_tokens_used = 0;
         self.session_id = self.session_store.generate_session_id();
         self.session_persisted = false;
+        self.last_seen_swarm_msg_id = None;
         self._active_guard = None;
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
     }
@@ -492,7 +496,29 @@ impl AgentLoop {
 
         // 2. Build Tri-Zone context:
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
-        let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+        let mut system_prompt =
+            PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+
+        // Swarm Turn-Start Ingestion: Check for unread peer messages
+        if let (Ok(swarm_dir_str), Ok(task_id)) = (
+            std::env::var("MINICODE_SWARM_DIR"),
+            std::env::var("MINICODE_SWARM_TASK_ID"),
+        ) {
+            let swarm_dir = std::path::Path::new(&swarm_dir_str);
+            if let Ok(bus) = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir) {
+                if let Ok(unread) =
+                    bus.read_unread(&task_id, self.last_seen_swarm_msg_id.as_deref())
+                {
+                    if !unread.is_empty() {
+                        if let Some(newest) = unread.last() {
+                            self.last_seen_swarm_msg_id = Some(newest.id.clone());
+                        }
+                        let peer_block = crate::agent::prompt::format_peer_messages_prompt(&unread);
+                        system_prompt.push_str(&peer_block);
+                    }
+                }
+            }
+        }
 
         // Zone 3: Recency Zone (dynamic workspace context: git, active files, memory anchor, context budget)
         let git_service = crate::git::GitService::new(self.workspace_root.clone());

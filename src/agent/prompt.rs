@@ -163,6 +163,23 @@ pub fn sanitize_past_user_message(content: &str) -> String {
     cleaned.trim().to_string()
 }
 
+/// Formats unread peer messages into a structured XML block for turn-start context injection.
+#[must_use]
+pub fn format_peer_messages_prompt(messages: &[crate::agent::swarm::bus::SwarmMessage]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+
+    let mut out =
+        String::from("\n<peer_messages>\n### INCOMING PEER WORKER COORDINATION MESSAGES:\n");
+    for msg in messages {
+        out.push_str(&msg.format_for_prompt());
+        out.push('\n');
+    }
+    out.push_str("</peer_messages>\n");
+    out
+}
+
 #[allow(dead_code)]
 pub const DEFAULT_SYSTEM_PROMPT: &str = STATIC_SYSTEM_PROMPT;
 
@@ -897,5 +914,24 @@ mod tests {
             None,
         );
         assert!(!recency_non_empty.contains("<project_bootstrap_guidance>"));
+    }
+
+    #[test]
+    fn test_format_peer_messages_block() {
+        let msg = crate::agent::swarm::bus::SwarmMessage::new(
+            "swarm-1",
+            "t1_api",
+            None,
+            crate::agent::swarm::bus::SwarmMessageIntent::PublishContract,
+            "User Schema",
+            "export interface User { id: string; }",
+        );
+        let block = crate::agent::prompt::format_peer_messages_prompt(&[msg]);
+        assert!(block.contains("<peer_messages>"));
+        assert!(block.contains("export interface User"));
+        assert!(block.contains("</peer_messages>"));
+
+        // Verify empty slice produces empty string
+        assert_eq!(crate::agent::prompt::format_peer_messages_prompt(&[]), "");
     }
 }
