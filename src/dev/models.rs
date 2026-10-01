@@ -72,6 +72,8 @@ pub enum DevProcessType {
     Cron,
     /// One-shot countdown timer task
     Timer,
+    /// Autonomous multi-agent swarm orchestrator or worker
+    Swarm,
 }
 
 impl DevProcessType {
@@ -84,6 +86,7 @@ impl DevProcessType {
             "worker" | "subagent" | "task" => Self::Worker,
             "cron" | "schedule" | "scheduled" | "interval" => Self::Cron,
             "timer" | "timeout" | "countdown" => Self::Timer,
+            "swarm" | "swarm-worker" | "swarm-task" => Self::Swarm,
             _ => Self::Script,
         }
     }
@@ -108,6 +111,7 @@ impl fmt::Display for DevProcessType {
             Self::Worker => write!(f, "Worker"),
             Self::Cron => write!(f, "Cron"),
             Self::Timer => write!(f, "Timer"),
+            Self::Swarm => write!(f, "Swarm"),
         }
     }
 }
@@ -599,5 +603,22 @@ mod tests {
         );
         assert_eq!(format!("{}", DevProcessType::Cron), "Cron");
         assert_eq!(format!("{}", DevProcessType::Timer), "Timer");
+    }
+
+    #[test]
+    fn test_dev_process_type_swarm() {
+        assert_eq!(
+            DevProcessType::from_str_loose("swarm"),
+            DevProcessType::Swarm
+        );
+        assert_eq!(
+            DevProcessType::from_str_loose("swarm-worker"),
+            DevProcessType::Swarm
+        );
+        assert_eq!(
+            DevProcessType::from_str_loose("swarm-task"),
+            DevProcessType::Swarm
+        );
+        assert_eq!(format!("{}", DevProcessType::Swarm), "Swarm");
     }
 }

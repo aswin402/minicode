@@ -23,8 +23,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "probe_port", "check_port"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
+                    "enum": ["start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "swarms", "probe_port", "check_port"],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
                 },
                 "command": {
                     "type": "string",
@@ -40,8 +40,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "process_type": {
                     "type": "string",
-                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent", "cron", "timer"],
-                    "description": "Category of process (default: 'frontend')"
+                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent", "cron", "timer", "swarm"],
+                    "description": "Category of process (default: 'frontend', can be 'frontend', 'backend', 'docker', 'script', 'browser', 'worker', 'subagent', 'cron', 'timer', 'swarm')"
                 },
                 "interval_seconds": {
                     "type": "integer",
@@ -371,6 +371,27 @@ pub async fn dispatch(
                 }
 
                 let mut out = format!("🤖 Active Autonomous Subagents & Workers ({} active):\n\n", list.len());
+                for p in list {
+                    out.push_str(&format!(
+                        "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
+                        p.id,
+                        p.name,
+                        p.status,
+                        p.pid.unwrap_or(0),
+                        p.cpu_percent,
+                        p.memory_rss_mb,
+                        p.uptime_secs,
+                    ));
+                }
+                Ok(out)
+            }
+            "swarms" => {
+                let list = registry.list_swarms().await;
+                if list.is_empty() {
+                    return Ok("ℹ No autonomous swarms or swarm workers are currently active.".to_string());
+                }
+
+                let mut out = format!("🐝 Active Multi-Agent Swarms & Workers ({} active):\n\n", list.len());
                 for p in list {
                     out.push_str(&format!(
                         "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
@@ -890,5 +911,46 @@ mod tests {
         // Clean up
         let kill_args = json!({ "action": "kill_all" });
         let _ = dispatch("minitask", &kill_args, temp.path()).await;
+    }
+
+    #[tokio::test]
+    async fn test_minitask_swarms_dispatch() {
+        let temp = tempdir().unwrap();
+        let registry = get_global_dev_registry();
+
+        let handle = registry
+            .register_swarm_process(
+                DevProcessId::from("swarm-unit-dispatch"),
+                "Dispatch Test Swarm".to_string(),
+                "minicode swarm run dispatch".to_string(),
+                temp.path().to_path_buf(),
+                std::process::id(),
+                0,
+                None,
+            )
+            .await;
+
+        let args = json!({ "action": "swarms" });
+        let res = dispatch("minitask", &args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(res.contains("swarm-unit-dispatch"));
+        assert!(res.contains("Dispatch Test Swarm"));
+
+        // List with process_type="swarm"
+        let list_args = json!({ "action": "list", "process_type": "swarm" });
+        let list_res = dispatch("minitask", &list_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(list_res.contains("swarm-unit-dispatch"));
+
+        handle
+            .update_status(crate::dev::models::DevProcessStatus::Stopped)
+            .await;
+        let _ = registry
+            .stop(&DevProcessId::from("swarm-unit-dispatch"))
+            .await;
     }
 }

@@ -332,6 +332,11 @@ impl MiniDevRegistry {
         self.list_filtered(Some(DevProcessType::Worker)).await
     }
 
+    /// Lists summaries of active swarm processes (orchestrator DAGs & workers).
+    pub async fn list_swarms(&self) -> Vec<DevProcessSummary> {
+        self.list_filtered(Some(DevProcessType::Swarm)).await
+    }
+
     /// Retrieves detailed summary for a specific process ID with flexible prefix matching.
     pub async fn get(&self, id: &DevProcessId) -> Option<DevProcessSummary> {
         if (id.as_str() == "browser" || id.as_str() == "chrome")
@@ -577,6 +582,60 @@ impl MiniDevRegistry {
             id: id.clone(),
             name,
             process_type: DevProcessType::Worker,
+            command,
+            working_dir,
+            extra_env: HashMap::new(),
+            port_policy: None,
+            max_memory_mb: None,
+            pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
+            pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
+            started_at: std::time::Instant::now(),
+            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
+            ports: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                crate::dev::process::MAX_RING_BUFFER_LINES,
+            ))),
+            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
+            port_resolution: Arc::new(RwLock::new(None)),
+            schedule_info: Arc::new(RwLock::new(None)),
+        });
+
+        if pgid > 0 && pgid != std::process::id() {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.insert(pgid);
+            }
+        }
+        if pid > 0 && pid != std::process::id() {
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.insert(pid);
+            }
+        }
+
+        let mut lock = self.processes.write().await;
+        lock.insert(id, Arc::clone(&handle));
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        handle
+    }
+
+    /// Registers an autonomous swarm orchestrator or swarm worker task into the dev registry.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_swarm_process(
+        &self,
+        id: DevProcessId,
+        name: String,
+        command: String,
+        working_dir: PathBuf,
+        pid: u32,
+        pgid: u32,
+        cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Arc<DevProcessHandle> {
+        let handle = Arc::new(DevProcessHandle {
+            id: id.clone(),
+            name,
+            process_type: DevProcessType::Swarm,
             command,
             working_dir,
             extra_env: HashMap::new(),
@@ -1246,5 +1305,43 @@ mod tests {
 
         let updated = registry.get(&summary.id).await.expect("exists");
         assert_eq!(updated.status, DevProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_register_and_list_swarm_process() {
+        let registry = MiniDevRegistry::new();
+        let handle = registry
+            .register_swarm_process(
+                DevProcessId::from("swarm-test-123"),
+                "Swarm Test DAG".to_string(),
+                "minicode swarm run test".to_string(),
+                PathBuf::from("/tmp"),
+                std::process::id(),
+                0,
+                None,
+            )
+            .await;
+
+        handle.append_log("Initializing swarm worker 1").await;
+        handle.append_log("Worker 1 completed successfully").await;
+
+        let swarms = registry.list_swarms().await;
+        assert_eq!(swarms.len(), 1);
+        assert_eq!(swarms[0].id.as_str(), "swarm-test-123");
+        assert_eq!(swarms[0].process_type, DevProcessType::Swarm);
+
+        let logs = registry
+            .logs(&DevProcessId::from("swarm-test-123"), 10, None)
+            .await
+            .expect("logs");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0], "Initializing swarm worker 1");
+
+        handle.update_status(DevProcessStatus::Stopped).await;
+        let summary = registry
+            .get(&DevProcessId::from("swarm-test-123"))
+            .await
+            .expect("summary");
+        assert_eq!(summary.status, DevProcessStatus::Stopped);
     }
 }

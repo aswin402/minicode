@@ -83,6 +83,24 @@ impl SwarmScheduler {
         let state = Arc::new(Mutex::new(SwarmExecutionState::new(&plan)));
         let run_options = Arc::new(options.clone());
 
+        // Register parent swarm orchestrator into MiniDevRegistry
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let swarm_dev_id = crate::dev::models::DevProcessId::from(format!("swarm-{}", plan.id));
+        let cancel_hook_token = cancel_token.clone();
+        let parent_handle = dev_registry
+            .register_swarm_process(
+                swarm_dev_id,
+                format!("Swarm DAG: {}", plan.title),
+                format!("minicode swarm run --auto-merge {}", plan.title),
+                workspace_root.to_path_buf(),
+                std::process::id(),
+                std::process::id(),
+                Some(Arc::new(move || {
+                    cancel_hook_token.cancel();
+                })),
+            )
+            .await;
+
         info!(
             swarm_id = %plan.id,
             tasks = plan.tasks.len(),
@@ -96,6 +114,9 @@ impl SwarmScheduler {
         loop {
             if cancel_token.is_cancelled() {
                 warn!(swarm_id = %plan.id, "Swarm execution cancelled by user");
+                parent_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Killed)
+                    .await;
                 let mut st = state.lock().await;
                 for status in st.task_statuses.values_mut() {
                     if *status == SwarmTaskStatus::Pending || *status == SwarmTaskStatus::Ready {
@@ -138,6 +159,7 @@ impl SwarmScheduler {
                 let plan_ref = plan.clone();
                 let opts = Arc::clone(&run_options);
                 let wave_peers = ready_ids_list.clone();
+                let parent_ref = Arc::clone(&parent_handle);
 
                 join_set.spawn(async move {
                     let outcome = Self::run_worker_task(
@@ -150,6 +172,7 @@ impl SwarmScheduler {
                         sem,
                         token,
                         opts,
+                        Some(parent_ref),
                     )
                     .await;
                     outcome
@@ -247,6 +270,10 @@ impl SwarmScheduler {
             merge_summary.as_deref(),
         )?;
 
+        parent_handle
+            .update_status(crate::dev::models::DevProcessStatus::Stopped)
+            .await;
+
         info!(
             swarm_id = %plan.id,
             total_duration_ms = total_duration,
@@ -269,6 +296,7 @@ impl SwarmScheduler {
         semaphore: Arc<Semaphore>,
         cancel_token: CancellationToken,
         options: Arc<SwarmRunOptions>,
+        parent_handle: Option<Arc<crate::dev::process::DevProcessHandle>>,
     ) -> SwarmTaskOutcome {
         let task_start = Instant::now();
 
@@ -436,8 +464,8 @@ impl SwarmScheduler {
         let worker_label = format!("Swarm ({}) - {}", task.role_title, task.title);
         let token_cancel_hook = cancel_token.clone();
 
-        let _dev_handle = dev_registry
-            .register_worker(
+        let dev_handle = dev_registry
+            .register_swarm_process(
                 dev_id,
                 worker_label,
                 format!("minicode swarm worker: {}", task.id),
@@ -454,6 +482,9 @@ impl SwarmScheduler {
         let stdout = match child.stdout.take() {
             Some(out) => out,
             None => {
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(1)))
+                    .await;
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
                 }
@@ -469,6 +500,10 @@ impl SwarmScheduler {
         let mut full_output = String::new();
 
         while let Ok(Some(line)) = reader.next_line().await {
+            dev_handle.append_log(&line).await;
+            if let Some(ref parent) = parent_handle {
+                parent.append_log(format!("[{}] {}", task.id, &line)).await;
+            }
             full_output.push_str(&line);
             full_output.push('\n');
         }
@@ -476,6 +511,9 @@ impl SwarmScheduler {
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => {
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Killed)
+                    .await;
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
                 }
@@ -489,6 +527,16 @@ impl SwarmScheduler {
 
         let duration_ms = task_start.elapsed().as_millis() as u64;
         let worker_success = status.success();
+
+        if worker_success {
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                .await;
+        } else {
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Exited(status.code()))
+                .await;
+        }
 
         // 6. Automated Verification check (if check_command specified)
         let (verification_passed, verif_cmd_str) = match &task.check_command {
