@@ -49,6 +49,17 @@ pub enum SwarmError {
     #[error("Swarm execution was cancelled")]
     Cancelled,
 
+    #[error("Message payload exceeds 800 characters (actual: {0})")]
+    MessagePayloadTooLarge(usize),
+
+    #[error(
+        "Message quota exceeded: worker '{0}' has reached the limit of 3 messages for this wave"
+    )]
+    MessageQuotaExceeded(String),
+
+    #[error("Invalid recipient: worker cannot send a message to itself")]
+    SelfMessageNotAllowed,
+
     #[error("IO or filesystem error: {0}")]
     IoError(String),
 
