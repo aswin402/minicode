@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 152 Swarm Cross-Worker Inter-Agent Messaging (v0.3.44) | **Status:** ✅ Complete (186 Tools)
+> **Current Phase:** Phase 153 Swarm MiniTask Integration & Dynamic Multi-Style Flight Deck (v0.3.45) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
@@ -2012,6 +2012,14 @@
 - [x] 152.3: Turn-Start Peer Message Ingestion in Agent Loop: Integrated zero-polling autonomous peer message ingestion in `src/agent/loop.rs` injecting `<peer_messages>` context blocks at turn start with read tracking.
 - [x] 152.4: Upgrade `send_worker_message` Tool with Typed Intents: Upgraded `send_worker_message` in `src/tools/registry/agent_tools/swarm.rs` to validate recipients, enforce quotas and payload limits, and write to `SwarmMessageBus`.
 - [x] 152.5: Swarm Reporter Log Integration & End-to-End Integration Suite: Added `## 💬 Inter-Worker Coordination Log` table rendering to `SwarmReporter` in `src/agent/swarm/report.rs`, implemented comprehensive integration tests in `tests/integration_swarm_messaging.rs`, and verified 0 warnings.
+
+### Phase 153: Swarm MiniTask Integration & Dynamic Multi-Style Flight Deck (v0.3.45)
+- [x] 153.1: Theme & Config System — 5 Swarm Styles & `/theme` Modal Tab: Implemented `SwarmDashboardStyle` (`Stylish` [Default ⭐], `GitGraph`, `Modern`, `Minimal`, `Cockpit`), added `swarm_style` to `UiConfig` and `RawUiConfig`, loose parsing, style cycling (`.next()`), added `ThemeModalTab::SwarmStyles` to `/theme` modal with live ASCII preview cards, and registered `/swarm-style [style]` command in `src/config.rs`, `src/ui/modals/theme_select.rs`, `src/app/commands.rs`, and `src/app/modals.rs`.
+- [x] 153.2: MiniTask Process Registry Expansion & Swarm Worker Supervision: Added `DevProcessType::Swarm` to `DevProcessType` with loose parsing, added `register_swarm_process` and `list_swarms` to `MiniDevRegistry`, upgraded `minitask` tool schema and `"swarms"` dispatch arm in `src/tools/registry/dev_tools.rs` (maintaining invariant 186 tools), and registered swarm parent DAG and worker child processes into dev registry in `src/agent/swarm/scheduler.rs`.
+- [x] 153.3: Swarm Flight Deck Data Model & 5 Dynamic Theme Renderers: Implemented `SwarmDeckData` with disk loading (`plan.json`, `state.json`, `bus.jsonl`) and 5 100% theme-adaptive visual layouts (`render_stylish`, `render_gitgraph`, `render_modern`, `render_minimal`, `render_cockpit`) in `src/ui/modals/swarm_deck.rs` with zero hardcoded ANSI color sequences.
+- [x] 153.4: Interactive Integration into Processes & Task Modal (`/tasks`): Added `ProcessesTab::Swarm` to `ProcessesTab`, wired interactive keyboard event routing (`[Tab]` navigation, `[1-6]` tab shortcuts, `[↑/↓]` worker selection, `[s]` cycle style, `[Space]/[Enter]` worker log inspection, and `[k]` worker termination) in `src/ui/modals/processes.rs` and `src/app/modals.rs`.
+- [x] 153.5: Integration Test Suite & Global Release: Implemented `tests/integration_swarm_minitask_flight_deck.rs` testing registry supervision, config persistence, style cycling, bus tailing, and multi-theme palette rendering; passed `cargo clippy -j 1 --bin minicode -- -D warnings` and `cargo fmt --check`; bumped version to `0.3.45` in `Cargo.toml`.
+
 
 
 

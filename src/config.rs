@@ -660,6 +660,7 @@ pub struct RawUiConfig {
     pub theme: Option<String>,
     pub animation: Option<String>,
     pub todo_style: Option<String>,
+    pub swarm_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
 }
@@ -962,6 +963,9 @@ impl Config {
         }
         if let Some(todo_style) = other.ui.todo_style {
             self.ui.todo_style = todo_style;
+        }
+        if let Some(swarm_style) = other.ui.swarm_style {
+            self.ui.swarm_style = swarm_style;
         }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;
