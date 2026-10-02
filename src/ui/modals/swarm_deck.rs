@@ -136,6 +136,41 @@ impl SwarmDeckData {
             status_message: None,
         }
     }
+
+    pub fn select_prev(&mut self) {
+        if self.workers.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+        if self.selected_index == 0 {
+            self.selected_index = self.workers.len().saturating_sub(1);
+        } else {
+            self.selected_index -= 1;
+        }
+    }
+
+    pub fn select_next(&mut self) {
+        if self.workers.is_empty() {
+            self.selected_index = 0;
+            return;
+        }
+        if self.selected_index + 1 >= self.workers.len() {
+            self.selected_index = 0;
+        } else {
+            self.selected_index += 1;
+        }
+    }
+
+    pub fn selected_worker(&self) -> Option<&DevProcessSummary> {
+        self.workers
+            .get(self.selected_index)
+            .or_else(|| self.swarms.first())
+    }
+
+    pub fn cycle_style(&mut self) -> SwarmDashboardStyle {
+        self.style = self.style.next();
+        self.style
+    }
 }
 
 /// Dispatches rendering of the Swarm Flight Deck based on the active visual style.
@@ -1213,5 +1248,35 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_swarm_deck_navigation_and_cycle_style() {
+        let mut data = make_test_data(SwarmDashboardStyle::Stylish);
+        assert_eq!(data.selected_index, 0);
+        assert_eq!(
+            data.selected_worker().map(|w| w.id.as_str()),
+            Some("swarm-worker-t1")
+        );
+
+        data.select_next();
+        assert_eq!(data.selected_index, 1);
+        assert_eq!(
+            data.selected_worker().map(|w| w.id.as_str()),
+            Some("swarm-worker-t2")
+        );
+
+        data.select_next(); // Wrap around
+        assert_eq!(data.selected_index, 0);
+
+        data.select_prev(); // Wrap backwards
+        assert_eq!(data.selected_index, 1);
+
+        // Cycle style
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::GitGraph);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Modern);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Minimal);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Cockpit);
+        assert_eq!(data.cycle_style(), SwarmDashboardStyle::Stylish);
     }
 }

@@ -2559,9 +2559,41 @@ impl<'a> App<'a> {
             ModalState::Processes(state) => match key.code {
                 KeyCode::Tab | KeyCode::Right if !state.is_searching => {
                     state.next_tab();
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                        let active_style = self.config.ui.swarm_style_enum();
+                        let selected = state
+                            .swarm_deck_data
+                            .as_ref()
+                            .map(|d| d.selected_index)
+                            .unwrap_or(0);
+                        state.swarm_deck_data = Some(Box::new(
+                            crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                                &self.workspace_root,
+                                selected,
+                                active_style,
+                            )
+                            .await,
+                        ));
+                    }
                 }
                 KeyCode::BackTab | KeyCode::Left if !state.is_searching => {
                     state.prev_tab();
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                        let active_style = self.config.ui.swarm_style_enum();
+                        let selected = state
+                            .swarm_deck_data
+                            .as_ref()
+                            .map(|d| d.selected_index)
+                            .unwrap_or(0);
+                        state.swarm_deck_data = Some(Box::new(
+                            crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                                &self.workspace_root,
+                                selected,
+                                active_style,
+                            )
+                            .await,
+                        ));
+                    }
                 }
                 KeyCode::Char('1') if !state.is_searching => {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
@@ -2573,7 +2605,34 @@ impl<'a> App<'a> {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Workers);
                 }
                 KeyCode::Char('4') if !state.is_searching => {
-                    if let Some(p) = state.selected_process() {
+                    let active_style = self.config.ui.swarm_style_enum();
+                    let selected = state
+                        .swarm_deck_data
+                        .as_ref()
+                        .map(|d| d.selected_index)
+                        .unwrap_or(0);
+                    state.swarm_deck_data = Some(Box::new(
+                        crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                            &self.workspace_root,
+                            selected,
+                            active_style,
+                        )
+                        .await,
+                    ));
+                    state.set_tab(crate::ui::modals::processes::ProcessesTab::Swarm);
+                }
+                KeyCode::Char('5') if !state.is_searching => {
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                        if let Some(ref data) = state.swarm_deck_data {
+                            if let Some(worker) = data.selected_worker() {
+                                let pid = worker.id.clone();
+                                let registry = crate::dev::registry::get_global_dev_registry();
+                                if let Ok(logs) = registry.logs(&pid, 500, None).await {
+                                    state.set_logs(logs);
+                                }
+                            }
+                        }
+                    } else if let Some(p) = state.selected_process() {
                         let pid = p.id.clone();
                         let registry = crate::dev::registry::get_global_dev_registry();
                         if let Ok(logs) = registry.logs(&pid, 500, None).await {
@@ -2582,7 +2641,7 @@ impl<'a> App<'a> {
                     }
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
                 }
-                KeyCode::Char('5') if !state.is_searching => {
+                KeyCode::Char('6') if !state.is_searching => {
                     let registry = crate::dev::registry::get_global_dev_registry();
                     let res = registry.resources().await;
                     state.resources = Some(res);
@@ -2591,6 +2650,18 @@ impl<'a> App<'a> {
                 KeyCode::Up => {
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs {
                         state.scroll_logs_up(1);
+                    } else if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm
+                    {
+                        if let Some(ref mut data) = state.swarm_deck_data {
+                            data.select_prev();
+                            if let Some(w) = data.selected_worker() {
+                                let wid = w.id.clone();
+                                let registry = crate::dev::registry::get_global_dev_registry();
+                                if let Ok(logs) = registry.logs(&wid, 50, None).await {
+                                    data.selected_worker_logs = logs;
+                                }
+                            }
+                        }
                     } else {
                         state.select_prev();
                         if let Some(p) = state.selected_process() {
@@ -2605,6 +2676,18 @@ impl<'a> App<'a> {
                 KeyCode::Down => {
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs {
                         state.scroll_logs_down(1);
+                    } else if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm
+                    {
+                        if let Some(ref mut data) = state.swarm_deck_data {
+                            data.select_next();
+                            if let Some(w) = data.selected_worker() {
+                                let wid = w.id.clone();
+                                let registry = crate::dev::registry::get_global_dev_registry();
+                                if let Ok(logs) = registry.logs(&wid, 50, None).await {
+                                    data.selected_worker_logs = logs;
+                                }
+                            }
+                        }
                     } else {
                         state.select_next();
                         if let Some(p) = state.selected_process() {
@@ -2634,22 +2717,56 @@ impl<'a> App<'a> {
                     state.status_message = Some(msg);
                 }
                 KeyCode::Char('k') | KeyCode::Char('x') if !state.is_searching => {
-                    if let Some(p) = state.selected_process() {
-                        let target_id = p.id.clone();
+                    let target_id =
+                        if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                            state
+                                .swarm_deck_data
+                                .as_ref()
+                                .and_then(|d| d.selected_worker().map(|w| w.id.clone()))
+                        } else {
+                            state.selected_process().map(|p| p.id.clone())
+                        };
+
+                    if let Some(target_id) = target_id {
                         let registry = crate::dev::registry::get_global_dev_registry();
                         match registry.stop(&target_id).await {
                             Ok(_) => {
                                 let msg = format!("✔ Stopped process '{}'", target_id);
                                 state.status_message = Some(msg.clone());
+                                if let Some(ref mut data) = state.swarm_deck_data {
+                                    data.status_message = Some(msg.clone());
+                                }
                                 self.timeline.add_status(msg);
                                 let list = registry.list().await;
                                 let res = registry.resources().await;
                                 state.update_data(list, Some(res));
+
+                                if state.active_tab
+                                    == crate::ui::modals::processes::ProcessesTab::Swarm
+                                {
+                                    let active_style = self.config.ui.swarm_style_enum();
+                                    let selected = state
+                                        .swarm_deck_data
+                                        .as_ref()
+                                        .map(|d| d.selected_index)
+                                        .unwrap_or(0);
+                                    state.swarm_deck_data = Some(Box::new(
+                                        crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                                            &self.workspace_root,
+                                            selected,
+                                            active_style,
+                                        )
+                                        .await,
+                                    ));
+                                }
                             }
                             Err(e) => {
                                 let msg =
                                     format!("✗ Failed to stop process '{}': {}", target_id, e);
                                 state.status_message = Some(msg.clone());
+                                if let Some(ref mut data) = state.swarm_deck_data {
+                                    data.status_message = Some(msg.clone());
+                                }
                                 self.timeline.add_status(msg);
                             }
                         }
@@ -2681,7 +2798,18 @@ impl<'a> App<'a> {
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Enter if !state.is_searching => {
-                    if let Some(p) = state.selected_process() {
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                        if let Some(ref data) = state.swarm_deck_data {
+                            if let Some(worker) = data.selected_worker() {
+                                let pid = worker.id.clone();
+                                let registry = crate::dev::registry::get_global_dev_registry();
+                                if let Ok(logs) = registry.logs(&pid, 500, None).await {
+                                    state.set_logs(logs);
+                                }
+                                state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
+                            }
+                        }
+                    } else if let Some(p) = state.selected_process() {
                         let pid = p.id.clone();
                         let registry = crate::dev::registry::get_global_dev_registry();
                         if let Ok(logs) = registry.logs(&pid, 500, None).await {
@@ -2690,8 +2818,50 @@ impl<'a> App<'a> {
                         state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
                     }
                 }
+                KeyCode::Char(' ')
+                    if !state.is_searching
+                        && state.active_tab
+                            == crate::ui::modals::processes::ProcessesTab::Swarm =>
+                {
+                    if let Some(ref data) = state.swarm_deck_data {
+                        if let Some(worker) = data.selected_worker() {
+                            let pid = worker.id.clone();
+                            let registry = crate::dev::registry::get_global_dev_registry();
+                            if let Ok(logs) = registry.logs(&pid, 500, None).await {
+                                state.set_logs(logs);
+                            }
+                            state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
+                        }
+                    }
+                }
                 KeyCode::Char('s') if !state.is_searching => {
-                    if let Some(p) = state.selected_process() {
+                    if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                        let next_style = if let Some(ref mut data) = state.swarm_deck_data {
+                            let next = data.cycle_style();
+                            data.status_message = Some(format!("Swarm style: {}", next.as_str()));
+                            next
+                        } else {
+                            let next = self.config.ui.swarm_style_enum().next();
+                            self.config.ui.swarm_style = next.as_str().to_string();
+                            let _ = self.config.save(Some(&self.workspace_root));
+                            state.swarm_deck_data = Some(Box::new(
+                                crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                                    &self.workspace_root,
+                                    0,
+                                    next,
+                                )
+                                .await,
+                            ));
+                            return;
+                        };
+
+                        self.config.ui.swarm_style = next_style.as_str().to_string();
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        self.timeline.add_status(format!(
+                            "🎨 Swarm flight deck style set to '{}'",
+                            next_style.as_str()
+                        ));
+                    } else if let Some(p) = state.selected_process() {
                         if let Some(ref url) = p.url {
                             let url_str = url.clone();
                             self.timeline.add_status(format!(

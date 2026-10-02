@@ -19,6 +19,7 @@ pub enum ProcessesTab {
     All,
     Servers,
     Workers,
+    Swarm,
     Logs,
     Telemetry,
 }
@@ -29,6 +30,7 @@ impl ProcessesTab {
             ProcessesTab::All,
             ProcessesTab::Servers,
             ProcessesTab::Workers,
+            ProcessesTab::Swarm,
             ProcessesTab::Logs,
             ProcessesTab::Telemetry,
         ]
@@ -39,6 +41,7 @@ impl ProcessesTab {
             ProcessesTab::All => "All",
             ProcessesTab::Servers => "Servers",
             ProcessesTab::Workers => "Workers",
+            ProcessesTab::Swarm => "🐝 Swarm",
             ProcessesTab::Logs => "Logs",
             ProcessesTab::Telemetry => "Telemetry",
         }
@@ -48,7 +51,8 @@ impl ProcessesTab {
         match self {
             ProcessesTab::All => ProcessesTab::Servers,
             ProcessesTab::Servers => ProcessesTab::Workers,
-            ProcessesTab::Workers => ProcessesTab::Logs,
+            ProcessesTab::Workers => ProcessesTab::Swarm,
+            ProcessesTab::Swarm => ProcessesTab::Logs,
             ProcessesTab::Logs => ProcessesTab::Telemetry,
             ProcessesTab::Telemetry => ProcessesTab::All,
         }
@@ -59,7 +63,8 @@ impl ProcessesTab {
             ProcessesTab::All => ProcessesTab::Telemetry,
             ProcessesTab::Servers => ProcessesTab::All,
             ProcessesTab::Workers => ProcessesTab::Servers,
-            ProcessesTab::Logs => ProcessesTab::Workers,
+            ProcessesTab::Swarm => ProcessesTab::Workers,
+            ProcessesTab::Logs => ProcessesTab::Swarm,
             ProcessesTab::Telemetry => ProcessesTab::Logs,
         }
     }
@@ -81,6 +86,7 @@ pub struct ProcessesModalState {
     pub log_scroll_offset: usize,
     pub auto_scroll_logs: bool,
     pub status_message: Option<String>,
+    pub swarm_deck_data: Option<Box<crate::ui::modals::swarm_deck::SwarmDeckData>>,
 }
 
 impl ProcessesModalState {
@@ -99,6 +105,7 @@ impl ProcessesModalState {
             log_scroll_offset: 0,
             auto_scroll_logs: true,
             status_message: None,
+            swarm_deck_data: None,
         };
         state.refresh_filtered();
         state
@@ -128,6 +135,7 @@ impl ProcessesModalState {
             log_scroll_offset: initial_offset,
             auto_scroll_logs: true,
             status_message: None,
+            swarm_deck_data: None,
         };
         state.refresh_filtered();
         state
@@ -273,6 +281,7 @@ impl ProcessesModalState {
                     p.process_type,
                     DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
                 ),
+                ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
             };
 
             if !tab_match {
@@ -363,6 +372,27 @@ pub fn render_processes_modal(
         ProcessesTab::All | ProcessesTab::Servers | ProcessesTab::Workers => {
             render_process_table_and_details(frame, state, layout[2], theme);
         }
+        ProcessesTab::Swarm => {
+            if let Some(ref data) = state.swarm_deck_data {
+                crate::ui::modals::swarm_deck::render_swarm_flight_deck(
+                    frame, layout[2], theme, data,
+                );
+            } else {
+                let empty_para = Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "  🐝 Swarm Flight Deck: No active swarms. Press [s] to cycle styles or launch with 'minicode swarm run'.",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.border))
+                        .title(" 🐝 Swarm Flight Deck "),
+                );
+                frame.render_widget(empty_para, layout[2]);
+            }
+        }
         ProcessesTab::Logs => {
             render_process_logs_tab(frame, state, layout[2], theme);
         }
@@ -430,6 +460,14 @@ fn render_top_tabs_and_search(
                             DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
                         )
                     })
+                    .count();
+                format!(" ({})", cnt)
+            }
+            ProcessesTab::Swarm => {
+                let cnt = state
+                    .processes
+                    .iter()
+                    .filter(|p| matches!(p.process_type, DevProcessType::Swarm))
                     .count();
                 format!(" ({})", cnt)
             }
@@ -1407,7 +1445,50 @@ fn render_shortcuts_footer(
         Span::styled("Close", Style::default().fg(theme.muted)),
     ];
 
-    if state.active_tab == ProcessesTab::Logs {
+    if state.active_tab == ProcessesTab::Swarm {
+        spans = vec![
+            Span::styled(
+                "[↑/↓] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Select  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[Space] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Logs  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[s] ",
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Cycle Style  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[k] ",
+                Style::default()
+                    .fg(theme.destructive)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Kill  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[Tab] ",
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Switch Tab  ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "[Esc/F7] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Close", Style::default().fg(theme.muted)),
+        ];
+    } else if state.active_tab == ProcessesTab::Logs {
         spans.insert(
             6,
             Span::styled(
@@ -1489,6 +1570,22 @@ mod tests {
                 port_resolution: None,
                 schedule_info: None,
             },
+            DevProcessSummary {
+                id: DevProcessId::from("swarm-test"),
+                name: "Swarm DAG: Math Engine".to_string(),
+                process_type: DevProcessType::Swarm,
+                status: DevProcessStatus::Running,
+                pid: Some(12348),
+                ports: vec![],
+                url: None,
+                cpu_percent: 1.0,
+                memory_rss_mb: 50.0,
+                uptime_secs: 30,
+                restart_count: 0,
+                restart_policy: RestartPolicy::Never,
+                port_resolution: None,
+                schedule_info: None,
+            },
         ]
     }
 
@@ -1497,9 +1594,16 @@ mod tests {
         let tab = ProcessesTab::All;
         assert_eq!(tab.next(), ProcessesTab::Servers);
         assert_eq!(tab.next().next(), ProcessesTab::Workers);
-        assert_eq!(tab.next().next().next(), ProcessesTab::Logs);
-        assert_eq!(tab.next().next().next().next(), ProcessesTab::Telemetry);
-        assert_eq!(tab.next().next().next().next().next(), ProcessesTab::All);
+        assert_eq!(tab.next().next().next(), ProcessesTab::Swarm);
+        assert_eq!(tab.next().next().next().next(), ProcessesTab::Logs);
+        assert_eq!(
+            tab.next().next().next().next().next(),
+            ProcessesTab::Telemetry
+        );
+        assert_eq!(
+            tab.next().next().next().next().next().next(),
+            ProcessesTab::All
+        );
 
         assert_eq!(tab.prev(), ProcessesTab::Telemetry);
     }
@@ -1514,8 +1618,8 @@ mod tests {
             vec!["Log line 1".to_string(), "Log line 2".to_string()],
         );
 
-        // Tab: All -> 3 processes
-        assert_eq!(state.filtered_indices.len(), 3);
+        // Tab: All -> 4 processes
+        assert_eq!(state.filtered_indices.len(), 4);
 
         // Tab: Servers -> 2 processes (Vite and Axum)
         state.next_tab();
@@ -1529,6 +1633,15 @@ mod tests {
         assert_eq!(
             state.selected_process().map(|p| p.name.as_str()),
             Some("Autonomous Subagent Worker")
+        );
+
+        // Tab: Swarm -> 1 process
+        state.next_tab();
+        assert_eq!(state.active_tab, ProcessesTab::Swarm);
+        assert_eq!(state.filtered_indices.len(), 1);
+        assert_eq!(
+            state.selected_process().map(|p| p.name.as_str()),
+            Some("Swarm DAG: Math Engine")
         );
     }
 

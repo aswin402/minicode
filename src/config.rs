@@ -384,6 +384,16 @@ impl SwarmDashboardStyle {
             _ => Self::Stylish,
         }
     }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Stylish => Self::GitGraph,
+            Self::GitGraph => Self::Modern,
+            Self::Modern => Self::Minimal,
+            Self::Minimal => Self::Cockpit,
+            Self::Cockpit => Self::Stylish,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
