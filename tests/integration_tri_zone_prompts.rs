@@ -86,6 +86,7 @@ fn test_recency_context_formats_git_and_working_set() {
         Some(&git_status),
         Some(&budget),
         None,
+        None,
     );
 
     assert!(recency.contains("<workspace_context>"));

@@ -2,7 +2,64 @@ use super::accessibility::AccessibilityManager;
 use super::driver::CdpClient;
 use super::AriaElement;
 use crate::error::{Result, ToolError};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
+
+/// Declarative browser action step in a multi-action batch pipeline
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum BatchStep {
+    Navigate {
+        url: String,
+    },
+    Click {
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+    },
+    Fill {
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+        text: String,
+    },
+    Scroll {
+        direction: String,
+    },
+    WaitForSelector {
+        selector: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    WaitForNetworkIdle {
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    WaitDelay {
+        ms: u64,
+    },
+    EvaluateJs {
+        script: String,
+    },
+    AssertText {
+        text: String,
+        #[serde(default)]
+        selector: Option<String>,
+    },
+}
+
+/// Recorded outcome of an individual batch step
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchStepOutcome {
+    pub step_number: usize,
+    pub action: String,
+    pub detail: String,
+    pub success: bool,
+    pub duration_ms: u64,
+}
 
 /// Dispatches DOM interaction commands and returns the updated page snapshot
 pub struct BrowserInteractor;
@@ -34,8 +91,8 @@ impl BrowserInteractor {
             .into());
         }
 
-        // Allow DOM / network to settle after click
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Allow DOM / network to settle dynamically
+        let _ = cdp.wait_for_network_idle(Duration::from_millis(500)).await;
 
         // Advance accessibility revision for subsequent actions
         acc_mgr.next_revision();
@@ -84,7 +141,7 @@ impl BrowserInteractor {
             .into());
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
         acc_mgr.next_revision();
 
         let updated_html = cdp.get_document_html().await.unwrap_or_default();
@@ -123,9 +180,280 @@ impl BrowserInteractor {
         let scroll_js = Self::build_scroll_js(direction);
 
         cdp.evaluate_js(scroll_js).await?;
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         Ok(format!("Scrolled page {}", direction))
+    }
+
+    /// Executes an atomic pipeline of browser actions sequentially in a single turn
+    pub async fn execute_batch(
+        cdp: &CdpClient,
+        steps: &[BatchStep],
+        acc_mgr: &mut AccessibilityManager,
+    ) -> Result<String> {
+        let mut outcomes = Vec::with_capacity(steps.len());
+        let mut failure: Option<String> = None;
+
+        for (idx, step) in steps.iter().enumerate() {
+            let step_num = idx + 1;
+            let start_time = std::time::Instant::now();
+
+            let (step_action, step_detail, res): (&str, String, Result<()>) = match step {
+                BatchStep::Navigate { url } => {
+                    let action = "navigate";
+                    let detail = format!("Navigated to '{}'", url);
+                    (action, detail, cdp.navigate(url).await)
+                }
+                BatchStep::Click {
+                    target_ref,
+                    selector,
+                } => {
+                    let action = "click";
+                    if let Some(r) = target_ref {
+                        match acc_mgr.resolve_ref(r) {
+                            Ok(el) => {
+                                let el = el.clone();
+                                let detail = format!("Clicked {} <{}> \"{}\"", r, el.tag, el.name);
+                                let click_js = build_click_js(&el);
+                                let exec_res = cdp.evaluate_js(&click_js).await;
+                                match exec_res {
+                                    Ok(res_str) if res_str.starts_with("Error:") => (
+                                        action,
+                                        detail,
+                                        Err(ToolError::CommandExec(format!(
+                                            "Click failed: {}",
+                                            res_str
+                                        ))
+                                        .into()),
+                                    ),
+                                    Ok(_) => {
+                                        let _ = cdp
+                                            .wait_for_network_idle(Duration::from_millis(400))
+                                            .await;
+                                        (action, detail, Ok(()))
+                                    }
+                                    Err(e) => (action, detail, Err(e)),
+                                }
+                            }
+                            Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
+                        }
+                    } else if let Some(sel) = selector {
+                        let detail = format!("Clicked selector '{}'", sel);
+                        let click_js = build_click_by_selector_js(sel);
+                        let exec_res = cdp.evaluate_js(&click_js).await;
+                        match exec_res {
+                            Ok(res_str) if res_str.starts_with("Error:") => (
+                                action,
+                                detail,
+                                Err(ToolError::CommandExec(format!("Click failed: {}", res_str))
+                                    .into()),
+                            ),
+                            Ok(_) => {
+                                let _ = cdp.wait_for_network_idle(Duration::from_millis(400)).await;
+                                (action, detail, Ok(()))
+                            }
+                            Err(e) => (action, detail, Err(e)),
+                        }
+                    } else {
+                        (
+                            action,
+                            "Missing 'ref' or 'selector'".to_string(),
+                            Err(ToolError::InvalidArguments {
+                                name: "browser_batch".to_string(),
+                                reason: "Click action requires either 'ref' or 'selector'"
+                                    .to_string(),
+                            }
+                            .into()),
+                        )
+                    }
+                }
+                BatchStep::Fill {
+                    target_ref,
+                    selector,
+                    text,
+                } => {
+                    let action = "fill";
+                    if let Some(r) = target_ref {
+                        match acc_mgr.resolve_ref(r) {
+                            Ok(el) => {
+                                let el = el.clone();
+                                let detail = format!("Filled {} <{}> with \"{}\"", r, el.tag, text);
+                                let fill_js = build_fill_js(&el, text);
+                                let exec_res = cdp.evaluate_js(&fill_js).await;
+                                match exec_res {
+                                    Ok(res_str) if res_str.starts_with("Error:") => (
+                                        action,
+                                        detail,
+                                        Err(ToolError::CommandExec(format!(
+                                            "Fill failed: {}",
+                                            res_str
+                                        ))
+                                        .into()),
+                                    ),
+                                    Ok(_) => (action, detail, Ok(())),
+                                    Err(e) => (action, detail, Err(e)),
+                                }
+                            }
+                            Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
+                        }
+                    } else if let Some(sel) = selector {
+                        let detail = format!("Filled selector '{}' with \"{}\"", sel, text);
+                        let fill_js = build_fill_by_selector_js(sel, text);
+                        let exec_res = cdp.evaluate_js(&fill_js).await;
+                        match exec_res {
+                            Ok(res_str) if res_str.starts_with("Error:") => (
+                                action,
+                                detail,
+                                Err(ToolError::CommandExec(format!("Fill failed: {}", res_str))
+                                    .into()),
+                            ),
+                            Ok(_) => (action, detail, Ok(())),
+                            Err(e) => (action, detail, Err(e)),
+                        }
+                    } else {
+                        (
+                            action,
+                            "Missing 'ref' or 'selector'".to_string(),
+                            Err(ToolError::InvalidArguments {
+                                name: "browser_batch".to_string(),
+                                reason: "Fill action requires either 'ref' or 'selector'"
+                                    .to_string(),
+                            }
+                            .into()),
+                        )
+                    }
+                }
+                BatchStep::Scroll { direction } => {
+                    let action = "scroll";
+                    let detail = format!("Scrolled {}", direction);
+                    let scroll_js = Self::build_scroll_js(direction);
+                    (action, detail, cdp.evaluate_js(scroll_js).await.map(|_| ()))
+                }
+                BatchStep::WaitForSelector {
+                    selector,
+                    timeout_ms,
+                } => {
+                    let action = "wait_for_selector";
+                    let detail = format!("Waited for selector '{}'", selector);
+                    let dur = Duration::from_millis(timeout_ms.unwrap_or(5000));
+                    (action, detail, cdp.wait_for_selector(selector, dur).await)
+                }
+                BatchStep::WaitForNetworkIdle { timeout_ms } => {
+                    let action = "wait_for_network_idle";
+                    let detail = "Waited for network idle".to_string();
+                    let dur = Duration::from_millis(timeout_ms.unwrap_or(2000));
+                    (action, detail, cdp.wait_for_network_idle(dur).await)
+                }
+                BatchStep::WaitDelay { ms } => {
+                    let action = "delay";
+                    let detail = format!("Waited {}ms", ms);
+                    tokio::time::sleep(Duration::from_millis(*ms)).await;
+                    (action, detail, Ok(()))
+                }
+                BatchStep::EvaluateJs { script } => {
+                    let action = "eval_js";
+                    match cdp.evaluate_js(script).await {
+                        Ok(output) => (action, format!("Evaluated JS -> {}", output), Ok(())),
+                        Err(e) => (action, "Failed evaluating JS".to_string(), Err(e)),
+                    }
+                }
+                BatchStep::AssertText { text, selector } => {
+                    let action = "assert_text";
+                    let check_script = if let Some(sel) = selector {
+                        format!(
+                            "Boolean(document.querySelector(\"{}\")?.innerText?.includes({:?}))",
+                            sel.replace('"', "\\\""),
+                            text
+                        )
+                    } else {
+                        format!("document.body.innerText.includes({:?})", text)
+                    };
+                    match cdp.evaluate_js(&check_script).await {
+                        Ok(res) if res.trim() == "true" => (
+                            action,
+                            format!("Assertion passed: text {:?} is present", text),
+                            Ok(()),
+                        ),
+                        Ok(_) => {
+                            let detail = format!("Assertion failed: text {:?} not found", text);
+                            (
+                                action,
+                                detail.clone(),
+                                Err(ToolError::CommandExec(detail).into()),
+                            )
+                        }
+                        Err(e) => (action, "Assertion evaluation failed".to_string(), Err(e)),
+                    }
+                }
+            };
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+
+            match res {
+                Ok(()) => {
+                    outcomes.push(BatchStepOutcome {
+                        step_number: step_num,
+                        action: step_action.to_string(),
+                        detail: step_detail,
+                        success: true,
+                        duration_ms,
+                    });
+                }
+                Err(e) => {
+                    outcomes.push(BatchStepOutcome {
+                        step_number: step_num,
+                        action: step_action.to_string(),
+                        detail: format!("Failed: {}", e),
+                        success: false,
+                        duration_ms,
+                    });
+                    failure = Some(format!("Step {} failed: {}", step_num, e));
+                    break;
+                }
+            }
+        }
+
+        // Update accessibility tree at end of batch
+        acc_mgr.next_revision();
+        let updated_html = cdp.get_document_html().await.unwrap_or_default();
+        let updated_elements = acc_mgr.update_from_html(&updated_html);
+
+        // Format detailed markdown response for agent
+        let mut report = String::from("### Browser Batch Execution Report\n\n");
+        let succeeded_count = outcomes.iter().filter(|o| o.success).count();
+
+        if let Some(ref err) = failure {
+            report.push_str(&format!("❌ **Batch halted with error:** {}\n", err));
+            report.push_str(&format!(
+                "Executed {} of {} step(s) before failure.\n\n",
+                succeeded_count,
+                steps.len()
+            ));
+        } else {
+            report.push_str(&format!(
+                "✅ **All {} step(s) executed successfully.**\n\n",
+                steps.len()
+            ));
+        }
+
+        report.push_str("#### Step Outcomes:\n");
+        for o in &outcomes {
+            let icon = if o.success { "✓" } else { "✗" };
+            report.push_str(&format!(
+                "{}. [{}] `{}` — {} (took {}ms)\n",
+                o.step_number, icon, o.action, o.detail, o.duration_ms
+            ));
+        }
+        report.push('\n');
+
+        let tree_report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        report.push_str(&tree_report);
+
+        if failure.is_some() {
+            Err(ToolError::CommandExec(report).into())
+        } else {
+            Ok(report)
+        }
     }
 }
 
@@ -159,7 +487,12 @@ fn build_click_js(el: &AriaElement) -> String {
             if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
             target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
             target.focus();
-            target.click();
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
+                target.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
+            }});
+            if (typeof target.click === 'function') {{
+                try {{ target.click(); }} catch (_) {{}}
+            }}
             return 'OK';
         }})()"#,
         payload
@@ -199,7 +532,76 @@ fn build_fill_js(el: &AriaElement, text: &str) -> String {
             if (!target) return 'Error: Input element not found in DOM';
             target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
             target.focus();
-            target.value = p.text;
+            try {{
+                const proto = Object.getPrototypeOf(target);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+                if (setter) {{
+                    setter.call(target, p.text);
+                }} else {{
+                    target.value = p.text;
+                }}
+                if (target._valueTracker) {{
+                    target._valueTracker.setValue('');
+                }}
+            }} catch (_) {{
+                target.value = p.text;
+            }}
+            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_click_by_selector_js(selector: &str) -> String {
+    let payload = json!({ "selector": selector });
+    format!(
+        r#"(function() {{
+            const p = {};
+            const target = document.querySelector(p.selector);
+            if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            target.focus();
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
+                target.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
+            }});
+            if (typeof target.click === 'function') {{
+                try {{ target.click(); }} catch (_) {{}}
+            }}
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
+    let payload = json!({ "selector": selector, "text": text });
+    format!(
+        r#"(function() {{
+            const p = {};
+            const target = document.querySelector(p.selector);
+            if (!target) return 'Error: Input matching selector "' + p.selector + '" not found in DOM';
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            target.focus();
+            try {{
+                const proto = Object.getPrototypeOf(target);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+                if (setter) {{
+                    setter.call(target, p.text);
+                }} else {{
+                    target.value = p.text;
+                }}
+                if (target._valueTracker) {{
+                    target._valueTracker.setValue('');
+                }}
+            }} catch (_) {{
+                target.value = p.text;
+            }}
             target.dispatchEvent(new Event('input', {{ bubbles: true }}));
             target.dispatchEvent(new Event('change', {{ bubbles: true }}));
             return 'OK';
@@ -237,5 +639,100 @@ mod tests {
             assert!(js.ends_with("})()"));
             assert!(js.contains("return 'scrolled_"));
         }
+    }
+
+    #[test]
+    fn test_batch_step_deserialization() {
+        let json_input = r#"[
+            {"action": "navigate", "url": "http://localhost:3000"},
+            {"action": "fill", "ref": "@v1:e2", "text": "alice@example.com"},
+            {"action": "click", "ref": "@v1:e3"},
+            {"action": "wait_for_selector", "selector": ".dashboard", "timeout_ms": 3000},
+            {"action": "assert_text", "text": "Welcome Alice"}
+        ]"#;
+
+        let steps: Vec<BatchStep> = serde_json::from_str(json_input).expect("Valid batch steps");
+        assert_eq!(steps.len(), 5);
+        assert_eq!(
+            steps[0],
+            BatchStep::Navigate {
+                url: "http://localhost:3000".to_string()
+            }
+        );
+        assert_eq!(
+            steps[1],
+            BatchStep::Fill {
+                target_ref: Some("@v1:e2".to_string()),
+                selector: None,
+                text: "alice@example.com".to_string()
+            }
+        );
+        assert_eq!(
+            steps[2],
+            BatchStep::Click {
+                target_ref: Some("@v1:e3".to_string()),
+                selector: None
+            }
+        );
+        assert_eq!(
+            steps[3],
+            BatchStep::WaitForSelector {
+                selector: ".dashboard".to_string(),
+                timeout_ms: Some(3000)
+            }
+        );
+        assert_eq!(
+            steps[4],
+            BatchStep::AssertText {
+                text: "Welcome Alice".to_string(),
+                selector: None
+            }
+        );
+
+        let json_selector = r##"[
+            {"action": "fill", "selector": "#email", "text": "bob@example.com"},
+            {"action": "click", "selector": "#submit"}
+        ]"##;
+        let selector_steps: Vec<BatchStep> =
+            serde_json::from_str(json_selector).expect("Valid selector batch steps");
+        assert_eq!(
+            selector_steps[0],
+            BatchStep::Fill {
+                target_ref: None,
+                selector: Some("#email".to_string()),
+                text: "bob@example.com".to_string()
+            }
+        );
+        assert_eq!(
+            selector_steps[1],
+            BatchStep::Click {
+                target_ref: None,
+                selector: Some("#submit".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_synthetic_event_generators() {
+        let mut attrs = std::collections::HashMap::new();
+        attrs.insert("id".to_string(), "submit-btn".to_string());
+        let el = AriaElement {
+            ref_id: "@v1:e1".to_string(),
+            tag: "button".to_string(),
+            role: "button".to_string(),
+            name: "Submit".to_string(),
+            attributes: attrs,
+        };
+
+        let click_script = build_click_js(&el);
+        assert!(click_script.contains("pointerdown"));
+        assert!(click_script.contains("mousedown"));
+        assert!(click_script.contains("click"));
+        assert!(click_script.contains("submit-btn"));
+
+        let fill_script = build_fill_js(&el, "hello world");
+        assert!(fill_script.contains("HTMLInputElement.prototype"));
+        assert!(fill_script.contains("hello world"));
+        assert!(fill_script.contains("dispatchEvent"));
     }
 }

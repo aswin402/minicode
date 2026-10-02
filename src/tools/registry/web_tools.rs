@@ -200,6 +200,108 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "browser_batch".to_string(),
+            description: "Execute an atomic pipeline of multiple browser actions sequentially in a single turn without round-tripping to LLM between each step. Supports navigate, click, fill, scroll, wait_for_selector, wait_for_network_idle, delay, eval_js, and assert_text.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"fill\", \"ref\": \"@v1:e2\", \"text\": \"alice\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
+                        "items": {
+                            "type": "object"
+                        }
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["actions"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_mock_route".to_string(),
+            description: "Intercept and mock HTTP/API requests over CDP (or block ad/tracking URLs) to test frontend error boundaries (e.g. 500/404/401 handling) and loading states without modifying server code.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "URL pattern or wildcard to intercept (e.g. '*/api/users*', 'https://api.example.com/*')"
+                    },
+                    "status": {
+                        "type": "integer",
+                        "description": "Mocked HTTP status code to return (e.g. 200, 401, 404, 500). Default: 200"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Mocked HTTP response body string (usually JSON)"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "Response Content-Type header (default: 'application/json')"
+                    },
+                    "clear": {
+                        "type": "boolean",
+                        "description": "If true, clears all active mock routes instead of adding a new rule"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_debug_bundle".to_string(),
+            description: "Aggregate live browser diagnostics into a unified report: uncaught JavaScript exceptions, console logs, failed HTTP network requests (4xx/5xx / blocked requests), and current active page ARIA tree.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_qa_audit".to_string(),
+            description: "Run an automated in-page Quality Assurance audit on a target web application or local dev server. Checks for broken images, broken/placeholder links, form accessibility, missing meta/viewport tags, runtime JavaScript exceptions, and 4xx/5xx network failures.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to and audit (defaults to the currently open browser page)"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_inspect_dom".to_string(),
+            description: "Perform deep in-page DOM grounding inspection. Pierces Shadow DOM to discover custom Web Components, computes live bounding box geometry (X, Y, W, H), checks element visibility, and extracts precise CSS selectors.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "crawl_documentation".to_string(),
             description: "Recursively crawl a documentation site with domain boundaries, depth limits, and max page caps, extracting clean Fit-Markdown into a structured knowledge report and caching to .minicode/crawled/.".to_string(),
             parameters: json!({
@@ -259,6 +361,110 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     }
                 },
                 "required": ["query"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_emulate".to_string(),
+            description: "Configure device viewport emulation (mobile, iphone, tablet, desktop, desktop_wide, reset) and network throttling (offline, slow_3g, fast_3g, cable, reset) over CDP.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "viewport": {
+                        "type": "string",
+                        "enum": ["mobile", "mobile_large", "iphone", "tablet", "ipad", "desktop", "desktop_wide", "reset"],
+                        "description": "Device viewport preset"
+                    },
+                    "network": {
+                        "type": "string",
+                        "enum": ["offline", "slow_3g", "fast_3g", "cable", "wifi", "reset"],
+                        "description": "Network throttling condition preset"
+                    },
+                    "width": {
+                        "type": "integer",
+                        "description": "Custom viewport width in pixels"
+                    },
+                    "height": {
+                        "type": "integer",
+                        "description": "Custom viewport height in pixels"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_state".to_string(),
+            description: "Save or restore browser session states (cookies and localStorage) to/from persistent profiles in .minicode/browser_state/ to maintain logins across agent runs.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["save", "restore"],
+                        "description": "Action to perform: 'save' or 'restore'"
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "Profile name (e.g. 'auth_user', 'admin_session')"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["action", "profile"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_pdf".to_string(),
+            description: "Render and export the active web page or target document to a high-fidelity PDF file via CDP Page.printToPDF.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Target file path relative to workspace root (optional, defaults to .minicode/reports/page_export_<timestamp>.pdf)"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to before exporting to PDF"
+                    },
+                    "landscape": {
+                        "type": "boolean",
+                        "description": "Paper orientation: true for landscape, false for portrait (default: false)"
+                    },
+                    "print_background": {
+                        "type": "boolean",
+                        "description": "Print background graphics and colors (default: true)"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_check_injection".to_string(),
+            description: "Scan active page DOM for hidden elements (CSS display:none, visibility:hidden, zero-size text, off-screen coords) and audit for prompt injection attacks and context poisoning.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to before scanning"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser execution mode ('headless' or 'gui')"
+                    }
+                }
             }),
         },
         ToolSchema {
@@ -394,6 +600,71 @@ pub async fn dispatch(
                 let mode = parse_browser_mode(args);
 
                 BrowserController::take_screenshot(mode, workspace_root, path_opt).await
+            }
+            .await,
+        ),
+        "browser_batch" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let actions_val = args.get("actions").ok_or_else(|| {
+                    crate::error::ToolError::InvalidArguments {
+                        name: "browser_batch".to_string(),
+                        reason: "Missing required 'actions' array".to_string(),
+                    }
+                })?;
+                let steps: Vec<crate::tools::browser::BatchStep> =
+                    serde_json::from_value(actions_val.clone()).map_err(|e| {
+                        crate::error::ToolError::InvalidArguments {
+                            name: "browser_batch".to_string(),
+                            reason: format!("Failed parsing batch actions: {}", e),
+                        }
+                    })?;
+
+                BrowserController::execute_batch(&steps, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_mock_route" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let clear = args.get("clear").and_then(|c| c.as_bool()).unwrap_or(false);
+                let pattern = opt_str(args, "pattern").unwrap_or("*");
+                let status = args.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
+                let body = opt_str(args, "body").unwrap_or("{}");
+                let content_type = opt_str(args, "content_type");
+
+                BrowserController::mock_route(
+                    pattern,
+                    status,
+                    body,
+                    content_type,
+                    clear,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            .await,
+        ),
+        "browser_debug_bundle" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                BrowserController::get_debug_bundle(mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_qa_audit" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let url_opt = opt_str(args, "url");
+                BrowserController::run_qa_audit(url_opt, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_inspect_dom" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                BrowserController::inspect_visual_dom(mode, workspace_root).await
             }
             .await,
         ),
@@ -541,6 +812,91 @@ pub async fn dispatch(
                     }
                     Ok(out)
                 }
+            }
+            .await,
+        ),
+        "browser_emulate" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let viewport = opt_str(args, "viewport");
+                let network = opt_str(args, "network");
+                let width = opt_u64(args, "width").map(|w| w as u32);
+                let height = opt_u64(args, "height").map(|h| h as u32);
+
+                BrowserController::emulate_device_and_network(
+                    viewport,
+                    network,
+                    width,
+                    height,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            .await,
+        ),
+        "browser_state" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let action = require_str(args, "action", "browser_state")?;
+                let profile = require_str(args, "profile", "browser_state")?;
+
+                match action {
+                    "save" => {
+                        BrowserController::save_session_state(profile, mode, workspace_root).await
+                    }
+                    "restore" => {
+                        BrowserController::restore_session_state(profile, mode, workspace_root)
+                            .await
+                    }
+                    other => Err(crate::error::ToolError::InvalidArguments {
+                        name: "browser_state".to_string(),
+                        reason: format!("Unknown action '{}'. Expected 'save' or 'restore'", other),
+                    }
+                    .into()),
+                }
+            }
+            .await,
+        ),
+        "browser_pdf" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                if let Some(target_url) = opt_str(args, "url") {
+                    BrowserController::navigate_and_snapshot(target_url, mode, workspace_root)
+                        .await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                let custom_path = opt_str(args, "path");
+                let landscape = args
+                    .get("landscape")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let print_bg = args
+                    .get("print_background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                BrowserController::export_pdf(
+                    custom_path,
+                    landscape,
+                    print_bg,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            .await,
+        ),
+        "browser_check_injection" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                if let Some(target_url) = opt_str(args, "url") {
+                    BrowserController::navigate_and_snapshot(target_url, mode, workspace_root)
+                        .await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+
+                BrowserController::check_prompt_injections(mode, workspace_root).await
             }
             .await,
         ),

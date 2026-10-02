@@ -882,6 +882,10 @@ pub const BROWSER_MAX_SCREENSHOT_BYTES: usize = 2 * 1024 * 1024;
 pub const BROWSER_PROFILES_DIR: &str = ".minicode/browser_profiles";
 /// Relative directory inside workspace for browser screenshots
 pub const BROWSER_SCREENSHOTS_DIR: &str = ".minicode/screenshots";
+/// Relative directory inside workspace for browser session states
+pub const BROWSER_STATE_DIR: &str = ".minicode/browser_state";
+/// Relative directory inside workspace for browser reports and PDFs
+pub const BROWSER_REPORTS_DIR: &str = ".minicode/reports";
 
 // === MiniDev Runtime & Port Orchestrator ===
 /// Default scan range when searching for fallback available ports (100)
@@ -950,7 +954,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 186;
+pub const TOTAL_TOOL_COUNT: usize = 191;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

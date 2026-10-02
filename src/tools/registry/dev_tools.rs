@@ -23,8 +23,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart", "resources", "kill_all", "stop_all", "screenshot", "workers", "swarms", "probe_port", "check_port"],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port)"
+                    "enum": [
+                        "start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart",
+                        "resources", "kill_all", "stop_all", "screenshot", "workers", "swarms",
+                        "probe_port", "check_port", "audit", "qa_audit", "inspect", "inspect_dom",
+                        "batch", "browser_batch", "mock_route", "browser_status", "browser_debug",
+                        "browser_close", "emulate", "browser_emulate", "save_state", "browser_save_state",
+                        "restore_state", "browser_restore_state", "pdf", "browser_pdf",
+                        "check_injection", "browser_check_injection", "scan_hidden"
+                    ],
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections)"
                 },
                 "command": {
                     "type": "string",
@@ -103,7 +111,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "url": {
                     "type": "string",
-                    "description": "Target URL to capture for 'screenshot' action (optional, defaults to primary URL of running process)"
+                    "description": "Target URL to capture, audit, or inspect for 'screenshot', 'audit', 'inspect' (optional, defaults to primary URL of running process)"
                 },
                 "path": {
                     "type": "string",
@@ -112,7 +120,34 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "mode": {
                     "type": "string",
                     "enum": ["headless", "gui"],
-                    "description": "Browser execution mode for 'screenshot' ('headless' or 'gui', default: 'headless')"
+                    "description": "Browser execution mode for browser actions ('headless' or 'gui', default: 'headless')"
+                },
+                "actions": {
+                    "type": "array",
+                    "description": "Ordered array of browser action objects to execute sequentially for 'batch'/'browser_batch' (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"fill\", \"ref\": \"@v1:e2\", \"text\": \"alice\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}])",
+                    "items": {
+                        "type": "object"
+                    }
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "URL pattern or wildcard to intercept for 'mock_route' (e.g. '*/api/*', 'https://api.example.com/*')"
+                },
+                "status": {
+                    "type": "integer",
+                    "description": "Mocked HTTP status code for 'mock_route' (e.g. 200, 401, 404, 500). Default: 200"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Mocked HTTP response body string for 'mock_route' (usually JSON)"
+                },
+                "content_type": {
+                    "type": "string",
+                    "description": "Response Content-Type header for 'mock_route' (default: 'application/json')"
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Clear all active mock routes if true (used by 'mock_route')"
                 },
                 "working_dir": {
                     "type": "string",
@@ -133,11 +168,49 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "filter": {
                     "type": "string",
                     "description": "Optional substring filter to apply when querying process logs"
+                },
+                "viewport": {
+                    "type": "string",
+                    "enum": ["mobile", "mobile_large", "iphone", "tablet", "ipad", "desktop", "desktop_wide", "reset"],
+                    "description": "Device viewport preset for 'emulate'/'browser_emulate'"
+                },
+                "network": {
+                    "type": "string",
+                    "enum": ["offline", "slow_3g", "fast_3g", "cable", "wifi", "reset"],
+                    "description": "Network throttling condition preset for 'emulate'/'browser_emulate'"
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Named session state profile identifier for 'save_state'/'restore_state' (e.g. 'auth_user')"
+                },
+                "landscape": {
+                    "type": "boolean",
+                    "description": "Paper orientation for 'pdf' (true for landscape, false for portrait, default: false)"
+                },
+                "print_background": {
+                    "type": "boolean",
+                    "description": "Print background graphics and colors for 'pdf' (default: true)"
+                },
+                "custom_width": {
+                    "type": "integer",
+                    "description": "Custom viewport width in pixels for 'emulate'"
+                },
+                "custom_height": {
+                    "type": "integer",
+                    "description": "Custom viewport height in pixels for 'emulate'"
                 }
             },
             "required": ["action"]
         }),
     }]
+}
+
+fn parse_browser_mode(args: &serde_json::Value) -> crate::tools::browser::BrowserMode {
+    let mode_str = opt_str(args, "mode").unwrap_or("headless");
+    match mode_str {
+        "gui" => crate::tools::browser::BrowserMode::Gui,
+        _ => crate::tools::browser::BrowserMode::Headless,
+    }
 }
 
 /// Dispatches execution of the `minitask` tool.
@@ -410,18 +483,25 @@ pub async fn dispatch(
                 let filter_type = opt_str(args, "process_type")
                     .map(DevProcessType::from_str_loose);
                 let list = registry.list_filtered(filter_type).await;
-                if list.is_empty() {
+                let browser_details = if filter_type.is_none() || filter_type == Some(DevProcessType::Chrome) {
+                    crate::tools::browser::BrowserManager::get_live_engine_details().await
+                } else {
+                    None
+                };
+
+                if list.is_empty() && browser_details.is_none() {
                     if let Some(ft) = filter_type {
                         return Ok(format!("ℹ No processes of type '{:?}' are currently running.", ft));
                     } else {
-                        return Ok("ℹ No development processes are currently running.".to_string());
+                        return Ok("ℹ No development processes or browser sessions are currently running.".to_string());
                     }
                 }
 
+                let total_count = list.len() + if browser_details.is_some() { 1 } else { 0 };
                 let header = if let Some(ft) = filter_type {
-                    format!("📋 Managed Processes [{:?}] ({} active):\n\n", ft, list.len())
+                    format!("📋 Managed Processes [{:?}] ({} active):\n\n", ft, total_count)
                 } else {
-                    format!("📋 Managed Development Processes ({} active):\n\n", list.len())
+                    format!("📋 Managed Development Processes ({} active):\n\n", total_count)
                 };
                 let mut out = header;
                 for p in list {
@@ -450,6 +530,12 @@ pub async fn dispatch(
                         sched_disp,
                     ));
                 }
+                if let Some((engine, pid, port, uptime)) = browser_details {
+                    out.push_str(&format!(
+                        "• [browser] {} (Browser) | Status: Running | URL: http://127.0.0.1:{} | PID: {} | Uptime: {}s\n",
+                        engine, port, pid, uptime
+                    ));
+                }
                 Ok(out)
             }
             "status" => {
@@ -459,6 +545,25 @@ pub async fn dispatch(
                     .or_else(|| opt_str(args, "target"));
 
                 if let Some(id_str) = id_opt {
+                    if id_str == "browser" || id_str == "chrome" || id_str == "obscura" {
+                        if let Some((engine, pid, port, uptime)) =
+                            crate::tools::browser::BrowserManager::get_live_engine_details().await
+                        {
+                            let bundle = crate::tools::browser::BrowserController::get_debug_bundle(
+                                crate::tools::browser::BrowserMode::Headless,
+                                workspace_root,
+                            )
+                            .await
+                            .unwrap_or_default();
+                            return Ok(format!(
+                                "📊 Browser Engine Status:\n• Engine: {}\n• Status: Running\n• PID: {}\n• CDP Port: {}\n• Uptime: {}s\n\n{}",
+                                engine, pid, port, uptime, bundle
+                            ));
+                        } else {
+                            return Ok("ℹ No active browser session is currently running.".to_string());
+                        }
+                    }
+
                     let id = DevProcessId::from(id_str);
                     let summary = registry
                         .get(&id)
@@ -493,10 +598,13 @@ pub async fn dispatch(
                 } else {
                     // Fall back to listing all processes
                     let list = registry.list().await;
-                    if list.is_empty() {
-                        return Ok("ℹ No development processes are currently running.".to_string());
+                    let browser_details =
+                        crate::tools::browser::BrowserManager::get_live_engine_details().await;
+                    if list.is_empty() && browser_details.is_none() {
+                        return Ok("ℹ No development processes or browser sessions are currently running.".to_string());
                     }
-                    let mut out = format!("📋 Managed Development Processes ({} active):\n\n", list.len());
+                    let total_count = list.len() + if browser_details.is_some() { 1 } else { 0 };
+                    let mut out = format!("📋 Managed Development Processes ({} active):\n\n", total_count);
                     for p in list {
                         let url_disp = p.url.as_deref().unwrap_or("-");
                         let sched_disp = if let Some(ref sched) = p.schedule_info {
@@ -520,6 +628,12 @@ pub async fn dispatch(
                             p.cpu_percent,
                             p.memory_rss_mb,
                             sched_disp,
+                        ));
+                    }
+                    if let Some((engine, pid, port, uptime)) = browser_details {
+                        out.push_str(&format!(
+                            "• [browser] {} (Browser) | Status: Running | URL: http://127.0.0.1:{} | PID: {} | Uptime: {}s\n",
+                            engine, port, pid, uptime
                         ));
                     }
                     Ok(out)
@@ -547,7 +661,17 @@ pub async fn dispatch(
                 }
                 Ok(out)
             }
-            "stop" | "kill" => {
+            "stop" | "kill" | "browser_close" => {
+                if action == "browser_close" {
+                    let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
+                    let _ = registry.stop(&DevProcessId::from("browser")).await;
+                    if stopped {
+                        return Ok("✔ Browser session closed successfully. All browser processes terminated.".to_string());
+                    } else {
+                        return Ok("ℹ No active browser session was running.".to_string());
+                    }
+                }
+
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
                     .or_else(|| opt_str(args, "process_id"))
@@ -640,11 +764,7 @@ pub async fn dispatch(
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id").map(DevProcessId::from);
                 let custom_path = opt_str(args, "path");
-                let mode_str = opt_str(args, "mode").unwrap_or("headless");
-                let mode = match mode_str {
-                    "gui" => crate::tools::browser::BrowserMode::Gui,
-                    _ => crate::tools::browser::BrowserMode::Headless,
-                };
+                let mode = parse_browser_mode(args);
 
                 let target_url = if let Some(u) = explicit_url {
                     u.to_string()
@@ -694,9 +814,255 @@ pub async fn dispatch(
                     target_url, result_msg
                 ))
             }
+            "audit" | "qa_audit" => {
+                let mode = parse_browser_mode(args);
+                let explicit_url = opt_str(args, "url");
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .map(DevProcessId::from);
+
+                let target_url: Option<String> = if let Some(u) = explicit_url {
+                    Some(u.to_string())
+                } else if let Some(ref id) = id_opt {
+                    let summary = registry.get(id).await.ok_or_else(|| {
+                        DevError::NotFound(format!("Process '{}' not found for QA audit", id))
+                    })?;
+                    summary.url
+                } else {
+                    let list = registry.list().await;
+                    list.into_iter().find_map(|p| p.url)
+                };
+
+                let report = crate::tools::browser::BrowserController::run_qa_audit(
+                    target_url.as_deref(),
+                    mode,
+                    workspace_root,
+                )
+                .await?;
+                Ok(report)
+            }
+            "inspect" | "inspect_dom" => {
+                let mode = parse_browser_mode(args);
+                let explicit_url = opt_str(args, "url");
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .map(DevProcessId::from);
+
+                let target_url: Option<String> = if let Some(u) = explicit_url {
+                    Some(u.to_string())
+                } else if let Some(ref id) = id_opt {
+                    let summary = registry.get(id).await.ok_or_else(|| {
+                        DevError::NotFound(format!("Process '{}' not found for DOM inspection", id))
+                    })?;
+                    summary.url
+                } else {
+                    None
+                };
+
+                if let Some(url) = target_url {
+                    let _ = crate::tools::browser::BrowserController::navigate_and_snapshot(
+                        &url,
+                        mode,
+                        workspace_root,
+                    )
+                    .await?;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+
+                let report = crate::tools::browser::BrowserController::inspect_visual_dom(
+                    mode,
+                    workspace_root,
+                )
+                .await?;
+                Ok(report)
+            }
+            "batch" | "browser_batch" => {
+                let mode = parse_browser_mode(args);
+                let actions_val = args.get("actions").ok_or_else(|| {
+                    ToolError::InvalidArguments {
+                        name: "minitask".to_string(),
+                        reason: "Action 'batch' requires 'actions' array of browser operations".to_string(),
+                    }
+                })?;
+                let steps: Vec<crate::tools::browser::BatchStep> =
+                    serde_json::from_value(actions_val.clone()).map_err(|e| {
+                        ToolError::InvalidArguments {
+                            name: "minitask".to_string(),
+                            reason: format!("Failed parsing batch actions: {}", e),
+                        }
+                    })?;
+
+                crate::tools::browser::BrowserController::execute_batch(
+                    &steps,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "mock_route" => {
+                let mode = parse_browser_mode(args);
+                let clear = args.get("clear").and_then(|c| c.as_bool()).unwrap_or(false);
+                let pattern = opt_str(args, "pattern").unwrap_or("*");
+                let status = args.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
+                let body = opt_str(args, "body").unwrap_or("{}");
+                let content_type = opt_str(args, "content_type");
+
+                crate::tools::browser::BrowserController::mock_route(
+                    pattern,
+                    status,
+                    body,
+                    content_type,
+                    clear,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "browser_status" | "browser_debug" => {
+                let mode = parse_browser_mode(args);
+                if !crate::tools::browser::BrowserManager::is_live_engine_running().await {
+                    return Ok("ℹ No active browser session is currently running.".to_string());
+                }
+                crate::tools::browser::BrowserController::get_debug_bundle(mode, workspace_root)
+                    .await
+            }
+            "emulate" | "browser_emulate" => {
+                let mode = parse_browser_mode(args);
+                let viewport = opt_str(args, "viewport");
+                let network = opt_str(args, "network");
+                let width = opt_u64(args, "custom_width")
+                    .or_else(|| opt_u64(args, "width"))
+                    .map(|w| w as u32);
+                let height = opt_u64(args, "custom_height")
+                    .or_else(|| opt_u64(args, "height"))
+                    .map(|h| h as u32);
+
+                crate::tools::browser::BrowserController::emulate_device_and_network(
+                    viewport,
+                    network,
+                    width,
+                    height,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "save_state" | "browser_save_state" => {
+                let mode = parse_browser_mode(args);
+                let profile = opt_str(args, "profile")
+                    .or_else(|| opt_str(args, "name"))
+                    .unwrap_or("default");
+
+                crate::tools::browser::BrowserController::save_session_state(
+                    profile,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "restore_state" | "browser_restore_state" => {
+                let mode = parse_browser_mode(args);
+                let profile = opt_str(args, "profile")
+                    .or_else(|| opt_str(args, "name"))
+                    .unwrap_or("default");
+
+                crate::tools::browser::BrowserController::restore_session_state(
+                    profile,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "pdf" | "browser_pdf" => {
+                let mode = parse_browser_mode(args);
+                let explicit_url = opt_str(args, "url");
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .map(DevProcessId::from);
+
+                let target_url: Option<String> = if let Some(u) = explicit_url {
+                    Some(u.to_string())
+                } else if let Some(ref id) = id_opt {
+                    if id.as_str() != "browser" {
+                        let summary = registry.get(id).await.ok_or_else(|| {
+                            DevError::NotFound(format!("Process '{}' not found for PDF export", id))
+                        })?;
+                        summary.url
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(url) = target_url {
+                    let _ = crate::tools::browser::BrowserController::navigate_and_snapshot(
+                        &url,
+                        mode,
+                        workspace_root,
+                    )
+                    .await?;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+
+                let custom_path = opt_str(args, "path");
+                let landscape = args.get("landscape").and_then(|v| v.as_bool()).unwrap_or(false);
+                let print_bg = args.get("print_background").and_then(|v| v.as_bool()).unwrap_or(true);
+
+                crate::tools::browser::BrowserController::export_pdf(
+                    custom_path,
+                    landscape,
+                    print_bg,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "check_injection" | "browser_check_injection" | "scan_hidden" => {
+                let mode = parse_browser_mode(args);
+                let explicit_url = opt_str(args, "url");
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .map(DevProcessId::from);
+
+                let target_url: Option<String> = if let Some(u) = explicit_url {
+                    Some(u.to_string())
+                } else if let Some(ref id) = id_opt {
+                    if id.as_str() != "browser" {
+                        let summary = registry.get(id).await.ok_or_else(|| {
+                            DevError::NotFound(format!("Process '{}' not found for security audit", id))
+                        })?;
+                        summary.url
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(url) = target_url {
+                    let _ = crate::tools::browser::BrowserController::navigate_and_snapshot(
+                        &url,
+                        mode,
+                        workspace_root,
+                    )
+                    .await?;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+
+                crate::tools::browser::BrowserController::check_prompt_injections(
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
             unknown => Err(ToolError::InvalidArguments {
                 name: "minitask".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, probe_port", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, swarms, probe_port, audit, inspect, batch, mock_route, browser_status, browser_close, emulate, save_state, restore_state, pdf, check_injection", unknown),
             }.into()),
         }
     }.await)
@@ -952,5 +1318,67 @@ mod tests {
         let _ = registry
             .stop(&DevProcessId::from("swarm-unit-dispatch"))
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_minitask_browser_actions_schema() {
+        let schemas = get_schemas();
+        let minitask = &schemas[0];
+        let actions = minitask.parameters["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(actions.contains(&"audit"));
+        assert!(actions.contains(&"qa_audit"));
+        assert!(actions.contains(&"inspect"));
+        assert!(actions.contains(&"inspect_dom"));
+        assert!(actions.contains(&"batch"));
+        assert!(actions.contains(&"browser_batch"));
+        assert!(actions.contains(&"mock_route"));
+        assert!(actions.contains(&"browser_status"));
+        assert!(actions.contains(&"browser_debug"));
+        assert!(actions.contains(&"browser_close"));
+        assert!(actions.contains(&"emulate"));
+        assert!(actions.contains(&"browser_emulate"));
+        assert!(actions.contains(&"save_state"));
+        assert!(actions.contains(&"browser_save_state"));
+        assert!(actions.contains(&"restore_state"));
+        assert!(actions.contains(&"browser_restore_state"));
+        assert!(actions.contains(&"pdf"));
+        assert!(actions.contains(&"browser_pdf"));
+        assert!(actions.contains(&"check_injection"));
+        assert!(actions.contains(&"browser_check_injection"));
+    }
+
+    #[tokio::test]
+    async fn test_minitask_browser_close_and_status_dispatch() {
+        let temp = tempdir().unwrap();
+
+        // 1. Query browser_status when no engine running
+        let status_args = json!({ "action": "browser_status" });
+        let status_res = dispatch("minitask", &status_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(status_res.contains("No active browser session"));
+
+        // 2. Query status for id="browser"
+        let proc_status_args = json!({ "action": "status", "id": "browser" });
+        let proc_status_res = dispatch("minitask", &proc_status_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(proc_status_res.contains("No active browser session"));
+
+        // 3. browser_close action when not running
+        let close_args = json!({ "action": "browser_close" });
+        let close_res = dispatch("minitask", &close_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(close_res.contains("No active browser session"));
     }
 }

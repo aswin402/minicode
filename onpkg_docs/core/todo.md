@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 153 Swarm MiniTask Integration & Dynamic Multi-Style Flight Deck (v0.3.45) | **Status:** ✅ Complete (186 Tools)
+> **Current Phase:** Phase 154 Native Inbuilt Browser & Autonomous Page Agent with MiniTask Integration (v0.3.46) | **Status:** ✅ Complete (186 Tools)
 
 ---
 
@@ -2020,6 +2020,11 @@
 - [x] 153.4: Interactive Integration into Processes & Task Modal (`/tasks`): Added `ProcessesTab::Swarm` to `ProcessesTab`, wired interactive keyboard event routing (`[Tab]` navigation, `[1-6]` tab shortcuts, `[↑/↓]` worker selection, `[s]` cycle style, `[Space]/[Enter]` worker log inspection, and `[k]` worker termination) in `src/ui/modals/processes.rs` and `src/app/modals.rs`.
 - [x] 153.5: Integration Test Suite & Global Release: Implemented `tests/integration_swarm_minitask_flight_deck.rs` testing registry supervision, config persistence, style cycling, bus tailing, and multi-theme palette rendering; passed `cargo clippy -j 1 --bin minicode -- -D warnings` and `cargo fmt --check`; bumped version to `0.3.45` in `Cargo.toml`.
 
-
-
-
+### Phase 154: Native Inbuilt Browser & Autonomous Page Agent with MiniTask Integration (v0.3.46)
+- [x] 154.1: Native PageAgent In-Page QA Auditor & Visual DOM Grounding: Implemented `PageAgent` in pure Rust (`src/tools/browser/page_agent.rs`) executing in-page QA audits (detecting broken images, placeholder links, unlabelled form inputs, missing viewport tags, console exceptions, 4xx/5xx network failures) and deep DOM grounding traversing open Shadow DOM Web Components with computed bounding boxes and CSS selector extraction.
+- [x] 154.2: CDP Batch Pipeline & Network Route Mocking: Extended `BrowserInteractor` in `src/tools/browser/interaction.rs` and `CdpClient` in `src/tools/browser/driver.rs` with multi-step sequential batch actions (`fill`, `click`, `wait_for_selector`, `wait_millis`, `assert_text`, `press_key`, `scroll`) and declarative CDP route mocking (`mock_route`) for testing simulated API error states.
+- [x] 154.3: Device Viewport & Network Throttling Emulation: Added device metric overrides (`mobile`, `iphone`, `tablet`, `desktop`, `desktop_wide`, `reset`, custom dimensions) and network throttling profiles (`offline`, `slow_3g`, `fast_3g`, `cable`, `reset`) over CDP with cross-engine fallback resilience in `src/tools/browser/driver.rs` and `src/tools/browser/mod.rs`.
+- [x] 154.4: Session State Persistence & PDF Generation: Implemented `save_state` and `restore_state` exporting/importing session cookies and `localStorage` to `.minicode/browser_state/<profile>.json` for persistent user sessions; implemented high-fidelity `print_to_pdf` via CDP `Page.printToPDF` with pure-Rust fallback document generation.
+- [x] 154.5: DOM Prompt Injection & Hidden Content Scanner: Implemented in-page security analysis in `check_prompt_injections` traversing computed styles (`display: none`, `visibility: hidden`, `opacity: 0`, `font-size: 0px`, off-screen coordinates) and matching prompt injection/jailbreak patterns to protect agent context.
+- [x] 154.6: MiniTask Vault Orchestration & Standalone Tool Registry: Wired all browser operations into `minitask` (Tool 168) in `src/tools/registry/dev_tools.rs` for autonomous agent orchestration; registered standalone tool schemas (`browser_qa_audit`, `browser_inspect_dom`, `browser_batch`, `browser_mock_route`, `browser_emulate`, `browser_state`, `browser_pdf`, `browser_check_injection`, `browser_close`) in `src/tools/registry/web_tools.rs`.
+- [x] 154.7: Verification & Quality Gates: Implemented comprehensive integration test suites (`tests/integration_minitask_browser_vault.rs`, `tests/integration_gsd_browser_and_page_agent.rs`), validated live autonomous headless execution (`minicode run ... -y`), verified zero clippy warnings (`cargo clippy -j 1 -- -D warnings`), verified formatting (`cargo fmt --check`), and bumped version to `0.3.46`.

@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod agent;
 mod app;
 pub mod blocks;

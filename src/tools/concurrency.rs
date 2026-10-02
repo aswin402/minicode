@@ -115,8 +115,15 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         "exec_cmd" | "sandbox_exec" => ToolSafetyLevel::Mutating,
 
         // Web & Browser Tools
-        "search_web" | "fetch_or_browse" | "browser_snapshot" => ToolSafetyLevel::ReadOnly,
-        "browser_navigate" | "browser_close" => ToolSafetyLevel::Mutating,
+        "search_web"
+        | "fetch_or_browse"
+        | "browser_snapshot"
+        | "browser_debug_bundle"
+        | "browser_qa_audit"
+        | "browser_inspect_dom" => ToolSafetyLevel::ReadOnly,
+        "browser_navigate" | "browser_close" | "browser_batch" | "browser_mock_route" => {
+            ToolSafetyLevel::Mutating
+        }
 
         // onpkg & MiniKit Scaffolding, Package & Skill Tools
         "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"

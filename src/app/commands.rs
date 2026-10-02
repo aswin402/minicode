@@ -442,16 +442,20 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniTask Runtime Orchestrator Slash Commands (/tasks, /minitask)
+        // MiniTask Runtime Orchestrator Slash Commands (/tasks, /minitask, /dev)
         if prompt_lower == "/tasks"
             || prompt_lower == "/minitask"
+            || prompt_lower == "/dev"
             || prompt_lower.starts_with("/tasks ")
             || prompt_lower.starts_with("/minitask ")
+            || prompt_lower.starts_with("/dev ")
         {
             let sub = if prompt_lower.starts_with("/minitask ") {
                 prompt_trimmed[10..].trim()
             } else if prompt_lower.starts_with("/tasks ") {
                 prompt_trimmed[7..].trim()
+            } else if prompt_lower.starts_with("/dev ") {
+                prompt_trimmed[5..].trim()
             } else {
                 ""
             };
@@ -480,10 +484,13 @@ impl<'a> App<'a> {
                 }
                 "list" | "ps" => {
                     let list = registry.list().await;
-                    if list.is_empty() {
+                    let browser_info =
+                        crate::tools::browser::BrowserManager::get_live_engine_details().await;
+                    if list.is_empty() && browser_info.is_none() {
                         self.timeline.add_status("ℹ No active development processes running. Use 'minitask start' or /tasks to launch one.".to_string());
                     } else {
-                        let mut msg = format!("🚀 Active Development Processes ({})\n", list.len());
+                        let total = list.len() + if browser_info.is_some() { 1 } else { 0 };
+                        let mut msg = format!("🚀 Active Development Processes ({})\n", total);
                         for p in list {
                             let url_disp = p.url.as_deref().unwrap_or("-");
                             msg.push_str(&format!(
@@ -495,6 +502,12 @@ impl<'a> App<'a> {
                                 p.pid.unwrap_or(0),
                                 p.cpu_percent,
                                 p.memory_rss_mb,
+                            ));
+                        }
+                        if let Some((engine, pid, port, uptime)) = browser_info {
+                            msg.push_str(&format!(
+                                "• [browser] {} (Browser) - CDP: http://127.0.0.1:{} | PID: {} | Uptime: {}s\n",
+                                engine, port, pid, uptime
                             ));
                         }
                         self.timeline.add_status(msg);
@@ -717,7 +730,7 @@ impl<'a> App<'a> {
                 }
                 unknown => {
                     self.timeline.add_status(format!(
-                        "ℹ Unknown /dev subcommand '{}'. Usage: /dev [list | workers | resources | port <number> | watchdog | logs <id> | stop <id> | kill | screenshot]",
+                        "ℹ Unknown /tasks subcommand '{}'. Usage: /tasks [list | workers | resources | port <number> | watchdog | logs <id> | stop <id> | kill | screenshot]",
                         unknown
                     ));
                 }
@@ -1219,10 +1232,8 @@ impl<'a> App<'a> {
         }
 
         if prompt == "/todo"
-            || prompt == "/tasks"
             || prompt == "/plan"
             || prompt.starts_with("/todo ")
-            || prompt.starts_with("/tasks ")
             || prompt.starts_with("/plan ")
         {
             self.modal = ModalState::new_todo(&self.workspace_root);

@@ -5,23 +5,28 @@ pub mod engine;
 pub mod interaction;
 pub mod manager;
 pub mod markdown;
+pub mod page_agent;
 
 #[allow(unused_imports)]
 pub use accessibility::AccessibilityManager;
 #[allow(unused_imports)]
 pub use debug::{ConsoleEntry, DebugCollector, LogLevel, NetworkErrorEntry};
 #[allow(unused_imports)]
-pub use driver::CdpClient;
+pub use driver::{CdpClient, MockRouteRule};
 #[allow(unused_imports)]
 pub use engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
 #[allow(unused_imports)]
-pub use interaction::BrowserInteractor;
+pub use interaction::{BatchStep, BatchStepOutcome, BrowserInteractor};
 #[allow(unused_imports)]
 pub use manager::{BrowserManager, EngineProcess};
 #[allow(unused_imports)]
 pub use markdown::SmartMarkdownExtractor;
+#[allow(unused_imports)]
+pub use page_agent::{PageAgent, QaAuditReport, VisualElement};
 
-use crate::constants::{BROWSER_BLOCKED_HOSTS, BROWSER_SCREENSHOTS_DIR};
+use crate::constants::{
+    BROWSER_BLOCKED_HOSTS, BROWSER_REPORTS_DIR, BROWSER_SCREENSHOTS_DIR, BROWSER_STATE_DIR,
+};
 use crate::error::{Result, SecurityError, ToolError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -257,6 +262,631 @@ impl BrowserController {
             target_path.display(),
             png_bytes.len()
         ))
+    }
+
+    /// Executes an atomic pipeline of browser actions sequentially in a single turn
+    pub async fn execute_batch(
+        steps: &[BatchStep],
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let mut acc_mgr = engine.accessibility.lock().await;
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        acc_mgr.update_from_html(&current_html);
+
+        BrowserInteractor::execute_batch(&engine.cdp, steps, &mut acc_mgr).await
+    }
+
+    /// Registers or clears mock HTTP responses for route interception
+    pub async fn mock_route(
+        pattern: &str,
+        status: u16,
+        body: &str,
+        content_type: Option<&str>,
+        clear: bool,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if clear {
+            engine.cdp.clear_mock_routes().await?;
+            Ok("Cleared all active browser mock routes.".to_string())
+        } else {
+            engine
+                .cdp
+                .add_mock_route(MockRouteRule {
+                    pattern: pattern.to_string(),
+                    status,
+                    body: body.to_string(),
+                    content_type: content_type.map(str::to_string),
+                })
+                .await?;
+            Ok(format!(
+                "Registered mock route for pattern '{}' with HTTP {} response.",
+                pattern, status
+            ))
+        }
+    }
+
+    /// Blocks or unblocks URL patterns (e.g. ad networks, analytics)
+    #[allow(dead_code)]
+    pub async fn block_url(
+        pattern: &str,
+        clear: bool,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if clear {
+            engine.cdp.clear_blocked_urls().await?;
+            Ok("Cleared all active URL block rules.".to_string())
+        } else {
+            engine.cdp.block_url_pattern(pattern).await?;
+            Ok(format!(
+                "Blocked URL pattern '{}' in browser engine.",
+                pattern
+            ))
+        }
+    }
+
+    /// Aggregates console errors, uncaught exceptions, and failed network calls into a diagnostic report
+    pub async fn get_debug_bundle(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let debug_report = engine.cdp.debug_collector().format_report();
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = engine.accessibility.lock().await;
+        let elements = acc_mgr.update_from_html(&current_html);
+
+        let mut report = String::from("### Browser Diagnostic Bundle\n\n");
+        report.push_str(&debug_report);
+        report.push_str("\n\n---\n\n");
+        report.push_str(&format!(
+            "#### Active Page State (DOM Revision v{}, {} interactive elements):\n",
+            acc_mgr.revision(),
+            elements.len()
+        ));
+        for el in elements.iter().take(15) {
+            report.push_str(&format!(
+                "  • **{}** `<{}>` ({}) \"{}\"\n",
+                el.ref_id, el.tag, el.role, el.name
+            ));
+        }
+        if elements.len() > 15 {
+            report.push_str(&format!("  ... +{} more elements\n", elements.len() - 15));
+        }
+        Ok(report)
+    }
+
+    /// Runs a comprehensive in-page QA audit on the given URL or active page
+    pub async fn run_qa_audit(
+        url_opt: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let current_url = if let Some(url) = url_opt {
+            engine.cdp.navigate(url).await?;
+            url.to_string()
+        } else {
+            engine
+                .cdp
+                .evaluate_js("window.location.href")
+                .await
+                .unwrap_or_else(|_| "http://localhost".to_string())
+        };
+
+        let report = PageAgent::run_qa_audit(&engine.cdp, &current_url).await?;
+        Ok(PageAgent::format_qa_report(&report))
+    }
+
+    /// Inspects in-page DOM elements including Shadow DOM and computed geometry
+    pub async fn inspect_visual_dom(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let elements = PageAgent::scan_visual_tree(&engine.cdp).await?;
+        Ok(PageAgent::format_visual_tree_report(&elements))
+    }
+
+    /// Configures device viewport emulation and/or network throttling over CDP
+    pub async fn emulate_device_and_network(
+        viewport: Option<&str>,
+        network: Option<&str>,
+        custom_width: Option<u32>,
+        custom_height: Option<u32>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let mut results = Vec::new();
+
+        // 1. Viewport / Device Emulation
+        if let Some(vp) = viewport {
+            let lower = vp.to_lowercase();
+            match lower.as_str() {
+                "reset" | "clear" | "none" => {
+                    engine.cdp.clear_device_metrics().await?;
+                    results.push(
+                        "Cleared device viewport override (reset to default window size)"
+                            .to_string(),
+                    );
+                }
+                "mobile" => {
+                    engine.cdp.emulate_device(375, 667, true, 2.0).await?;
+                    results.push(
+                        "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)"
+                            .to_string(),
+                    );
+                }
+                "mobile_large" | "iphone" => {
+                    engine.cdp.emulate_device(414, 896, true, 3.0).await?;
+                    results.push("Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)".to_string());
+                }
+                "tablet" | "ipad" => {
+                    engine.cdp.emulate_device(768, 1024, true, 2.0).await?;
+                    results.push(
+                        "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)"
+                            .to_string(),
+                    );
+                }
+                "desktop" => {
+                    engine.cdp.emulate_device(1280, 800, false, 1.0).await?;
+                    results.push(
+                        "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)"
+                            .to_string(),
+                    );
+                }
+                "desktop_wide" => {
+                    engine.cdp.emulate_device(1920, 1080, false, 1.0).await?;
+                    results.push(
+                        "Emulating 'desktop_wide' viewport (1920x1080, scale: 1.0, mobile: false)"
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_emulate".to_string(),
+                        reason: format!("Unknown viewport preset '{}'. Supported: mobile, mobile_large, iphone, tablet, ipad, desktop, desktop_wide, reset", other),
+                    }.into());
+                }
+            }
+        } else if let (Some(w), Some(h)) = (custom_width, custom_height) {
+            engine.cdp.emulate_device(w, h, false, 1.0).await?;
+            results.push(format!("Custom viewport set to {}x{} (scale: 1.0)", w, h));
+        }
+
+        // 2. Network Throttling Emulation
+        if let Some(net) = network {
+            let lower = net.to_lowercase();
+            match lower.as_str() {
+                "reset" | "clear" | "none" | "online" => {
+                    engine
+                        .cdp
+                        .emulate_network_conditions(false, 0.0, -1.0, -1.0)
+                        .await?;
+                    results.push("Network throttling cleared (unthrottled online)".to_string());
+                }
+                "offline" => {
+                    engine
+                        .cdp
+                        .emulate_network_conditions(true, 0.0, 0.0, 0.0)
+                        .await?;
+                    results.push("Network set to 'offline'".to_string());
+                }
+                "slow_3g" => {
+                    engine
+                        .cdp
+                        .emulate_network_conditions(false, 400.0, 50_000.0, 50_000.0)
+                        .await?;
+                    results.push(
+                        "Network throttled to 'slow_3g' (latency: 400ms, throughput: 50 KB/s)"
+                            .to_string(),
+                    );
+                }
+                "fast_3g" => {
+                    engine
+                        .cdp
+                        .emulate_network_conditions(false, 150.0, 180_000.0, 84_000.0)
+                        .await?;
+                    results.push(
+                        "Network throttled to 'fast_3g' (latency: 150ms, throughput: 180 KB/s)"
+                            .to_string(),
+                    );
+                }
+                "cable" | "wifi" => {
+                    engine
+                        .cdp
+                        .emulate_network_conditions(false, 20.0, 5_000_000.0, 1_000_000.0)
+                        .await?;
+                    results.push(
+                        "Network set to 'cable / wifi' (latency: 20ms, throughput: 5 MB/s)"
+                            .to_string(),
+                    );
+                }
+                other => {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_emulate".to_string(),
+                        reason: format!("Unknown network preset '{}'. Supported: offline, slow_3g, fast_3g, cable, wifi, reset", other),
+                    }.into());
+                }
+            }
+        }
+
+        if results.is_empty() {
+            Ok("ℹ No emulation parameters specified. Provide 'viewport', 'network', or custom width/height.".to_string())
+        } else {
+            Ok(format!(
+                "📱 Emulation settings applied:\n{}",
+                results
+                    .iter()
+                    .map(|r| format!("• {}", r))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))
+        }
+    }
+
+    /// Saves the current browser session state (cookies and localStorage) to a named profile in the workspace
+    pub async fn save_session_state(
+        profile_name: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let safe_name: String = profile_name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        if safe_name.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: "Profile name must contain valid alphanumeric characters".to_string(),
+            }
+            .into());
+        }
+
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+
+        let current_url = engine
+            .cdp
+            .evaluate_js("window.location.href")
+            .await
+            .unwrap_or_else(|_| "http://localhost".to_string());
+        let cookies = engine
+            .cdp
+            .get_cookies()
+            .await
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let ls_raw = engine.cdp.evaluate_js(
+            "(() => { try { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); o[k] = localStorage.getItem(k); } return JSON.stringify(o); } catch(e) { return '{}'; } })()"
+        ).await.unwrap_or_else(|_| "{}".to_string());
+        let local_storage: serde_json::Value =
+            serde_json::from_str(&ls_raw).unwrap_or_else(|_| serde_json::json!({}));
+
+        let state_dir = workspace_root.join(BROWSER_STATE_DIR);
+        tokio::fs::create_dir_all(&state_dir).await.map_err(|e| {
+            ToolError::CommandExec(format!("Failed to create browser state directory: {}", e))
+        })?;
+
+        let file_path = state_dir.join(format!("{}.json", safe_name));
+        let state = serde_json::json!({
+            "profile": safe_name,
+            "url": current_url,
+            "cookies": cookies,
+            "local_storage": local_storage,
+            "saved_at": chrono::Utc::now().to_rfc3339()
+        });
+
+        let json_str = serde_json::to_string_pretty(&state).map_err(|e| {
+            ToolError::CommandExec(format!("Failed serializing browser session state: {}", e))
+        })?;
+        tokio::fs::write(&file_path, json_str).await.map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed writing browser session state to '{}': {}",
+                file_path.display(),
+                e
+            ))
+        })?;
+
+        let cookies_count = cookies.as_array().map(|a| a.len()).unwrap_or(0);
+        let ls_count = local_storage.as_object().map(|o| o.len()).unwrap_or(0);
+
+        let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
+        Ok(format!(
+            "💾 Browser session state successfully saved:\n• Profile: `{}`\n• File: `{}`\n• Cookies: {}\n• LocalStorage keys: {}\n• Active URL: `{}`",
+            safe_name,
+            rel_path.display(),
+            cookies_count,
+            ls_count,
+            current_url
+        ))
+    }
+
+    /// Restores a previously saved browser session profile (cookies and localStorage) into the active session
+    pub async fn restore_session_state(
+        profile_name: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let safe_name: String = profile_name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        if safe_name.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: "Profile name must contain valid alphanumeric characters".to_string(),
+            }
+            .into());
+        }
+
+        let file_path = workspace_root
+            .join(BROWSER_STATE_DIR)
+            .join(format!("{}.json", safe_name));
+        if !file_path.exists() {
+            return Err(ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: format!(
+                    "Browser session profile '{}' does not exist at '{}'",
+                    safe_name,
+                    file_path.display()
+                ),
+            }
+            .into());
+        }
+
+        let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
+            ToolError::CommandExec(format!("Failed reading session state file: {}", e))
+        })?;
+        let state: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| ToolError::CommandExec(format!("Corrupt session state JSON: {}", e)))?;
+
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let mut applied = Vec::new();
+
+        // Restore cookies
+        if let Some(cookies) = state.get("cookies") {
+            if cookies.is_array() && !cookies.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+                engine.cdp.set_cookies(cookies.clone()).await?;
+                applied.push(format!(
+                    "Applied {} cookie(s)",
+                    cookies.as_array().map(|a| a.len()).unwrap_or(0)
+                ));
+            }
+        }
+
+        // Navigate to saved URL if present
+        if let Some(url_str) = state.get("url").and_then(|u| u.as_str()) {
+            if !url_str.is_empty()
+                && (url_str.starts_with("http://")
+                    || url_str.starts_with("https://")
+                    || url_str.starts_with("file://"))
+            {
+                let _ = engine.cdp.navigate(url_str).await;
+                applied.push(format!("Navigated to `{}`", url_str));
+            }
+        }
+
+        // Restore localStorage
+        if let Some(ls) = state.get("local_storage").and_then(|l| l.as_object()) {
+            if !ls.is_empty() {
+                for (k, v) in ls {
+                    let v_str = v.as_str().unwrap_or("");
+                    let k_escaped = serde_json::to_string(k).unwrap_or_default();
+                    let v_escaped = serde_json::to_string(v_str).unwrap_or_default();
+                    let script = format!(
+                        "try {{ localStorage.setItem({}, {}); }} catch(e) {{}}",
+                        k_escaped, v_escaped
+                    );
+                    let _ = engine.cdp.evaluate_js(&script).await;
+                }
+                applied.push(format!("Restored {} localStorage item(s)", ls.len()));
+            }
+        }
+
+        Ok(format!(
+            "🔄 Browser session profile `{}` restored successfully:\n• {}",
+            safe_name,
+            if applied.is_empty() {
+                "No state entries found in profile".to_string()
+            } else {
+                applied.join("\n• ")
+            }
+        ))
+    }
+
+    /// Exports the active page or target document to PDF bytes and saves to workspace
+    pub async fn export_pdf(
+        custom_path: Option<&str>,
+        landscape: bool,
+        print_background: bool,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let pdf_bytes = engine.cdp.print_to_pdf(landscape, print_background).await?;
+
+        let target_path = if let Some(p) = custom_path {
+            crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(p))?
+        } else {
+            let dir = workspace_root.join(BROWSER_REPORTS_DIR);
+            tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+                ToolError::CommandExec(format!("Failed to create reports directory: {}", e))
+            })?;
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            dir.join(format!("page_export_{}.pdf", timestamp))
+        };
+
+        if let Some(parent) = target_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+
+        tokio::fs::write(&target_path, &pdf_bytes)
+            .await
+            .map_err(|e| {
+                ToolError::CommandExec(format!(
+                    "Failed saving PDF to '{}': {}",
+                    target_path.display(),
+                    e
+                ))
+            })?;
+
+        let rel_path = target_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(&target_path);
+
+        Ok(format!(
+            "📄 PDF document generated successfully:\n• File: `{}`\n• Size: {} bytes\n• Landscape: {}\n• Print Background: {}",
+            rel_path.display(),
+            pdf_bytes.len(),
+            landscape,
+            print_background
+        ))
+    }
+
+    /// Audits DOM elements for hidden text, CSS hiding techniques, and prompt injection signatures
+    pub async fn check_prompt_injections(
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let script = r#"
+        (() => {
+            const findings = [];
+            const injectionPatterns = [
+                'ignore previous',
+                'ignore all',
+                'disregard previous',
+                'system prompt',
+                'you are an ai',
+                'you are chatgpt',
+                'you must output',
+                'jailbreak',
+                'repeat the following',
+                'developer mode',
+                'system override',
+                'drop table',
+                'transfer money'
+            ];
+
+            const all = document.querySelectorAll('*');
+            for (let el of all) {
+                const tag = el.tagName.toLowerCase();
+                if (['script', 'style', 'meta', 'head', 'noscript', 'link', 'title'].includes(tag)) continue;
+
+                const text = (el.textContent || '').trim();
+                if (!text) continue;
+
+                let isHidden = false;
+                let reasons = [];
+
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none') { isHidden = true; reasons.push('display: none'); }
+                if (style.visibility === 'hidden') { isHidden = true; reasons.push('visibility: hidden'); }
+                if (style.opacity === '0') { isHidden = true; reasons.push('opacity: 0'); }
+                if (style.fontSize === '0px' || style.fontSize === '0') { isHidden = true; reasons.push('font-size: 0'); }
+
+                const rect = el.getBoundingClientRect();
+                if (rect.left < -500 || rect.top < -500 || rect.left > window.innerWidth + 500) {
+                    isHidden = true; reasons.push('positioned off-screen (' + Math.round(rect.left) + ',' + Math.round(rect.top) + ')');
+                }
+
+                const lowerText = text.toLowerCase();
+                const matched = injectionPatterns.filter(p => lowerText.includes(p));
+
+                if (matched.length > 0 || (isHidden && text.length > 15)) {
+                    findings.push({
+                        tag: tag,
+                        id: el.id || '',
+                        className: (typeof el.className === 'string') ? el.className : '',
+                        hidden: isHidden,
+                        reasons: reasons,
+                        matched: matched,
+                        sample: text.length > 120 ? text.substring(0, 120) + '...' : text
+                    });
+                }
+            }
+            return JSON.stringify(findings);
+        })()
+        "#;
+
+        let raw_json = engine.cdp.evaluate_js(script).await?;
+        let findings: Vec<serde_json::Value> = serde_json::from_str(&raw_json).unwrap_or_default();
+
+        if findings.is_empty() {
+            return Ok("🛡 **DOM Security Audit Passed:** No prompt injection signatures or suspicious hidden DOM elements detected on current page.".to_string());
+        }
+
+        let mut injection_alerts = Vec::new();
+        let mut hidden_elements = Vec::new();
+
+        for item in &findings {
+            let tag = item
+                .get("tag")
+                .and_then(|t| t.as_str())
+                .unwrap_or("element");
+            let id = item.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let reasons = item
+                .get("reasons")
+                .and_then(|r| r.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let sample = item.get("sample").and_then(|s| s.as_str()).unwrap_or("");
+            let matched = item
+                .get("matched")
+                .and_then(|m| m.as_array())
+                .map(|arr| arr.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            let id_str = if id.is_empty() {
+                String::new()
+            } else {
+                format!(" id=\"{}\"", id)
+            };
+
+            if !matched.is_empty() {
+                injection_alerts.push(format!(
+                    "• **HIGH ALERT: Prompt Injection Trigger** in `<{}{}>` (triggers: {:?}, {})\n  > Text: \"{}\"",
+                    tag, id_str, matched, if reasons.is_empty() { "visible".to_string() } else { reasons }, sample
+                ));
+            } else {
+                hidden_elements.push(format!(
+                    "• `<{}{}>` ({})\n  > Text: \"{}\"",
+                    tag, id_str, reasons, sample
+                ));
+            }
+        }
+
+        let mut out = String::new();
+        if !injection_alerts.is_empty() {
+            out.push_str("🚨 **SECURITY WARNING: Potential Prompt Injection / Context Poisoning Detected!**\n\n");
+            for alert in &injection_alerts {
+                out.push_str(alert);
+                out.push_str("\n\n");
+            }
+        }
+
+        if !hidden_elements.is_empty() {
+            out.push_str(&format!(
+                "⚠️ **Hidden DOM Elements Detected ({} element(s)):**\n\n",
+                hidden_elements.len()
+            ));
+            for el in hidden_elements.iter().take(10) {
+                out.push_str(el);
+                out.push_str("\n\n");
+            }
+            if hidden_elements.len() > 10 {
+                out.push_str(&format!(
+                    "*...and {} more hidden elements.*",
+                    hidden_elements.len() - 10
+                ));
+            }
+        }
+
+        Ok(out)
     }
 
     /// Parses raw HTML into an accessible tree with numbered element references
