@@ -71,6 +71,13 @@ impl BrowserController {
 
                 let cdp_res = async {
                     engine.cdp.navigate(url).await?;
+                    let _ = PageAgent::inject_probe(&engine.cdp).await;
+                    let _ = PageAgent::scan_visual_tree(&engine.cdp).await;
+                    if mode == BrowserMode::Gui {
+                        let _ =
+                            PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
+                                .await;
+                    }
                     engine.cdp.get_document_html().await
                 }
                 .await;
@@ -239,6 +246,31 @@ impl BrowserController {
                 Ok("Cleared visual badge overlays from page.".to_string())
             } else {
                 Ok("No active visual badge overlays were present.".to_string())
+            }
+        }
+    }
+
+    /// Toggles the Alibaba-style visual simulator aura (luminous corner glows, AI cursor, status pill)
+    pub async fn toggle_simulator_aura(
+        enable: bool,
+        status: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if enable {
+            PageAgent::inject_simulator_aura(&engine.cdp, status).await?;
+            let status_msg = status.unwrap_or("AI Agent Active");
+            Ok(format!(
+                "Activated browser simulator visual aura with status: \"{}\"",
+                status_msg
+            ))
+        } else {
+            let cleared = PageAgent::clear_simulator_aura(&engine.cdp).await?;
+            if cleared {
+                Ok("Deactivated browser simulator visual aura.".to_string())
+            } else {
+                Ok("No active simulator visual aura was present.".to_string())
             }
         }
     }

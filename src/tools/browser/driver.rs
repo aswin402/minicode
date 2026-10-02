@@ -831,6 +831,76 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Dispatches a mouse event at (x, y) coordinates via CDP Input domain
+    #[allow(clippy::too_many_arguments)]
+    pub async fn dispatch_mouse_event(
+        &self,
+        event_type: &str,
+        x: f64,
+        y: f64,
+        button: Option<&str>,
+        click_count: Option<i32>,
+        delta_x: Option<f64>,
+        delta_y: Option<f64>,
+    ) -> Result<()> {
+        let mut params = json!({
+            "type": event_type,
+            "x": x,
+            "y": y,
+        });
+        if let Some(b) = button {
+            params["button"] = json!(b);
+        }
+        if let Some(c) = click_count {
+            params["clickCount"] = json!(c);
+        }
+        if let Some(dx) = delta_x {
+            params["deltaX"] = json!(dx);
+        }
+        if let Some(dy) = delta_y {
+            params["deltaY"] = json!(dy);
+        }
+        let _ = self.send_command("Input.dispatchMouseEvent", params).await;
+        Ok(())
+    }
+
+    /// Moves the mouse pointer to (x, y) coordinates via CDP
+    #[allow(dead_code)]
+    pub async fn mouse_move_to(&self, x: f64, y: f64) -> Result<()> {
+        self.dispatch_mouse_event("mouseMoved", x, y, None, None, None, None)
+            .await
+    }
+
+    /// Synthesizes a true OS-level mouse click at (x, y) coordinates via CDP
+    pub async fn mouse_click_at(&self, x: f64, y: f64) -> Result<()> {
+        let _ = self
+            .dispatch_mouse_event("mouseMoved", x, y, None, None, None, None)
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = self
+            .dispatch_mouse_event("mousePressed", x, y, Some("left"), Some(1), None, None)
+            .await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let _ = self
+            .dispatch_mouse_event("mouseReleased", x, y, Some("left"), Some(1), None, None)
+            .await;
+        Ok(())
+    }
+
+    /// Synthesizes mouse wheel scroll via CDP
+    pub async fn mouse_wheel_scroll(
+        &self,
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+    ) -> Result<()> {
+        let _ = self
+            .dispatch_mouse_event("mouseWheel", x, y, None, None, Some(delta_x), Some(delta_y))
+            .await;
+        Ok(())
+    }
+
     /// Emulates network conditions (e.g. offline, slow 3G, fast 3G) over CDP
     pub async fn emulate_network_conditions(
         &self,

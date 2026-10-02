@@ -34,9 +34,9 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "hover", "browser_hover", "select_option", "browser_select_option",
                         "scroll_horizontal", "browser_scroll_horizontal",
                         "badges", "browser_badges", "tabs", "browser_tabs",
-                        "metrics", "browser_metrics"
+                        "metrics", "browser_metrics", "aura", "browser_aura", "glow"
                     ],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics)"
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics), 'aura'/'browser_aura'/'glow' (toggle Alibaba-style luminous corner glow aura, cursor, and status pill)"
                 },
                 "command": {
                     "type": "string",
@@ -1157,6 +1157,18 @@ pub async fn dispatch(
                 let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
                 crate::tools::browser::BrowserController::toggle_visual_badges(
                     enable,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "aura" | "browser_aura" | "glow" => {
+                let mode = parse_browser_mode(args);
+                let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
+                let status = opt_str(args, "status").or_else(|| opt_str(args, "prompt"));
+                crate::tools::browser::BrowserController::toggle_simulator_aura(
+                    enable,
+                    status,
                     mode,
                     workspace_root,
                 )

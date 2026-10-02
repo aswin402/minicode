@@ -287,6 +287,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "browser_aura".to_string(),
+            description: "Toggle the Alibaba Page-Agent visual simulator aura in the browser (luminous 4-corner glow border, animated AI agent cursor, click ripple wave, and floating status pill) to visually monitor agent execution in real-time.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "enable": {
+                        "type": "boolean",
+                        "description": "Enable (true) or disable (false) the simulator visual aura (default: true)"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Initial status text to display on the floating status pill"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "browser_debug_logs".to_string(),
             description: "Inspect live browser runtime diagnostics including console logs (errors/warnings), uncaught JS exceptions, and failed HTTP network requests (4xx/5xx). Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
@@ -815,7 +837,8 @@ pub async fn dispatch(
         "browser_metrics" => Some(
             async {
                 let mode = parse_browser_mode(args);
-                let metrics = BrowserController::get_page_metrics(mode, workspace_root).await?;
+                let metrics: crate::tools::browser::PageMetrics =
+                    BrowserController::get_page_metrics(mode, workspace_root).await?;
                 let json_res = serde_json::to_string_pretty(&metrics).unwrap_or_default();
                 Ok(format!(
                     "### Browser Page Metrics\n```json\n{}\n```",
@@ -912,6 +935,15 @@ pub async fn dispatch(
             async {
                 let mode = parse_browser_mode(args);
                 BrowserController::inspect_visual_dom(mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_aura" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
+                let status = opt_str(args, "status");
+                BrowserController::toggle_simulator_aura(enable, status, mode, workspace_root).await
             }
             .await,
         ),

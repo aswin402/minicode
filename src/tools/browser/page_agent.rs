@@ -5,14 +5,15 @@ use std::collections::HashMap;
 
 /// Embedded in-page probe that runs inside the browser DOM context.
 /// Pierces Shadow DOM, computes accurate layout geometry, and checks accessibility.
-pub const PAGE_PROBE_JS: &str = r#"(function() {
+pub const PAGE_PROBE_JS: &str = r###"(function() {
     if (window.__minicode_page_agent) return 'already_installed';
 
     window.__minicode_page_agent = {
-        // Pierces light DOM and Shadow DOM to find visible interactive elements
+        // Pierces light DOM and Shadow DOM to find visible interactive elements and stamps DOM refs
         scanInteractables: function() {
             var results = [];
             var idCounter = 1;
+            var rev = window.__minicode_rev || 1;
 
             function getShortSelector(el) {
                 if (el.id) return '#' + CSS.escape(el.id);
@@ -38,7 +39,7 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
 
             function isIgnoredRoot(el) {
                 if (el === document.body || el === document.documentElement) return true;
-                if (el.matches && el.matches('[data-reactroot], [data-reactid], [data-react-checksum], #root, #app, [id^="root-"], [id^="app-"], #adex-wrapper, #adex-root')) {
+                if (el.matches && el.matches('[data-reactroot], [data-reactid], [data-react-checksum], #root, #app, [id^="root-"], [id^="app-"], #adex-wrapper, #adex-root, #minicode-simulator-container')) {
                     return true;
                 }
                 return false;
@@ -85,6 +86,15 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                             var text = (el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').trim();
                             if (text.length > 80) text = text.substring(0, 77) + '...';
 
+                            var refId = '@v' + rev + ':e' + idCounter;
+                            var idxStr = String(idCounter);
+
+                            // Deterministic live DOM stamping for robust selection & visual alignment
+                            try {
+                                el.setAttribute('data-minicode-ref', refId);
+                                el.setAttribute('data-minicode-idx', idxStr);
+                            } catch (_) {}
+
                             var attrs = {};
                             if (el.id) attrs.id = el.id;
                             if (el.getAttribute('name')) attrs.name = el.getAttribute('name');
@@ -108,6 +118,7 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                                 scroll_data: scrollData,
                                 attributes: attrs
                             });
+                            idCounter++;
                         }
                     }
                 }
@@ -115,6 +126,400 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
 
             walk(document, false);
             return results;
+        },
+
+        // Resolves target DOM node by ref (@v1:e7), numeric index, ID, attribute, or text content
+        resolveElement: function(targetRef, targetName, selector) {
+            if (selector) {
+                var el = document.querySelector(selector);
+                if (el) return el;
+            }
+            if (targetRef) {
+                var clean = targetRef.trim();
+                // 1. Exact match on stamped data-minicode-ref
+                var byRef = document.querySelector('[data-minicode-ref="' + CSS.escape(clean) + '"]');
+                if (byRef) return byRef;
+
+                // 2. Numeric suffix match on data-minicode-idx (e.g. '@v1:e7' -> '7' or '7')
+                var match = clean.match(/e?(\d+)$/);
+                if (match) {
+                    var byIdx = document.querySelector('[data-minicode-idx="' + match[1] + '"]');
+                    if (byIdx) return byIdx;
+                }
+
+                // 3. ID match
+                var idClean = clean.startsWith('#') ? clean.slice(1) : clean;
+                var byId = document.getElementById(idClean);
+                if (byId) return byId;
+
+                // 4. Exact attribute match
+                try {
+                    var byAttr = document.querySelector('[name="' + CSS.escape(clean) + '"], [data-testid="' + CSS.escape(clean) + '"], [aria-label="' + CSS.escape(clean) + '"]');
+                    if (byAttr) return byAttr;
+                } catch (_) {}
+            }
+
+            // 5. Intelligent fuzzy match by targetName among interactive elements
+            if (targetName && targetName.trim().length > 0) {
+                var query = targetName.trim().toLowerCase();
+                var candidates = Array.from(document.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick]'));
+                
+                var exact = candidates.find(function(c) {
+                    var t = (c.innerText || c.value || c.getAttribute('aria-label') || '').trim().toLowerCase();
+                    return t === query;
+                });
+                if (exact) return exact;
+
+                var contains = candidates.find(function(c) {
+                    var t = (c.innerText || c.value || c.getAttribute('aria-label') || '').trim().toLowerCase();
+                    return t.length > 0 && (t.includes(query) || query.includes(t));
+                });
+                if (contains) return contains;
+            }
+
+            // 6. Pierce Shadow DOMs for matching target
+            function searchShadow(root) {
+                var els = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+                for (var i = 0; i < els.length; i++) {
+                    var e = els[i];
+                    if (targetRef && (e.getAttribute('data-minicode-ref') === targetRef || e.id === targetRef || e.getAttribute('data-testid') === targetRef)) return e;
+                    if (e.shadowRoot) {
+                        var found = searchShadow(e.shadowRoot);
+                        if (found) return found;
+                    }
+                }
+                return null;
+            }
+            return searchShadow(document);
+        },
+
+        // Injects Alibaba-style luminous 4-corner glow border, AI cursor, ripple, and floating pill
+        injectSimulatorAura: function(statusText) {
+            var existing = document.getElementById('minicode-simulator-container');
+            if (existing) {
+                if (statusText) {
+                    var txtEl = document.getElementById('minicode-pill-text');
+                    if (txtEl) txtEl.innerText = statusText;
+                }
+                return true;
+            }
+
+            var style = document.createElement('style');
+            style.id = 'minicode-simulator-styles';
+            style.textContent = `
+                @keyframes minicode-pulse-dot {
+                    0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 8px #39b6ff; }
+                    50% { transform: scale(1.3); opacity: 0.8; box-shadow: 0 0 16px #39b6ff; }
+                }
+                @keyframes minicode-aura-glow {
+                    0%, 100% { opacity: 0.85; }
+                    50% { opacity: 1; }
+                }
+                @keyframes minicode-ripple-wave {
+                    0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.95; }
+                    100% { transform: translate(-50%, -50%) scale(2.8); opacity: 0; }
+                }
+                #minicode-simulator-container {
+                    position: fixed;
+                    inset: 0;
+                    width: 100vw;
+                    height: 100vh;
+                    pointer-events: none;
+                    z-index: 2147483645;
+                    overflow: hidden;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                }
+                #minicode-simulator-border {
+                    position: absolute;
+                    inset: 0;
+                    border: 2.5px solid rgba(189, 69, 251, 0.55);
+                    box-shadow: inset 0 0 32px rgba(189, 69, 251, 0.4), inset 0 0 10px rgba(57, 182, 255, 0.5);
+                    pointer-events: none;
+                    animation: minicode-aura-glow 4s ease-in-out infinite;
+                }
+                .minicode-corner-aura {
+                    position: absolute;
+                    width: 320px;
+                    height: 320px;
+                    pointer-events: none;
+                    opacity: 0.85;
+                }
+                #minicode-aura-tl {
+                    top: 0; left: 0;
+                    background: radial-gradient(circle at 0% 0%, rgba(189, 69, 251, 0.55) 0%, rgba(189, 69, 251, 0) 70%);
+                }
+                #minicode-aura-tr {
+                    top: 0; right: 0;
+                    background: radial-gradient(circle at 100% 0%, rgba(255, 0, 122, 0.45) 0%, rgba(255, 0, 122, 0) 70%);
+                }
+                #minicode-aura-bl {
+                    bottom: 0; left: 0;
+                    background: radial-gradient(circle at 0% 100%, rgba(57, 182, 255, 0.5) 0%, rgba(57, 182, 255, 0) 70%);
+                }
+                #minicode-aura-br {
+                    bottom: 0; right: 0;
+                    background: radial-gradient(circle at 100% 100%, rgba(189, 69, 251, 0.55) 0%, rgba(189, 69, 251, 0) 70%);
+                }
+                #minicode-simulator-cursor {
+                    position: absolute;
+                    left: 50%;
+                    top: 50%;
+                    width: 32px;
+                    height: 32px;
+                    z-index: 2147483647;
+                    pointer-events: none;
+                    transition: left 0.28s cubic-bezier(0.2, 0, 0, 1), top 0.28s cubic-bezier(0.2, 0, 0, 1);
+                    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.6));
+                    transform: translate(-3px, -3px);
+                }
+                #minicode-cursor-ripple {
+                    position: absolute;
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 50%;
+                    border: 3px solid #39b6ff;
+                    background: radial-gradient(circle, rgba(57, 182, 255, 0.35) 0%, rgba(189, 69, 251, 0.15) 100%);
+                    pointer-events: none;
+                    opacity: 0;
+                    z-index: 2147483646;
+                }
+                #minicode-cursor-ripple.active {
+                    animation: minicode-ripple-wave 0.55s ease-out forwards;
+                }
+                #minicode-simulator-pill {
+                    position: absolute;
+                    bottom: 24px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    background: rgba(15, 20, 35, 0.9);
+                    backdrop-filter: blur(12px);
+                    -webkit-backdrop-filter: blur(12px);
+                    border: 1.5px solid rgba(189, 69, 251, 0.65);
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 20px rgba(189, 69, 251, 0.35);
+                    border-radius: 9999px;
+                    padding: 7px 18px;
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    color: #f8fafc;
+                    font-size: 13px;
+                    font-weight: 500;
+                    z-index: 2147483646;
+                    pointer-events: auto;
+                    user-select: none;
+                }
+                #minicode-pill-dot {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    background: #39b6ff;
+                    display: inline-block;
+                    animation: minicode-pulse-dot 1.8s ease-in-out infinite;
+                }
+                #minicode-pill-text {
+                    letter-spacing: -0.01em;
+                    max-width: 450px;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                #minicode-pill-dropdown {
+                    color: #94a3b8;
+                    font-size: 10px;
+                    cursor: pointer;
+                }
+                #minicode-pill-stop {
+                    color: #ef4444;
+                    font-size: 11px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+            `;
+            document.head.appendChild(style);
+
+            var container = document.createElement('div');
+            container.id = 'minicode-simulator-container';
+            container.setAttribute('data-minicode-ignore', 'true');
+
+            container.innerHTML = `
+                <div id="minicode-simulator-border"></div>
+                <div id="minicode-aura-tl" class="minicode-corner-aura"></div>
+                <div id="minicode-aura-tr" class="minicode-corner-aura"></div>
+                <div id="minicode-aura-bl" class="minicode-corner-aura"></div>
+                <div id="minicode-aura-br" class="minicode-corner-aura"></div>
+                <div id="minicode-cursor-ripple"></div>
+                <svg id="minicode-simulator-cursor" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="minicodeCursorGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#39b6ff"/>
+                            <stop offset="100%" stop-color="#bd45fb"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M5.5 3.5L24.5 16.5L15.5 18.5L12 27.5L5.5 3.5Z" fill="url(#minicodeCursorGrad)" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
+                </svg>
+                <div id="minicode-simulator-pill">
+                    <span id="minicode-pill-dot"></span>
+                    <span id="minicode-pill-text">${statusText ? statusText.replace(/</g, '&lt;') : 'AI Agent Active'}</span>
+                    <span id="minicode-pill-dropdown">▼</span>
+                    <span id="minicode-pill-stop">■</span>
+                </div>
+            `;
+            document.body.appendChild(container);
+            return true;
+        },
+
+        // Updates simulator state: updates pill message, glides cursor, and optionally triggers ripple
+        updateSimulatorState: function(actionText, targetX, targetY, isClick) {
+            this.injectSimulatorAura(actionText);
+
+            var txtEl = document.getElementById('minicode-pill-text');
+            if (txtEl && actionText) txtEl.innerText = actionText;
+
+            var cursor = document.getElementById('minicode-simulator-cursor');
+            if (cursor && typeof targetX === 'number' && typeof targetY === 'number') {
+                cursor.style.left = targetX + 'px';
+                cursor.style.top = targetY + 'px';
+            }
+
+            if (isClick && typeof targetX === 'number' && typeof targetY === 'number') {
+                var ripple = document.getElementById('minicode-cursor-ripple');
+                if (ripple) {
+                    ripple.classList.remove('active');
+                    ripple.style.left = targetX + 'px';
+                    ripple.style.top = targetY + 'px';
+                    void ripple.offsetWidth; // Force reflow to re-trigger CSS keyframes
+                    ripple.classList.add('active');
+                }
+            }
+            return true;
+        },
+
+        // Clears the simulator aura container and styles from DOM
+        clearSimulatorAura: function() {
+            var c = document.getElementById('minicode-simulator-container');
+            if (c) c.remove();
+            var s = document.getElementById('minicode-simulator-styles');
+            if (s) s.remove();
+            return true;
+        },
+
+        // Robustly clicks an element: scrolls into view, updates aura, and dispatches full W3C sequence
+        clickElement: function(targetRef, targetName, selector) {
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'Element matching "' + (targetRef || selector || targetName || '') + '" not found in DOM' });
+            }
+
+            try {
+                el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            } catch (_) {}
+
+            var rect = el.getBoundingClientRect();
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+
+            var idx = el.getAttribute('data-minicode-idx') || '';
+            var name = (el.innerText || el.value || el.getAttribute('aria-label') || targetName || '').trim();
+            if (name.length > 30) name = name.substring(0, 27) + '...';
+
+            var actionLabel = idx ? ('Clicking element [' + idx + ']' + (name ? ' "' + name + '"' : '') + '...') : ('Clicking <' + el.tagName.toLowerCase() + '>' + (name ? ' "' + name + '"' : '') + '...');
+            this.updateSimulatorState(actionLabel, cx, cy, true);
+
+            var hitTarget = (document.elementFromPoint && document.elementFromPoint(cx, cy)) || el;
+
+            var pointerOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, pointerType: 'mouse', view: window };
+            var mouseOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
+
+            try { hitTarget.dispatchEvent(new PointerEvent('pointerover', pointerOpts)); } catch (_) {}
+            try { hitTarget.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, pointerOpts, { bubbles: false }))); } catch (_) {}
+            try { hitTarget.dispatchEvent(new MouseEvent('mouseover', mouseOpts)); } catch (_) {}
+            try { hitTarget.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, mouseOpts, { bubbles: false }))); } catch (_) {}
+            try { hitTarget.dispatchEvent(new PointerEvent('pointerdown', pointerOpts)); } catch (_) {}
+            try { hitTarget.dispatchEvent(new MouseEvent('mousedown', mouseOpts)); } catch (_) {}
+            try { if (typeof hitTarget.focus === 'function') hitTarget.focus(); } catch (_) {}
+            try { hitTarget.dispatchEvent(new PointerEvent('pointerup', pointerOpts)); } catch (_) {}
+            try { hitTarget.dispatchEvent(new MouseEvent('mouseup', mouseOpts)); } catch (_) {}
+            try { hitTarget.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
+
+            if (typeof hitTarget.click === 'function') {
+                try { hitTarget.click(); } catch (_) {}
+            } else if (typeof el.click === 'function') {
+                try { el.click(); } catch (_) {}
+            }
+
+            return JSON.stringify({
+                ok: true,
+                x: cx,
+                y: cy,
+                ref: el.getAttribute('data-minicode-ref') || targetRef,
+                idx: idx,
+                tag: el.tagName.toLowerCase(),
+                name: name
+            });
+        },
+
+        // Scrolls viewport with fallback to largest scrollable container in DOM
+        scrollPage: function(direction, pixels) {
+            var dir = (direction || 'down').toLowerCase();
+            var vh = window.innerHeight || 800;
+            var step = pixels || Math.round(vh * 0.75);
+
+            this.updateSimulatorState('Scrolling ' + dir + '...', Math.round(window.innerWidth / 2), Math.round(vh / 2), false);
+
+            var initialY = window.scrollY || window.pageYOffset || 0;
+            var scrolled = false;
+
+            if (dir === 'top') {
+                window.scrollTo({ top: 0, behavior: 'instant' });
+                scrolled = true;
+            } else if (dir === 'bottom') {
+                var maxScroll = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight || 0);
+                window.scrollTo({ top: maxScroll, behavior: 'instant' });
+                scrolled = true;
+            } else {
+                var delta = (dir === 'up' || dir === 'pageup') ? -step : step;
+                window.scrollBy({ top: delta, behavior: 'instant' });
+
+                var newY = window.scrollY || window.pageYOffset || 0;
+                if (Math.abs(newY - initialY) > 5) {
+                    scrolled = true;
+                } else {
+                    // Container fallback: search for scrollable containers in DOM
+                    var allEls = Array.from(document.querySelectorAll('*'));
+                    var scrollableContainers = [];
+
+                    for (var i = 0; i < allEls.length; i++) {
+                        var el = allEls[i];
+                        if (el === document.body || el === document.documentElement) continue;
+                        if (el.scrollHeight > el.clientHeight + 10) {
+                            var style = window.getComputedStyle(el);
+                            if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+                                scrollableContainers.push({
+                                    el: el,
+                                    area: el.clientWidth * el.clientHeight
+                                });
+                            }
+                        }
+                    }
+
+                    scrollableContainers.sort(function(a, b) { return b.area - a.area; });
+
+                    if (scrollableContainers.length > 0) {
+                        var targetCont = scrollableContainers[0].el;
+                        targetCont.scrollBy({ top: delta, behavior: 'instant' });
+                        scrolled = true;
+                    }
+                }
+            }
+
+            return JSON.stringify({
+                ok: true,
+                direction: dir,
+                scrolled: scrolled,
+                new_scroll_y: window.scrollY || window.pageYOffset || 0
+            });
         },
 
         // Calculates viewport and total page scroll metrics
@@ -239,7 +644,7 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
         }
     };
     return 'installed';
-})()"#;
+})()"###;
 
 /// Scroll distance metrics for a scrollable container
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -355,6 +760,114 @@ impl PageAgent {
             .evaluate_js("window.__minicode_page_agent.clearVisualBadges()")
             .await?;
         Ok(res_str.trim() == "true")
+    }
+
+    /// Injects the visual simulator aura, corner glows, AI cursor, and floating status pill
+    pub async fn inject_simulator_aura(cdp: &CdpClient, status_text: Option<&str>) -> Result<()> {
+        Self::inject_probe(cdp).await?;
+        let status_json = serde_json::to_string(status_text.unwrap_or("AI Agent Active"))
+            .unwrap_or_else(|_| "\"AI Agent Active\"".to_string());
+        let script = format!(
+            "window.__minicode_page_agent.injectSimulatorAura({})",
+            status_json
+        );
+        cdp.evaluate_js(&script).await?;
+        Ok(())
+    }
+
+    /// Updates the simulator aura status pill and glides cursor to target coordinates
+    #[allow(dead_code)]
+    pub async fn update_simulator_action(
+        cdp: &CdpClient,
+        action_text: &str,
+        x: f64,
+        y: f64,
+        is_click: bool,
+    ) -> Result<()> {
+        Self::inject_probe(cdp).await?;
+        let action_json =
+            serde_json::to_string(action_text).unwrap_or_else(|_| "\"Acting\"".to_string());
+        let script = format!(
+            "window.__minicode_page_agent.updateSimulatorState({}, {}, {}, {})",
+            action_json, x, y, is_click
+        );
+        cdp.evaluate_js(&script).await?;
+        Ok(())
+    }
+
+    /// Clears the visual simulator aura from the active page
+    pub async fn clear_simulator_aura(cdp: &CdpClient) -> Result<bool> {
+        Self::inject_probe(cdp).await?;
+        let res = cdp
+            .evaluate_js("window.__minicode_page_agent.clearSimulatorAura()")
+            .await?;
+        Ok(res.trim() == "true")
+    }
+
+    /// Clicks an element via DOM event dispatch, updates simulator aura, and returns coordinates
+    pub async fn click_element_with_aura(
+        cdp: &CdpClient,
+        target_ref: &str,
+        target_name: &str,
+        selector: Option<&str>,
+    ) -> Result<(f64, f64, String)> {
+        Self::inject_probe(cdp).await?;
+        let ref_json = serde_json::to_string(target_ref).unwrap_or_default();
+        let name_json = serde_json::to_string(target_name).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+
+        let script = format!(
+            "window.__minicode_page_agent.clickElement({}, {}, {})",
+            ref_json, name_json, sel_json
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed parsing click result: {} -> {}",
+                e, res_json
+            ))
+        })?;
+
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let name = parsed
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(target_name)
+                .to_string();
+            Ok((x, y, name))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Click failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
+    /// Scrolls the page with container fallback and updates simulator aura
+    pub async fn scroll_with_container_fallback(
+        cdp: &CdpClient,
+        direction: &str,
+        pixels: Option<i32>,
+    ) -> Result<()> {
+        Self::inject_probe(cdp).await?;
+        let dir_json = serde_json::to_string(direction).unwrap_or_default();
+        let px_json = match pixels {
+            Some(px) => px.to_string(),
+            None => "null".to_string(),
+        };
+
+        let script = format!(
+            "window.__minicode_page_agent.scrollPage({}, {})",
+            dir_json, px_json
+        );
+        cdp.evaluate_js(&script).await?;
+        Ok(())
     }
 
     /// Scans the DOM tree including Shadow DOM and returns visible interactive elements with bounding boxes
@@ -592,6 +1105,13 @@ mod tests {
     fn test_page_probe_js_syntax() {
         assert!(PAGE_PROBE_JS.starts_with("(function()"));
         assert!(PAGE_PROBE_JS.contains("scanInteractables"));
+        assert!(PAGE_PROBE_JS.contains("resolveElement"));
+        assert!(PAGE_PROBE_JS.contains("injectSimulatorAura"));
+        assert!(PAGE_PROBE_JS.contains("minicode-simulator-container"));
+        assert!(PAGE_PROBE_JS.contains("minicode-simulator-cursor"));
+        assert!(PAGE_PROBE_JS.contains("minicode-simulator-pill"));
+        assert!(PAGE_PROBE_JS.contains("clickElement"));
+        assert!(PAGE_PROBE_JS.contains("scrollPage"));
         assert!(PAGE_PROBE_JS.contains("auditPage"));
         assert!(PAGE_PROBE_JS.ends_with("})()"));
     }

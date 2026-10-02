@@ -176,26 +176,62 @@ impl AccessibilityManager {
             }
         }
 
-        // 3. Look up element by flexible suffix match (@e1 -> @vX:e1)
-        self.current_elements
+        // 2. Look up element by flexible suffix match (@e1 -> @vX:e1)
+        if let Some(el) = self.current_elements.iter().find(|el| {
+            el.ref_id == clean_ref
+                || (clean_ref.starts_with("@e")
+                    && el
+                        .ref_id
+                        .ends_with(clean_ref.strip_prefix('@').unwrap_or("")))
+        }) {
+            return Ok(el);
+        }
+
+        // 3. Numeric index match (e.g. "8" or "[8]" -> 8th element in tree)
+        let num_clean = clean_ref.trim_matches(|c| c == '[' || c == ']');
+        if let Ok(idx) = num_clean.parse::<usize>() {
+            if idx >= 1 && idx <= self.current_elements.len() {
+                return Ok(&self.current_elements[idx - 1]);
+            }
+        }
+
+        // 4. Element ID match (e.g. "#hover-target" or "hover-target")
+        let id_clean = clean_ref.strip_prefix('#').unwrap_or(clean_ref);
+        if let Some(el) = self
+            .current_elements
             .iter()
-            .find(|el| {
-                el.ref_id == clean_ref
-                    || (clean_ref.starts_with("@e")
-                        && el.ref_id.ends_with(clean_ref.strip_prefix('@').unwrap_or("")))
-            })
-            .ok_or_else(|| {
-                ToolError::InvalidArguments {
-                    name: "browser_action".to_string(),
-                    reason: format!(
-                        "Element reference '{}' not found in current accessibility tree (revision v{} with {} interactive elements)",
-                        clean_ref,
-                        self.revision,
-                        self.current_elements.len()
-                    ),
-                }
-                .into()
-            })
+            .find(|el| el.attributes.get("id").map(|s| s.as_str()) == Some(id_clean))
+        {
+            return Ok(el);
+        }
+
+        // 5. Name or data-testid attribute match
+        if let Some(el) = self.current_elements.iter().find(|el| {
+            el.attributes.get("name").map(|s| s.as_str()) == Some(clean_ref)
+                || el.attributes.get("data-testid").map(|s| s.as_str()) == Some(clean_ref)
+        }) {
+            return Ok(el);
+        }
+
+        // 6. Case-insensitive visible name/label match (e.g. "Hover Me", "Place Order Now")
+        if let Some(el) = self
+            .current_elements
+            .iter()
+            .find(|el| el.name.eq_ignore_ascii_case(clean_ref))
+        {
+            return Ok(el);
+        }
+
+        Err(ToolError::InvalidArguments {
+            name: "browser_action".to_string(),
+            reason: format!(
+                "Element reference '{}' not found in current accessibility tree (revision v{} with {} interactive elements)",
+                clean_ref,
+                self.revision,
+                self.current_elements.len()
+            ),
+        }
+        .into())
     }
 }
 

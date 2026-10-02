@@ -621,7 +621,130 @@ async fn test_realworld_browser_gsd_and_page_agent_pipeline() {
     println!("✔ Minitask Badges:\n{}", minitask_badges.output);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 13: Clean Teardown
+    // Phase 13: Alibaba Page-Agent Visual Aura, Glow & Cursor (`browser_aura`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_aura (Enabling luminous viewport glow, cursor, and status pill)");
+    let aura_tool_res = ToolRegistry::dispatch(
+        &ws,
+        "call_browser_aura",
+        "browser_aura",
+        &json!({
+            "enable": true,
+            "status": "AI Agent Exploring E-Commerce",
+            "mode": "headless"
+        }),
+        None,
+        16,
+    )
+    .await;
+    assert!(
+        aura_tool_res.success,
+        "browser_aura failed: {}",
+        aura_tool_res.output
+    );
+    println!("✔ Browser Aura Output:\n{}", aura_tool_res.output);
+    assert!(
+        aura_tool_res
+            .output
+            .contains("Activated browser simulator visual aura"),
+        "Missing aura activation confirmation"
+    );
+
+    println!("▶ Testing minitask action: 'aura'");
+    let minitask_aura = ToolRegistry::dispatch(
+        &ws,
+        "call_minitask_aura",
+        "minitask",
+        &json!({
+            "action": "aura",
+            "enable": true,
+            "status": "Clicking element [7]...",
+            "mode": "headless"
+        }),
+        None,
+        17,
+    )
+    .await;
+    assert!(
+        minitask_aura.success,
+        "minitask aura failed: {}",
+        minitask_aura.output
+    );
+    println!("✔ Minitask Aura Output:\n{}", minitask_aura.output);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 14: Dual-Dispatch Button Click with Coordinates & Visual Ripple
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_click (Dual dispatch W3C + CDP native mouse events)");
+    let click_res = ToolRegistry::dispatch(
+        &ws,
+        "call_browser_click_hover",
+        "browser_click",
+        &json!({
+            "ref": "#hover-target",
+            "mode": "headless"
+        }),
+        None,
+        18,
+    )
+    .await;
+    assert!(
+        click_res.success,
+        "browser_click on hover-target failed: {}",
+        click_res.output
+    );
+    println!("✔ Button Click Output:\n{}", click_res.output);
+    assert!(
+        click_res.output.contains("Clicked"),
+        "Click confirmation missing from output"
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 15: Multi-tier Viewport & Container Scrolling with Wheel Events
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_scroll (Intelligent scrolling with CDP wheel events)");
+    let scroll_down_res = ToolRegistry::dispatch(
+        &ws,
+        "call_scroll_down",
+        "browser_scroll",
+        &json!({
+            "direction": "down",
+            "mode": "headless"
+        }),
+        None,
+        19,
+    )
+    .await;
+    assert!(
+        scroll_down_res.success,
+        "browser_scroll down failed: {}",
+        scroll_down_res.output
+    );
+    println!("✔ Scroll Down Output:\n{}", scroll_down_res.output);
+    assert!(scroll_down_res.output.contains("Scrolled page down"));
+
+    let scroll_up_res = ToolRegistry::dispatch(
+        &ws,
+        "call_scroll_up",
+        "browser_scroll",
+        &json!({
+            "direction": "up",
+            "mode": "headless"
+        }),
+        None,
+        20,
+    )
+    .await;
+    assert!(
+        scroll_up_res.success,
+        "browser_scroll up failed: {}",
+        scroll_up_res.output
+    );
+    println!("✔ Scroll Up Output:\n{}", scroll_up_res.output);
+    assert!(scroll_up_res.output.contains("Scrolled page up"));
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 16: Clean Teardown
     // ─────────────────────────────────────────────────────────────────────────
     let shutdown_success = BrowserManager::shutdown_live_engine()
         .await

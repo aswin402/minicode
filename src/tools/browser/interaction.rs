@@ -1,5 +1,6 @@
 use super::accessibility::AccessibilityManager;
 use super::driver::CdpClient;
+use super::page_agent::PageAgent;
 use super::AriaElement;
 use crate::error::{Result, ToolError};
 use serde::{Deserialize, Serialize};
@@ -92,30 +93,51 @@ pub struct BatchStepOutcome {
 pub struct BrowserInteractor;
 
 impl BrowserInteractor {
-    /// Clicks an element identified by its ARIA reference (@v1:e1)
+    /// Clicks an element identified by its ARIA reference (@v1:e1) or selector with dual-dispatch
     pub async fn click_element(
         cdp: &CdpClient,
         target_ref: &str,
         acc_mgr: &mut AccessibilityManager,
     ) -> Result<String> {
-        let el = acc_mgr.resolve_ref(target_ref)?.clone();
+        let el_opt = acc_mgr.resolve_ref(target_ref).ok().cloned();
+        let target_name = el_opt
+            .as_ref()
+            .map(|e| e.name.as_str())
+            .unwrap_or(target_ref);
+        let tag = el_opt.as_ref().map(|e| e.tag.as_str()).unwrap_or("element");
 
         tracing::info!(
             target_ref = %target_ref,
-            tag = %el.tag,
-            name = %el.name,
-            "Executing browser click"
+            tag = %tag,
+            name = %target_name,
+            "Executing dual-dispatch browser click with visual aura"
         );
 
-        let click_js = build_click_js(&el);
-        let exec_res = cdp.evaluate_js(&click_js).await?;
+        // 1. In-page click via PageAgent probe (updates visual aura, cursor glide, ripple, and dispatches W3C DOM events)
+        let (cx, cy, clicked_name) =
+            match PageAgent::click_element_with_aura(cdp, target_ref, target_name, None).await {
+                Ok(coords) => coords,
+                Err(e) => {
+                    if let Some(ref el) = el_opt {
+                        let click_js = build_click_js(el);
+                        let exec_res = cdp.evaluate_js(&click_js).await?;
+                        if exec_res.starts_with("Error:") {
+                            return Err(ToolError::CommandExec(format!(
+                                "Failed clicking element '{}' ({}): {}",
+                                target_ref, el.name, exec_res
+                            ))
+                            .into());
+                        }
+                        (100.0, 100.0, el.name.clone())
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
 
-        if exec_res.starts_with("Error:") {
-            return Err(ToolError::CommandExec(format!(
-                "Failed clicking element '{}' ({}): {}",
-                target_ref, el.name, exec_res
-            ))
-            .into());
+        // 2. Dual-dispatch: also trigger native OS-level CDP mouse click at (cx, cy)
+        if cx > 0.0 || cy > 0.0 {
+            let _ = cdp.mouse_click_at(cx, cy).await;
         }
 
         // Allow DOM / network to settle dynamically
@@ -129,10 +151,12 @@ impl BrowserInteractor {
         let updated_elements = acc_mgr.update_from_html(&updated_html);
 
         let confirmation = format!(
-            "Clicked **{}** `<{}>` \"{}\" (DOM updated to revision v{} with {} interactive elements):\n\n",
+            "Clicked **{}** `<{}>` \"{}\" at ({:.0}, {:.0}) (DOM updated to revision v{} with {} interactive elements):\n\n",
             target_ref,
-            el.tag,
-            el.name,
+            tag,
+            clicked_name,
+            cx,
+            cy,
             acc_mgr.revision(),
             updated_elements.len()
         );
@@ -203,12 +227,35 @@ impl BrowserInteractor {
     }
 
     /// Scrolls the viewport in the specified direction ("up", "down", "top", "bottom")
+    /// Uses intelligent container fallback + native CDP mouse wheel dispatch
     pub async fn scroll_page(cdp: &CdpClient, direction: &str) -> Result<String> {
-        let scroll_js = Self::build_scroll_js(direction);
+        // 1. In-page scroll with container fallback and simulator aura update
+        let _ = PageAgent::scroll_with_container_fallback(cdp, direction, None).await;
 
-        cdp.evaluate_js(scroll_js).await?;
+        // 2. Dual-dispatch: also issue CDP native mouse wheel scroll at center of viewport
+        let metrics: super::page_agent::PageMetrics =
+            PageAgent::get_page_metrics(cdp).await.unwrap_or_default();
+        let vw = if metrics.viewport_width > 0.0 {
+            metrics.viewport_width
+        } else {
+            1280.0
+        };
+        let vh = if metrics.viewport_height > 0.0 {
+            metrics.viewport_height
+        } else {
+            800.0
+        };
+        let scroll_delta = match direction.to_lowercase().as_str() {
+            "up" | "pageup" => -500.0,
+            "top" => -2000.0,
+            "bottom" => 2000.0,
+            _ => 500.0,
+        };
+        let _ = cdp
+            .mouse_wheel_scroll(vw / 2.0, vh / 2.0, 0.0, scroll_delta)
+            .await;
+
         tokio::time::sleep(Duration::from_millis(200)).await;
-
         Ok(format!("Scrolled page {}", direction))
     }
 
@@ -376,46 +423,72 @@ impl BrowserInteractor {
                             Ok(el) => {
                                 let el = el.clone();
                                 let detail = format!("Clicked {} <{}> \"{}\"", r, el.tag, el.name);
-                                let click_js = build_click_js(&el);
-                                let exec_res = cdp.evaluate_js(&click_js).await;
-                                match exec_res {
-                                    Ok(res_str) if res_str.starts_with("Error:") => (
-                                        action,
-                                        detail,
-                                        Err(ToolError::CommandExec(format!(
-                                            "Click failed: {}",
-                                            res_str
-                                        ))
-                                        .into()),
-                                    ),
-                                    Ok(_) => {
-                                        let _ = cdp
-                                            .wait_for_network_idle(Duration::from_millis(400))
-                                            .await;
-                                        (action, detail, Ok(()))
+                                let click_res = match PageAgent::click_element_with_aura(
+                                    cdp, r, &el.name, None,
+                                )
+                                .await
+                                {
+                                    Ok((cx, cy, _)) => {
+                                        if cx > 0.0 || cy > 0.0 {
+                                            let _ = cdp.mouse_click_at(cx, cy).await;
+                                        }
+                                        Ok(())
                                     }
-                                    Err(e) => (action, detail, Err(e)),
-                                }
+                                    Err(_) => {
+                                        let click_js = build_click_js(&el);
+                                        match cdp.evaluate_js(&click_js).await {
+                                            Ok(res_str) if res_str.starts_with("Error:") => {
+                                                Err(ToolError::CommandExec(format!(
+                                                    "Click failed: {}",
+                                                    res_str
+                                                ))
+                                                .into())
+                                            }
+                                            Ok(_) => Ok(()),
+                                            Err(e) => Err(e),
+                                        }
+                                    }
+                                };
+                                let _ = cdp.wait_for_network_idle(Duration::from_millis(400)).await;
+                                (action, detail, click_res)
                             }
                             Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
                         }
                     } else if let Some(sel) = selector {
                         let detail = format!("Clicked selector '{}'", sel);
-                        let click_js = build_click_by_selector_js(sel);
-                        let exec_res = cdp.evaluate_js(&click_js).await;
-                        match exec_res {
-                            Ok(res_str) if res_str.starts_with("Error:") => (
-                                action,
-                                detail,
-                                Err(ToolError::CommandExec(format!("Click failed: {}", res_str))
-                                    .into()),
-                            ),
-                            Ok(_) => {
-                                let _ = cdp.wait_for_network_idle(Duration::from_millis(400)).await;
-                                (action, detail, Ok(()))
+                        let click_res = match PageAgent::click_element_with_aura(
+                            cdp,
+                            "",
+                            "",
+                            Some(sel),
+                        )
+                        .await
+                        {
+                            Ok((cx, cy, _)) => {
+                                if cx > 0.0 || cy > 0.0 {
+                                    let _ = cdp.mouse_click_at(cx, cy).await;
+                                }
+                                Ok(())
                             }
-                            Err(e) => (action, detail, Err(e)),
+                            Err(_) => {
+                                let click_js = build_click_by_selector_js(sel);
+                                match cdp.evaluate_js(&click_js).await {
+                                    Ok(res_str) if res_str.starts_with("Error:") => {
+                                        Err(ToolError::CommandExec(format!(
+                                            "Click failed: {}",
+                                            res_str
+                                        ))
+                                        .into())
+                                    }
+                                    Ok(_) => Ok(()),
+                                    Err(e) => Err(e),
+                                }
+                            }
+                        };
+                        if click_res.is_ok() {
+                            let _ = cdp.wait_for_network_idle(Duration::from_millis(400)).await;
                         }
+                        (action, detail, click_res)
                     } else {
                         (
                             action,
@@ -798,11 +871,13 @@ impl BrowserInteractor {
 fn build_click_js(el: &AriaElement) -> String {
     let tag = &el.tag;
     let name = el.name.replace('"', "\\\"");
+    let ref_id = &el.ref_id;
     let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
     let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
     let href_attr = el.attributes.get("href").map(|s| s.as_str()).unwrap_or("");
 
     let payload = json!({
+        "ref": ref_id,
         "tag": tag,
         "name": name,
         "id": id_attr,
@@ -813,14 +888,33 @@ fn build_click_js(el: &AriaElement) -> String {
     format!(
         r#"(function() {{
             const p = {};
-            const candidates = Array.from(document.querySelectorAll(p.tag));
-            let target = candidates.find(el => {{
-                if (p.id && el.id === p.id) return true;
-                if (p.attr_name && el.name === p.attr_name) return true;
-                if (p.href && el.getAttribute('href') === p.href) return true;
-                if (el.innerText && el.innerText.trim().includes(p.name)) return true;
-                return false;
-            }}) || candidates[0];
+            let target = null;
+            if (window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
+                target = window.__minicode_page_agent.resolveElement(p.ref, p.name, null);
+            }}
+            if (!target && p.ref) {{
+                try {{ target = document.querySelector('[data-minicode-ref="' + CSS.escape(p.ref) + '"]'); }} catch (_) {{}}
+            }}
+            if (!target && p.id) {{
+                target = document.getElementById(p.id);
+            }}
+            if (!target && p.attr_name) {{
+                try {{ target = document.querySelector('[name="' + CSS.escape(p.attr_name) + '"]'); }} catch (_) {{}}
+            }}
+            if (!target && p.href) {{
+                try {{ target = document.querySelector('[href="' + CSS.escape(p.href) + '"]'); }} catch (_) {{}}
+            }}
+            if (!target) {{
+                const candidates = Array.from(document.querySelectorAll(p.tag));
+                target = candidates.find(el => {{
+                    if (p.id && el.id === p.id) return true;
+                    if (p.attr_name && el.name === p.attr_name) return true;
+                    if (p.href && el.getAttribute('href') === p.href) return true;
+                    if (el.innerText && el.innerText.trim().toLowerCase() === p.name.toLowerCase()) return true;
+                    if (el.innerText && el.innerText.trim().includes(p.name)) return true;
+                    return false;
+                }});
+            }}
 
             if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
             target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
