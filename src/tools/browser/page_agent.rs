@@ -193,12 +193,24 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             return searchShadow(document);
         },
 
-        // Injects simulator HUD aura into DOM if not already present
+        // Injects simulator HUD aura into DOM if not already present (Option B: Neon Rim Cyber Glass)
         injectSimulatorAura: function(statusText, themeColor) {
             var color = themeColor || '#a277ff';
+            var rgbColor = (function(hex) {
+                try {
+                    var c = hex.replace('#', '');
+                    if (c.length === 3) c = c.split('').map(function(x){ return x + x; }).join('');
+                    var num = parseInt(c, 16);
+                    return ((num >> 16) & 255) + ', ' + ((num >> 8) & 255) + ', ' + (num & 255);
+                } catch (_) {
+                    return '162, 119, 255';
+                }
+            })(color);
+
             var existing = document.getElementById('minicode-simulator-container');
             if (existing) {
                 existing.style.setProperty('--minicode-theme-color', color);
+                existing.style.setProperty('--minicode-theme-color-rgb', rgbColor);
                 if (statusText) {
                     var txtEl = document.getElementById('minicode-pill-text');
                     if (txtEl) txtEl.innerText = statusText;
@@ -209,10 +221,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var style = document.createElement('style');
             style.id = 'minicode-simulator-styles';
             style.textContent = `
-                @keyframes minicode-pulse-dot {
-                    0%, 100% { transform: scale(1); opacity: 0.9; box-shadow: 0 0 6px var(--minicode-theme-color, #a277ff); }
-                    50% { transform: scale(1.25); opacity: 1; box-shadow: 0 0 14px var(--minicode-theme-color, #a277ff); }
-                }
+                @keyframes minicode-eq-1 { 0%, 100% { height: 4px; } 50% { height: 12px; } }
+                @keyframes minicode-eq-2 { 0%, 100% { height: 12px; } 50% { height: 5px; } }
+                @keyframes minicode-eq-3 { 0%, 100% { height: 7px; } 50% { height: 13px; } }
                 @keyframes minicode-rail-wave {
                     0% { background-position: 0% 0%; }
                     100% { background-position: 0% 200%; }
@@ -223,6 +234,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 }
                 #minicode-simulator-container {
                     --minicode-theme-color: ${color};
+                    --minicode-theme-color-rgb: ${rgbColor};
                     position: fixed;
                     inset: 0;
                     width: 100vw;
@@ -292,46 +304,58 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 #minicode-cursor-ripple.active {
                     animation: minicode-ripple-wave 0.5s ease-out forwards;
                 }
-                /* Ultra-clean glassmorphic status pill with dark & light theme responsiveness */
+                /* Option B: Neon Rim Cyber Glass status pill with responsive light/dark themes */
                 #minicode-simulator-pill {
                     position: absolute;
                     bottom: 22px;
                     left: 50%;
                     transform: translateX(-50%);
-                    background: rgba(15, 17, 26, 0.78);
-                    backdrop-filter: blur(16px) saturate(180%);
-                    -webkit-backdrop-filter: blur(16px) saturate(180%);
-                    border: 1px solid rgba(255, 255, 255, 0.12);
-                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 16px rgba(0, 0, 0, 0.25);
-                    border-radius: 9999px;
-                    padding: 6px 16px;
+                    background: rgba(10, 12, 20, 0.82);
+                    backdrop-filter: blur(24px) saturate(200%);
+                    -webkit-backdrop-filter: blur(24px) saturate(200%);
+                    border: 1.5px solid var(--minicode-theme-color, #a277ff);
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 18px rgba(var(--minicode-theme-color-rgb, 162, 119, 255), 0.35), inset 0 0 12px rgba(var(--minicode-theme-color-rgb, 162, 119, 255), 0.15);
+                    border-radius: 12px;
+                    padding: 7px 18px;
                     display: flex;
                     align-items: center;
-                    gap: 9px;
-                    color: #f1f5f9;
-                    font-size: 12.5px;
+                    gap: 12px;
+                    color: #ffffff;
+                    font-size: 13px;
                     font-weight: 500;
                     z-index: 2147483646;
                     pointer-events: auto;
                     user-select: none;
-                    transition: all 0.3s ease;
+                    transition: all 0.25s ease;
                 }
                 @media (prefers-color-scheme: light) {
                     #minicode-simulator-pill {
-                        background: rgba(255, 255, 255, 0.82);
-                        border: 1px solid rgba(0, 0, 0, 0.08);
-                        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12), 0 0 12px rgba(0, 0, 0, 0.05);
+                        background: rgba(248, 250, 255, 0.88);
+                        border: 1.5px solid var(--minicode-theme-color, #a277ff);
+                        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 0 14px rgba(var(--minicode-theme-color-rgb, 162, 119, 255), 0.25);
                         color: #0f172a;
                     }
                 }
-                #minicode-pill-dot {
-                    width: 7.5px;
-                    height: 7.5px;
-                    border-radius: 50%;
-                    background: var(--minicode-theme-color, #a277ff);
-                    display: inline-block;
-                    animation: minicode-pulse-dot 1.8s ease-in-out infinite;
+                .minicode-equalizer {
+                    display: flex;
+                    align-items: flex-end;
+                    gap: 2.5px;
+                    height: 12px;
                 }
+                .minicode-equalizer-bar {
+                    width: 2.5px;
+                    background: var(--minicode-theme-color, #a277ff);
+                    border-radius: 2px;
+                    transition: height 0.2s ease;
+                }
+                .minicode-equalizer-bar:nth-child(1) { height: 6px; }
+                .minicode-equalizer-bar:nth-child(2) { height: 11px; }
+                .minicode-equalizer-bar:nth-child(3) { height: 8px; }
+
+                #minicode-simulator-pill.active .minicode-equalizer-bar:nth-child(1) { animation: minicode-eq-1 0.7s infinite; }
+                #minicode-simulator-pill.active .minicode-equalizer-bar:nth-child(2) { animation: minicode-eq-2 0.5s infinite; }
+                #minicode-simulator-pill.active .minicode-equalizer-bar:nth-child(3) { animation: minicode-eq-3 0.8s infinite; }
+
                 #minicode-pill-text {
                     letter-spacing: -0.01em;
                     max-width: 440px;
@@ -339,20 +363,24 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     text-overflow: ellipsis;
                     white-space: nowrap;
                 }
-                #minicode-pill-dropdown {
-                    color: #94a3b8;
-                    font-size: 9.5px;
-                    cursor: pointer;
-                    opacity: 0.7;
-                }
                 #minicode-pill-stop {
+                    background: rgba(239, 68, 68, 0.15);
+                    border: 1px solid rgba(239, 68, 68, 0.4);
                     color: #ef4444;
                     font-size: 10px;
+                    font-weight: 600;
                     cursor: pointer;
-                    display: flex;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    display: inline-flex;
                     align-items: center;
-                    justify-content: center;
+                    gap: 3px;
                     opacity: 0.85;
+                    transition: background 0.2s ease, opacity 0.2s ease;
+                }
+                #minicode-pill-stop:hover {
+                    background: rgba(239, 68, 68, 0.3);
+                    opacity: 1;
                 }
             `;
             document.head.appendChild(style);
@@ -361,6 +389,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             container.id = 'minicode-simulator-container';
             container.setAttribute('data-minicode-ignore', 'true');
             container.style.setProperty('--minicode-theme-color', color);
+            container.style.setProperty('--minicode-theme-color-rgb', rgbColor);
 
             container.innerHTML = `
                 <div id="minicode-aura-left-rail" class="minicode-aura-rail"></div>
@@ -370,34 +399,41 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     <path d="M5.5 3.5L24.5 16.5L15.5 18.5L12 27.5L5.5 3.5Z" fill="var(--minicode-theme-color, #a277ff)" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
                 </svg>
                 <div id="minicode-simulator-pill">
-                    <span id="minicode-pill-dot"></span>
+                    <div class="minicode-equalizer">
+                        <div class="minicode-equalizer-bar"></div>
+                        <div class="minicode-equalizer-bar"></div>
+                        <div class="minicode-equalizer-bar"></div>
+                    </div>
                     <span id="minicode-pill-text">${statusText ? statusText.replace(/</g, '&lt;') : 'AI Agent Active'}</span>
-                    <span id="minicode-pill-dropdown">▼</span>
-                    <span id="minicode-pill-stop">■</span>
+                    <span id="minicode-pill-stop" title="Halt Agent">HALT ■</span>
                 </div>
             `;
             document.body.appendChild(container);
             return true;
         },
 
-        // Updates simulator state: updates pill message, glides cursor, triggers ripple, and activates rail wave
+        // Updates simulator state: updates pill message, glides cursor, triggers ripple, activates rail wave & equalizer
         updateSimulatorState: function(actionText, targetX, targetY, isClick, themeColor) {
             this.injectSimulatorAura(actionText, themeColor);
 
             var txtEl = document.getElementById('minicode-pill-text');
             if (txtEl && actionText) txtEl.innerText = actionText;
 
-            // Trigger active rail animation wave
+            // Trigger active rail animation wave and equalizer bounce
             var leftRail = document.getElementById('minicode-aura-left-rail');
             var rightRail = document.getElementById('minicode-aura-right-rail');
+            var pill = document.getElementById('minicode-simulator-pill');
             if (leftRail) leftRail.classList.add('active');
             if (rightRail) rightRail.classList.add('active');
+            if (pill) pill.classList.add('active');
             if (window.__minicode_rail_timer) clearTimeout(window.__minicode_rail_timer);
             window.__minicode_rail_timer = setTimeout(function() {
                 var l = document.getElementById('minicode-aura-left-rail');
                 var r = document.getElementById('minicode-aura-right-rail');
+                var p = document.getElementById('minicode-simulator-pill');
                 if (l) l.classList.remove('active');
                 if (r) r.classList.remove('active');
+                if (p) p.classList.remove('active');
             }, 1800);
 
             var cursor = document.getElementById('minicode-simulator-cursor');
@@ -1236,5 +1272,17 @@ mod tests {
         assert_eq!(parsed.viewport_width, 1920.0);
         assert_eq!(parsed.pages_above, 1.0);
         assert_eq!(parsed.total_pages, 3.0);
+    }
+
+    #[test]
+    fn test_page_probe_js_option_b_components() {
+        assert!(PAGE_PROBE_JS.contains("minicode-aura-left-rail"));
+        assert!(PAGE_PROBE_JS.contains("minicode-aura-right-rail"));
+        assert!(PAGE_PROBE_JS.contains("minicode-equalizer"));
+        assert!(PAGE_PROBE_JS.contains("minicode-equalizer-bar"));
+        assert!(PAGE_PROBE_JS.contains("minicode-eq-1"));
+        assert!(PAGE_PROBE_JS.contains("HALT ■"));
+        assert!(PAGE_PROBE_JS.contains("--minicode-theme-color-rgb"));
+        assert!(PAGE_PROBE_JS.contains("prefers-color-scheme: light"));
     }
 }
