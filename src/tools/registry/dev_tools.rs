@@ -30,9 +30,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "batch", "browser_batch", "mock_route", "browser_status", "browser_debug",
                         "browser_close", "emulate", "browser_emulate", "save_state", "browser_save_state",
                         "restore_state", "browser_restore_state", "pdf", "browser_pdf",
-                        "check_injection", "browser_check_injection", "scan_hidden"
+                        "check_injection", "browser_check_injection", "scan_hidden",
+                        "hover", "browser_hover", "select_option", "browser_select_option",
+                        "scroll_horizontal", "browser_scroll_horizontal",
+                        "badges", "browser_badges", "tabs", "browser_tabs",
+                        "metrics", "browser_metrics"
                     ],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections)"
+                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics)"
                 },
                 "command": {
                     "type": "string",
@@ -198,6 +202,40 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "custom_height": {
                     "type": "integer",
                     "description": "Custom viewport height in pixels for 'emulate'"
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "ARIA element reference (e.g. '@v1:e2') or target selector for 'hover' or 'select_option'"
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector for element interaction, container scrolling, or inspection"
+                },
+                "option": {
+                    "type": "string",
+                    "description": "Dropdown option text or value to choose for 'select_option'"
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["left", "right", "up", "down"],
+                    "description": "Scroll direction for 'scroll_horizontal' ('left' or 'right')"
+                },
+                "distance": {
+                    "type": "integer",
+                    "description": "Number of pixels to scroll horizontally (default: 500)"
+                },
+                "subaction": {
+                    "type": "string",
+                    "enum": ["list", "create", "new", "switch", "close"],
+                    "description": "Subaction for 'tabs' ('list', 'create', 'switch', 'close')"
+                },
+                "target_id": {
+                    "type": "string",
+                    "description": "Target/Tab ID for browser tab operations ('switch', 'close')"
+                },
+                "enable": {
+                    "type": "boolean",
+                    "description": "Toggle high-contrast numbered visual badges on or off for 'badges' (default: true)"
                 }
             },
             "required": ["action"]
@@ -1060,9 +1098,113 @@ pub async fn dispatch(
                 )
                 .await
             }
+            "hover" | "browser_hover" => {
+                let mode = parse_browser_mode(args);
+                let target_ref = opt_str(args, "ref")
+                    .or_else(|| opt_str(args, "selector"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "minitask".to_string(),
+                        reason: "Action 'hover' requires 'ref' or 'selector' parameter".to_string(),
+                    })?;
+                crate::tools::browser::BrowserController::hover_and_snapshot(
+                    target_ref,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "select_option" | "browser_select_option" => {
+                let mode = parse_browser_mode(args);
+                let target_ref = opt_str(args, "ref")
+                    .or_else(|| opt_str(args, "selector"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "minitask".to_string(),
+                        reason: "Action 'select_option' requires 'ref' or 'selector' parameter".to_string(),
+                    })?;
+                let option_text = opt_str(args, "option")
+                    .or_else(|| opt_str(args, "value"))
+                    .or_else(|| opt_str(args, "text"))
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "minitask".to_string(),
+                        reason: "Action 'select_option' requires 'option' or 'value' parameter".to_string(),
+                    })?;
+                crate::tools::browser::BrowserController::select_option_and_snapshot(
+                    target_ref,
+                    option_text,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "scroll_horizontal" | "browser_scroll_horizontal" => {
+                let mode = parse_browser_mode(args);
+                let direction = opt_str(args, "direction").unwrap_or("right");
+                let pixels = args.get("distance").and_then(|d| d.as_i64()).map(|d| d as i32);
+                let selector = opt_str(args, "selector").or_else(|| opt_str(args, "ref"));
+                crate::tools::browser::BrowserController::scroll_horizontally(
+                    direction,
+                    pixels,
+                    selector,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "badges" | "browser_badges" => {
+                let mode = parse_browser_mode(args);
+                let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
+                crate::tools::browser::BrowserController::toggle_visual_badges(
+                    enable,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "tabs" | "browser_tabs" => {
+                let mode = parse_browser_mode(args);
+                let subaction = opt_str(args, "subaction")
+                    .or_else(|| opt_str(args, "tab_action"))
+                    .unwrap_or("list");
+                let url = opt_str(args, "url");
+                let target_id = opt_str(args, "target_id")
+                    .or_else(|| opt_str(args, "tab_id"))
+                    .or_else(|| opt_str(args, "id"));
+                crate::tools::browser::BrowserController::manage_tabs(
+                    subaction,
+                    url,
+                    target_id,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            "metrics" | "browser_metrics" => {
+                let mode = parse_browser_mode(args);
+                let metrics = crate::tools::browser::BrowserController::get_page_metrics(
+                    mode,
+                    workspace_root,
+                )
+                .await?;
+                let json_metrics = serde_json::to_string_pretty(&metrics)
+                    .unwrap_or_else(|_| "{}".to_string());
+                Ok(format!(
+                    "📊 Page & Viewport Metrics (Alibaba Page-Agent compatible):\n```json\n{}\n```\n• Viewport: {}x{}\n• Full Page: {}x{}\n• Scroll Position: ({}, {})\n• Pages Remaining Below: {:.1} (total: {})",
+                    json_metrics,
+                    metrics.viewport_width,
+                    metrics.viewport_height,
+                    metrics.page_width,
+                    metrics.page_height,
+                    metrics.scroll_x,
+                    metrics.scroll_y,
+                    metrics.pages_below,
+                    metrics.total_pages
+                ))
+            }
             unknown => Err(ToolError::InvalidArguments {
                 name: "minitask".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, swarms, probe_port, audit, inspect, batch, mock_route, browser_status, browser_close, emulate, save_state, restore_state, pdf, check_injection", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, swarms, probe_port, audit, inspect, batch, mock_route, browser_status, browser_close, emulate, save_state, restore_state, pdf, check_injection, hover, select_option, scroll_horizontal, badges, tabs, metrics", unknown),
             }.into()),
         }
     }.await)
@@ -1351,6 +1493,18 @@ mod tests {
         assert!(actions.contains(&"browser_pdf"));
         assert!(actions.contains(&"check_injection"));
         assert!(actions.contains(&"browser_check_injection"));
+        assert!(actions.contains(&"hover"));
+        assert!(actions.contains(&"browser_hover"));
+        assert!(actions.contains(&"select_option"));
+        assert!(actions.contains(&"browser_select_option"));
+        assert!(actions.contains(&"scroll_horizontal"));
+        assert!(actions.contains(&"browser_scroll_horizontal"));
+        assert!(actions.contains(&"badges"));
+        assert!(actions.contains(&"browser_badges"));
+        assert!(actions.contains(&"tabs"));
+        assert!(actions.contains(&"browser_tabs"));
+        assert!(actions.contains(&"metrics"));
+        assert!(actions.contains(&"browser_metrics"));
     }
 
     #[tokio::test]
@@ -1380,5 +1534,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(close_res.contains("No active browser session"));
+    }
+
+    #[tokio::test]
+    async fn test_minitask_page_agent_dispatch_validations() {
+        let temp = tempdir().unwrap();
+
+        // Hover requires ref or selector
+        let hover_args = json!({ "action": "hover" });
+        let hover_err = dispatch("minitask", &hover_args, temp.path())
+            .await
+            .unwrap();
+        assert!(hover_err.is_err());
+
+        // Select option requires option or value
+        let select_args = json!({ "action": "select_option", "ref": "@v1:e1" });
+        let select_err = dispatch("minitask", &select_args, temp.path())
+            .await
+            .unwrap();
+        assert!(select_err.is_err());
     }
 }

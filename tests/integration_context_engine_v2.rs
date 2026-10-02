@@ -416,7 +416,7 @@ fn test_prompt_no_double_nested_progressive_memory() {
     mem.add_l2_fact("engine", "Tokio multi-threaded", "test", 1.0);
     mem.save(root).unwrap();
 
-    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None, None);
+    let recency = PromptBuilder::build_recency_context(root, None, &[], None, None, None, None);
 
     // Invariant: <progressive_memory> must appear exactly once, not nested
     assert!(
@@ -522,6 +522,7 @@ fn test_status_bar_kv_cache_rendering() {
         show_cost: true,
         session_cost_usd: 0.035,
         cached_tokens: 8200,
+        tasks_summary: None,
     };
 
     assert_eq!(ctx_with_kv.cached_tokens, 8200);
@@ -590,6 +591,7 @@ fn test_recency_context_kv_cache_prefix_alignment() {
         &active_set,
         Some(&git_status),
         Some(&budget),
+        None,
         None,
     );
 

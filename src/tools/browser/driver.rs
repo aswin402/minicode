@@ -972,6 +972,65 @@ impl CdpClient {
         }
     }
 
+    /// Lists all available targets (browser tabs, iframes, workers)
+    pub async fn list_targets(&self) -> Result<Vec<serde_json::Value>> {
+        let res = self.send_command("Target.getTargets", json!({})).await?;
+        let targets = res
+            .get("targetInfos")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(targets)
+    }
+
+    /// Creates a new browser tab/target and optionally attaches to it
+    pub async fn create_tab(&self, url: &str, switch_to: bool) -> Result<String> {
+        let created = self
+            .send_command("Target.createTarget", json!({ "url": url }))
+            .await?;
+        let target_id = created
+            .get("targetId")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("CDP createTarget returned no targetId".to_string())
+            })?
+            .to_string();
+
+        if switch_to {
+            self.switch_tab(&target_id).await?;
+        }
+
+        Ok(target_id)
+    }
+
+    /// Closes a browser tab by its targetId
+    pub async fn close_tab(&self, target_id: &str) -> Result<()> {
+        self.send_command("Target.closeTarget", json!({ "targetId": target_id }))
+            .await?;
+        Ok(())
+    }
+
+    /// Switches active CDP focus to a specific target tab
+    pub async fn switch_tab(&self, target_id: &str) -> Result<()> {
+        let attached = self
+            .send_command(
+                "Target.attachToTarget",
+                json!({ "targetId": target_id, "flatten": true }),
+            )
+            .await?;
+        let session = attached
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("CDP attachToTarget returned no sessionId".to_string())
+            })?
+            .to_string();
+
+        *self.session_id.lock().await = Some(session);
+        self.enable_core_domains().await?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn page_ws_url(&self) -> &str {
         &self.page_ws_url

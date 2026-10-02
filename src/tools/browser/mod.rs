@@ -22,7 +22,7 @@ pub use manager::{BrowserManager, EngineProcess};
 #[allow(unused_imports)]
 pub use markdown::SmartMarkdownExtractor;
 #[allow(unused_imports)]
-pub use page_agent::{PageAgent, QaAuditReport, VisualElement};
+pub use page_agent::{PageAgent, PageMetrics, QaAuditReport, ScrollData, VisualElement};
 
 use crate::constants::{
     BROWSER_BLOCKED_HOSTS, BROWSER_REPORTS_DIR, BROWSER_SCREENSHOTS_DIR, BROWSER_STATE_DIR,
@@ -173,6 +173,144 @@ impl BrowserController {
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         BrowserInteractor::scroll_page(&engine.cdp, direction).await
+    }
+
+    /// Hovers over an element by ARIA reference and returns updated page snapshot
+    pub async fn hover_and_snapshot(
+        target_ref: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = engine.accessibility.lock().await;
+        acc_mgr.update_from_html(&current_html);
+        BrowserInteractor::hover_element(&engine.cdp, target_ref, &mut acc_mgr).await
+    }
+
+    /// Selects an option from a `<select>` dropdown and returns updated page snapshot
+    pub async fn select_option_and_snapshot(
+        target_ref: &str,
+        option_text: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = engine.accessibility.lock().await;
+        acc_mgr.update_from_html(&current_html);
+        BrowserInteractor::select_option(&engine.cdp, target_ref, option_text, &mut acc_mgr).await
+    }
+
+    /// Scrolls horizontally left or right across the page or within a container
+    pub async fn scroll_horizontally(
+        direction: &str,
+        pixels: Option<i32>,
+        selector: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        BrowserInteractor::scroll_horizontally(&engine.cdp, direction, pixels, selector).await
+    }
+
+    /// Retrieves scroll metrics and viewport geometry for the current page
+    pub async fn get_page_metrics(mode: BrowserMode, workspace_root: &Path) -> Result<PageMetrics> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        PageAgent::get_page_metrics(&engine.cdp).await
+    }
+
+    /// Toggles high-contrast visual badge overlays on interactive elements
+    pub async fn toggle_visual_badges(
+        enable: bool,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if enable {
+            let count = PageAgent::inject_visual_badges(&engine.cdp).await?;
+            Ok(format!(
+                "Injected visual badge overlays for {} interactive element(s).",
+                count
+            ))
+        } else {
+            let cleared = PageAgent::clear_visual_badges(&engine.cdp).await?;
+            if cleared {
+                Ok("Cleared visual badge overlays from page.".to_string())
+            } else {
+                Ok("No active visual badge overlays were present.".to_string())
+            }
+        }
+    }
+
+    /// Manages browser tabs / targets (list, create, switch, close)
+    pub async fn manage_tabs(
+        action: &str,
+        url: Option<&str>,
+        target_id: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        match action {
+            "list" => {
+                let targets = engine.cdp.list_targets().await?;
+                let mut out = format!("### Active Browser Tabs ({})\n\n", targets.len());
+                for (idx, t) in targets.iter().enumerate() {
+                    let id = t
+                        .get("targetId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let title = t
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(untitled)");
+                    let target_url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let target_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("page");
+                    out.push_str(&format!(
+                        "{}. [{}] \"{}\" (`{}`) - ID: `{}`\n",
+                        idx + 1,
+                        target_type,
+                        title,
+                        target_url,
+                        id
+                    ));
+                }
+                Ok(out)
+            }
+            "create" | "new" => {
+                let target_url = url.unwrap_or("about:blank");
+                let id = engine.cdp.create_tab(target_url, true).await?;
+                Ok(format!(
+                    "Opened new browser tab navigating to '{}' (ID: `{}`)",
+                    target_url, id
+                ))
+            }
+            "switch" => {
+                let id = target_id.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_tabs".to_string(),
+                    reason: "Action 'switch' requires 'target_id'".to_string(),
+                })?;
+                engine.cdp.switch_tab(id).await?;
+                Ok(format!("Switched browser focus to tab ID `{}`", id))
+            }
+            "close" => {
+                let id = target_id.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_tabs".to_string(),
+                    reason: "Action 'close' requires 'target_id'".to_string(),
+                })?;
+                engine.cdp.close_tab(id).await?;
+                Ok(format!("Closed browser tab ID `{}`", id))
+            }
+            other => Err(ToolError::InvalidArguments {
+                name: "browser_tabs".to_string(),
+                reason: format!(
+                    "Unknown tab action '{}'. Supported: list, create, switch, close",
+                    other
+                ),
+            }
+            .into()),
+        }
     }
 
     /// Retrieves diagnostic logs (console errors, unhandled exceptions, and failed HTTP requests)

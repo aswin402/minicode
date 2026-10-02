@@ -12,7 +12,7 @@ use tempfile::tempdir;
 fn test_subagent_step_record_and_transcript() {
     let mut transcript = SubagentTranscript::new(
         "researcher-1",
-        SubagentRole::Researcher,
+        SubagentRole::Scout,
         "Explore authentication implementation".to_string(),
     );
 
@@ -72,7 +72,7 @@ fn test_subagent_transcript_store_persistence() {
     let store = SubagentTranscriptStore::new();
     let mut transcript = SubagentTranscript::new(
         "worker-42",
-        SubagentRole::TestEngineer,
+        SubagentRole::Tester,
         "Run integration tests".to_string(),
     );
     transcript.add_step(SubagentStepRecord::new(
@@ -126,7 +126,7 @@ async fn test_subagent_synthesis_reducer_ast_and_verifications() {
 
     let mut transcript = SubagentTranscript::new(
         "tester-99",
-        SubagentRole::TestEngineer,
+        SubagentRole::Tester,
         "Add multiply function and verify tests".to_string(),
     );
 
@@ -157,7 +157,7 @@ async fn test_subagent_synthesis_reducer_ast_and_verifications() {
 
     let report = SubagentSynthesisReducer::reduce(SubagentSynthesisContext {
         subagent_id: "tester-99",
-        role: &SubagentRole::TestEngineer,
+        role: &SubagentRole::Tester,
         final_summary,
         success: true,
         status: "completed",
@@ -205,7 +205,7 @@ async fn test_subagent_transcript_drilldown_tool_dispatch() {
 
     let mut transcript = SubagentTranscript::new(
         "reviewer-7",
-        SubagentRole::CodeReviewer,
+        SubagentRole::Reviewer,
         "Review pull request changes".to_string(),
     );
 
@@ -289,7 +289,7 @@ async fn test_ephemeral_isolation_token_reduction() {
 
     let mut transcript = SubagentTranscript::new(
         "worker-verbose",
-        SubagentRole::Custom("CompilerRunner".to_string()),
+        SubagentRole::Coder,
         "Build and test entire workspace".to_string(),
     );
 
@@ -305,7 +305,7 @@ async fn test_ephemeral_isolation_token_reduction() {
 
     let final_summary = "Build succeeded with 48 integration tests passing without warnings.";
 
-    let role = SubagentRole::Custom("CompilerRunner".to_string());
+    let role = SubagentRole::Coder;
     let report = SubagentSynthesisReducer::reduce(SubagentSynthesisContext {
         subagent_id: "worker-verbose",
         role: &role,

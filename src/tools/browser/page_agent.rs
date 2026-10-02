@@ -36,6 +36,28 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                 return true;
             }
 
+            function isIgnoredRoot(el) {
+                if (el === document.body || el === document.documentElement) return true;
+                if (el.matches && el.matches('[data-reactroot], [data-reactid], [data-react-checksum], #root, #app, [id^="root-"], [id^="app-"], #adex-wrapper, #adex-root')) {
+                    return true;
+                }
+                return false;
+            }
+
+            function checkScrollable(el, style) {
+                var hasScrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
+                var hasScrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth;
+                if (hasScrollY || hasScrollX) {
+                    return {
+                        top: Math.round(el.scrollTop),
+                        bottom: Math.round(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)),
+                        left: Math.round(el.scrollLeft),
+                        right: Math.round(Math.max(0, el.scrollWidth - el.clientWidth - el.scrollLeft))
+                    };
+                }
+                return null;
+            }
+
             function walk(root, inShadow) {
                 var elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
                 for (var i = 0; i < elements.length; i++) {
@@ -45,6 +67,8 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                     if (el.shadowRoot) {
                         walk(el.shadowRoot, true);
                     }
+
+                    if (isIgnoredRoot(el)) continue;
 
                     var tag = el.tagName.toLowerCase();
                     var role = (el.getAttribute('role') || tag).toLowerCase();
@@ -68,6 +92,8 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                             if (el.getAttribute('href')) attrs.href = el.getAttribute('href');
                             if (el.getAttribute('data-testid')) attrs.data_testid = el.getAttribute('data-testid');
 
+                            var scrollData = checkScrollable(el, style);
+
                             results.push({
                                 tag: tag,
                                 role: role,
@@ -78,6 +104,8 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
                                 width: Math.round(rect.width),
                                 height: Math.round(rect.height),
                                 is_shadow_dom: inShadow,
+                                is_scrollable: Boolean(scrollData),
+                                scroll_data: scrollData,
                                 attributes: attrs
                             });
                         }
@@ -87,6 +115,73 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
 
             walk(document, false);
             return results;
+        },
+
+        // Calculates viewport and total page scroll metrics
+        getPageMetrics: function() {
+            var vw = window.innerWidth;
+            var vh = window.innerHeight;
+            var pw = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth || 0);
+            var ph = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight || 0);
+            var sx = window.scrollX || window.pageXOffset || 0;
+            var sy = window.scrollY || window.pageYOffset || 0;
+            var pb = Math.max(0, ph - (vh + sy));
+            return {
+                viewport_width: vw,
+                viewport_height: vh,
+                page_width: pw,
+                page_height: ph,
+                scroll_x: sx,
+                scroll_y: sy,
+                pixels_above: sy,
+                pixels_below: pb,
+                pages_above: vh > 0 ? Number((sy / vh).toFixed(2)) : 0,
+                pages_below: vh > 0 ? Number((pb / vh).toFixed(2)) : 0,
+                total_pages: vh > 0 ? Number((ph / vh).toFixed(2)) : 0,
+                current_page_position: Number((sy / Math.max(1, ph - vh)).toFixed(3))
+            };
+        },
+
+        // Injects high-contrast indexed badge overlays on interactive elements for visual verification
+        injectVisualBadges: function() {
+            var existing = document.getElementById('minicode-highlight-container');
+            if (existing) existing.remove();
+
+            var container = document.createElement('div');
+            container.id = 'minicode-highlight-container';
+            container.setAttribute('data-minicode-ignore', 'true');
+            container.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483640;';
+
+            var items = this.scanInteractables();
+            var colors = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#9333ea', '#0891b2'];
+            var count = 0;
+
+            for (var i = 0; i < items.length; i++) {
+                var it = items[i];
+                var color = colors[i % colors.length];
+                var box = document.createElement('div');
+                box.style.cssText = 'position:absolute;left:' + (it.x + window.scrollX) + 'px;top:' + (it.y + window.scrollY) + 'px;width:' + it.width + 'px;height:' + it.height + 'px;border:2px solid ' + color + ';pointer-events:none;box-sizing:border-box;border-radius:3px;box-shadow:0 0 4px rgba(0,0,0,0.3);';
+
+                var badge = document.createElement('span');
+                badge.innerText = '[' + (i + 1) + ']';
+                badge.style.cssText = 'position:absolute;top:-13px;left:-2px;background:' + color + ';color:#fff;font-size:10px;font-weight:bold;padding:1px 3px;border-radius:2px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1;box-shadow:0 1px 2px rgba(0,0,0,0.4);';
+
+                box.appendChild(badge);
+                container.appendChild(box);
+                count++;
+            }
+            document.body.appendChild(container);
+            return count;
+        },
+
+        // Removes visual badge overlay container from the DOM
+        clearVisualBadges: function() {
+            var existing = document.getElementById('minicode-highlight-container');
+            if (existing) {
+                existing.remove();
+                return true;
+            }
+            return false;
         },
 
         // Audits broken images, broken links, form accessibility, and page diagnostics
@@ -146,6 +241,32 @@ pub const PAGE_PROBE_JS: &str = r#"(function() {
     return 'installed';
 })()"#;
 
+/// Scroll distance metrics for a scrollable container
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ScrollData {
+    pub top: f64,
+    pub bottom: f64,
+    pub left: f64,
+    pub right: f64,
+}
+
+/// Page-level scroll position and viewport metrics
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PageMetrics {
+    pub viewport_width: f64,
+    pub viewport_height: f64,
+    pub page_width: f64,
+    pub page_height: f64,
+    pub scroll_x: f64,
+    pub scroll_y: f64,
+    pub pixels_above: f64,
+    pub pixels_below: f64,
+    pub pages_above: f64,
+    pub pages_below: f64,
+    pub total_pages: f64,
+    pub current_page_position: f64,
+}
+
 /// An in-page visual element grounded with computed coordinates and selectors
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VisualElement {
@@ -158,6 +279,10 @@ pub struct VisualElement {
     pub width: f64,
     pub height: f64,
     pub is_shadow_dom: bool,
+    #[serde(default)]
+    pub is_scrollable: bool,
+    #[serde(default)]
+    pub scroll_data: Option<ScrollData>,
     #[serde(default)]
     pub attributes: HashMap<String, String>,
 }
@@ -200,6 +325,36 @@ impl PageAgent {
     pub async fn inject_probe(cdp: &CdpClient) -> Result<()> {
         cdp.evaluate_js(PAGE_PROBE_JS).await?;
         Ok(())
+    }
+
+    /// Retrieves scroll metrics and viewport geometry for the current page
+    pub async fn get_page_metrics(cdp: &CdpClient) -> Result<PageMetrics> {
+        Self::inject_probe(cdp).await?;
+        let res_json = cdp
+            .evaluate_js("JSON.stringify(window.__minicode_page_agent.getPageMetrics())")
+            .await?;
+        let metrics: PageMetrics = serde_json::from_str(&res_json)
+            .map_err(|e| ToolError::CommandExec(format!("Failed parsing page metrics: {}", e)))?;
+        Ok(metrics)
+    }
+
+    /// Injects numbered visual badge overlays onto interactive elements for visual verification
+    pub async fn inject_visual_badges(cdp: &CdpClient) -> Result<usize> {
+        Self::inject_probe(cdp).await?;
+        let count_str = cdp
+            .evaluate_js("window.__minicode_page_agent.injectVisualBadges()")
+            .await?;
+        let count = count_str.trim().parse::<usize>().unwrap_or(0);
+        Ok(count)
+    }
+
+    /// Clears visual badge overlays from the active page
+    pub async fn clear_visual_badges(cdp: &CdpClient) -> Result<bool> {
+        Self::inject_probe(cdp).await?;
+        let res_str = cdp
+            .evaluate_js("window.__minicode_page_agent.clearVisualBadges()")
+            .await?;
+        Ok(res_str.trim() == "true")
     }
 
     /// Scans the DOM tree including Shadow DOM and returns visible interactive elements with bounding boxes
@@ -479,6 +634,8 @@ mod tests {
             width: 150.0,
             height: 40.0,
             is_shadow_dom: false,
+            is_scrollable: false,
+            scroll_data: None,
             attributes: HashMap::new(),
         }];
 
@@ -486,5 +643,29 @@ mod tests {
         assert!(formatted.contains("#add-to-cart-btn"));
         assert!(formatted.contains("Add to Cart"));
         assert!(formatted.contains("(100, 200, 150x40)"));
+    }
+
+    #[test]
+    fn test_page_metrics_serialization() {
+        let metrics = PageMetrics {
+            viewport_width: 1920.0,
+            viewport_height: 1080.0,
+            page_width: 1920.0,
+            page_height: 3240.0,
+            scroll_x: 0.0,
+            scroll_y: 1080.0,
+            pixels_above: 1080.0,
+            pixels_below: 1080.0,
+            pages_above: 1.0,
+            pages_below: 1.0,
+            total_pages: 3.0,
+            current_page_position: 0.5,
+        };
+
+        let json_str = serde_json::to_string(&metrics).unwrap();
+        let parsed: PageMetrics = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(parsed.viewport_width, 1920.0);
+        assert_eq!(parsed.pages_above, 1.0);
+        assert_eq!(parsed.total_pages, 3.0);
     }
 }

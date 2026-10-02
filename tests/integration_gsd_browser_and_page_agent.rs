@@ -45,6 +45,24 @@ static FIXTURE_HTML: &str = r##"<!DOCTYPE html>
 
     <div id="status-message" class="hidden"></div>
 
+    <!-- Page-Agent Features Fixture Elements -->
+    <div style="margin-top: 20px;">
+        <label for="shipping-method">Shipping Option</label>
+        <select id="shipping-method" name="shipping">
+            <option value="standard">Standard Delivery ($5)</option>
+            <option value="express">Express Next-Day ($15)</option>
+            <option value="drone">Autonomous Drone Delivery ($25)</option>
+        </select>
+
+        <button id="hover-target" onmouseover="this.innerText='Hovered Successfully';" onmouseout="this.innerText='Hover Me';">Hover Me</button>
+
+        <div id="scroll-box" style="width: 200px; height: 80px; overflow: auto; border: 1px solid #aaa; margin-top: 10px;">
+            <div style="width: 800px; height: 200px; background: linear-gradient(to right, #e0f2fe, #38bdf8);">
+                Horizontal Scrollable Area for Alibaba Page-Agent Tests
+            </div>
+        </div>
+    </div>
+
     <!-- Web Component with Shadow DOM -->
     <user-badge id="user-badge"></user-badge>
 
@@ -364,7 +382,246 @@ async fn test_realworld_browser_gsd_and_page_agent_pipeline() {
     );
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 6: Clean Teardown
+    // Phase 7: Page & Scroll Metrics (`browser_metrics`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_metrics (Alibaba Page-Agent viewport & scroll telemetry)");
+    let metrics_res = ToolRegistry::dispatch(
+        &ws,
+        "call_browser_metrics",
+        "browser_metrics",
+        &json!({
+            "mode": "headless"
+        }),
+        None,
+        6,
+    )
+    .await;
+
+    assert!(
+        metrics_res.success,
+        "browser_metrics failed: {}",
+        metrics_res.output
+    );
+    println!("✔ Browser Metrics Output:\n{}", metrics_res.output);
+    assert!(
+        metrics_res.output.contains("viewport_width") || metrics_res.output.contains("total_pages"),
+        "Expected viewport metrics JSON"
+    );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 8: High-Contrast Visual Badges (`browser_badges`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_badges inject & clear");
+    let badges_res = ToolRegistry::dispatch(
+        &ws,
+        "call_browser_badges_inject",
+        "browser_badges",
+        &json!({
+            "action": "inject",
+            "mode": "headless"
+        }),
+        None,
+        7,
+    )
+    .await;
+
+    assert!(
+        badges_res.success,
+        "browser_badges inject failed: {}",
+        badges_res.output
+    );
+    println!("✔ Badges Inject Output:\n{}", badges_res.output);
+    assert!(
+        badges_res.output.contains("Injected visual badge overlays"),
+        "Expected badge injection confirmation"
+    );
+
+    let badges_clear_res = ToolRegistry::dispatch(
+        &ws,
+        "call_browser_badges_clear",
+        "browser_badges",
+        &json!({
+            "action": "clear",
+            "mode": "headless"
+        }),
+        None,
+        8,
+    )
+    .await;
+    assert!(
+        badges_clear_res.success,
+        "browser_badges clear failed: {}",
+        badges_clear_res.output
+    );
+    println!("✔ Badges Clear Output:\n{}", badges_clear_res.output);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 9: Dropdown Selection & Hover (`browser_select_option` & `browser_hover`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_select_option");
+    let select_res = ToolRegistry::dispatch(
+        &ws,
+        "call_select_option",
+        "browser_select_option",
+        &json!({
+            "selector": "#shipping-method",
+            "option_text": "Express",
+            "mode": "headless"
+        }),
+        None,
+        9,
+    )
+    .await;
+
+    assert!(
+        select_res.success,
+        "browser_select_option failed: {}",
+        select_res.output
+    );
+    println!("✔ Select Option Output:\n{}", select_res.output);
+
+    println!("▶ Testing browser_hover");
+    let hover_res = ToolRegistry::dispatch(
+        &ws,
+        "call_hover",
+        "browser_hover",
+        &json!({
+            "selector": "#hover-target",
+            "mode": "headless"
+        }),
+        None,
+        10,
+    )
+    .await;
+
+    assert!(
+        hover_res.success,
+        "browser_hover failed: {}",
+        hover_res.output
+    );
+    println!("✔ Hover Output:\n{}", hover_res.output);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 10: Horizontal Container Scrolling (`browser_scroll_horizontal`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_scroll_horizontal");
+    let scroll_res = ToolRegistry::dispatch(
+        &ws,
+        "call_scroll_h",
+        "browser_scroll_horizontal",
+        &json!({
+            "selector": "#scroll-box",
+            "direction": "right",
+            "pixels": 200,
+            "mode": "headless"
+        }),
+        None,
+        11,
+    )
+    .await;
+
+    assert!(
+        scroll_res.success,
+        "browser_scroll_horizontal failed: {}",
+        scroll_res.output
+    );
+    println!("✔ Horizontal Scroll Output:\n{}", scroll_res.output);
+    assert!(scroll_res
+        .output
+        .contains("Scrolled container '#scroll-box' horizontally right"));
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 11: Multi-Tab Orchestration (`browser_tabs`)
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing browser_tabs (list, create, switch, close)");
+    let list_tabs = ToolRegistry::dispatch(
+        &ws,
+        "call_tabs_list",
+        "browser_tabs",
+        &json!({
+            "action": "list",
+            "mode": "headless"
+        }),
+        None,
+        12,
+    )
+    .await;
+    assert!(
+        list_tabs.success,
+        "browser_tabs list failed: {}",
+        list_tabs.output
+    );
+    println!("✔ Active Tabs:\n{}", list_tabs.output);
+    assert!(list_tabs.output.contains("Active Browser Tabs"));
+
+    let create_tab = ToolRegistry::dispatch(
+        &ws,
+        "call_tabs_create",
+        "browser_tabs",
+        &json!({
+            "action": "create",
+            "url": base_url,
+            "mode": "headless"
+        }),
+        None,
+        13,
+    )
+    .await;
+    assert!(
+        create_tab.success,
+        "browser_tabs create failed: {}",
+        create_tab.output
+    );
+    println!("✔ Created Tab:\n{}", create_tab.output);
+    assert!(create_tab.output.contains("Opened new browser tab"));
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 12: Minitask Unified Agent Tool Integration
+    // ─────────────────────────────────────────────────────────────────────────
+    println!("▶ Testing minitask action: 'metrics'");
+    let minitask_metrics = ToolRegistry::dispatch(
+        &ws,
+        "call_minitask_metrics",
+        "minitask",
+        &json!({
+            "action": "metrics",
+            "mode": "headless"
+        }),
+        None,
+        14,
+    )
+    .await;
+    assert!(
+        minitask_metrics.success,
+        "minitask metrics failed: {}",
+        minitask_metrics.output
+    );
+    println!("✔ Minitask Metrics:\n{}", minitask_metrics.output);
+    assert!(minitask_metrics.output.contains("Page & Viewport Metrics"));
+
+    println!("▶ Testing minitask action: 'badges'");
+    let minitask_badges = ToolRegistry::dispatch(
+        &ws,
+        "call_minitask_badges",
+        "minitask",
+        &json!({
+            "action": "badges",
+            "enable": true,
+            "mode": "headless"
+        }),
+        None,
+        15,
+    )
+    .await;
+    assert!(
+        minitask_badges.success,
+        "minitask badges failed: {}",
+        minitask_badges.output
+    );
+    println!("✔ Minitask Badges:\n{}", minitask_badges.output);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 13: Clean Teardown
     // ─────────────────────────────────────────────────────────────────────────
     let shutdown_success = BrowserManager::shutdown_live_engine()
         .await

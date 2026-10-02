@@ -149,6 +149,144 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "browser_hover".to_string(),
+            description: "Simulate hovering over an interactive element identified by its ARIA reference (@v1:e1) or CSS selector to trigger hover dropdowns, navigation menus, and tooltips.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "ARIA element reference (e.g. '@v1:e1')"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector to hover over (alternative to 'ref')"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_select_option".to_string(),
+            description: "Select an option in a <select> dropdown element by its visible option text or value and dispatch input/change events.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "ARIA element reference for the <select> element"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector for the <select> element (alternative to 'ref')"
+                    },
+                    "option_text": {
+                        "type": "string",
+                        "description": "Visible text or value of the option to select"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["option_text"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_scroll_horizontal".to_string(),
+            description: "Scroll horizontally ('left' or 'right') across wide web pages or within specific scrollable table/container elements.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["left", "right"],
+                        "description": "Horizontal scroll direction (default: 'right')"
+                    },
+                    "pixels": {
+                        "type": "integer",
+                        "description": "Number of horizontal pixels to scroll (default: 400)"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector of the scrollable container"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_badges".to_string(),
+            description: "Inject or clear high-contrast colored visual badge overlays ([1], [2], [3]) on interactive elements for visual verification in screenshots.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["inject", "clear"],
+                        "description": "Action: 'inject' to show badges, 'clear' to remove badges"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["action"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_tabs".to_string(),
+            description: "Manage multiple browser tabs and page targets via CDP (list, create/new, switch, close).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "switch", "close"],
+                        "description": "Tab operation: 'list', 'create', 'switch', or 'close'"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Target URL when creating a new tab (defaults to 'about:blank')"
+                    },
+                    "target_id": {
+                        "type": "string",
+                        "description": "Target ID when switching or closing a tab"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                },
+                "required": ["action"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_metrics".to_string(),
+            description: "Retrieve viewport dimensions and scroll metrics (pixels above/below, pages above/below, scroll positions) to understand page depth.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["headless", "gui"],
+                        "description": "Browser mode ('headless' or 'gui')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "browser_debug_logs".to_string(),
             description: "Inspect live browser runtime diagnostics including console logs (errors/warnings), uncaught JS exceptions, and failed HTTP network requests (4xx/5xx). Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
             parameters: json!({
@@ -574,6 +712,115 @@ pub async fn dispatch(
                 let mode = parse_browser_mode(args);
 
                 BrowserController::scroll(direction, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_hover" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let target_ref = opt_str(args, "ref");
+                let selector = opt_str(args, "selector");
+
+                if let Some(r) = target_ref {
+                    BrowserController::hover_and_snapshot(r, mode, workspace_root).await
+                } else if let Some(sel) = selector {
+                    let steps = vec![crate::tools::browser::BatchStep::Hover {
+                        target_ref: None,
+                        selector: Some(sel.to_string()),
+                    }];
+                    BrowserController::execute_batch(&steps, mode, workspace_root).await
+                } else {
+                    Err(crate::error::ToolError::InvalidArguments {
+                        name: "browser_hover".to_string(),
+                        reason: "Requires either 'ref' or 'selector'".to_string(),
+                    }
+                    .into())
+                }
+            }
+            .await,
+        ),
+        "browser_select_option" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let option_text = require_str(args, "option_text", "browser_select_option")?;
+                let target_ref = opt_str(args, "ref");
+                let selector = opt_str(args, "selector");
+
+                if let Some(r) = target_ref {
+                    BrowserController::select_option_and_snapshot(
+                        r,
+                        option_text,
+                        mode,
+                        workspace_root,
+                    )
+                    .await
+                } else if let Some(sel) = selector {
+                    let steps = vec![crate::tools::browser::BatchStep::SelectOption {
+                        target_ref: None,
+                        selector: Some(sel.to_string()),
+                        option_text: option_text.to_string(),
+                    }];
+                    BrowserController::execute_batch(&steps, mode, workspace_root).await
+                } else {
+                    Err(crate::error::ToolError::InvalidArguments {
+                        name: "browser_select_option".to_string(),
+                        reason: "Requires either 'ref' or 'selector'".to_string(),
+                    }
+                    .into())
+                }
+            }
+            .await,
+        ),
+        "browser_scroll_horizontal" => Some(
+            async {
+                let direction = opt_str(args, "direction").unwrap_or("right");
+                let pixels = opt_u64(args, "pixels").map(|p| p as i32);
+                let selector = opt_str(args, "selector");
+                let mode = parse_browser_mode(args);
+
+                BrowserController::scroll_horizontally(
+                    direction,
+                    pixels,
+                    selector,
+                    mode,
+                    workspace_root,
+                )
+                .await
+            }
+            .await,
+        ),
+        "browser_badges" => Some(
+            async {
+                let action = require_str(args, "action", "browser_badges")?;
+                let mode = parse_browser_mode(args);
+                let enable = action.eq_ignore_ascii_case("inject")
+                    || action.eq_ignore_ascii_case("show")
+                    || action.eq_ignore_ascii_case("enable");
+
+                BrowserController::toggle_visual_badges(enable, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_tabs" => Some(
+            async {
+                let action = require_str(args, "action", "browser_tabs")?;
+                let url = opt_str(args, "url");
+                let target_id = opt_str(args, "target_id");
+                let mode = parse_browser_mode(args);
+
+                BrowserController::manage_tabs(action, url, target_id, mode, workspace_root).await
+            }
+            .await,
+        ),
+        "browser_metrics" => Some(
+            async {
+                let mode = parse_browser_mode(args);
+                let metrics = BrowserController::get_page_metrics(mode, workspace_root).await?;
+                let json_res = serde_json::to_string_pretty(&metrics).unwrap_or_default();
+                Ok(format!(
+                    "### Browser Page Metrics\n```json\n{}\n```",
+                    json_res
+                ))
             }
             .await,
         ),

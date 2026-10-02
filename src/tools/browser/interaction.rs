@@ -19,6 +19,12 @@ pub enum BatchStep {
         #[serde(default)]
         selector: Option<String>,
     },
+    Hover {
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+    },
     Fill {
         #[serde(default, rename = "ref")]
         target_ref: Option<String>,
@@ -26,8 +32,29 @@ pub enum BatchStep {
         selector: Option<String>,
         text: String,
     },
+    SelectOption {
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+        option_text: String,
+    },
     Scroll {
         direction: String,
+    },
+    ScrollHorizontal {
+        direction: String,
+        #[serde(default)]
+        pixels: Option<i32>,
+        #[serde(default)]
+        selector: Option<String>,
+    },
+    ScrollContainer {
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        pixels: i32,
     },
     WaitForSelector {
         selector: String,
@@ -185,6 +212,141 @@ impl BrowserInteractor {
         Ok(format!("Scrolled page {}", direction))
     }
 
+    /// Hovers over an interactive element identified by its ARIA reference (@v1:e1)
+    pub async fn hover_element(
+        cdp: &CdpClient,
+        target_ref: &str,
+        acc_mgr: &mut AccessibilityManager,
+    ) -> Result<String> {
+        let el = acc_mgr.resolve_ref(target_ref)?.clone();
+
+        tracing::info!(
+            target_ref = %target_ref,
+            tag = %el.tag,
+            name = %el.name,
+            "Executing browser hover"
+        );
+
+        let hover_js = build_hover_js(&el);
+        let exec_res = cdp.evaluate_js(&hover_js).await?;
+
+        if exec_res.starts_with("Error:") {
+            return Err(ToolError::CommandExec(format!(
+                "Failed hovering element '{}' ({}): {}",
+                target_ref, el.name, exec_res
+            ))
+            .into());
+        }
+
+        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
+        acc_mgr.next_revision();
+
+        let updated_html = cdp.get_document_html().await.unwrap_or_default();
+        let updated_elements = acc_mgr.update_from_html(&updated_html);
+
+        let confirmation = format!(
+            "Hovered over **{}** `<{}>` \"{}\" (DOM revision v{} with {} interactive elements):\n\n",
+            target_ref,
+            el.tag,
+            el.name,
+            acc_mgr.revision(),
+            updated_elements.len()
+        );
+
+        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        Ok(format!("{}{}", confirmation, report))
+    }
+
+    /// Selects an option from a `<select>` dropdown by its visible text or value
+    pub async fn select_option(
+        cdp: &CdpClient,
+        target_ref: &str,
+        option_text: &str,
+        acc_mgr: &mut AccessibilityManager,
+    ) -> Result<String> {
+        let el = acc_mgr.resolve_ref(target_ref)?.clone();
+
+        tracing::info!(
+            target_ref = %target_ref,
+            tag = %el.tag,
+            option_text = %option_text,
+            "Executing browser select option"
+        );
+
+        let select_js = build_select_option_js(&el, option_text);
+        let exec_res = cdp.evaluate_js(&select_js).await?;
+
+        if exec_res.starts_with("Error:") {
+            return Err(ToolError::CommandExec(format!(
+                "Failed selecting option '{}' in element '{}' ({}): {}",
+                option_text, target_ref, el.name, exec_res
+            ))
+            .into());
+        }
+
+        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
+        acc_mgr.next_revision();
+
+        let updated_html = cdp.get_document_html().await.unwrap_or_default();
+        let updated_elements = acc_mgr.update_from_html(&updated_html);
+
+        let confirmation = format!(
+            "Selected option \"{}\" in **{}** `<{}>` (revision v{}):\n\n",
+            option_text,
+            target_ref,
+            el.tag,
+            acc_mgr.revision()
+        );
+
+        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        Ok(format!("{}{}", confirmation, report))
+    }
+
+    /// Scrolls horizontally left or right across the page or within a specific scrollable container
+    pub async fn scroll_horizontally(
+        cdp: &CdpClient,
+        direction: &str,
+        pixels: Option<i32>,
+        selector: Option<&str>,
+    ) -> Result<String> {
+        let scroll_js = build_horizontal_scroll_js(direction, pixels, selector);
+        cdp.evaluate_js(&scroll_js).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let target_desc = selector
+            .map(|s| format!(" container '{}'", s))
+            .unwrap_or_else(|| " page".to_string());
+        Ok(format!(
+            "Scrolled{} horizontally {}",
+            target_desc, direction
+        ))
+    }
+
+    /// Scrolls a specific scrollable container by vertical pixels
+    #[allow(dead_code)]
+    pub async fn scroll_container(
+        cdp: &CdpClient,
+        selector: Option<&str>,
+        target_ref: Option<&str>,
+        pixels: i32,
+        acc_mgr: &AccessibilityManager,
+    ) -> Result<String> {
+        let el = if let Some(r) = target_ref {
+            Some(acc_mgr.resolve_ref(r)?.clone())
+        } else {
+            None
+        };
+
+        let scroll_js = build_container_scroll_js(selector, el.as_ref(), pixels);
+        let res = cdp.evaluate_js(&scroll_js).await?;
+        if res.starts_with("Error:") {
+            return Err(ToolError::CommandExec(res).into());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        Ok(format!("Scrolled container by {}px", pixels))
+    }
+
     /// Executes an atomic pipeline of browser actions sequentially in a single turn
     pub async fn execute_batch(
         cdp: &CdpClient,
@@ -323,11 +485,187 @@ impl BrowserInteractor {
                         )
                     }
                 }
+                BatchStep::Hover {
+                    target_ref,
+                    selector,
+                } => {
+                    let action = "hover";
+                    if let Some(r) = target_ref {
+                        match acc_mgr.resolve_ref(r) {
+                            Ok(el) => {
+                                let el = el.clone();
+                                let detail =
+                                    format!("Hovered over {} <{}> \"{}\"", r, el.tag, el.name);
+                                let hover_js = build_hover_js(&el);
+                                let exec_res = cdp.evaluate_js(&hover_js).await;
+                                match exec_res {
+                                    Ok(res_str) if res_str.starts_with("Error:") => (
+                                        action,
+                                        detail,
+                                        Err(ToolError::CommandExec(format!(
+                                            "Hover failed: {}",
+                                            res_str
+                                        ))
+                                        .into()),
+                                    ),
+                                    Ok(_) => {
+                                        let _ = cdp
+                                            .wait_for_network_idle(Duration::from_millis(300))
+                                            .await;
+                                        (action, detail, Ok(()))
+                                    }
+                                    Err(e) => (action, detail, Err(e)),
+                                }
+                            }
+                            Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
+                        }
+                    } else if let Some(sel) = selector {
+                        let detail = format!("Hovered over selector '{}'", sel);
+                        let hover_js = build_hover_by_selector_js(sel);
+                        let exec_res = cdp.evaluate_js(&hover_js).await;
+                        match exec_res {
+                            Ok(res_str) if res_str.starts_with("Error:") => (
+                                action,
+                                detail,
+                                Err(ToolError::CommandExec(format!("Hover failed: {}", res_str))
+                                    .into()),
+                            ),
+                            Ok(_) => {
+                                let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
+                                (action, detail, Ok(()))
+                            }
+                            Err(e) => (action, detail, Err(e)),
+                        }
+                    } else {
+                        (
+                            action,
+                            "Missing 'ref' or 'selector'".to_string(),
+                            Err(ToolError::InvalidArguments {
+                                name: "browser_batch".to_string(),
+                                reason: "Hover action requires either 'ref' or 'selector'"
+                                    .to_string(),
+                            }
+                            .into()),
+                        )
+                    }
+                }
+                BatchStep::SelectOption {
+                    target_ref,
+                    selector,
+                    option_text,
+                } => {
+                    let action = "select_option";
+                    if let Some(r) = target_ref {
+                        match acc_mgr.resolve_ref(r) {
+                            Ok(el) => {
+                                let el = el.clone();
+                                let detail = format!(
+                                    "Selected option \"{}\" in {} <{}>",
+                                    option_text, r, el.tag
+                                );
+                                let select_js = build_select_option_js(&el, option_text);
+                                let exec_res = cdp.evaluate_js(&select_js).await;
+                                match exec_res {
+                                    Ok(res_str) if res_str.starts_with("Error:") => (
+                                        action,
+                                        detail,
+                                        Err(ToolError::CommandExec(format!(
+                                            "Select option failed: {}",
+                                            res_str
+                                        ))
+                                        .into()),
+                                    ),
+                                    Ok(_) => {
+                                        let _ = cdp
+                                            .wait_for_network_idle(Duration::from_millis(300))
+                                            .await;
+                                        (action, detail, Ok(()))
+                                    }
+                                    Err(e) => (action, detail, Err(e)),
+                                }
+                            }
+                            Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
+                        }
+                    } else if let Some(sel) = selector {
+                        let detail =
+                            format!("Selected option \"{}\" in selector '{}'", option_text, sel);
+                        let select_js = build_select_option_by_selector_js(sel, option_text);
+                        let exec_res = cdp.evaluate_js(&select_js).await;
+                        match exec_res {
+                            Ok(res_str) if res_str.starts_with("Error:") => (
+                                action,
+                                detail,
+                                Err(ToolError::CommandExec(format!(
+                                    "Select option failed: {}",
+                                    res_str
+                                ))
+                                .into()),
+                            ),
+                            Ok(_) => {
+                                let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
+                                (action, detail, Ok(()))
+                            }
+                            Err(e) => (action, detail, Err(e)),
+                        }
+                    } else {
+                        (
+                            action,
+                            "Missing 'ref' or 'selector'".to_string(),
+                            Err(ToolError::InvalidArguments {
+                                name: "browser_batch".to_string(),
+                                reason: "SelectOption requires either 'ref' or 'selector'"
+                                    .to_string(),
+                            }
+                            .into()),
+                        )
+                    }
+                }
                 BatchStep::Scroll { direction } => {
                     let action = "scroll";
                     let detail = format!("Scrolled {}", direction);
                     let scroll_js = Self::build_scroll_js(direction);
                     (action, detail, cdp.evaluate_js(scroll_js).await.map(|_| ()))
+                }
+                BatchStep::ScrollHorizontal {
+                    direction,
+                    pixels,
+                    selector,
+                } => {
+                    let action = "scroll_horizontal";
+                    let detail = format!("Scrolled horizontally {}", direction);
+                    let scroll_js =
+                        build_horizontal_scroll_js(direction, *pixels, selector.as_deref());
+                    (
+                        action,
+                        detail,
+                        cdp.evaluate_js(&scroll_js).await.map(|_| ()),
+                    )
+                }
+                BatchStep::ScrollContainer {
+                    selector,
+                    target_ref,
+                    pixels,
+                } => {
+                    let action = "scroll_container";
+                    let detail = format!("Scrolled container by {}px", pixels);
+                    let el = if let Some(r) = target_ref {
+                        match acc_mgr.resolve_ref(r) {
+                            Ok(element) => Some(element.clone()),
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        None
+                    };
+                    let scroll_js =
+                        build_container_scroll_js(selector.as_deref(), el.as_ref(), *pixels);
+                    let res = cdp.evaluate_js(&scroll_js).await;
+                    match res {
+                        Ok(res_str) if res_str.starts_with("Error:") => {
+                            (action, detail, Err(ToolError::CommandExec(res_str).into()))
+                        }
+                        Ok(_) => (action, detail, Ok(())),
+                        Err(e) => (action, detail, Err(e)),
+                    }
                 }
                 BatchStep::WaitForSelector {
                     selector,
@@ -532,6 +870,35 @@ fn build_fill_js(el: &AriaElement, text: &str) -> String {
             if (!target) return 'Error: Input element not found in DOM';
             target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
             target.focus();
+
+            if (target.isContentEditable || target.getAttribute('contenteditable') === 'true') {{
+                let inserted = false;
+                try {{
+                    if (target.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: p.text }}))) {{
+                        target.innerText = p.text;
+                        target.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: p.text }}));
+                        inserted = target.innerText.trim() === p.text.trim();
+                    }}
+                }} catch (_) {{}}
+                if (!inserted) {{
+                    try {{
+                        const doc = target.ownerDocument || document;
+                        const sel = (doc.defaultView || window).getSelection();
+                        const range = doc.createRange();
+                        range.selectNodeContents(target);
+                        sel?.removeAllRanges();
+                        sel?.addRange(range);
+                        doc.execCommand('delete', false);
+                        doc.execCommand('insertText', false, p.text);
+                    }} catch (_) {{
+                        target.innerText = p.text;
+                    }}
+                }}
+                target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                target.blur();
+                return 'OK';
+            }}
+
             try {{
                 const proto = Object.getPrototypeOf(target);
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
@@ -577,6 +944,207 @@ fn build_click_by_selector_js(selector: &str) -> String {
     )
 }
 
+fn build_hover_js(el: &AriaElement) -> String {
+    let tag = &el.tag;
+    let name = el.name.replace('"', "\\\"");
+    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
+    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
+    let href_attr = el.attributes.get("href").map(|s| s.as_str()).unwrap_or("");
+
+    let payload = json!({
+        "tag": tag,
+        "name": name,
+        "id": id_attr,
+        "attr_name": name_attr,
+        "href": href_attr,
+    });
+
+    format!(
+        r#"(function() {{
+            const p = {};
+            const candidates = Array.from(document.querySelectorAll(p.tag));
+            let target = candidates.find(el => {{
+                if (p.id && el.id === p.id) return true;
+                if (p.attr_name && el.name === p.attr_name) return true;
+                if (p.href && el.getAttribute('href') === p.href) return true;
+                if (el.innerText && el.innerText.trim().includes(p.name)) return true;
+                return false;
+            }}) || candidates[0];
+
+            if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            const rect = target.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const pointerOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'mouse' }};
+            const mouseOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }};
+            target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
+            target.dispatchEvent(new PointerEvent('pointerenter', Object.assign({{}}, pointerOpts, {{ bubbles: false }})));
+            target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
+            target.dispatchEvent(new MouseEvent('mouseenter', Object.assign({{}}, mouseOpts, {{ bubbles: false }})));
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_hover_by_selector_js(selector: &str) -> String {
+    let payload = json!({ "selector": selector });
+    format!(
+        r#"(function() {{
+            const p = {};
+            const target = document.querySelector(p.selector);
+            if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            const rect = target.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const pointerOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'mouse' }};
+            const mouseOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }};
+            target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
+            target.dispatchEvent(new PointerEvent('pointerenter', Object.assign({{}}, pointerOpts, {{ bubbles: false }})));
+            target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
+            target.dispatchEvent(new MouseEvent('mouseenter', Object.assign({{}}, mouseOpts, {{ bubbles: false }})));
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_select_option_js(el: &AriaElement, option_text: &str) -> String {
+    let tag = &el.tag;
+    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
+    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
+
+    let payload = json!({
+        "tag": tag,
+        "id": id_attr,
+        "attr_name": name_attr,
+        "option_text": option_text,
+    });
+
+    format!(
+        r#"(function() {{
+            const p = {};
+            const candidates = Array.from(document.querySelectorAll('select'));
+            let target = candidates.find(el => {{
+                if (p.id && el.id === p.id) return true;
+                if (p.attr_name && el.name === p.attr_name) return true;
+                return false;
+            }}) || candidates[0];
+
+            if (!target) return 'Error: Select element not found in DOM';
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            target.focus();
+
+            const options = Array.from(target.options);
+            const opt = options.find(o => {{
+                const t = (o.text || '').trim().toLowerCase();
+                const v = (o.value || '').trim().toLowerCase();
+                const targetText = p.option_text.trim().toLowerCase();
+                return t === targetText || v === targetText || t.includes(targetText);
+            }});
+
+            if (!opt) return 'Error: Option matching "' + p.option_text + '" not found in <select>';
+            target.value = opt.value;
+            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_select_option_by_selector_js(selector: &str, option_text: &str) -> String {
+    let payload = json!({ "selector": selector, "option_text": option_text });
+    format!(
+        r#"(function() {{
+            const p = {};
+            let target = document.querySelector(p.selector);
+            if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
+            if (target.tagName.toLowerCase() !== 'select') {{
+                target = target.querySelector('select') || target;
+            }}
+            if (target.tagName.toLowerCase() !== 'select') {{
+                return 'Error: Element matching selector "' + p.selector + '" is not a <select> element';
+            }}
+            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+            target.focus();
+
+            const options = Array.from(target.options);
+            const opt = options.find(o => {{
+                const t = (o.text || '').trim().toLowerCase();
+                const v = (o.value || '').trim().toLowerCase();
+                const targetText = p.option_text.trim().toLowerCase();
+                return t === targetText || v === targetText || t.includes(targetText);
+            }});
+
+            if (!opt) return 'Error: Option matching "' + p.option_text + '" not found in <select>';
+            target.value = opt.value;
+            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_horizontal_scroll_js(
+    direction: &str,
+    pixels: Option<i32>,
+    selector: Option<&str>,
+) -> String {
+    let mult = if direction.eq_ignore_ascii_case("left") {
+        -1
+    } else {
+        1
+    };
+    let px = mult * pixels.unwrap_or(400);
+    let payload = json!({ "pixels": px, "selector": selector });
+
+    format!(
+        r#"(function() {{
+            const p = {};
+            if (p.selector) {{
+                const el = document.querySelector(p.selector);
+                if (el) {{
+                    el.scrollBy({{ left: p.pixels, behavior: 'instant' }});
+                    return 'scrolled_container_horizontally';
+                }}
+            }}
+            window.scrollBy({{ left: p.pixels, behavior: 'instant' }});
+            return 'scrolled_page_horizontally';
+        }})()"#,
+        payload
+    )
+}
+
+fn build_container_scroll_js(
+    selector: Option<&str>,
+    el: Option<&AriaElement>,
+    pixels: i32,
+) -> String {
+    let sel = selector.unwrap_or("");
+    let el_id = el
+        .and_then(|e| e.attributes.get("id"))
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let payload = json!({ "selector": sel, "id": el_id, "pixels": pixels });
+
+    format!(
+        r#"(function() {{
+            const p = {};
+            let target = null;
+            if (p.selector) target = document.querySelector(p.selector);
+            if (!target && p.id) target = document.getElementById(p.id);
+            if (!target) return 'Error: Scrollable container not found in DOM';
+            target.scrollBy({{ top: p.pixels, behavior: 'instant' }});
+            return 'OK';
+        }})()"#,
+        payload
+    )
+}
+
 fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
     let payload = json!({ "selector": selector, "text": text });
     format!(
@@ -586,6 +1154,35 @@ fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
             if (!target) return 'Error: Input matching selector "' + p.selector + '" not found in DOM';
             target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
             target.focus();
+
+            if (target.isContentEditable || target.getAttribute('contenteditable') === 'true') {{
+                let inserted = false;
+                try {{
+                    if (target.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: p.text }}))) {{
+                        target.innerText = p.text;
+                        target.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: p.text }}));
+                        inserted = target.innerText.trim() === p.text.trim();
+                    }}
+                }} catch (_) {{}}
+                if (!inserted) {{
+                    try {{
+                        const doc = target.ownerDocument || document;
+                        const sel = (doc.defaultView || window).getSelection();
+                        const range = doc.createRange();
+                        range.selectNodeContents(target);
+                        sel?.removeAllRanges();
+                        sel?.addRange(range);
+                        doc.execCommand('delete', false);
+                        doc.execCommand('insertText', false, p.text);
+                    }} catch (_) {{
+                        target.innerText = p.text;
+                    }}
+                }}
+                target.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                target.blur();
+                return 'OK';
+            }}
+
             try {{
                 const proto = Object.getPrototypeOf(target);
                 const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
@@ -734,5 +1331,62 @@ mod tests {
         assert!(fill_script.contains("HTMLInputElement.prototype"));
         assert!(fill_script.contains("hello world"));
         assert!(fill_script.contains("dispatchEvent"));
+
+        let hover_script = build_hover_js(&el);
+        assert!(hover_script.contains("pointerover"));
+        assert!(hover_script.contains("mouseover"));
+
+        let select_script = build_select_option_js(&el, "Option 2");
+        assert!(select_script.contains("Option 2"));
+        assert!(select_script.contains("target.options"));
+
+        let h_scroll = build_horizontal_scroll_js("right", Some(300), None);
+        assert!(h_scroll.contains("300"));
+        assert!(h_scroll.contains("scrollBy"));
+    }
+
+    #[test]
+    fn test_batch_step_deserialization_new_actions() {
+        let json_input = r##"[
+            {"action": "hover", "ref": "@v1:e1"},
+            {"action": "select_option", "ref": "@v1:e2", "option_text": "California"},
+            {"action": "scroll_horizontal", "direction": "right", "pixels": 250},
+            {"action": "scroll_container", "selector": "#code-editor", "pixels": 500}
+        ]"##;
+
+        let steps: Vec<BatchStep> =
+            serde_json::from_str(json_input).expect("Valid new batch steps");
+        assert_eq!(steps.len(), 4);
+        assert_eq!(
+            steps[0],
+            BatchStep::Hover {
+                target_ref: Some("@v1:e1".to_string()),
+                selector: None,
+            }
+        );
+        assert_eq!(
+            steps[1],
+            BatchStep::SelectOption {
+                target_ref: Some("@v1:e2".to_string()),
+                selector: None,
+                option_text: "California".to_string(),
+            }
+        );
+        assert_eq!(
+            steps[2],
+            BatchStep::ScrollHorizontal {
+                direction: "right".to_string(),
+                pixels: Some(250),
+                selector: None,
+            }
+        );
+        assert_eq!(
+            steps[3],
+            BatchStep::ScrollContainer {
+                selector: Some("#code-editor".to_string()),
+                target_ref: None,
+                pixels: 500,
+            }
+        );
     }
 }
