@@ -21,6 +21,9 @@ pub struct Config {
 
     #[serde(default)]
     pub git: GitConfig,
+
+    #[serde(default)]
+    pub browser: BrowserSettingsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -586,6 +589,54 @@ impl Default for GitConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserSettingsConfig {
+    /// Ordered engine priority list for headless automation (default: ["obscura", "chrome", "firefox"])
+    #[serde(default = "default_headless_priority")]
+    pub headless_priority: Vec<String>,
+
+    /// Ordered engine priority list for GUI windowed automation (default: ["chrome", "firefox", "obscura"])
+    #[serde(default = "default_gui_priority")]
+    pub gui_priority: Vec<String>,
+
+    /// Explicit override engine (obscura | chrome | firefox)
+    #[serde(default)]
+    pub default_engine: Option<String>,
+}
+
+fn default_headless_priority() -> Vec<String> {
+    vec![
+        "obscura".to_string(),
+        "chrome".to_string(),
+        "firefox".to_string(),
+    ]
+}
+
+fn default_gui_priority() -> Vec<String> {
+    vec![
+        "chrome".to_string(),
+        "firefox".to_string(),
+        "obscura".to_string(),
+    ]
+}
+
+impl Default for BrowserSettingsConfig {
+    fn default() -> Self {
+        Self {
+            headless_priority: default_headless_priority(),
+            gui_priority: default_gui_priority(),
+            default_engine: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawBrowserConfig {
+    pub headless_priority: Option<Vec<String>>,
+    pub gui_priority: Option<Vec<String>>,
+    pub default_engine: Option<String>,
+}
+
 fn default_mcp_transport() -> McpTransport {
     McpTransport::Stdio
 }
@@ -685,6 +736,8 @@ pub struct RawConfig {
     pub mcp: McpConfig,
     #[serde(default)]
     pub git: RawGitConfig,
+    #[serde(default)]
+    pub browser: RawBrowserConfig,
 }
 
 impl Config {
@@ -1014,6 +1067,15 @@ impl Config {
         }
         for (name, srv) in other.mcp.servers {
             self.mcp.servers.insert(name, srv);
+        }
+        if let Some(hl) = other.browser.headless_priority {
+            self.browser.headless_priority = hl;
+        }
+        if let Some(gp) = other.browser.gui_priority {
+            self.browser.gui_priority = gp;
+        }
+        if let Some(de) = other.browser.default_engine {
+            self.browser.default_engine = Some(de);
         }
     }
 

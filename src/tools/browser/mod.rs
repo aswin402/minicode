@@ -141,6 +141,45 @@ impl BrowserController {
         Ok(snapshot)
     }
 
+    /// Takes a snapshot of the live DOM without re-navigating if the browser is already at `url`.
+    /// If the browser is on a different URL or not yet started, navigates and snapshots as usual.
+    pub async fn snapshot_live_or_navigate(
+        url: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<PageSnapshot> {
+        validate_browser_url(url)?;
+
+        if let Ok(engine) = BrowserManager::get_or_launch(mode, workspace_root).await {
+            let engine_name = format!("{} ({})", engine.process.config.engine, mode);
+            // Check if current browser is already loaded at this URL
+            let current_url = engine
+                .cdp
+                .evaluate_js("window.location.href")
+                .await
+                .unwrap_or_default();
+            let clean_current = current_url.trim_matches('"').trim_end_matches('/');
+            let clean_target = url.trim_end_matches('/');
+
+            if !clean_current.is_empty() && clean_current == clean_target {
+                tracing::info!(
+                    url = %url,
+                    "Live page is already active at URL; snapshotting current DOM state"
+                );
+                let _ = PageAgent::inject_probe(&engine.cdp).await;
+                let html = engine.cdp.get_document_html().await.unwrap_or_default();
+                let mut acc_mgr = engine.accessibility.lock().await;
+                let elements = acc_mgr.update_from_html(&html);
+                let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                snapshot.interactive_elements = elements;
+                snapshot.engine_used = engine_name;
+                return Ok(snapshot);
+            }
+        }
+
+        Self::navigate_and_snapshot(url, mode, workspace_root).await
+    }
+
     /// Clicks an element by ARIA reference and returns the updated page snapshot
     pub async fn click_and_snapshot(
         target_ref: &str,

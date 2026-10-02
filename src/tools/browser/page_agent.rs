@@ -427,7 +427,14 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var actionLabel = idx ? ('Clicking element [' + idx + ']' + (name ? ' "' + name + '"' : '') + '...') : ('Clicking <' + el.tagName.toLowerCase() + '>' + (name ? ' "' + name + '"' : '') + '...');
             this.updateSimulatorState(actionLabel, cx, cy, true);
 
-            var hitTarget = (document.elementFromPoint && document.elementFromPoint(cx, cy)) || el;
+            // Filter out simulator overlays so hitTarget never hits the AI cursor or ripple
+            var hitTarget = el;
+            if (document.elementFromPoint) {
+                var candidate = document.elementFromPoint(cx, cy);
+                if (candidate && !candidate.closest('#minicode-simulator-container') && candidate !== document.body && candidate !== document.documentElement) {
+                    hitTarget = candidate;
+                }
+            }
 
             var pointerOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, pointerType: 'mouse', view: window };
             var mouseOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
@@ -443,11 +450,22 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             try { hitTarget.dispatchEvent(new MouseEvent('mouseup', mouseOpts)); } catch (_) {}
             try { hitTarget.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
 
-            if (typeof hitTarget.click === 'function') {
-                try { hitTarget.click(); } catch (_) {}
-            } else if (typeof el.click === 'function') {
-                try { el.click(); } catch (_) {}
+            if (hitTarget !== el) {
+                try { el.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
             }
+
+            // Always invoke native .click() on the target element
+            try {
+                if (typeof el.click === 'function') {
+                    el.click();
+                } else if (typeof hitTarget.click === 'function') {
+                    hitTarget.click();
+                }
+            } catch (_) {}
+
+            // Re-read element name / value after click mutation
+            var updatedName = (el.innerText || el.value || el.getAttribute('aria-label') || name).trim();
+            if (updatedName.length > 80) updatedName = updatedName.substring(0, 77) + '...';
 
             return JSON.stringify({
                 ok: true,
@@ -456,7 +474,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 ref: el.getAttribute('data-minicode-ref') || targetRef,
                 idx: idx,
                 tag: el.tagName.toLowerCase(),
-                name: name
+                name: updatedName
             });
         },
 
@@ -468,21 +486,27 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
             this.updateSimulatorState('Scrolling ' + dir + '...', Math.round(window.innerWidth / 2), Math.round(vh / 2), false);
 
-            var initialY = window.scrollY || window.pageYOffset || 0;
+            var initialY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
             var scrolled = false;
 
             if (dir === 'top') {
                 window.scrollTo({ top: 0, behavior: 'instant' });
+                if (document.documentElement) document.documentElement.scrollTop = 0;
+                if (document.body) document.body.scrollTop = 0;
                 scrolled = true;
             } else if (dir === 'bottom') {
                 var maxScroll = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight || 0);
                 window.scrollTo({ top: maxScroll, behavior: 'instant' });
+                if (document.documentElement) document.documentElement.scrollTop = maxScroll;
+                if (document.body) document.body.scrollTop = maxScroll;
                 scrolled = true;
             } else {
                 var delta = (dir === 'up' || dir === 'pageup') ? -step : step;
                 window.scrollBy({ top: delta, behavior: 'instant' });
+                if (document.documentElement) document.documentElement.scrollTop += delta;
+                if (document.body) document.body.scrollTop += delta;
 
-                var newY = window.scrollY || window.pageYOffset || 0;
+                var newY = window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
                 if (Math.abs(newY - initialY) > 5) {
                     scrolled = true;
                 } else {
@@ -518,7 +542,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 ok: true,
                 direction: dir,
                 scrolled: scrolled,
-                new_scroll_y: window.scrollY || window.pageYOffset || 0
+                new_scroll_y: window.scrollY || window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0
             });
         },
 

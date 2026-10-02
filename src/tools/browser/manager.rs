@@ -208,6 +208,15 @@ pub struct BrowserManager {
     instances: Arc<Mutex<HashMap<BrowserMode, u16>>>, // Mode -> Port
 }
 
+fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
+    match name.trim().to_lowercase().as_str() {
+        "obscura" => Some(BrowserEngine::Obscura),
+        "firefox" | "ff" => Some(BrowserEngine::Firefox),
+        "chrome" | "chromium" | "google-chrome" => Some(BrowserEngine::Chrome),
+        _ => None,
+    }
+}
+
 impl BrowserManager {
     #[allow(dead_code)]
     pub fn new() -> Self {
@@ -216,21 +225,43 @@ impl BrowserManager {
         }
     }
 
-    /// Discovers an available browser binary according to priority rules
+    /// Discovers an available browser binary according to priority rules and configuration
     pub fn discover_engine(mode: BrowserMode, workspace_root: &Path) -> Option<EngineConfig> {
         let default_priority = match mode {
             BrowserMode::Headless => HEADLESS_PRIORITY,
             BrowserMode::Gui => GUI_PRIORITY,
         };
 
-        // MINICODE_BROWSER forces a specific engine (obscura|firefox|chrome),
-        // skipping the automatic priority chain.
+        // 1. MINICODE_BROWSER env var override
         let priority: Vec<BrowserEngine> = if let Ok(name) = std::env::var("MINICODE_BROWSER") {
-            match name.to_lowercase().as_str() {
-                "obscura" => vec![BrowserEngine::Obscura],
-                "firefox" => vec![BrowserEngine::Firefox],
-                "chrome" | "chromium" | "google-chrome" => vec![BrowserEngine::Chrome],
-                _ => default_priority.to_vec(),
+            if let Some(engine) = parse_engine_name(&name) {
+                vec![engine]
+            } else {
+                default_priority.to_vec()
+            }
+        } else if let Ok(cfg) = crate::config::Config::load(Some(workspace_root), None) {
+            // 2. Explicit default engine configured in settings
+            if let Some(ref forced) = cfg.browser.default_engine {
+                if let Some(engine) = parse_engine_name(forced) {
+                    vec![engine]
+                } else {
+                    default_priority.to_vec()
+                }
+            } else {
+                // 3. Configured priority list for active mode
+                let configured_names = match mode {
+                    BrowserMode::Headless => &cfg.browser.headless_priority,
+                    BrowserMode::Gui => &cfg.browser.gui_priority,
+                };
+                let parsed: Vec<BrowserEngine> = configured_names
+                    .iter()
+                    .filter_map(|n| parse_engine_name(n))
+                    .collect();
+                if parsed.is_empty() {
+                    default_priority.to_vec()
+                } else {
+                    parsed
+                }
             }
         } else {
             default_priority.to_vec()

@@ -702,7 +702,7 @@ pub async fn dispatch(
                 let snapshot = if let Some(html) = html_opt {
                     BrowserController::parse_html_to_aria_snapshot(url, html)
                 } else {
-                    BrowserController::navigate_and_snapshot(url, mode, workspace_root).await?
+                    BrowserController::snapshot_live_or_navigate(url, mode, workspace_root).await?
                 };
                 let report = BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
