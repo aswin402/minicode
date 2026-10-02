@@ -2027,6 +2027,34 @@ impl<'a> App<'a> {
                             state.probe_results = Some(results);
                             state.probing = false;
                         }
+                        crate::ui::modals::settings::SettingsTab::Browser => {
+                            match state.selected_index {
+                                0 => {
+                                    state.browser_default_engine = match state.browser_default_engine.as_deref() {
+                                        None => Some("obscura".to_string()),
+                                        Some("obscura") => Some("firefox".to_string()),
+                                        Some("firefox") => Some("chrome".to_string()),
+                                        _ => None,
+                                    };
+                                }
+                                1 => {
+                                    if !state.browser_headless_priority.is_empty() {
+                                        state.browser_headless_priority.rotate_left(1);
+                                    }
+                                }
+                                2 => {
+                                    if !state.browser_gui_priority.is_empty() {
+                                        state.browser_gui_priority.rotate_left(1);
+                                    }
+                                }
+                                3 => {
+                                    state.browser_default_engine = None;
+                                    state.browser_headless_priority = vec!["obscura".to_string(), "chrome".to_string(), "firefox".to_string()];
+                                    state.browser_gui_priority = vec!["firefox".to_string(), "chrome".to_string(), "obscura".to_string()];
+                                }
+                                _ => {}
+                            }
+                        }
                     },
                     KeyCode::Enter => match state.active_tab {
                         crate::ui::modals::settings::SettingsTab::Providers => {
@@ -2107,6 +2135,34 @@ impl<'a> App<'a> {
                             state.probe_results = Some(results);
                             state.probing = false;
                         }
+                        crate::ui::modals::settings::SettingsTab::Browser => {
+                            match state.selected_index {
+                                0 => {
+                                    state.browser_default_engine = match state.browser_default_engine.as_deref() {
+                                        None => Some("obscura".to_string()),
+                                        Some("obscura") => Some("firefox".to_string()),
+                                        Some("firefox") => Some("chrome".to_string()),
+                                        _ => None,
+                                    };
+                                }
+                                1 => {
+                                    if !state.browser_headless_priority.is_empty() {
+                                        state.browser_headless_priority.rotate_left(1);
+                                    }
+                                }
+                                2 => {
+                                    if !state.browser_gui_priority.is_empty() {
+                                        state.browser_gui_priority.rotate_left(1);
+                                    }
+                                }
+                                3 => {
+                                    state.browser_default_engine = None;
+                                    state.browser_headless_priority = vec!["obscura".to_string(), "chrome".to_string(), "firefox".to_string()];
+                                    state.browser_gui_priority = vec!["firefox".to_string(), "chrome".to_string(), "obscura".to_string()];
+                                }
+                                _ => {}
+                            }
+                        }
                     },
                     KeyCode::Esc | KeyCode::Char('q') => {
                         let old_provider = self.config.provider.default.clone();
@@ -2114,6 +2170,7 @@ impl<'a> App<'a> {
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
                         let old_policy = self.config.agent.approval_policy.clone();
+                        let old_browser = self.config.browser.clone();
 
                         self.config.provider.default = state.active_provider.clone();
                         self.config.provider.model = state.active_model.clone();
@@ -2124,6 +2181,9 @@ impl<'a> App<'a> {
                             Some(state.thinking_budget)
                         };
                         self.config.agent.approval_policy = state.approval_policy.clone();
+                        self.config.browser.default_engine = state.browser_default_engine.clone();
+                        self.config.browser.headless_priority = state.browser_headless_priority.clone();
+                        self.config.browser.gui_priority = state.browser_gui_priority.clone();
 
                         if state.save_to_workspace {
                             let ws_minicode_dir = self
@@ -2144,7 +2204,12 @@ impl<'a> App<'a> {
                             || old_model != self.config.provider.model
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget
-                            || old_policy != self.config.agent.approval_policy;
+                            || old_policy != self.config.agent.approval_policy
+                            || old_browser != self.config.browser;
+
+                        if old_browser != self.config.browser {
+                            self.timeline.add_status("✔ Browser preferences updated in configuration".to_string());
+                        }
 
                         if config_changed {
                             let custom_url = self

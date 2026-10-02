@@ -1,6 +1,7 @@
 use crate::ui::theme::Theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Rich terminal Markdown parser and syntax highlighter for minicode
 pub struct MarkdownRenderer;
@@ -10,8 +11,11 @@ impl MarkdownRenderer {
     pub fn render<'a>(text: &'a str, theme: &'a Theme) -> Vec<Line<'a>> {
         let mut lines = Vec::new();
         let mut in_code_block = false;
+        let raw_lines: Vec<&'a str> = text.lines().collect();
+        let mut i = 0;
 
-        for raw_line in text.lines() {
+        while i < raw_lines.len() {
+            let raw_line = raw_lines[i];
             let line = raw_line.trim_end();
 
             // Code block fence detection
@@ -35,6 +39,7 @@ impl MarkdownRenderer {
                         Style::default().fg(theme.border),
                     )]));
                 }
+                i += 1;
                 continue;
             }
 
@@ -49,21 +54,30 @@ impl MarkdownRenderer {
                             .bg(theme.bg_elevated),
                     ),
                 ]));
+                i += 1;
                 continue;
             }
 
             // Empty line
             if line.is_empty() {
                 lines.push(Line::from(String::new()));
+                i += 1;
                 continue;
             }
 
-            // Markdown Table Row detection (e.g. "| Col 1 | Col 2 |")
-            if line.starts_with('|') && line.ends_with('|') && line.len() >= 2 {
-                if let Some(table_line) = Self::render_table_row(line, theme) {
-                    lines.push(table_line);
-                    continue;
+            // Markdown Table Block detection (e.g. contiguous "| Col 1 | Col 2 |" rows)
+            if Self::is_table_row(line) {
+                let mut j = i;
+                while j < raw_lines.len()
+                    && !raw_lines[j].trim_end().starts_with("```")
+                    && Self::is_table_row(raw_lines[j].trim_end())
+                {
+                    j += 1;
                 }
+                let table_lines = &raw_lines[i..j];
+                lines.extend(Self::render_table_block(table_lines, theme));
+                i = j;
+                continue;
             }
 
             // Headings
@@ -148,6 +162,7 @@ impl MarkdownRenderer {
                 let spans = Self::parse_inline(line, theme);
                 lines.push(Line::from(spans));
             }
+            i += 1;
         }
 
         lines
@@ -185,52 +200,204 @@ impl MarkdownRenderer {
         None
     }
 
-    /// Renders markdown table rows (headers, separators, data rows)
-    fn render_table_row<'a>(line: &'a str, theme: &'a Theme) -> Option<Line<'a>> {
-        let raw_cells: Vec<&str> = line
-            .trim_matches('|')
-            .split('|')
-            .map(|s| s.trim())
-            .collect();
+    /// Checks if a trimmed line is a Markdown table row (e.g. "| Col 1 | Col 2 |")
+    fn is_table_row(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() >= 2
+    }
 
-        if raw_cells.is_empty() {
-            return None;
+    /// Renders a full contiguous block of markdown table rows with character-aligned columns,
+    /// box-drawing borders (┌─┬─┐, ├─┼─┤, └─┴─┘), and header styling.
+    fn render_table_block<'a>(table_lines: &[&'a str], theme: &'a Theme) -> Vec<Line<'a>> {
+        if table_lines.is_empty() {
+            return Vec::new();
         }
 
-        // Check if separator row (e.g. "| --- | :---: | ---: |")
-        let is_separator = raw_cells
+        struct ParsedRow<'b> {
+            raw_cells: Vec<&'b str>,
+            is_separator: bool,
+        }
+
+        let mut parsed_rows = Vec::new();
+        for &line in table_lines {
+            let raw_cells: Vec<&'a str> = line
+                .trim()
+                .trim_matches('|')
+                .split('|')
+                .map(|s| s.trim())
+                .collect();
+
+            if raw_cells.is_empty() {
+                continue;
+            }
+
+            let is_sep = !raw_cells.is_empty()
+                && raw_cells
+                    .iter()
+                    .all(|cell| !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':'));
+
+            parsed_rows.push(ParsedRow {
+                raw_cells,
+                is_separator: is_sep,
+            });
+        }
+
+        if parsed_rows.is_empty() {
+            return Vec::new();
+        }
+
+        let num_cols = parsed_rows
             .iter()
-            .all(|cell| !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':'));
+            .map(|r| r.raw_cells.len())
+            .max()
+            .unwrap_or(0);
+        if num_cols == 0 {
+            return Vec::new();
+        }
 
-        if is_separator {
-            let mut spans = Vec::new();
-            spans.push(Span::styled("├", Style::default().fg(theme.border)));
-            for (idx, _) in raw_cells.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(Span::styled("┼", Style::default().fg(theme.border)));
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ColAlign {
+            Left,
+            Center,
+            Right,
+        }
+
+        let mut alignments = vec![ColAlign::Left; num_cols];
+        if let Some(sep_row) = parsed_rows.iter().find(|r| r.is_separator) {
+            for (c, cell) in sep_row.raw_cells.iter().enumerate().take(num_cols) {
+                let trimmed = cell.trim();
+                let starts_colon = trimmed.starts_with(':');
+                let ends_colon = trimmed.ends_with(':');
+                if starts_colon && ends_colon {
+                    alignments[c] = ColAlign::Center;
+                } else if ends_colon {
+                    alignments[c] = ColAlign::Right;
+                } else {
+                    alignments[c] = ColAlign::Left;
                 }
-                spans.push(Span::styled(
-                    "────────────────────",
-                    Style::default().fg(theme.border),
-                ));
             }
-            spans.push(Span::styled("┤", Style::default().fg(theme.border)));
-            return Some(Line::from(spans));
         }
 
-        let mut spans = Vec::new();
-        spans.push(Span::styled("│ ", Style::default().fg(theme.border)));
+        let mut col_widths = vec![3usize; num_cols];
+        let mut row_spans: Vec<Option<Vec<Vec<Span<'a>>>>> = Vec::new();
 
-        for (idx, cell) in raw_cells.iter().enumerate() {
-            if idx > 0 {
-                spans.push(Span::styled(" │ ", Style::default().fg(theme.border)));
+        for row in &parsed_rows {
+            if row.is_separator {
+                row_spans.push(None);
+            } else {
+                let mut cells_spans = Vec::new();
+                for (c, col_w) in col_widths.iter_mut().enumerate().take(num_cols) {
+                    let cell_text = row.raw_cells.get(c).copied().unwrap_or("");
+                    let spans = Self::parse_inline(cell_text, theme);
+                    let visible_w: usize = spans
+                        .iter()
+                        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    *col_w = (*col_w).max(visible_w);
+                    cells_spans.push(spans);
+                }
+                row_spans.push(Some(cells_spans));
             }
-            let cell_spans = Self::parse_inline(cell, theme);
-            spans.extend(cell_spans);
         }
 
-        spans.push(Span::styled(" │", Style::default().fg(theme.border)));
-        Some(Line::from(spans))
+        let mut out = Vec::new();
+        let border_style = Style::default().fg(theme.border);
+
+        // 1. Top border: ┌───┬───┐
+        let mut top_line = Vec::new();
+        top_line.push(Span::styled("┌─", border_style));
+        for (c, &w) in col_widths.iter().enumerate() {
+            if c > 0 {
+                top_line.push(Span::styled("─┬─", border_style));
+            }
+            top_line.push(Span::styled("─".repeat(w), border_style));
+        }
+        top_line.push(Span::styled("─┐", border_style));
+        out.push(Line::from(top_line));
+
+        // 2. Render rows
+        let first_is_header =
+            parsed_rows.len() > 1 && parsed_rows.get(1).is_some_and(|r| r.is_separator);
+
+        for (row_idx, row) in parsed_rows.iter().enumerate() {
+            if row.is_separator {
+                // Divider row: ├───┼───┤
+                let mut div_line = Vec::new();
+                div_line.push(Span::styled("├─", border_style));
+                for (c, &w) in col_widths.iter().enumerate() {
+                    if c > 0 {
+                        div_line.push(Span::styled("─┼─", border_style));
+                    }
+                    div_line.push(Span::styled("─".repeat(w), border_style));
+                }
+                div_line.push(Span::styled("─┤", border_style));
+                out.push(Line::from(div_line));
+            } else if let Some(ref cells_spans) = row_spans[row_idx] {
+                let is_header = row_idx == 0 && first_is_header;
+                let mut row_line = Vec::new();
+                row_line.push(Span::styled("│ ", border_style));
+
+                for c in 0..num_cols {
+                    if c > 0 {
+                        row_line.push(Span::styled(" │ ", border_style));
+                    }
+
+                    let spans = &cells_spans[c];
+                    let visible_w: usize = spans
+                        .iter()
+                        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    let target_w = col_widths[c];
+                    let pad_total = target_w.saturating_sub(visible_w);
+
+                    let (pad_left, pad_right) = match alignments[c] {
+                        ColAlign::Right => (pad_total, 0),
+                        ColAlign::Center => {
+                            let pl = pad_total / 2;
+                            (pl, pad_total - pl)
+                        }
+                        ColAlign::Left => (0, pad_total),
+                    };
+
+                    if pad_left > 0 {
+                        row_line.push(Span::raw(" ".repeat(pad_left)));
+                    }
+
+                    for span in spans {
+                        if is_header {
+                            let mut st = span.style.add_modifier(Modifier::BOLD);
+                            if st.fg.is_none() {
+                                st = st.fg(theme.highlight);
+                            }
+                            row_line.push(Span::styled(span.content.clone(), st));
+                        } else {
+                            row_line.push(span.clone());
+                        }
+                    }
+
+                    if pad_right > 0 {
+                        row_line.push(Span::raw(" ".repeat(pad_right)));
+                    }
+                }
+
+                row_line.push(Span::styled(" │", border_style));
+                out.push(Line::from(row_line));
+            }
+        }
+
+        // 3. Bottom border: └───┴───┘
+        let mut bot_line = Vec::new();
+        bot_line.push(Span::styled("└─", border_style));
+        for (c, &w) in col_widths.iter().enumerate() {
+            if c > 0 {
+                bot_line.push(Span::styled("─┴─", border_style));
+            }
+            bot_line.push(Span::styled("─".repeat(w), border_style));
+        }
+        bot_line.push(Span::styled("─┘", border_style));
+        out.push(Line::from(bot_line));
+
+        out
     }
 
     /// Parses inline Markdown styling (bold, code, paths, URLs, metrics) safely
@@ -532,5 +699,40 @@ mod tests {
             &theme,
         );
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_markdown_table_alignment() {
+        let theme = Theme::default();
+        let markdown = "\
+| Step | Description | Status |
+| :--- | :---: | ---: |
+| 1 | Navigate to https://example.com | OK |
+| 2 | Extract headings and test content | Done |
+";
+        let lines = MarkdownRenderer::render(markdown, &theme);
+        // Expect: top border, header row, divider row, data row 1, data row 2, bottom border = 6 lines
+        assert_eq!(lines.len(), 6);
+
+        // Verify each line has identical total visible character width!
+        let widths: Vec<usize> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum()
+            })
+            .collect();
+
+        assert!(widths.len() == 6);
+        let expected_w = widths[0];
+        for (idx, &w) in widths.iter().enumerate() {
+            assert_eq!(
+                w, expected_w,
+                "Table line {} width ({}) does not match line 0 width ({})",
+                idx, w, expected_w
+            );
+        }
     }
 }

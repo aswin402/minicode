@@ -42,6 +42,7 @@ pub enum SettingsTab {
     Workspace,
     Autonomy,
     Probes,
+    Browser,
 }
 
 impl SettingsTab {
@@ -52,6 +53,7 @@ impl SettingsTab {
             SettingsTab::Workspace,
             SettingsTab::Autonomy,
             SettingsTab::Probes,
+            SettingsTab::Browser,
         ]
     }
 
@@ -62,6 +64,7 @@ impl SettingsTab {
             SettingsTab::Workspace => "2. Workspace",
             SettingsTab::Autonomy => "3. Autonomy",
             SettingsTab::Probes => "4. Probes",
+            SettingsTab::Browser => "5. Browser",
         }
     }
 
@@ -71,17 +74,19 @@ impl SettingsTab {
             SettingsTab::Providers => SettingsTab::Workspace,
             SettingsTab::Workspace => SettingsTab::Autonomy,
             SettingsTab::Autonomy => SettingsTab::Probes,
-            SettingsTab::Probes => SettingsTab::Providers,
+            SettingsTab::Probes => SettingsTab::Browser,
+            SettingsTab::Browser => SettingsTab::Providers,
         }
     }
 
     /// Cycles to the previous tab.
     pub fn prev(&self) -> Self {
         match self {
-            SettingsTab::Providers => SettingsTab::Probes,
+            SettingsTab::Providers => SettingsTab::Browser,
             SettingsTab::Workspace => SettingsTab::Providers,
             SettingsTab::Autonomy => SettingsTab::Workspace,
             SettingsTab::Probes => SettingsTab::Autonomy,
+            SettingsTab::Browser => SettingsTab::Probes,
         }
     }
 }
@@ -100,6 +105,11 @@ pub struct SettingsModalState {
     pub approval_policy: String,
     pub probe_results: Option<Vec<ConnectionTestResult>>,
     pub probing: bool,
+
+    // Browser settings for Browser tab:
+    pub browser_default_engine: Option<String>,
+    pub browser_headless_priority: Vec<String>,
+    pub browser_gui_priority: Vec<String>,
 
     // Model selection drill-down sub-state for Providers tab:
     pub selecting_model_for_provider: Option<String>,
@@ -146,6 +156,9 @@ impl SettingsModalState {
             approval_policy: config.agent.approval_policy.clone(),
             probe_results: None,
             probing: false,
+            browser_default_engine: config.browser.default_engine.clone(),
+            browser_headless_priority: config.browser.headless_priority.clone(),
+            browser_gui_priority: config.browser.gui_priority.clone(),
             selecting_model_for_provider: None,
             provider_models: Vec::new(),
             model_selected_index: 0,
@@ -180,6 +193,7 @@ impl SettingsModalState {
             SettingsTab::Workspace => 3,
             SettingsTab::Autonomy => 3,
             SettingsTab::Probes => 1,
+            SettingsTab::Browser => 4,
         }
     }
 
@@ -890,6 +904,123 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 ]));
             }
         }
+        SettingsTab::Browser => {
+            // Item 0: Default Engine override
+            let def_engine_str = match state.browser_default_engine.as_deref() {
+                Some("obscura") => "Obscura (Pure-Rust V8, ~30MB)",
+                Some("firefox") => "Firefox (Gecko)",
+                Some("chrome") => "Chrome (Chromium Blink)",
+                Some(other) => other,
+                None => "Auto (Adaptive Priority)",
+            };
+
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 0 { "  ❯ " } else { "    " },
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "🌐 Default Engine: ",
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {} ]", def_engine_str),
+                    if state.selected_index == 0 {
+                        Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — Auto adapts, or forces specific browser binary",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 1: Headless Mode Engine Priority
+            let hl_chain = state.browser_headless_priority.join(" ➔ ");
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 1 { "  ❯ " } else { "    " },
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "⚡ Headless Mode Priority: ",
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {} ]", hl_chain),
+                    if state.selected_index == 1 {
+                        Style::default().fg(theme.success).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+            ]));
+            content_lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(
+                    "1st priority: Obscura (~30MB RAM footprint, instant start)",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 2: GUI Headed Mode Engine Priority
+            let gui_chain = state.browser_gui_priority.join(" ➔ ");
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 2 { "  ❯ " } else { "    " },
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "🖥️ GUI Headed Mode Priority: ",
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {} ]", gui_chain),
+                    if state.selected_index == 2 {
+                        Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+            ]));
+            content_lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(
+                    "1st priority: Firefox for headed inspection (or Chrome)",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 3: Reset Preferences to Defaults
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 3 { "  ❯ " } else { "    " },
+                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "↺ [ Reset Browser Preferences to System Defaults ]",
+                    if state.selected_index == 3 {
+                        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            content_lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    "Press [Enter] or [Space] to cycle engine / rotate priorities",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
     }
 
     let content_p = Paragraph::new(content_lines);
@@ -1384,5 +1515,25 @@ pub mod tests {
         assert_eq!(format_context_tokens(Some(128_000)), "128k");
         assert_eq!(format_context_tokens(Some(512)), "512");
         assert_eq!(format_context_tokens(None), "-");
+    }
+
+    #[test]
+    fn test_settings_modal_browser_tab() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Config::default();
+        let mut state = SettingsModalState::from_config(&config, temp_dir.path());
+
+        state.active_tab = SettingsTab::Browser;
+        assert_eq!(state.max_items(), 4);
+
+        let theme = Theme::default();
+        let backend = TestBackend::new(95, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_settings(f, area, &theme, &state);
+            })
+            .unwrap();
     }
 }

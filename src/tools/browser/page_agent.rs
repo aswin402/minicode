@@ -193,10 +193,12 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             return searchShadow(document);
         },
 
-        // Injects Alibaba-style luminous 4-corner glow border, AI cursor, ripple, and floating pill
-        injectSimulatorAura: function(statusText) {
+        // Injects simulator HUD aura into DOM if not already present
+        injectSimulatorAura: function(statusText, themeColor) {
+            var color = themeColor || '#a277ff';
             var existing = document.getElementById('minicode-simulator-container');
             if (existing) {
+                existing.style.setProperty('--minicode-theme-color', color);
                 if (statusText) {
                     var txtEl = document.getElementById('minicode-pill-text');
                     if (txtEl) txtEl.innerText = statusText;
@@ -208,18 +210,19 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             style.id = 'minicode-simulator-styles';
             style.textContent = `
                 @keyframes minicode-pulse-dot {
-                    0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 8px #39b6ff; }
-                    50% { transform: scale(1.3); opacity: 0.8; box-shadow: 0 0 16px #39b6ff; }
+                    0%, 100% { transform: scale(1); opacity: 0.9; box-shadow: 0 0 6px var(--minicode-theme-color, #a277ff); }
+                    50% { transform: scale(1.25); opacity: 1; box-shadow: 0 0 14px var(--minicode-theme-color, #a277ff); }
                 }
-                @keyframes minicode-aura-glow {
-                    0%, 100% { opacity: 0.85; }
-                    50% { opacity: 1; }
+                @keyframes minicode-rail-wave {
+                    0% { background-position: 0% 0%; }
+                    100% { background-position: 0% 200%; }
                 }
                 @keyframes minicode-ripple-wave {
-                    0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.95; }
-                    100% { transform: translate(-50%, -50%) scale(2.8); opacity: 0; }
+                    0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.9; }
+                    100% { transform: translate(-50%, -50%) scale(2.6); opacity: 0; }
                 }
                 #minicode-simulator-container {
+                    --minicode-theme-color: ${color};
                     position: fixed;
                     inset: 0;
                     width: 100vw;
@@ -229,112 +232,127 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     overflow: hidden;
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                 }
-                #minicode-simulator-border {
+                /* Minimal vertical glow rails on left and right sides only */
+                .minicode-aura-rail {
                     position: absolute;
-                    inset: 0;
-                    border: 2.5px solid rgba(189, 69, 251, 0.55);
-                    box-shadow: inset 0 0 32px rgba(189, 69, 251, 0.4), inset 0 0 10px rgba(57, 182, 255, 0.5);
+                    top: 0;
+                    bottom: 0;
+                    width: 3.5px;
                     pointer-events: none;
-                    animation: minicode-aura-glow 4s ease-in-out infinite;
+                    z-index: 2147483645;
+                    opacity: 0.16;
+                    background: var(--minicode-theme-color, #a277ff);
+                    box-shadow: 0 0 10px var(--minicode-theme-color, #a277ff);
+                    transition: opacity 0.4s ease, box-shadow 0.4s ease;
                 }
-                .minicode-corner-aura {
-                    position: absolute;
-                    width: 320px;
-                    height: 320px;
-                    pointer-events: none;
-                    opacity: 0.85;
+                #minicode-aura-left-rail {
+                    left: 0;
                 }
-                #minicode-aura-tl {
-                    top: 0; left: 0;
-                    background: radial-gradient(circle at 0% 0%, rgba(189, 69, 251, 0.55) 0%, rgba(189, 69, 251, 0) 70%);
+                #minicode-aura-right-rail {
+                    right: 0;
                 }
-                #minicode-aura-tr {
-                    top: 0; right: 0;
-                    background: radial-gradient(circle at 100% 0%, rgba(255, 0, 122, 0.45) 0%, rgba(255, 0, 122, 0) 70%);
-                }
-                #minicode-aura-bl {
-                    bottom: 0; left: 0;
-                    background: radial-gradient(circle at 0% 100%, rgba(57, 182, 255, 0.5) 0%, rgba(57, 182, 255, 0) 70%);
-                }
-                #minicode-aura-br {
-                    bottom: 0; right: 0;
-                    background: radial-gradient(circle at 100% 100%, rgba(189, 69, 251, 0.55) 0%, rgba(189, 69, 251, 0) 70%);
+                /* Active animation when minicode executes an action in GUI */
+                .minicode-aura-rail.active {
+                    opacity: 0.92;
+                    background: linear-gradient(
+                        180deg,
+                        transparent 0%,
+                        var(--minicode-theme-color, #a277ff) 25%,
+                        #ffffff 50%,
+                        var(--minicode-theme-color, #a277ff) 75%,
+                        transparent 100%
+                    );
+                    background-size: 100% 200%;
+                    animation: minicode-rail-wave 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+                    box-shadow: 0 0 16px var(--minicode-theme-color, #a277ff), 0 0 32px var(--minicode-theme-color, #a277ff);
                 }
                 #minicode-simulator-cursor {
                     position: absolute;
                     left: 50%;
                     top: 50%;
-                    width: 32px;
-                    height: 32px;
+                    width: 30px;
+                    height: 30px;
                     z-index: 2147483647;
                     pointer-events: none;
                     transition: left 0.28s cubic-bezier(0.2, 0, 0, 1), top 0.28s cubic-bezier(0.2, 0, 0, 1);
-                    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.6));
+                    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.55));
                     transform: translate(-3px, -3px);
                 }
                 #minicode-cursor-ripple {
                     position: absolute;
-                    width: 48px;
-                    height: 48px;
+                    width: 44px;
+                    height: 44px;
                     border-radius: 50%;
-                    border: 3px solid #39b6ff;
-                    background: radial-gradient(circle, rgba(57, 182, 255, 0.35) 0%, rgba(189, 69, 251, 0.15) 100%);
+                    border: 2px solid var(--minicode-theme-color, #a277ff);
+                    background: radial-gradient(circle, var(--minicode-theme-color, #a277ff) 0%, transparent 70%);
                     pointer-events: none;
                     opacity: 0;
                     z-index: 2147483646;
                 }
                 #minicode-cursor-ripple.active {
-                    animation: minicode-ripple-wave 0.55s ease-out forwards;
+                    animation: minicode-ripple-wave 0.5s ease-out forwards;
                 }
+                /* Ultra-clean glassmorphic status pill with dark & light theme responsiveness */
                 #minicode-simulator-pill {
                     position: absolute;
-                    bottom: 24px;
+                    bottom: 22px;
                     left: 50%;
                     transform: translateX(-50%);
-                    background: rgba(15, 20, 35, 0.9);
-                    backdrop-filter: blur(12px);
-                    -webkit-backdrop-filter: blur(12px);
-                    border: 1.5px solid rgba(189, 69, 251, 0.65);
-                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65), 0 0 20px rgba(189, 69, 251, 0.35);
+                    background: rgba(15, 17, 26, 0.78);
+                    backdrop-filter: blur(16px) saturate(180%);
+                    -webkit-backdrop-filter: blur(16px) saturate(180%);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 0 16px rgba(0, 0, 0, 0.25);
                     border-radius: 9999px;
-                    padding: 7px 18px;
+                    padding: 6px 16px;
                     display: flex;
                     align-items: center;
-                    gap: 10px;
-                    color: #f8fafc;
-                    font-size: 13px;
+                    gap: 9px;
+                    color: #f1f5f9;
+                    font-size: 12.5px;
                     font-weight: 500;
                     z-index: 2147483646;
                     pointer-events: auto;
                     user-select: none;
+                    transition: all 0.3s ease;
+                }
+                @media (prefers-color-scheme: light) {
+                    #minicode-simulator-pill {
+                        background: rgba(255, 255, 255, 0.82);
+                        border: 1px solid rgba(0, 0, 0, 0.08);
+                        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12), 0 0 12px rgba(0, 0, 0, 0.05);
+                        color: #0f172a;
+                    }
                 }
                 #minicode-pill-dot {
-                    width: 8px;
-                    height: 8px;
+                    width: 7.5px;
+                    height: 7.5px;
                     border-radius: 50%;
-                    background: #39b6ff;
+                    background: var(--minicode-theme-color, #a277ff);
                     display: inline-block;
                     animation: minicode-pulse-dot 1.8s ease-in-out infinite;
                 }
                 #minicode-pill-text {
                     letter-spacing: -0.01em;
-                    max-width: 450px;
+                    max-width: 440px;
                     overflow: hidden;
                     text-overflow: ellipsis;
                     white-space: nowrap;
                 }
                 #minicode-pill-dropdown {
                     color: #94a3b8;
-                    font-size: 10px;
+                    font-size: 9.5px;
                     cursor: pointer;
+                    opacity: 0.7;
                 }
                 #minicode-pill-stop {
                     color: #ef4444;
-                    font-size: 11px;
+                    font-size: 10px;
                     cursor: pointer;
                     display: flex;
                     align-items: center;
                     justify-content: center;
+                    opacity: 0.85;
                 }
             `;
             document.head.appendChild(style);
@@ -342,22 +360,14 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var container = document.createElement('div');
             container.id = 'minicode-simulator-container';
             container.setAttribute('data-minicode-ignore', 'true');
+            container.style.setProperty('--minicode-theme-color', color);
 
             container.innerHTML = `
-                <div id="minicode-simulator-border"></div>
-                <div id="minicode-aura-tl" class="minicode-corner-aura"></div>
-                <div id="minicode-aura-tr" class="minicode-corner-aura"></div>
-                <div id="minicode-aura-bl" class="minicode-corner-aura"></div>
-                <div id="minicode-aura-br" class="minicode-corner-aura"></div>
+                <div id="minicode-aura-left-rail" class="minicode-aura-rail"></div>
+                <div id="minicode-aura-right-rail" class="minicode-aura-rail"></div>
                 <div id="minicode-cursor-ripple"></div>
                 <svg id="minicode-simulator-cursor" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                        <linearGradient id="minicodeCursorGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" stop-color="#39b6ff"/>
-                            <stop offset="100%" stop-color="#bd45fb"/>
-                        </linearGradient>
-                    </defs>
-                    <path d="M5.5 3.5L24.5 16.5L15.5 18.5L12 27.5L5.5 3.5Z" fill="url(#minicodeCursorGrad)" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
+                    <path d="M5.5 3.5L24.5 16.5L15.5 18.5L12 27.5L5.5 3.5Z" fill="var(--minicode-theme-color, #a277ff)" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
                 </svg>
                 <div id="minicode-simulator-pill">
                     <span id="minicode-pill-dot"></span>
@@ -370,12 +380,25 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             return true;
         },
 
-        // Updates simulator state: updates pill message, glides cursor, and optionally triggers ripple
-        updateSimulatorState: function(actionText, targetX, targetY, isClick) {
-            this.injectSimulatorAura(actionText);
+        // Updates simulator state: updates pill message, glides cursor, triggers ripple, and activates rail wave
+        updateSimulatorState: function(actionText, targetX, targetY, isClick, themeColor) {
+            this.injectSimulatorAura(actionText, themeColor);
 
             var txtEl = document.getElementById('minicode-pill-text');
             if (txtEl && actionText) txtEl.innerText = actionText;
+
+            // Trigger active rail animation wave
+            var leftRail = document.getElementById('minicode-aura-left-rail');
+            var rightRail = document.getElementById('minicode-aura-right-rail');
+            if (leftRail) leftRail.classList.add('active');
+            if (rightRail) rightRail.classList.add('active');
+            if (window.__minicode_rail_timer) clearTimeout(window.__minicode_rail_timer);
+            window.__minicode_rail_timer = setTimeout(function() {
+                var l = document.getElementById('minicode-aura-left-rail');
+                var r = document.getElementById('minicode-aura-right-rail');
+                if (l) l.classList.remove('active');
+                if (r) r.classList.remove('active');
+            }, 1800);
 
             var cursor = document.getElementById('minicode-simulator-cursor');
             if (cursor && typeof targetX === 'number' && typeof targetY === 'number') {
@@ -1132,6 +1155,8 @@ mod tests {
         assert!(PAGE_PROBE_JS.contains("resolveElement"));
         assert!(PAGE_PROBE_JS.contains("injectSimulatorAura"));
         assert!(PAGE_PROBE_JS.contains("minicode-simulator-container"));
+        assert!(PAGE_PROBE_JS.contains("minicode-aura-left-rail"));
+        assert!(PAGE_PROBE_JS.contains("minicode-aura-right-rail"));
         assert!(PAGE_PROBE_JS.contains("minicode-simulator-cursor"));
         assert!(PAGE_PROBE_JS.contains("minicode-simulator-pill"));
         assert!(PAGE_PROBE_JS.contains("clickElement"));
