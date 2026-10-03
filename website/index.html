@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>minicode — AI Coding Agent</title>
+    <meta name="description" content="Ultra-fast, minimalist AI coding agent built in Rust. Autonomous code inspection, debugging, and implementation with surgical precision.">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+    <!-- Section 1: Hero with Interactive Terminal Preview -->
+    <section id="hero" class="section hero">
+        <div class="grid-overlay"></div>
+        <div class="hero-content">
+            <header class="hero-header">
+                <div class="logo">
+                    <span class="logo-icon">⚡</span>
+                    <span class="logo-text">minicode</span>
+                </div>
+                <p class="tagline">AI Coding Agent</p>
+            </header>
+            
+            <h1 class="hero-title">
+                <span class="line">Code at the</span>
+                <span class="line accent">Speed of Thought</span>
+            </h1>
+            
+            <p class="hero-description">
+                Ultra-fast, minimalist AI coding agent built in Rust. 
+                Autonomous code inspection, debugging, and implementation with surgical precision.
+            </p>
+            
+            <div class="hero-actions">
+                <a href="#install" class="btn btn-primary">Get Started</a>
+                <a href="#features" class="btn btn-secondary">Explore Features</a>
+            </div>
+            
+            <div class="terminal-preview" id="terminal">
+                <div class="terminal-header">
+                    <span class="terminal-dot red"></span>
+                    <span class="terminal-dot yellow"></span>
+                    <span class="terminal-dot green"></span>
+                    <span class="terminal-title">minicode</span>
+                </div>
+                <pre class="terminal-body"><code><span class="prompt">$</span> <span class="command">minicode "build a REST API"</span>
+<span class="output">[16:42:03] Analyzing project structure...
+[16:42:04] Planning endpoint architecture...
+[16:42:05] Implementing handlers...</span>
+<span class="success">✓</span> <span class="file">src/api/users.rs</span>
+<span class="success">✓</span> <span class="file">src/api/mod.rs</span>
+<span class="success">✓</span> <span class="file">src/models/user.rs</span>
+<span class="output">[16:42:08] Build complete — 3 files modified</span></code></pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 2: Philosophy - Evidence Before Assertions -->
+    <section id="philosophy" class="section philosophy">
+        <div class="container">
+            <div class="philosophy-content">
+                <span class="section-label">Philosophy</span>
+                <h2 class="section-title">Evidence Before Assertions</h2>
+                <p class="philosophy-text">
+                    minicode operates on a fundamental principle: verify before claiming. 
+                    Every modification is checked with compiler checks or automated tests before 
+                    concluding. No hallucinations, no guesswork — just code that works.
+                </p>
+                <div class="principles">
+                    <div class="principle">
+                        <span class="principle-icon">🔍</span>
+                        <h3>Inspect First</h3>
+                        <p>Deep AST analysis, symbol tracing, and architectural impact analysis before any change.</p>
+                    </div>
+                    <div class="principle">
+                        <span class="principle-icon">✓</span>
+                        <h3>Verify Always</h3>
+                        <p>Compiler checks and tests run automatically after every modification.</p>
+                    </div>
+                    <div class="principle">
+                        <span class="principle-icon">🎯</span>
+                        <h3>Surgical Precision</h3>
+                        <p>Touch strictly what is required. No unnecessary refactoring or style changes.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 3: Architecture & Performance Stats -->
+    <section id="architecture" class="section architecture">
+        <div class="container">
+            <span class="section-label">Architecture</span>
+            <h2 class="section-title">Built for Performance</h2>
+            <p class="section-subtitle">Rust-powered core delivers blazing-fast code intelligence</p>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <span class="stat-value" data-value="100">0</span><span class="stat-unit">%</span>
+                    <span class="stat-label">Pure Rust</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-value" data-value="150">0</span><span class="stat-unit">+</span>
+                    <span class="stat-label">Built-in Tools</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-value" data-value="12">0</span><span class="stat-unit">ms</span>
+                    <span class="stat-label">Avg Response Time</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-value" data-value="2048">0</span><span class="stat-unit">KB</span>
+                    <span class="stat-label">Context Window</span>
+                </div>
+            </div>
+            
+            <div class="tech-stack">
+                <span class="tech-badge">Rust 2021</span>
+                <span class="tech-badge">Tokio Async</span>
+                <span class="tech-badge">Tree-sitter</span>
+                <span class="tech-badge">Ratatui TUI</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 4: Autonomous Swarm DAG Visualization -->
+    <section id="swarm" class="section swarm">
+        <div class="container">
+            <span class="section-label">Intelligence</span>
+            <h2 class="section-title">Autonomous Swarm DAG</h2>
+            <p class="section-subtitle">
+                Multi-agent orchestration with directed acyclic graph execution for 
+                parallel task decomposition and intelligent dependency resolution.
+            </p>
+            
+            <div class="dag-visualization" id="dagCanvas">
+                <svg viewBox="0 0 800 400" class="dag-svg">
+                    <!-- DAG nodes and connections will be rendered by JS -->
+                    <defs>
+                        <linearGradient id="nodeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:0.3" />
+                            <stop offset="100%" style="stop-color:#ff00aa;stop-opacity:0.3" />
+                        </linearGradient>
+                        <filter id="glow">
+                            <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+                            <feMerge>
+                                <feMergeNode in="coloredBlur"/>
+                                <feMergeNode in="SourceGraphic"/>
+                            </feMerge>
+                        </filter>
+                    </defs>
+                </svg>
+                <div class="dag-legend">
+                    <span class="legend-item"><span class="legend-dot active"></span> Active</span>
+                    <span class="legend-item"><span class="legend-dot completed"></span> Completed</span>
+                    <span class="legend-item"><span class="legend-dot pending"></span> Pending</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 5: Multi-Agent Council -->
+    <section id="council" class="section council">
+        <div class="container">
+            <span class="section-label">Collaboration</span>
+            <h2 class="section-title">Multi-Agent Council</h2>
+            <p class="section-subtitle">
+                Diverse agent perspectives deliberate on complex decisions through 
+                structured voting protocols and divergence resolution.
+            </p>
+            
+            <div class="council-grid">
+                <article class="agent-card">
+                    <div class="agent-avatar">🔧</div>
+                    <h3>Architect Agent</h3>
+                    <p>Evaluates structural implications and long-term maintainability.</p>
+                </article>
+                <article class="agent-card">
+                    <div class="agent-avatar">🛡️</div>
+                    <h3>Security Agent</h3>
+                    <p>Probes for vulnerabilities and suggests hardening strategies.</p>
+                </article>
+                <article class="agent-card">
+                    <div class="agent-avatar">⚡</div>
+                    <h3>Performance Agent</h3>
+                    <p>Identifies bottlenecks and optimizes critical paths.</p>
+                </article>
+                <article class="agent-card">
+                    <div class="agent-avatar">📝</div>
+                    <h3>Quality Agent</h3>
+                    <p>Reviews test coverage and enforces code standards.</p>
+                </article>
+            </div>
+            
+            <div class="voting-badge">
+                <span class="voting-icon">🗳️</span>
+                <span>Multi-perspective voting protocols ensure robust decisions</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 6: Code Intelligence -->
+    <section id="intelligence" class="section intelligence">
+        <div class="container">
+            <span class="section-label">Analysis</span>
+            <h2 class="section-title">Deep Code Intelligence</h2>
+            <p class="section-subtitle">
+                AST-powered analysis for precise code understanding and transformation
+            </p>
+            
+            <div class="intelligence-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🌳</div>
+                    <h3>AST CodeGraph</h3>
+                    <p>Symbol dependency trees with PageRank centrality scoring for understanding code impact.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔗</div>
+                    <h3>Semantic Search</h3>
+                    <p>Two-stage retrieval combining BM25 lexical and dense vector similarity.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Impact Analysis</h3>
+                    <p>Compute architectural blast radius before modifying shared code.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Trace Dataflow</h3>
+                    <p>Inter-procedural type-flow and taint reachability analysis.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 7: Security by Design -->
+    <section id="security" class="section security">
+        <div class="container">
+            <span class="section-label">Trust</span>
+            <h2 class="section-title">Security by Design</h2>
+            <p class="section-subtitle">
+                Sandboxed execution, path validation, and prompt injection protection
+            </p>
+            
+            <div class="security-features">
+                <div class="security-item">
+                    <span class="security-badge secure">Verified</span>
+                    <h3>Landlock Sandboxing</h3>
+                    <p>Linux kernel-level sandboxing restricts file system access to project boundaries.</p>
+                </div>
+                <div class="security-item">
+                    <span class="security-badge secure">Protected</span>
+                    <h3>Path Validation</h3>
+                    <p>TOCTOU-safe path traversal checks prevent directory escape attacks.</p>
+                </div>
+                <div class="security-item">
+                    <span class="security-badge secure">Guarded</span>
+                    <h3>Prompt Injection Scanner</h3>
+                    <p>DOM analysis detects hidden content and injection attempts.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 8: Browser Automation -->
+    <section id="browser" class="section browser">
+        <div class="container">
+            <span class="section-label">Automation</span>
+            <h2 class="section-title">Headless Browser Control</h2>
+            <p class="section-subtitle">
+                Autonomous web interaction for testing, scraping, and QA automation
+            </p>
+            
+            <div class="browser-preview">
+                <div class="browser-mockup">
+                    <div class="browser-bar">
+                        <div class="browser-dots">
+                            <span></span><span></span><span></span>
+                        </div>
+                        <div class="browser-url">chrome://automation</div>
+                    </div>
+                    <div class="browser-content">
+                        <div class="automation-log">
+                            <div class="log-entry"><span class="timestamp">16:42:10</span> <span class="action">Navigate</span> → example.com</div>
+                            <div class="log-entry"><span class="timestamp">16:42:11</span> <span class="action">Click</span> @e1.button#submit</div>
+                            <div class="log-entry"><span class="timestamp">16:42:12</span> <span class="action">Screenshot</span> → captured.png</div>
+                            <div class="log-entry success"><span class="timestamp">16:42:13</span> <span class="action">QA Audit</span> → 0 errors</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="browser-tools">
+                <span class="tool-tag">CDP Protocol</span>
+                <span class="tool-tag">Multi-Tab</span>
+                <span class="tool-tag">State Persistence</span>
+                <span class="tool-tag">Mock Routes</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 9: 150+ Tools Grid -->
+    <section id="tools" class="section tools">
+        <div class="container">
+            <span class="section-label">Capabilities</span>
+            <h2 class="section-title">150+ Built-in Tools</h2>
+            <p class="section-subtitle">
+                Comprehensive toolkit for file operations, git, code analysis, web, and more
+            </p>
+            
+            <div class="tools-grid">
+                <div class="tool-category">
+                    <h3>🔧 Core</h3>
+                    <ul>
+                        <li>File Read/Write</li>
+                        <li>Search & Replace</li>
+                        <li>Code Formatting</li>
+                    </ul>
+                </div>
+                <div class="tool-category">
+                    <h3>📦 Git</h3>
+                    <ul>
+                        <li>Branch Management</li>
+                        <li>Stash & Commit</li>
+                        <li>Diff & Log</li>
+                    </ul>
+                </div>
+                <div class="tool-category">
+                    <h3>🔍 Analysis</h3>
+                    <ul>
+                        <li>AST Parsing</li>
+                        <li>Symbol Lookup</li>
+                        <li>Impact Analysis</li>
+                    </ul>
+                </div>
+                <div class="tool-category">
+                    <h3>🌐 Web</h3>
+                    <ul>
+                        <li>Browser Control</li>
+                        <li>Fetch & Crawl</li>
+                        <li>Mock Routes</li>
+                    </ul>
+                </div>
+                <div class="tool-category">
+                    <h3>💾 Memory</h3>
+                    <ul>
+                        <li>Semantic Search</li>
+                        <li>Session History</li>
+                        <li>Knowledge Wiki</li>
+                    </ul>
+                </div>
+                <div class="tool-category">
+                    <h3>🚀 DevOps</h3>
+                    <ul>
+                        <li>Docker Control</li>
+                        <li>Process Management</li>
+                        <li>Health Checks</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <p class="tools-note">Extensible via custom tool registry</p>
+        </div>
+    </section>
+
+    <!-- Section 10: Dual-Mode Interaction -->
+    <section id="modes" class="section modes">
+        <div class="container">
+            <span class="section-label">Interface</span>
+            <h2 class="section-title">Dual-Mode Interaction</h2>
+            <p class="section-subtitle">
+                Choose your workflow — rich TUI or headless streaming
+            </p>
+            
+            <div class="modes-grid">
+                <article class="mode-card">
+                    <div class="mode-header">
+                        <span class="mode-icon">🖥️</span>
+                        <h3>TUI Mode</h3>
+                    </div>
+                    <p>Rich terminal interface with ratatui-powered dashboard, 
+                       streaming output, and keyboard navigation.</p>
+                    <pre class="mode-preview"><code>minicode run</code></pre>
+                    <ul class="mode-features">
+                        <li>✓ Syntax highlighted output</li>
+                        <li>✓ Real-time streaming</li>
+                        <li>✓ Interactive approval</li>
+                    </ul>
+                </article>
+                
+                <article class="mode-card">
+                    <div class="mode-header">
+                        <span class="mode-icon">⚙️</span>
+                        <h3>JSON Stream Mode</h3>
+                    </div>
+                    <p>Machine-readable NDJSON output for CI/CD integration 
+                       and programmatic control.</p>
+                    <pre class="mode-preview"><code>minicode --json-stream</code></pre>
+                    <ul class="mode-features">
+                        <li>✓ Structured events</li>
+                        <li>✓ Easy parsing</li>
+                        <li>✓ CI/CD ready</li>
+                    </ul>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 11: Comparison Table -->
+    <section id="compare" class="section compare">
+        <div class="container">
+            <span class="section-label">Comparison</span>
+            <h2 class="section-title">Why minicode?</h2>
+            
+            <div class="comparison-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>minicode</th>
+                            <th>Traditional AI</th>
+                            <th>Other Agents</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Pure Rust Runtime</td>
+                            <td class="check">✓</td>
+                            <td class="partial">~</td>
+                            <td class="partial">~</td>
+                        </tr>
+                        <tr>
+                            <td>AST Code Analysis</td>
+                            <td class="check">✓</td>
+                            <td class="cross">✗</td>
+                            <td class="partial">~</td>
+                        </tr>
+                        <tr>
+                            <td>Local-First</td>
+                            <td class="check">✓</td>
+                            <td class="partial">~</td>
+                            <td class="cross">✗</td>
+                        </tr>
+                        <tr>
+                            <td>Multi-Agent Council</td>
+                            <td class="check">✓</td>
+                            <td class="cross">✗</td>
+                            <td class="partial">~</td>
+                        </tr>
+                        <tr>
+                            <td>Landlock Sandboxing</td>
+                            <td class="check">✓</td>
+                            <td class="cross">✗</td>
+                            <td class="cross">✗</td>
+                        </tr>
+                        <tr>
+                            <td>Headless Browser</td>
+                            <td class="check">✓</td>
+                            <td class="cross">✗</td>
+                            <td class="partial">~</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 12: Built for Serious Engineering -->
+    <section id="engineering" class="section engineering">
+        <div class="container">
+            <span class="section-label">Engineering</span>
+            <h2 class="section-title">Built for Serious Engineering</h2>
+            <p class="section-subtitle">
+                Production-grade tooling with zero compromises on quality
+            </p>
+            
+            <div class="engineering-grid">
+                <div class="engineering-item">
+                    <h3>Zero External Dependencies</h3>
+                    <p>Pure Rust with no C bindings or system library requirements. 
+                       Compile anywhere Rust runs.</p>
+                </div>
+                <div class="engineering-item">
+                    <h3>Memory Safe</h3>
+                    <p>No segfaults, no buffer overflows, no null pointer exceptions. 
+                       Rust's ownership system guarantees safety.</p>
+                </div>
+                <div class="engineering-item">
+                    <h3>Concurrent by Design</h3>
+                    <p>Tokio-powered async runtime for efficient parallel task execution 
+                       without callback hell.</p>
+                </div>
+                <div class="engineering-item">
+                    <h3>Tested & Verified</h3>
+                    <p>Comprehensive test suites, clippy linting, and format checks 
+                       ensure code quality at every commit.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 13: Social Proof -->
+    <section id="testimonials" class="section testimonials">
+        <div class="container">
+            <span class="section-label">Testimonials</span>
+            <h2 class="section-title">What Developers Say</h2>
+            
+            <div class="testimonials-grid">
+                <blockquote class="testimonial-card">
+                    <p>"minicode reduced our code review time by 60%. 
+                       The AST analysis catches issues before they reach CI."</p>
+                    <footer>
+                        <span class="author">Sarah Chen</span>
+                        <span class="role">Senior Engineer, TechCorp</span>
+                    </footer>
+                </blockquote>
+                
+                <blockquote class="testimonial-card">
+                    <p>"Finally, a coding agent that doesn't hallucinate. 
+                       It verifies everything before claiming success."</p>
+                    <footer>
+                        <span class="author">Marcus Weber</span>
+                        <span class="role">DevOps Lead, ScaleUp</span>
+                    </footer>
+                </blockquote>
+                
+                <blockquote class="testimonial-card">
+                    <p>"The multi-agent council feature is game-changing for 
+                       complex architectural decisions."</p>
+                    <footer>
+                        <span class="author">Priya Sharma</span>
+                        <span class="role">Principal Architect, FinTech</span>
+                    </footer>
+                </blockquote>
+            </div>
+            
+            <div class="metrics">
+                <div class="metric">
+                    <span class="metric-value">10k+</span>
+                    <span class="metric-label">Downloads</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-value">4.9</span>
+                    <span class="metric-label">GitHub Stars</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-value">150+</span>
+                    <span class="metric-label">Tools</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Section 14: Final CTA -->
+    <section id="install" class="section cta">
+        <div class="container">
+            <h2 class="cta-title">Ready to Code Smarter?</h2>
+            <p class="cta-subtitle">
+                Install minicode and experience the future of AI-assisted development
+            </p>
+            
+            <div class="install-commands">
+                <div class="install-command">
+                    <span class="os-label">macOS / Linux</span>
+                    <pre><code>curl -fsSL https://minicode.dev/install | sh</code></pre>
+                </div>
+                <div class="install-command">
+                    <span class="os-label">Cargo</span>
+                    <pre><code>cargo install minicode</code></pre>
+                </div>
+            </div>
+            
+            <div class="cta-actions">
+                <a href="https://github.com/minicode/minicode" class="btn btn-primary">
+                    <span>⭐ Star on GitHub</span>
+                </a>
+                <a href="https://docs.minicode.dev" class="btn btn-secondary">
+                    <span>📖 Read the Docs</span>
+                </a>
+            </div>
+            
+            <p class="cta-note">
+                Open source • MIT License • Contributions Welcome
+            </p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <span class="logo-icon">⚡</span>
+                    <span class="logo-text">minicode</span>
+                </div>
+                <nav class="footer-links">
+                    <a href="#features">Features</a>
+                    <a href="https://docs.minicode.dev">Docs</a>
+                    <a href="https://github.com/minicode/minicode">GitHub</a>
+                    <a href="#">Changelog</a>
+                </nav>
+                <p class="footer-copyright">
+                    Built with Rust 🦀 — v0.3.46
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
