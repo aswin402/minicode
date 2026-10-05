@@ -180,6 +180,45 @@ impl BrowserController {
         Self::navigate_and_snapshot(url, mode, workspace_root).await
     }
 
+    /// Captures a snapshot of the currently active browser page, or navigates to `url_opt` if provided.
+    pub async fn snapshot_active_or_navigate(
+        url_opt: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<PageSnapshot> {
+        if let Some(url) = url_opt {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                return Self::snapshot_live_or_navigate(trimmed, mode, workspace_root).await;
+            }
+        }
+
+        // URL was omitted: check if a browser is already active and snapshot current page
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let engine_name = format!("{} ({})", engine.process.config.engine, mode);
+        let current_url = engine
+            .cdp
+            .evaluate_js("window.location.href")
+            .await
+            .unwrap_or_default();
+        let clean_current = current_url.trim_matches('"').trim_end_matches('/');
+
+        let effective_url = if clean_current.is_empty() || clean_current == "about:blank" {
+            "http://localhost"
+        } else {
+            clean_current
+        };
+
+        let _ = PageAgent::inject_probe(&engine.cdp).await;
+        let html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = engine.accessibility.lock().await;
+        let elements = acc_mgr.update_from_html(&html);
+        let mut snapshot = Self::parse_html_to_aria_snapshot(effective_url, &html);
+        snapshot.interactive_elements = elements;
+        snapshot.engine_used = engine_name;
+        Ok(snapshot)
+    }
+
     /// Clicks an element by ARIA reference and returns the updated page snapshot
     pub async fn click_and_snapshot(
         target_ref: &str,

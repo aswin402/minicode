@@ -184,14 +184,22 @@ impl<'a> App<'a> {
                         *savings_percent,
                     );
                 }
-                AgentEvent::Error { message, .. } => {
-                    self.timeline.add_status(format!("Error: {}", message));
+                AgentEvent::Error {
+                    message, retrying, ..
+                } => {
+                    if *retrying {
+                        self.timeline.add_status(message.clone());
+                    } else {
+                        self.timeline.add_status(format!("✕ Error: {}", message));
+                    }
                 }
                 AgentEvent::AntiThrashTripped { intervention, .. } => {
-                    self.timeline.add_status(format!(
-                        "⚠️ Anti-Thrashing Breaker: Halting loop\n{}",
-                        intervention
-                    ));
+                    let clean_msg = intervention
+                        .lines()
+                        .find(|l| l.contains("•") || l.contains("Notice:") || l.contains("Reason:"))
+                        .unwrap_or("Repetitive operation detected; adaptive guidance applied.");
+                    let line = clean_msg.trim().trim_start_matches('•').trim();
+                    self.timeline.add_status(format!("⚠ Guidance: {}", line));
                 }
                 AgentEvent::PlanUpdated {
                     total_tasks,
@@ -648,7 +656,7 @@ impl<'a> App<'a> {
                                     self.timeline.add_status(message);
                                 } else {
                                     self.timeline
-                                        .append_assistant_delta(&format!("\n✗ Error: {}\n", message));
+                                        .add_status(format!("✕ Error: {}", message));
                                     self.is_working = false;
                                     self.current_activity = None;
                                     self.work_start = None;
@@ -656,7 +664,12 @@ impl<'a> App<'a> {
                                 }
                             }
                             AgentEvent::AntiThrashTripped { intervention, .. } => {
-                                self.timeline.add_status(format!("⚠️ Anti-Thrashing Breaker: Halting loop\n{}", intervention));
+                                let clean_msg = intervention
+                                    .lines()
+                                    .find(|l| l.contains("•") || l.contains("Notice:") || l.contains("Reason:"))
+                                    .unwrap_or("Repetitive operation detected; adaptive guidance applied.");
+                                let line = clean_msg.trim().trim_start_matches('•').trim();
+                                self.timeline.add_status(format!("⚠ Guidance: {}", line));
                             }
                             AgentEvent::SubagentProgress {
                                 subagent_id,
@@ -1260,6 +1273,9 @@ impl<'a> App<'a> {
         }
 
         // Abort background task and cleanup terminal state cleanly
+        if let Some(token) = self.cancel_token.take() {
+            token.cancel();
+        }
         agent_task.abort();
         disable_raw_mode()?;
         execute!(

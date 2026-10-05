@@ -51,7 +51,7 @@ impl Default for CompletionOptions {
         Self {
             model: String::new(),
             temperature: 0.2,
-            max_tokens: 8192,
+            max_tokens: 16384,
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,
@@ -65,7 +65,7 @@ impl CompletionOptions {
         Self {
             model: model.into(),
             temperature: 0.2,
-            max_tokens: 8192,
+            max_tokens: 16384,
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,

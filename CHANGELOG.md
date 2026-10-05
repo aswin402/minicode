@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.49] — 2026-10-05
+
+### Minimal Circuit Breaker TUI, Chunked File Appending & Two-Tier Plan Synchronization
+
+#### 💡 Ideas & Inspirations
+- **Minimal Left-Bordered Circuit Breaker Cards (`│ 🛡`, `│ ⚠`)**: Replaced abrasive emojis (`🛑`, `▲`) with a clean, modern developer card styling using a subtle left border (`│`). Hard circuit breaker trips are badged with `│ 🛡 Circuit Breaker · Runaway Loop Halted`, and warnings with `│ ⚠ Loop Warning · <Pattern>`, matching the terminal styling of leading developer tools.
+- **Chunked File Append & Output Token Truncation Prevention**: Large file generations (>25KB / >300 lines) previously caused model completion outputs to truncate mid-stream, resulting in malformed JSON tool call arguments (`EOF while parsing a string`). Inspired by Aider and Cline/Roo Code, minicode now provides `append: bool` in `write_file`, enabling agents to write modular scaffolds and stream/append sections progressively without JSON parse failures.
+- **Two-Tier Planning & Real-Time Step Synchronization**: Delineated the core project roadmap (`minikit_docs/core/todo.md` or `todo.md`) from active prompt-driven execution steps (`.minicode/plan/task_plan.md`). The `/todo` modal displays the full strategic project roadmap, while the inline dock execution widget tracks granular MiniPower steps in real-time. `init_plan()` safely preserves the core roadmap from being overwritten, and `complete_task` bridges directly into `WorkingMemory`.
+
+#### 🚀 Features & Changes
+- **Anti-Thrashing Circuit Breaker Modernization (`src/agent/stuck_detector.rs`)**:
+  - Replaced all verbose ASCII banner and emoji patterns with left-bordered cards (`│ 🛡`, `│ ⚠`).
+  - Updated all pattern matchers (`ConsecutiveRepetition`, `FileTargetThrashing`, `ExecutionCollapse`, `PingPongOscillation`, `TriangularOscillation`).
+  - Updated unit test assertions; 100% test coverage passing.
+- **Resilient File Append Engine (`src/tools/fs.rs`, `src/tools/registry/fs_tools.rs`)**:
+  - Implemented `write_file_with_options` supporting `append: bool`.
+  - Updated `write_file` tool schema and dispatch to accept `append: bool`.
+  - Added AST Syntax Barrier pre-validation across both original and appended content.
+- **Two-Tier Plan Architecture & Auto-Advancement (`src/context/memory/working_memory.rs`, `src/tools/registry/agent_tools/dag.rs`)**:
+  - Implemented `read_task_plan_tasks()`, `read_task_plan_title()`, and `build_plan_summary()`.
+  - Enhanced `read_active_plan_summary()` to prioritize `.minicode/plan/task_plan.md` for inline TUI dock synchronization.
+  - Preserved canonical project `todo.md` in `init_plan()` to prevent strategic roadmaps from being clobbered by micro-task plans.
+  - Bridged `complete_task` in DAG registry to fall back to `WorkingMemory::update_progress`.
+- **Rust 1.99.0 Deprecation & Clippy Hardening (`src/dev/registry.rs`, `src/lib.rs`, `src/main.rs`)**:
+  - Replaced deprecated `AtomicU32::fetch_update` calls with atomic `compare_exchange_weak` saturating decrement helper `decrement_atomic_saturating`.
+  - Harmonized crate-level attributes for Rust 1.99.0 pedantic clippy rules; verified clean `cargo clippy -j 1 -- -D warnings`.
+  - Verified 100% test suite pass rate (851 unit tests passing) including append-mode unit verification `test_write_file_append_mode`.
+
 ## [0.3.27] — 2026-09-18
 
 ### Turbovec TurboQuant 1-Bit/4-Bit Zero-Copy Vector Storage & Headroom DOX Pre-Ingress Observation Pruner (Phases 126 & 127)

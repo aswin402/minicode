@@ -1,4 +1,11 @@
 #![recursion_limit = "512"]
+#![allow(
+    clippy::manual_checked_ops,
+    clippy::unnecessary_sort_by,
+    clippy::collapsible_match,
+    clippy::useless_borrows_in_formatting,
+    clippy::question_mark
+)]
 
 mod agent;
 mod app;
@@ -616,6 +623,10 @@ fn install_panic_hook() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     install_panic_hook();
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+    }
     let _dev_lifecycle_guard = dev::lifecycle::install_lifecycle_hooks();
     let cli = Cli::parse();
 
@@ -1628,9 +1639,6 @@ async fn run_headless_task(
     emit_ndjson: bool,
     resume_session_id: Option<&str>,
 ) -> Result<()> {
-    // Ensure workspace is initialized with canonical documentation and skills (Phase 149 Auto-Bootstrap)
-    ensure_workspace_bootstrapped(workspace);
-
     let api_key = match config.get_api_key(&config.provider.default) {
         Ok(k) => k,
         Err(e) => {
@@ -1788,8 +1796,6 @@ fn emit_invalid_command(message: &str) {
 /// Headless NDJSON agent loop over stdin/stdout for AI orchestrators
 async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     tracing::info!("Starting minicode in NDJSON streaming mode");
-    // Ensure workspace is initialized with canonical documentation and skills (Phase 149 Auto-Bootstrap)
-    ensure_workspace_bootstrapped(workspace);
 
     // Resolve provider BEFORE announcing readiness: a misconfigured host must
     // receive an error event, not a "ready" heartbeat followed by death.
@@ -2037,32 +2043,12 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Automatically ensures new workspaces are bootstrapped with canonical documentation, AGENTS.md, and skills.
-fn ensure_workspace_bootstrapped(workspace: &Path) {
-    let minikit_docs = workspace.join(crate::constants::MINIKIT_DOCS_DIR);
-    let onpkg_docs = workspace.join(crate::constants::ONPKG_DOCS_DIR);
-    let agents_md = workspace.join(crate::constants::AGENTS_MD_FILE);
-    if (!minikit_docs.exists() && !onpkg_docs.exists()) || !agents_md.exists() {
-        if let Err(e) = tools::minikit::sync::MiniKitSyncEngine::sync(workspace) {
-            tracing::debug!(error = %e, "Initial workspace sync skipped or deferred");
-        } else {
-            tracing::info!(
-                workspace = %workspace.display(),
-                "Auto-bootstrapped workspace with canonical documentation and skills"
-            );
-        }
-    }
-}
-
 /// Interactive mode entrypoint (Plain REPL or full-screen Aura Ratatui TUI)
 async fn run_interactive_mode(
     workspace: &Path,
     config: &Config,
     resume_session_id: Option<&str>,
 ) -> Result<()> {
-    // Ensure workspace is initialized with canonical documentation and skills (Phase 149 Auto-Bootstrap)
-    ensure_workspace_bootstrapped(workspace);
-
     let api_key_res = config.get_api_key(&config.provider.default);
     let custom_url = config.get_provider_base_url(&config.provider.default);
     let (provider, startup_err) = crate::agent::provider::create_provider_or_fallback(

@@ -733,7 +733,17 @@ impl MiniKitScaffolder {
 
         // 1. Write all template files
         for f in &stack.files {
-            let file_path = dest_dir.join(&f.path);
+            // Remap any legacy onpkg_docs/ path to minikit_docs/ so onpkg_docs is never created
+            let clean_rel_path = if f.path.starts_with(crate::constants::ONPKG_DOCS_DIR) {
+                f.path.replacen(
+                    crate::constants::ONPKG_DOCS_DIR,
+                    crate::constants::MINIKIT_DOCS_DIR,
+                    1,
+                )
+            } else {
+                f.path.clone()
+            };
+            let file_path = dest_dir.join(&clean_rel_path);
             if let Some(parent) = file_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
                     path: parent.display().to_string(),
@@ -752,27 +762,9 @@ impl MiniKitScaffolder {
                     source: e,
                 })?;
             }
-
-            // If the template file belongs to onpkg_docs/, mirror it into minikit_docs/
-            if f.path.starts_with(crate::constants::ONPKG_DOCS_DIR) {
-                let minikit_rel = f.path.replacen(
-                    crate::constants::ONPKG_DOCS_DIR,
-                    crate::constants::MINIKIT_DOCS_DIR,
-                    1,
-                );
-                let minikit_file_path = dest_dir.join(&minikit_rel);
-                if let Some(parent) = minikit_file_path.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                if let Some(bin) = &f.binary_content {
-                    let _ = fs::write(&minikit_file_path, bin);
-                } else {
-                    let _ = fs::write(&minikit_file_path, &f.content);
-                }
-            }
         }
 
-        // 2. Generate onpkg.json manifest
+        // 2. Generate minikit.json manifest
         let project_name = dest_dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -794,11 +786,6 @@ impl MiniKitScaffolder {
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
-        fs::write(
-            dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE),
-            &manifest_json,
-        )
-        .ok();
 
         // 3. Generate AGENTS.md instructions
         let agents_md = format!(
@@ -823,16 +810,10 @@ impl MiniKitScaffolder {
         );
         fs::write(dest_dir.join("AGENTS.md"), agents_md).ok();
 
-        // 4. Generate initial workflow docs under minikit_docs and onpkg_docs
+        // 4. Generate initial workflow docs under minikit_docs
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &docs_dir,
-            &project_name,
-            &stack.runtime,
-        );
-        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
-        super::sync::MiniKitSyncEngine::ensure_workflow_docs(
-            &onpkg_docs,
             &project_name,
             &stack.runtime,
         );

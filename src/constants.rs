@@ -492,7 +492,21 @@ pub const FAULT_LOCALIZATION_CONTEXT_LINES: usize = 12;
 // === Sandbox Environment Whitelist & Blacklist ===
 /// Standard environment variables permitted through execution sandbox
 pub const WHITELIST_ENV_VARS: &[&str] = &[
-    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "EDITOR", "TMPDIR", "PWD",
+    "PATH",
+    "HOME",
+    "USER",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SHELL",
+    "EDITOR",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "PWD",
+    "BUN_INSTALL",
+    "BUN_TMPDIR",
+    "BUN_INSTALL_CACHE_DIR",
 ];
 
 /// Substrings indicating confidential credentials in environment keys
@@ -954,7 +968,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 191;
+pub const TOTAL_TOOL_COUNT: usize = 202;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization

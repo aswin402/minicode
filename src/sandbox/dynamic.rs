@@ -431,6 +431,19 @@ async fn run_landlock_or_isolated(
         },
     );
 
+    // Ensure package managers like Bun have consistent temp and install paths on the same mount
+    if let Some(home) = dirs::home_dir() {
+        let bun_dir = home.join(".bun");
+        if std::env::var("BUN_INSTALL").is_err() && bun_dir.exists() {
+            std_cmd.env("BUN_INSTALL", &bun_dir);
+        }
+        if std::env::var("BUN_TMPDIR").is_err() {
+            let bun_tmp = bun_dir.join("tmp");
+            let _ = std::fs::create_dir_all(&bun_tmp);
+            std_cmd.env("BUN_TMPDIR", &bun_tmp);
+        }
+    }
+
     std_cmd.arg("-c").arg(command_str);
 
     #[cfg(target_os = "linux")]
@@ -468,6 +481,10 @@ async fn execute_std_command_with_limits(
 
         unsafe {
             std_cmd.pre_exec(move || {
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                }
                 if let Some(mb) = mem_mb {
                     let bytes = mb.saturating_mul(1024 * 1024);
                     let rlim = libc::rlimit {
@@ -502,6 +519,11 @@ async fn execute_std_command_with_limits(
         .spawn()
         .map_err(|e| ToolError::CommandExec(format!("Process spawn error: {}", e)))?;
 
+    let child_pid = child.id().unwrap_or(0);
+    if child_pid > 0 {
+        crate::dev::registry::get_global_dev_registry().register_external_pid(child_pid);
+    }
+
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -534,20 +556,41 @@ async fn execute_std_command_with_limits(
     };
 
     let status = match tokio::time::timeout(timeout, run_fut).await {
-        Ok(Ok(s)) => s,
+        Ok(Ok(s)) => {
+            if child_pid > 0 {
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
+            }
+            s
+        }
         Ok(Err(e)) => {
+            if child_pid > 0 {
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
+            }
             return Err(ToolError::CommandExec(format!("Process execution error: {}", e)).into());
         }
         Err(_) => {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
+            if child_pid > 0 {
+                let p_i32 = child_pid as i32;
+                let descendants = crate::dev::ports::find_all_descendants(child_pid);
                 unsafe {
-                    libc::kill(-(pid as i32), libc::SIGTERM);
+                    let _ = libc::kill(-p_i32, libc::SIGTERM);
+                    let _ = libc::kill(p_i32, libc::SIGTERM);
+                    for &d in &descendants {
+                        let _ = libc::kill(d as i32, libc::SIGTERM);
+                        let _ = libc::kill(-(d as i32), libc::SIGTERM);
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(PROCESS_KILL_GRACE_PERIOD_MS)).await;
                 unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
+                    let _ = libc::kill(-p_i32, libc::SIGKILL);
+                    let _ = libc::kill(p_i32, libc::SIGKILL);
+                    for &d in &descendants {
+                        let _ = libc::kill(d as i32, libc::SIGKILL);
+                        let _ = libc::kill(-(d as i32), libc::SIGKILL);
+                    }
                 }
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }
             let _ = child.kill().await;
             return Err(ToolError::CommandTimeout {

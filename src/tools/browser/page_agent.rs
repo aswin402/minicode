@@ -495,32 +495,29 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 }
             }
 
-            var pointerOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, pointerType: 'mouse', view: window };
-            var mouseOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
-
-            try { hitTarget.dispatchEvent(new PointerEvent('pointerover', pointerOpts)); } catch (_) {}
-            try { hitTarget.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, pointerOpts, { bubbles: false }))); } catch (_) {}
-            try { hitTarget.dispatchEvent(new MouseEvent('mouseover', mouseOpts)); } catch (_) {}
-            try { hitTarget.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, mouseOpts, { bubbles: false }))); } catch (_) {}
-            try { hitTarget.dispatchEvent(new PointerEvent('pointerdown', pointerOpts)); } catch (_) {}
-            try { hitTarget.dispatchEvent(new MouseEvent('mousedown', mouseOpts)); } catch (_) {}
-            try { if (typeof hitTarget.focus === 'function') hitTarget.focus(); } catch (_) {}
-            try { hitTarget.dispatchEvent(new PointerEvent('pointerup', pointerOpts)); } catch (_) {}
-            try { hitTarget.dispatchEvent(new MouseEvent('mouseup', mouseOpts)); } catch (_) {}
-            try { hitTarget.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
-
-            if (hitTarget !== el) {
-                try { el.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
-            }
-
-            // Always invoke native .click() on the target element
-            try {
-                if (typeof el.click === 'function') {
-                    el.click();
-                } else if (typeof hitTarget.click === 'function') {
-                    hitTarget.click();
+            // If valid coordinates exist, native CDP mouse_click_at(cx, cy) will deliver
+            // the authentic W3C event sequence with isTrusted: true without double-firing.
+            // Only perform synthetic DOM click fallback if element has no rendered coordinates.
+            if (cx <= 0 && cy <= 0) {
+                var pointerOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, pointerType: 'mouse', view: window };
+                var mouseOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, button: 0, view: window };
+                try { hitTarget.dispatchEvent(new PointerEvent('pointerdown', pointerOpts)); } catch (_) {}
+                try { hitTarget.dispatchEvent(new MouseEvent('mousedown', mouseOpts)); } catch (_) {}
+                try { if (typeof hitTarget.focus === 'function') hitTarget.focus(); } catch (_) {}
+                try { hitTarget.dispatchEvent(new PointerEvent('pointerup', pointerOpts)); } catch (_) {}
+                try { hitTarget.dispatchEvent(new MouseEvent('mouseup', mouseOpts)); } catch (_) {}
+                try { hitTarget.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
+                if (hitTarget !== el) {
+                    try { el.dispatchEvent(new MouseEvent('click', mouseOpts)); } catch (_) {}
                 }
-            } catch (_) {}
+                try {
+                    if (typeof el.click === 'function') {
+                        el.click();
+                    } else if (typeof hitTarget.click === 'function') {
+                        hitTarget.click();
+                    }
+                } catch (_) {}
+            }
 
             // Re-read element name / value after click mutation
             var updatedName = (el.innerText || el.value || el.getAttribute('aria-label') || name).trim();

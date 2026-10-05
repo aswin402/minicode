@@ -114,14 +114,38 @@ impl ToolRegistry {
                 display_output: String::new(),
                 duration_ms,
             },
-            Err(err) => ToolResult {
-                tool_id: tool_id.to_string(),
-                tool_name: tool_name.to_string(),
-                success: false,
-                output: format!("Error executing {}: {}", tool_name, err),
-                display_output: String::new(),
-                duration_ms,
-            },
+            Err(err) => {
+                let display_output = Self::format_minimal_display_error(tool_name, &err);
+                ToolResult {
+                    tool_id: tool_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    success: false,
+                    output: format!("Error executing {}: {}", tool_name, err),
+                    display_output,
+                    duration_ms,
+                }
+            }
+        }
+    }
+
+    fn format_minimal_display_error(tool_name: &str, err: &crate::error::MinicodeError) -> String {
+        let err_str = err.to_string();
+        if err_str.contains("EOF while parsing") || err_str.contains("Invalid JSON syntax") {
+            "Arguments truncated (payload too large). Decompose into modular files (<250 lines) or scaffold with `kit_stack_add`.".to_string()
+        } else if let Some(idx) = err_str.find("Raw arguments preview: '") {
+            let prefix = err_str[..idx].trim().trim_end_matches('.');
+            format!("{}: {}", tool_name, prefix)
+        } else if let Some(idx) = err_str.find("Raw arguments: '") {
+            let prefix = err_str[..idx].trim().trim_end_matches('.');
+            format!("{}: {}", tool_name, prefix)
+        } else {
+            let clean_lines: Vec<&str> = err_str
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .take(2)
+                .collect();
+            clean_lines.join("\n")
         }
     }
 
@@ -137,7 +161,12 @@ impl ToolRegistry {
                 .get("__raw")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let mut reason = format!("{}. Raw arguments: '{}'", err_msg, raw);
+            let raw_preview = if raw.len() > 200 {
+                format!("{}... [clamped {} bytes]", &raw[..200], raw.len())
+            } else {
+                raw.to_string()
+            };
+            let mut reason = format!("{}. Raw arguments preview: '{}'", err_msg, raw_preview);
             if err_msg.contains("EOF while parsing") || raw.len() > 8000 {
                 reason.push_str("\n[Actionable Recovery Guidance]: The tool call payload was truncated or malformed because the generated output was too large for a single tool call. Do NOT attempt to write a massive monolithic file. Decompose your project into modular files (e.g. separate index.html, styles.css, app.js) or write the scaffold structure first and use patch_file.");
             }

@@ -21,6 +21,7 @@ impl<'a> App<'a> {
                     *selected_yes = !*selected_yes;
                 }
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    crate::dev::registry::kill_all_sync();
                     self.should_exit = true;
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -28,12 +29,14 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Enter => {
                     if *selected_yes {
+                        crate::dev::registry::kill_all_sync();
                         self.should_exit = true;
                     } else {
                         self.modal = ModalState::None;
                     }
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    crate::dev::registry::kill_all_sync();
                     self.should_exit = true;
                 }
                 _ => {}
@@ -2030,12 +2033,13 @@ impl<'a> App<'a> {
                         crate::ui::modals::settings::SettingsTab::Browser => {
                             match state.selected_index {
                                 0 => {
-                                    state.browser_default_engine = match state.browser_default_engine.as_deref() {
-                                        None => Some("obscura".to_string()),
-                                        Some("obscura") => Some("firefox".to_string()),
-                                        Some("firefox") => Some("chrome".to_string()),
-                                        _ => None,
-                                    };
+                                    state.browser_default_engine =
+                                        match state.browser_default_engine.as_deref() {
+                                            None => Some("obscura".to_string()),
+                                            Some("obscura") => Some("firefox".to_string()),
+                                            Some("firefox") => Some("chrome".to_string()),
+                                            _ => None,
+                                        };
                                 }
                                 1 => {
                                     if !state.browser_headless_priority.is_empty() {
@@ -2049,8 +2053,16 @@ impl<'a> App<'a> {
                                 }
                                 3 => {
                                     state.browser_default_engine = None;
-                                    state.browser_headless_priority = vec!["obscura".to_string(), "chrome".to_string(), "firefox".to_string()];
-                                    state.browser_gui_priority = vec!["firefox".to_string(), "chrome".to_string(), "obscura".to_string()];
+                                    state.browser_headless_priority = vec![
+                                        "obscura".to_string(),
+                                        "chrome".to_string(),
+                                        "firefox".to_string(),
+                                    ];
+                                    state.browser_gui_priority = vec![
+                                        "firefox".to_string(),
+                                        "chrome".to_string(),
+                                        "obscura".to_string(),
+                                    ];
                                 }
                                 _ => {}
                             }
@@ -2138,12 +2150,13 @@ impl<'a> App<'a> {
                         crate::ui::modals::settings::SettingsTab::Browser => {
                             match state.selected_index {
                                 0 => {
-                                    state.browser_default_engine = match state.browser_default_engine.as_deref() {
-                                        None => Some("obscura".to_string()),
-                                        Some("obscura") => Some("firefox".to_string()),
-                                        Some("firefox") => Some("chrome".to_string()),
-                                        _ => None,
-                                    };
+                                    state.browser_default_engine =
+                                        match state.browser_default_engine.as_deref() {
+                                            None => Some("obscura".to_string()),
+                                            Some("obscura") => Some("firefox".to_string()),
+                                            Some("firefox") => Some("chrome".to_string()),
+                                            _ => None,
+                                        };
                                 }
                                 1 => {
                                     if !state.browser_headless_priority.is_empty() {
@@ -2157,8 +2170,16 @@ impl<'a> App<'a> {
                                 }
                                 3 => {
                                     state.browser_default_engine = None;
-                                    state.browser_headless_priority = vec!["obscura".to_string(), "chrome".to_string(), "firefox".to_string()];
-                                    state.browser_gui_priority = vec!["firefox".to_string(), "chrome".to_string(), "obscura".to_string()];
+                                    state.browser_headless_priority = vec![
+                                        "obscura".to_string(),
+                                        "chrome".to_string(),
+                                        "firefox".to_string(),
+                                    ];
+                                    state.browser_gui_priority = vec![
+                                        "firefox".to_string(),
+                                        "chrome".to_string(),
+                                        "obscura".to_string(),
+                                    ];
                                 }
                                 _ => {}
                             }
@@ -2182,7 +2203,8 @@ impl<'a> App<'a> {
                         };
                         self.config.agent.approval_policy = state.approval_policy.clone();
                         self.config.browser.default_engine = state.browser_default_engine.clone();
-                        self.config.browser.headless_priority = state.browser_headless_priority.clone();
+                        self.config.browser.headless_priority =
+                            state.browser_headless_priority.clone();
                         self.config.browser.gui_priority = state.browser_gui_priority.clone();
 
                         if state.save_to_workspace {
@@ -2208,7 +2230,9 @@ impl<'a> App<'a> {
                             || old_browser != self.config.browser;
 
                         if old_browser != self.config.browser {
-                            self.timeline.add_status("✔ Browser preferences updated in configuration".to_string());
+                            self.timeline.add_status(
+                                "✔ Browser preferences updated in configuration".to_string(),
+                            );
                         }
 
                         if config_changed {
@@ -3271,7 +3295,7 @@ impl<'a> App<'a> {
         sub: PendingSubmission,
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
     ) {
-        self.timeline.add_user_message(sub.display);
+        self.timeline.add_user_message(sub.prompt.clone());
         self.is_working = true;
         self.current_activity = Some(crate::ui::AgentActivity::Thinking);
         self.work_start = Some(Instant::now());

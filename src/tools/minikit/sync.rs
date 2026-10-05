@@ -413,12 +413,9 @@ impl MiniKitSyncEngine {
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
 
-        // Also sync onpkg.json for seamless backward-compatibility
+        // Update onpkg.json ONLY if it already exists in legacy projects; never create it anew
         let onpkg_json_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        if onpkg_json_path.exists() || manifest_filename == crate::constants::ONPKG_MANIFEST_FILE {
-            fs::write(&onpkg_json_path, &manifest_json).ok();
-        } else {
-            // Also write onpkg.json so tooling expecting either manifest works
+        if onpkg_json_path.exists() {
             fs::write(&onpkg_json_path, &manifest_json).ok();
         }
 

@@ -628,7 +628,9 @@ impl AgentLoop {
         // Reset stuck detector at start of user turn
         self.stuck_detector.reset();
 
-        // Broadcast initial active execution plan tasks if present
+        // Reconcile any uncompleted tasks whose deliverables already exist on disk
+        let wm = crate::context::working_memory::WorkingMemory::new(&self.workspace_root);
+        let _ = wm.reconcile_workspace_tasks(&[]);
         self.emit_current_plan(Some(turn_id), &event_sender);
 
         let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
@@ -737,7 +739,7 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut was_cancelled = false;
-        let mut circuit_tripped = false;
+        let circuit_tripped = false;
         let mut hit_iteration_limit = false;
 
         let options = CompletionOptions {
@@ -805,7 +807,7 @@ impl AgentLoop {
                                 retry_count += 1;
                                 let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
                                 let retry_msg = format!(
-                                    "Provider connection error. Retrying in {}s (attempt {}/{})...",
+                                    "⚠ Provider connection error. Retrying in {}s (attempt {}/{})...",
                                     delay_secs, retry_count, max_retries
                                 );
                                 let event = AgentEvent::Error {
@@ -945,7 +947,7 @@ impl AgentLoop {
                             retry_count += 1;
                             let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
                             let retry_msg = format!(
-                                "Rate limit or network error. Retrying in {}s (attempt {}/{})...",
+                                "⚠ Rate limit or network error. Retrying in {}s (attempt {}/{})...",
                                 delay_secs, retry_count, max_retries
                             );
                             let event = AgentEvent::Error {
@@ -1142,14 +1144,13 @@ impl AgentLoop {
                                         tool_result.output.push_str(&intervention);
                                     }
                                     BreakerAction::Trip { reason, loop_type } => {
-                                        tracing::error!(
+                                        tracing::warn!(
                                             tool = %tool_call.name,
                                             pattern = %loop_type.pattern_name(),
-                                            "Anti-thrashing circuit breaker TRIPPED: runaway loop halted"
+                                            "Anti-thrashing circuit breaker intervention injected"
                                         );
                                         tool_result.output.push_str("\n\n");
                                         tool_result.output.push_str(&reason);
-                                        circuit_tripped = true;
 
                                         let trip_event = AgentEvent::AntiThrashTripped {
                                             turn_id,
@@ -1593,14 +1594,13 @@ impl AgentLoop {
                                     tool_result.output.push_str(&intervention);
                                 }
                                 BreakerAction::Trip { reason, loop_type } => {
-                                    tracing::error!(
+                                    tracing::warn!(
                                         tool = %tool_call.name,
                                         pattern = %loop_type.pattern_name(),
-                                        "Anti-thrashing circuit breaker TRIPPED: runaway loop halted"
+                                        "Anti-thrashing circuit breaker intervention injected"
                                     );
                                     tool_result.output.push_str("\n\n");
                                     tool_result.output.push_str(&reason);
-                                    circuit_tripped = true;
 
                                     let trip_event = AgentEvent::AntiThrashTripped {
                                         turn_id,
@@ -1708,6 +1708,29 @@ impl AgentLoop {
                                             );
                                         }
                                     }
+                                    let wm =
+                                        crate::context::memory::working_memory::WorkingMemory::new(
+                                            &self.workspace_root,
+                                        );
+                                    let reconciled =
+                                        wm.reconcile_workspace_tasks(&[path_str.to_string()]);
+                                    if reconciled > 0 {
+                                        self.emit_current_plan(Some(turn_id), &event_sender);
+                                    }
+                                }
+                            }
+
+                            if tool_result.success
+                                && (tool_call.name == "kit_stack_add"
+                                    || tool_call.name == "block_scaffold"
+                                    || tool_call.name == "block_insert")
+                            {
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                let reconciled = wm.reconcile_workspace_tasks(&[]);
+                                if reconciled > 0 {
+                                    self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
                             }
 
@@ -1947,15 +1970,19 @@ impl AgentLoop {
                         let wm = crate::context::working_memory::WorkingMemory::new(
                             &self.workspace_root,
                         );
-                        let tasks = wm.read_parsed_tasks();
-                        let target_task = tasks
-                            .iter()
-                            .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
-                            .or_else(|| {
-                                tasks.iter().find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::Pending)
-                            });
-                        if let Some(task) = target_task {
-                            let _ = wm.update_progress(&task.title, "completed");
+                        let reconciled = wm.reconcile_workspace_tasks(&turn_files_modified);
+                        if reconciled == 0 {
+                            // If no explicit file deliverable matched, advance active/pending task
+                            let tasks = wm.read_parsed_tasks();
+                            let target_task = tasks
+                                .iter()
+                                .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
+                                .or_else(|| {
+                                    tasks.iter().find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::Pending)
+                                });
+                            if let Some(task) = target_task {
+                                let _ = wm.update_progress(&task.title, "completed");
+                            }
                         }
                         self.emit_current_plan(Some(turn_id), &event_sender);
 
@@ -2049,6 +2076,39 @@ impl AgentLoop {
                 }
 
                 // No more tool calls and workspace compiles cleanly; assistant finished turn
+                // Reconcile any tasks whose deliverables are complete on disk so UI never lingers
+                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                    &self.workspace_root,
+                );
+                let _ = wm.reconcile_workspace_tasks(&turn_files_modified);
+
+                // Auto-advance and complete tasks when assistant concludes turn cleanly
+                if !hit_iteration_limit && !was_cancelled && !circuit_tripped {
+                    let tasks = wm.read_parsed_tasks();
+                    if let Some(active_task) = tasks
+                        .iter()
+                        .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
+                    {
+                        let _ = wm.update_progress(&active_task.title, "completed");
+                    }
+
+                    // If all tasks were completed except the final verification milestone, complete it
+                    let refreshed = wm.read_parsed_tasks();
+                    let pending: Vec<_> = refreshed
+                        .iter()
+                        .filter(|t| {
+                            t.status
+                                != crate::context::memory::working_memory::TaskItemStatus::Completed
+                        })
+                        .collect();
+                    if pending.len() == 1
+                        && (!turn_files_modified.is_empty() || !turn_tool_calls.is_empty())
+                    {
+                        let _ = wm.update_progress(&pending[0].title, "completed");
+                    }
+                }
+                self.emit_current_plan(Some(turn_id), &event_sender);
+
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
                 self.messages.push(Message::assistant(clean_text));
                 break;
@@ -2529,30 +2589,24 @@ impl AgentLoop {
         event_sender: &mpsc::UnboundedSender<AgentEvent>,
     ) {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-        let (_phase_label, tasks) = wm.read_active_phase_tasks();
-        if !tasks.is_empty() {
-            let total_tasks = tasks.len();
-            let completed_tasks = tasks
-                .iter()
-                .filter(|t| {
-                    t.status == crate::context::memory::working_memory::TaskItemStatus::Completed
-                })
-                .count();
-            let active_task = tasks
-                .iter()
-                .find(|t| {
-                    t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
-                })
-                .map(|t| t.title.clone());
-
+        if let Some(summary) = wm.read_active_plan_summary() {
             let event = AgentEvent::PlanUpdated {
                 turn_id,
-                total_tasks,
-                completed_tasks,
-                active_task,
-                tasks,
+                total_tasks: summary.total_tasks,
+                completed_tasks: summary.completed_tasks,
+                active_task: summary.active_task,
+                tasks: summary.tasks,
             };
             let _ = self.session_store.append_event(&self.session_id, &event);
+            let _ = event_sender.send(event);
+        } else {
+            let event = AgentEvent::PlanUpdated {
+                turn_id,
+                total_tasks: 0,
+                completed_tasks: 0,
+                active_task: None,
+                tasks: Vec::new(),
+            };
             let _ = event_sender.send(event);
         }
     }

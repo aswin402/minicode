@@ -659,6 +659,15 @@ impl MiniKitSkillsManager {
         workspace_root: &Path,
         active_files: &[PathBuf],
     ) -> String {
+        Self::format_progressive_prompt_context_with_prompt(workspace_root, active_files, None)
+    }
+
+    /// Formats progressive agent prompt context with optional prompt intent matching (Hermes-style autonomous skill activation).
+    pub fn format_progressive_prompt_context_with_prompt(
+        workspace_root: &Path,
+        active_files: &[PathBuf],
+        prompt: Option<&str>,
+    ) -> String {
         let all_skills = Self::get_all_skills_metadata(workspace_root);
         if all_skills.is_empty() {
             return String::new();
@@ -681,7 +690,8 @@ impl MiniKitSkillsManager {
             ));
         }
 
-        // Tier 2: Automatically attach rules for active files or explicitly enabled skills
+        // Tier 2: Automatically attach rules for active files, workspace tech, prompt keywords, or explicitly enabled skills
+        let prompt_lower = prompt.map(|p| p.to_ascii_lowercase());
         let mut matched_skills = Vec::new();
         for s in &all_skills {
             let is_manifest = manifest_active
@@ -690,7 +700,42 @@ impl MiniKitSkillsManager {
             let matches_file = active_files
                 .iter()
                 .any(|f| s.matches_path(workspace_root, f));
-            if is_manifest || s.always_apply || matches_file {
+
+            let matches_prompt = prompt_lower
+                .as_deref()
+                .map(|p| {
+                    let name = s.name.to_ascii_lowercase();
+                    crate::utils::has_word(p, &name)
+                        || (name == "frontend-design"
+                            && crate::utils::has_any_word(
+                                p,
+                                &["ui", "ux", "landing", "frontend", "design"],
+                            ))
+                        || (name == "ui-ux-pro-max"
+                            && crate::utils::has_any_word(p, &["palette", "theme", "aesthetic"]))
+                        || (name == "tailwind" && p.contains("tailwind"))
+                        || (name == "next" && (p.contains("nextjs") || p.contains("next.js")))
+                })
+                .unwrap_or(false);
+
+            let matches_workspace = {
+                let name = s.name.to_ascii_lowercase();
+                if name == "rust" && workspace_root.join("Cargo.toml").exists() {
+                    true
+                } else if (name == "react" || name == "tailwind" || name == "next")
+                    && workspace_root.join("package.json").exists()
+                {
+                    let pkg_content = fs::read_to_string(workspace_root.join("package.json"))
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    pkg_content.contains(&name)
+                } else {
+                    false
+                }
+            };
+
+            if is_manifest || s.always_apply || matches_file || matches_prompt || matches_workspace
+            {
                 matched_skills.push(s);
             }
         }

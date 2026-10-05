@@ -105,6 +105,12 @@ pub fn has_word(text: &str, word: &str) -> bool {
         .any(|w| w.eq_ignore_ascii_case(word))
 }
 
+/// Checks if a string contains any of `words` as a distinct token.
+#[must_use]
+pub fn has_any_word(text: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| has_word(text, w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

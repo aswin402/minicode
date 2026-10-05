@@ -161,7 +161,42 @@ impl BlockStore {
     }
 
     /// Searches components using inverted indices and multi-token fuzzy/substring scoring.
+    /// If strict framework/tag filtering returns 0 matches for a query, automatically relaxes
+    /// filters so relevant components across frameworks are discovered rather than returning empty.
     pub fn search_components(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult> {
+        let exact_matches = self.search_components_exact(filter);
+        if !exact_matches.is_empty() {
+            return exact_matches;
+        }
+
+        // Fallback 1: If query was provided and framework/tags yielded 0 results, relax framework and tags
+        if filter.query.is_some() && (filter.framework.is_some() || filter.tags.is_some()) {
+            let mut relaxed = filter.clone();
+            relaxed.framework = None;
+            relaxed.tags = None;
+            let relaxed_matches = self.search_components_exact(&relaxed);
+            if !relaxed_matches.is_empty() {
+                return relaxed_matches;
+            }
+        }
+
+        // Fallback 2: If category also yielded 0 results, relax category
+        if filter.query.is_some() && filter.category.is_some() {
+            let mut broad = filter.clone();
+            broad.category = None;
+            broad.framework = None;
+            broad.tags = None;
+            let broad_matches = self.search_components_exact(&broad);
+            if !broad_matches.is_empty() {
+                return broad_matches;
+            }
+        }
+
+        Vec::new()
+    }
+
+    /// Internal exact-filter component search.
+    pub fn search_components_exact(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult> {
         let mut candidate_ids: Option<HashSet<Uuid>> = None;
 
         // 1. Filter by category index
@@ -707,10 +742,9 @@ pub fn get_global_block_store() -> &'static RwLock<BlockStore> {
             s
         });
 
-        if store.stats().total_components == 0 {
-            if let Err(e) = crate::blocks::seed::seed_default_blocks(&mut store) {
-                tracing::warn!("Failed to seed default blocks into global store: {}", e);
-            }
+        // Seed default blocks (inserts any newly introduced seed catalog components/palettes/gradients)
+        if let Err(e) = crate::blocks::seed::seed_default_blocks(&mut store) {
+            tracing::warn!("Failed to seed default blocks into global store: {}", e);
         }
 
         RwLock::new(store)

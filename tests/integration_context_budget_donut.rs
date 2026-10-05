@@ -61,6 +61,7 @@ fn test_context_budget_recency_context_injection() {
         None,
         Some(&budget),
         None,
+        None,
     );
 
     assert!(recency.contains("<workspace_context>"));

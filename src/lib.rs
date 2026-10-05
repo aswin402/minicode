@@ -1,4 +1,11 @@
 #![recursion_limit = "512"]
+#![allow(
+    clippy::manual_checked_ops,
+    clippy::unnecessary_sort_by,
+    clippy::collapsible_match,
+    clippy::useless_borrows_in_formatting,
+    clippy::question_mark
+)]
 
 pub mod agent;
 pub mod app;

@@ -214,27 +214,60 @@ pub async fn dispatch(
                 _ => crate::agent::task_dag::TaskStatus::Completed,
             };
 
-            let mut dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
-            dag.set_task_status(task_id, status)?;
-            dag.save(workspace_root)?;
-
-            let next = dag.next_executable_tasks();
-            let next_desc = if next.is_empty() {
-                "None (all remaining tasks are blocked or completed)".to_string()
-            } else {
-                next.iter()
-                    .map(|t| format!("`{}` ({})", t.id, t.title))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            let mut dag = match crate::agent::task_dag::TaskDag::load(workspace_root) {
+                Ok(d) if !d.tasks.is_empty() => Some(d),
+                _ => None,
             };
 
-            Ok(format!(
-                "✔ Updated task `{}` to status {:?}.\n👉 Newly unblocked executable task(s): {}\n\n{}",
-                task_id,
-                status,
-                next_desc,
-                dag.generate_report()
-            ))
+            if let Some(ref mut d) = dag {
+                if d.tasks.contains_key(task_id) {
+                    d.set_task_status(task_id, status)?;
+                    d.save(workspace_root)?;
+                    let next = d.next_executable_tasks();
+                    let next_desc = if next.is_empty() {
+                        "None (all remaining tasks are blocked or completed)".to_string()
+                    } else {
+                        next.iter()
+                            .map(|t| format!("`{}` ({})", t.id, t.title))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return Ok(format!(
+                        "✔ Updated task `{}` to status {:?}.\n👉 Newly unblocked executable task(s): {}\n\n{}",
+                        task_id,
+                        status,
+                        next_desc,
+                        d.generate_report()
+                    ));
+                }
+            }
+
+            // Fallback: If not in TaskDag, bridge seamlessly to WorkingMemory (task_plan.md / todo.md)
+            let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+            match wm.update_progress(task_id, status_str) {
+                Ok(_) => Ok(format!(
+                    "✔ Updated task step '{}' to status '{}' in active plan.",
+                    task_id, status_str
+                )),
+                Err(_) => {
+                    // Try with 'active' if task_id resembles the current overarching goal/task
+                    if wm.update_progress("active", status_str).is_ok() {
+                        Ok(format!(
+                            "✔ Updated active task plan milestone to '{}'.",
+                            status_str
+                        ))
+                    } else {
+                        Err(ToolError::InvalidArguments {
+                            name: "complete_task".to_string(),
+                            reason: format!(
+                                "Task '{}' was not found in Task DAG or active Working Memory. Use 'update_progress' with step description or number.",
+                                task_id
+                            ),
+                        }
+                        .into())
+                    }
+                }
+            }
         })()),
         "schedule_task_waves" => Some((|| {
             let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;

@@ -22,14 +22,32 @@ pub struct EngineProcess {
 }
 
 impl EngineProcess {
-    /// Kill process and all descendants
+    /// Kill process and all descendants cleanly
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(pid) = self.child.id() {
             #[cfg(unix)]
-            unsafe {
-                let _ = libc::kill(-(pid as i32), libc::SIGTERM);
-                let _ = libc::kill(-(pid as i32), libc::SIGKILL);
+            {
+                let p_i32 = pid as i32;
+                let descendants = crate::dev::ports::find_all_descendants(pid);
+                unsafe {
+                    let _ = libc::kill(-p_i32, libc::SIGTERM);
+                    let _ = libc::kill(p_i32, libc::SIGTERM);
+                    for &desc in &descendants {
+                        let _ = libc::kill(desc as i32, libc::SIGTERM);
+                        let _ = libc::kill(-(desc as i32), libc::SIGTERM);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                unsafe {
+                    let _ = libc::kill(-p_i32, libc::SIGKILL);
+                    let _ = libc::kill(p_i32, libc::SIGKILL);
+                    for &desc in &descendants {
+                        let _ = libc::kill(desc as i32, libc::SIGKILL);
+                        let _ = libc::kill(-(desc as i32), libc::SIGKILL);
+                    }
+                }
             }
+            crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
         }
         let _ = self.child.kill().await;
         Ok(())

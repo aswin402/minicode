@@ -39,6 +39,18 @@ pub struct MilestonePhase {
     pub is_active: bool,
 }
 
+/// Detailed summary of the active plan and its tasks for UI synchronization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivePlanSummary {
+    pub phase_label: String,
+    pub total_tasks: usize,
+    pub completed_tasks: usize,
+    pub in_progress_tasks: usize,
+    pub pending_tasks: usize,
+    pub active_task: Option<String>,
+    pub tasks: Vec<TaskItem>,
+}
+
 /// Quadrants of the senior engineer scratchpad (`.minicode/NOTES.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -216,19 +228,22 @@ impl WorkingMemory {
         fs::write(self.task_plan_path(), &plan_content)
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        // Also synchronize with canonical `todo.md` if minikit docs are active
+        // If canonical `todo.md` does NOT exist yet, initialize it as the project's task list.
+        // If it ALREADY exists, do NOT overwrite it, because it contains the project's core roadmap!
         let todo_path = self.canonical_todo_path();
-        if let Some(parent) = todo_path.parent() {
-            let _ = fs::create_dir_all(parent);
-            let mut todo_content = format!(
-                "# Tasks & Todo: {}\n\n> Initialized: {}\n\n",
-                title, timestamp
-            );
-            for (idx, step) in steps.iter().enumerate() {
-                let clean = Self::sanitize_step_title(step);
-                todo_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
+        if !todo_path.exists() {
+            if let Some(parent) = todo_path.parent() {
+                let _ = fs::create_dir_all(parent);
+                let mut todo_content = format!(
+                    "# Tasks & Todo: {}\n\n> Initialized: {}\n\n",
+                    title, timestamp
+                );
+                for (idx, step) in steps.iter().enumerate() {
+                    let clean = Self::sanitize_step_title(step);
+                    todo_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
+                }
+                let _ = fs::write(&todo_path, todo_content);
             }
-            let _ = fs::write(&todo_path, todo_content);
         }
 
         let initial_progress = format!(
@@ -245,26 +260,28 @@ impl WorkingMemory {
         fs::write(self.findings_path(), initial_findings)
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
+        // Synchronize living IntentLedger with the new active plan
+        let intent_path = self
+            .workspace_root
+            .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        let mut new_ledger = crate::context::memory::intent::IntentLedger::new(title);
+        for step in steps {
+            new_ledger.add_item(&Self::sanitize_step_title(step), None, Vec::new());
+        }
+        let _ = new_ledger.save_to_disk(&intent_path);
+
         // Initialize NOTES.md template if missing
         let _ = self.ensure_notes_template();
 
         Ok(())
     }
 
-    /// Reads the current active plan if available.
-    pub fn read_plan(&self) -> Result<Option<String>> {
-        let todo_path = self.canonical_todo_path();
-        if todo_path.exists() {
-            if let Ok(content) = fs::read_to_string(&todo_path) {
-                if !content.trim().is_empty() {
-                    return Ok(Some(content));
-                }
-            }
-        }
-
+    /// Reads the active execution plan from `.minicode/plan/task_plan.md`.
+    pub fn read_task_plan(&self) -> Result<Option<String>> {
         let path = self.task_plan_path();
         match fs::read_to_string(&path) {
-            Ok(content) => Ok(Some(content)),
+            Ok(content) if !content.trim().is_empty() => Ok(Some(content)),
+            Ok(_) => Ok(None),
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
                     Ok(None)
@@ -274,6 +291,63 @@ impl WorkingMemory {
                 }
             }
         }
+    }
+
+    /// Reads the canonical project roadmap from `canonical_todo_path()`.
+    pub fn read_roadmap_todo(&self) -> Result<Option<String>> {
+        let todo_path = self.canonical_todo_path();
+        if todo_path.exists() {
+            if let Ok(content) = fs::read_to_string(&todo_path) {
+                if !content.trim().is_empty() {
+                    return Ok(Some(content));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reads the active plan if available (prefers active task plan, falls back to roadmap).
+    pub fn read_plan(&self) -> Result<Option<String>> {
+        if let Ok(Some(plan)) = self.read_task_plan() {
+            return Ok(Some(plan));
+        }
+        self.read_roadmap_todo()
+    }
+
+    /// Parses discrete task items specifically from active `.minicode/plan/task_plan.md`.
+    pub fn read_task_plan_tasks(&self) -> Vec<TaskItem> {
+        let content = match self.read_task_plan() {
+            Ok(Some(c)) => c,
+            _ => return Vec::new(),
+        };
+
+        let mut tasks = Vec::new();
+        for (idx, line) in content.lines().enumerate() {
+            if let Some(task) = Self::parse_task_line(idx, line.trim()) {
+                tasks.push(task);
+            }
+        }
+        tasks
+    }
+
+    /// Extracts title header from `task_plan.md`.
+    pub fn read_task_plan_title(&self) -> Option<String> {
+        let content = self.read_task_plan().ok().flatten()?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(t) = trimmed.strip_prefix("# Task Plan:") {
+                let clean = t.trim();
+                if !clean.is_empty() {
+                    return Some(clean.to_string());
+                }
+            } else if let Some(t) = trimmed.strip_prefix("# ") {
+                let clean = t.trim();
+                if !clean.is_empty() {
+                    return Some(clean.to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Parses a single task line into a TaskItem if it contains a task marker.
@@ -334,9 +408,14 @@ impl WorkingMemory {
 
     /// Parses roadmap milestones and their tasks from canonical `todo.md`.
     pub fn read_roadmap_milestones(&self) -> Vec<MilestonePhase> {
-        let content = match self.read_plan() {
-            Ok(Some(c)) => c,
-            _ => return Vec::new(),
+        let content = match self
+            .read_roadmap_todo()
+            .ok()
+            .flatten()
+            .or_else(|| self.read_task_plan().ok().flatten())
+        {
+            Some(c) => c,
+            None => return Vec::new(),
         };
 
         let mut milestones: Vec<MilestonePhase> = Vec::new();
@@ -433,6 +512,7 @@ impl WorkingMemory {
     /// Reads only the active phase's tasks, windowed to recent completed + active + next pending.
     /// Returns `(phase_title, windowed_tasks)`. If all tasks are completed or no tasks exist,
     /// returns `(None, Vec::new())`.
+    #[allow(dead_code)]
     pub fn read_active_phase_tasks(&self) -> (Option<String>, Vec<TaskItem>) {
         let milestones = self.read_roadmap_milestones();
         if let Some(active_milestone) = milestones.iter().find(|m| m.is_active) {
@@ -475,6 +555,116 @@ impl WorkingMemory {
         } else {
             (None, Vec::new())
         }
+    }
+
+    /// Helper to construct an ActivePlanSummary from a slice of tasks and phase label.
+    pub fn build_plan_summary(
+        phase_label: String,
+        tasks: &[TaskItem],
+    ) -> Option<ActivePlanSummary> {
+        if tasks.is_empty() {
+            return None;
+        }
+
+        let total_tasks = tasks.len();
+        let completed_tasks = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count();
+        let in_progress_tasks = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::InProgress)
+            .count();
+        let pending_tasks = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Pending)
+            .count();
+
+        let active_task = tasks
+            .iter()
+            .find(|t| t.status == TaskItemStatus::InProgress)
+            .map(|t| t.title.clone())
+            .or_else(|| {
+                tasks
+                    .iter()
+                    .find(|t| t.status == TaskItemStatus::Pending)
+                    .map(|t| t.title.clone())
+            });
+
+        let mut windowed = Vec::new();
+        if pending_tasks == 0 && in_progress_tasks == 0 {
+            // All tasks completed: display all completed tasks (up to 6)
+            let start = tasks.len().saturating_sub(6);
+            for t in &tasks[start..] {
+                windowed.push((*t).clone());
+            }
+        } else {
+            let completed: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Completed)
+                .collect();
+            let in_progress: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::InProgress)
+                .collect();
+            let pending: Vec<&TaskItem> = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Pending)
+                .collect();
+
+            let start = completed.len().saturating_sub(2);
+            for t in &completed[start..] {
+                windowed.push((*t).clone());
+            }
+            for t in in_progress {
+                windowed.push(t.clone());
+            }
+            for t in pending.into_iter().take(3) {
+                windowed.push(t.clone());
+            }
+        }
+
+        Some(ActivePlanSummary {
+            phase_label,
+            total_tasks,
+            completed_tasks,
+            in_progress_tasks,
+            pending_tasks,
+            active_task,
+            tasks: windowed,
+        })
+    }
+
+    /// Returns the active plan summary for UI synchronization.
+    /// Prioritizes active MiniPower execution steps from `.minicode/plan/task_plan.md`
+    /// for the inline todo widget, and falls back to active milestone from canonical `todo.md`.
+    pub fn read_active_plan_summary(&self) -> Option<ActivePlanSummary> {
+        let task_plan_tasks = self.read_task_plan_tasks();
+        if !task_plan_tasks.is_empty() {
+            let title = self
+                .read_task_plan_title()
+                .unwrap_or_else(|| "Active Plan".to_string());
+            return Self::build_plan_summary(title, &task_plan_tasks);
+        }
+
+        let milestones = self.read_roadmap_milestones();
+        if milestones.is_empty() {
+            return None;
+        }
+
+        let milestone = milestones
+            .iter()
+            .find(|m| m.in_progress_tasks > 0)
+            .or_else(|| milestones.iter().find(|m| m.pending_tasks > 0))
+            .or_else(|| milestones.last())?;
+
+        let phase_label = if milestone.id == milestone.title {
+            milestone.id.clone()
+        } else {
+            format!("{}: {}", milestone.id, milestone.title)
+        };
+
+        Self::build_plan_summary(phase_label, &milestone.tasks)
     }
 
     /// Appends a new architectural finding or observation.
@@ -673,6 +863,14 @@ impl WorkingMemory {
                 return false;
             };
 
+            let current_status = parsed_items[target_pos].1.status;
+            if (is_done && current_status == TaskItemStatus::Completed)
+                || (is_active && current_status == TaskItemStatus::InProgress)
+                || (is_pending && current_status == TaskItemStatus::Pending)
+            {
+                return true;
+            }
+
             let target_line_idx = parsed_items[target_pos].0;
             let mut updated_lines: Vec<String> = Vec::new();
             let mut modified = false;
@@ -753,26 +951,308 @@ impl WorkingMemory {
         let updated_plan = update_file(&self.task_plan_path());
         let updated_todo = update_file(&self.canonical_todo_path());
 
-        if !updated_plan && !updated_todo {
+        // Also synchronize IntentLedger if active on disk
+        let mut updated_intent = false;
+        let intent_path = self
+            .workspace_root
+            .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        if intent_path.exists() {
+            if let Ok(mut ledger) =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path)
+            {
+                let clean_step = Self::sanitize_step_title(step).to_ascii_lowercase();
+                for (item_idx, item) in ledger.items.iter_mut().enumerate() {
+                    let title_lower = item.title.to_ascii_lowercase();
+                    if title_lower.contains(&clean_step)
+                        || clean_step.contains(&title_lower)
+                        || target_index.map(|i| i - 1) == Some(item_idx)
+                    {
+                        item.status = if is_done {
+                            crate::context::memory::intent::RequirementStatus::Completed
+                        } else if is_active {
+                            crate::context::memory::intent::RequirementStatus::InProgress
+                        } else {
+                            crate::context::memory::intent::RequirementStatus::Pending
+                        };
+                        updated_intent = true;
+                    }
+                }
+                if updated_intent {
+                    let _ = ledger.save_to_disk(&intent_path);
+                }
+            }
+        }
+
+        if !updated_plan && !updated_todo && !updated_intent {
             let available_tasks = self.read_parsed_tasks();
-            let pending_list = if available_tasks.is_empty() {
-                "  (No tasks found in active plan)".to_string()
+            if available_tasks.is_empty()
+                && !self.task_plan_path().exists()
+                && !self.canonical_todo_path().exists()
+            {
+                // Auto-bootstrap active plan with this initial step so the agent workflow continues seamlessly
+                let clean_title = Self::sanitize_step_title(step);
+                let _ = self.init_plan("Development Plan", &[clean_title]);
+                let _ = update_file(&self.task_plan_path());
+                let _ = update_file(&self.canonical_todo_path());
             } else {
-                available_tasks
+                let pending_list = available_tasks
                     .iter()
                     .enumerate()
                     .map(|(i, t)| format!("  {}. [{:?}] {}", i + 1, t.status, t.title))
                     .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            return Err(ContextError::Memory(format!(
-                "No matching task step found for '{}'. Available tasks:\n{}",
-                step, pending_list
-            ))
-            .into());
+                    .join("\n");
+                return Err(ContextError::Memory(format!(
+                    "No matching task step found for '{}'. Available tasks:\n{}",
+                    step, pending_list
+                ))
+                .into());
+            }
+        }
+
+        // When all tasks in the active plan are completed, ensure progress.md reflects Completed (100%)
+        let refreshed = self.read_parsed_tasks();
+        if !refreshed.is_empty()
+            && refreshed
+                .iter()
+                .all(|t| t.status == TaskItemStatus::Completed)
+        {
+            let p_path = self.progress_path();
+            if let Ok(content) = fs::read_to_string(&p_path) {
+                if content.contains("- Status: In Progress") {
+                    let updated =
+                        content.replacen("- Status: In Progress", "- Status: Completed (100%)", 1);
+                    let _ = fs::write(&p_path, updated);
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Extracts potential deliverable file names or relative paths from a task title.
+    /// E.g. "Create main.js — terminal preview simulation..." -> ["main.js"]
+    /// E.g. "Implement user auth in src/auth.rs" -> ["src/auth.rs"]
+    pub fn extract_candidate_files(title: &str) -> Vec<String> {
+        let mut candidates = Vec::new();
+        for word in title.split_whitespace() {
+            let clean = word.trim_matches(|c: char| {
+                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+            });
+            if clean.is_empty() {
+                continue;
+            }
+            if clean.eq_ignore_ascii_case("dockerfile") || clean.eq_ignore_ascii_case("makefile") {
+                candidates.push(clean.to_string());
+                continue;
+            }
+            if let Some(pos) = clean.rfind('.') {
+                let ext = &clean[pos + 1..];
+                // Ignore purely numeric extensions (e.g. "0.1.0" or "v1.0") and known non-file tech tokens
+                if !ext.is_empty()
+                    && ext.len() <= 6
+                    && !ext.chars().all(|c| c.is_ascii_digit())
+                    && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                {
+                    let clean_lower = clean.to_ascii_lowercase();
+                    if clean_lower != "node.js"
+                        && clean_lower != "socket.io"
+                        && !clean_lower.ends_with(".ai")
+                        && !clean_lower.ends_with(".com")
+                        && !clean_lower.ends_with(".org")
+                        && !clean_lower.ends_with(".io")
+                    {
+                        candidates.push(clean.to_string());
+                        continue;
+                    }
+                }
+            }
+            if clean.contains('/') && !clean.starts_with("http") && clean.len() >= 3 {
+                candidates.push(clean.to_string());
+            }
+        }
+        candidates
+    }
+
+    /// Dynamically reconciles uncompleted tasks against files modified during the turn
+    /// or verified on disk in the workspace.
+    ///
+    /// Returns the number of tasks updated to `Completed`.
+    pub fn reconcile_workspace_tasks(&self, modified_files: &[String]) -> usize {
+        let tasks = self.read_parsed_tasks();
+        if tasks.is_empty() {
+            return 0;
+        }
+
+        let mut reconciled = 0;
+
+        for task in &tasks {
+            if task.status == TaskItemStatus::Completed {
+                continue;
+            }
+
+            let task_lower = task.title.to_ascii_lowercase();
+            let is_creation_intent = crate::utils::has_any_word(
+                &task_lower,
+                &[
+                    "create",
+                    "add",
+                    "scaffold",
+                    "write",
+                    "generate",
+                    "build",
+                    "setup",
+                    "implement",
+                    "make",
+                ],
+            );
+            let is_mutation_intent = crate::utils::has_any_word(
+                &task_lower,
+                &[
+                    "refactor", "fix", "update", "modify", "patch", "clean", "rewrite",
+                ],
+            );
+
+            let candidates = Self::extract_candidate_files(&task.title);
+            let mut file_satisfied = false;
+
+            for candidate in &candidates {
+                // 1. Check if candidate matches any explicitly modified file
+                let in_modified = modified_files.iter().any(|m| {
+                    m.eq_ignore_ascii_case(candidate)
+                        || m.ends_with(&format!("/{}", candidate))
+                        || candidate.ends_with(&format!("/{}", m))
+                });
+
+                // 2. Check if candidate file exists on disk and is non-empty
+                let on_disk = {
+                    let direct = self.workspace_root.join(candidate);
+                    if direct.is_file() {
+                        fs::metadata(&direct).map(|m| m.len() > 0).unwrap_or(false)
+                    } else if !candidate.contains('/') {
+                        let in_src = self.workspace_root.join("src").join(candidate);
+                        if in_src.is_file() {
+                            fs::metadata(&in_src).map(|m| m.len() > 0).unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if in_modified
+                    || (on_disk
+                        && (is_creation_intent || !is_mutation_intent || modified_files.is_empty()))
+                {
+                    file_satisfied = true;
+                    break;
+                }
+            }
+
+            // Semantic heuristic: If candidate files were not explicitly extracted from task title,
+            // but files were modified in this turn and the task is InProgress or Pending:
+            // Check if any significant word from the task title matches the modified file paths,
+            // or if this is a general scaffold/init/setup task and new project files were produced.
+            if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
+                let significant_words: Vec<&str> = task_lower
+                    .split_whitespace()
+                    .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+                    .filter(|w| {
+                        w.len() >= 4
+                            && ![
+                                "with", "from", "that", "this", "then", "into", "page", "section",
+                            ]
+                            .contains(w)
+                    })
+                    .collect();
+
+                let keyword_matched = !significant_words.is_empty()
+                    && modified_files.iter().any(|m| {
+                        let m_lower = m.to_ascii_lowercase();
+                        significant_words.iter().any(|kw| m_lower.contains(kw))
+                    });
+
+                let is_setup_task = crate::utils::has_any_word(
+                    &task_lower,
+                    &[
+                        "setup",
+                        "scaffold",
+                        "init",
+                        "bootstrap",
+                        "structure",
+                        "boilerplate",
+                    ],
+                );
+                let setup_matched = is_setup_task
+                    && modified_files.iter().any(|m| {
+                        m.contains("package.json")
+                            || m.contains("Cargo.toml")
+                            || m.contains("index.html")
+                            || m.contains("vite.config")
+                    });
+
+                if keyword_matched || setup_matched {
+                    file_satisfied = true;
+                }
+            }
+
+            if file_satisfied {
+                if let Ok(()) = self.update_progress(&task.title, "completed") {
+                    reconciled += 1;
+                }
+            }
+        }
+
+        // Final Milestone Sweep:
+        // If there were tasks with file deliverables and ALL file deliverables are now verified on disk,
+        // and only 1 non-file task remains (e.g. "Verify responsive design", "Final testing"),
+        // complete the final task as well so the plan reaches 100% completion cleanly.
+        let refreshed_tasks = self.read_parsed_tasks();
+        let pending_or_active: Vec<_> = refreshed_tasks
+            .iter()
+            .filter(|t| t.status != TaskItemStatus::Completed)
+            .collect();
+
+        if pending_or_active.len() == 1 {
+            let last_task = pending_or_active[0];
+            let candidates = Self::extract_candidate_files(&last_task.title);
+            let candidates_satisfied = if candidates.is_empty() {
+                true
+            } else {
+                candidates.iter().all(|c| {
+                    let direct = self.workspace_root.join(c);
+                    let in_src = self.workspace_root.join("src").join(c);
+                    (direct.is_file()
+                        && fs::metadata(&direct).map(|m| m.len() > 0).unwrap_or(false))
+                        || (in_src.is_file()
+                            && fs::metadata(&in_src).map(|m| m.len() > 0).unwrap_or(false))
+                })
+            };
+
+            if candidates_satisfied && !refreshed_tasks.is_empty() {
+                if let Ok(()) = self.update_progress(&last_task.title, "completed") {
+                    reconciled += 1;
+                }
+            }
+        }
+
+        let final_tasks = self.read_parsed_tasks();
+        if !final_tasks.is_empty()
+            && final_tasks
+                .iter()
+                .all(|t| t.status == TaskItemStatus::Completed)
+        {
+            let p_path = self.progress_path();
+            if let Ok(content) = fs::read_to_string(&p_path) {
+                if content.contains("- Status: In Progress") {
+                    let updated =
+                        content.replacen("- Status: In Progress", "- Status: Completed (100%)", 1);
+                    let _ = fs::write(&p_path, updated);
+                }
+            }
+        }
+
+        reconciled
     }
 
     /// Ensures `.minicode/NOTES.md` exists with the 4 senior engineer quadrants.
@@ -868,6 +1348,10 @@ impl WorkingMemory {
         let _ = fs::remove_file(self.task_plan_path());
         let _ = fs::remove_file(self.progress_path());
         let _ = fs::remove_file(self.findings_path());
+        let _ = fs::remove_file(
+            self.workspace_root
+                .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE),
+        );
 
         Ok(Some(archive_file))
     }
@@ -1251,6 +1735,169 @@ mod tests {
         assert!(err.is_err());
         let err_msg = err.unwrap_err().to_string();
         assert!(err_msg.contains("Invalid task status"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_read_active_plan_summary_all_completed() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_summary_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Initial setup".to_string(),
+            "Core implementation".to_string(),
+            "Unit tests".to_string(),
+            "Verification and docs".to_string(),
+        ];
+        wm.init_plan("Test Plan", &steps).unwrap();
+
+        // Mark all 4 steps completed
+        for step in &steps {
+            wm.update_progress(step, "completed").unwrap();
+        }
+
+        // Active plan summary must report 4/4 completed, active_task: None, and all tasks completed
+        let summary = wm
+            .read_active_plan_summary()
+            .expect("Summary must exist when milestones are present");
+        assert_eq!(summary.total_tasks, 4);
+        assert_eq!(summary.completed_tasks, 4);
+        assert_eq!(summary.in_progress_tasks, 0);
+        assert_eq!(summary.pending_tasks, 0);
+        assert_eq!(summary.active_task, None);
+        assert_eq!(summary.tasks.len(), 4);
+        for t in &summary.tasks {
+            assert_eq!(t.status, TaskItemStatus::Completed);
+        }
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_reconcile_workspace_tasks_dynamic_deliverables() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_reconcile_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Create index.html — semantic HTML structure".to_string(),
+            "Create styles.css — dark cyber theme and layout".to_string(),
+            "Create main.js — terminal preview simulation and animations".to_string(),
+            "Verify responsive layout in browser".to_string(),
+        ];
+        wm.init_plan("Landing Page Plan", &steps).unwrap();
+
+        // Initially no files exist -> 0 reconciled
+        let count0 = wm.reconcile_workspace_tasks(&[]);
+        assert_eq!(count0, 0);
+
+        // Write index.html to disk
+        fs::write(temp_dir.join("index.html"), "<!DOCTYPE html><html></html>").unwrap();
+        let count1 = wm.reconcile_workspace_tasks(&["index.html".to_string()]);
+        assert_eq!(count1, 1);
+
+        let tasks1 = wm.read_parsed_tasks();
+        assert_eq!(tasks1[0].status, TaskItemStatus::Completed);
+        assert_eq!(tasks1[1].status, TaskItemStatus::InProgress);
+
+        // Now write styles.css and main.js to disk
+        fs::write(temp_dir.join("styles.css"), "body { margin: 0; }").unwrap();
+        fs::write(temp_dir.join("main.js"), "console.log('ready');").unwrap();
+
+        // Turn ends with main.js modified -> should reconcile tasks 2, 3, and 4!
+        let count2 = wm.reconcile_workspace_tasks(&["main.js".to_string()]);
+        assert!(count2 >= 1);
+
+        // Even with empty modified_files (&[]), all 4 tasks must be completed
+        let _ = wm.reconcile_workspace_tasks(&[]);
+
+        let final_tasks = wm.read_parsed_tasks();
+        assert_eq!(final_tasks.len(), 4);
+        assert_eq!(final_tasks[0].status, TaskItemStatus::Completed);
+        assert_eq!(final_tasks[1].status, TaskItemStatus::Completed);
+        assert_eq!(final_tasks[2].status, TaskItemStatus::Completed);
+        assert_eq!(final_tasks[3].status, TaskItemStatus::Completed);
+
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.total_tasks, 4);
+        assert_eq!(summary.completed_tasks, 4);
+        assert_eq!(summary.in_progress_tasks, 0);
+        assert_eq!(summary.pending_tasks, 0);
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_reconcile_workspace_tasks_semantic_and_single_step() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_reconcile_semantic_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Scaffold project structure".to_string(),
+            "Implement modern hero component".to_string(),
+            "Verify all features".to_string(),
+        ];
+        wm.init_plan("Semantic Plan", &steps).unwrap();
+
+        // 1. Scaffolding task matched by package.json creation
+        fs::write(temp_dir.join("package.json"), "{}").unwrap();
+        let c1 = wm.reconcile_workspace_tasks(&["package.json".to_string()]);
+        assert_eq!(c1, 1);
+        let tasks = wm.read_parsed_tasks();
+        assert_eq!(tasks[0].status, TaskItemStatus::Completed);
+        assert_eq!(tasks[1].status, TaskItemStatus::InProgress);
+
+        // 2. "hero" keyword matched in Hero.tsx -> reconciles hero component and sweeps final verification task
+        fs::write(temp_dir.join("Hero.tsx"), "export const Hero = () => null;").unwrap();
+        let c2 = wm.reconcile_workspace_tasks(&["Hero.tsx".to_string()]);
+        assert!(c2 >= 1);
+        let final_tasks = wm.read_parsed_tasks();
+        assert_eq!(final_tasks[0].status, TaskItemStatus::Completed);
+        assert_eq!(final_tasks[1].status, TaskItemStatus::Completed);
+        assert_eq!(final_tasks[2].status, TaskItemStatus::Completed);
+
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.total_tasks, 3);
+        assert_eq!(summary.completed_tasks, 3);
+        assert_eq!(summary.in_progress_tasks, 0);
+        assert_eq!(summary.pending_tasks, 0);
+
+        let progress_content = fs::read_to_string(wm.progress_path()).unwrap();
+        assert!(progress_content.contains("- Status: Completed (100%)"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_update_progress_auto_bootstrap_when_no_plan() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_auto_bootstrap_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        // Initially no plan exists
+        assert!(wm.read_parsed_tasks().is_empty());
+
+        // Calling update_progress directly should auto-bootstrap the plan and mark step completed
+        let res = wm.update_progress("1. Initial scaffold of project", "completed");
+        assert!(res.is_ok());
+
+        let tasks = wm.read_parsed_tasks();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, TaskItemStatus::Completed);
+
+        let progress_content = fs::read_to_string(wm.progress_path()).unwrap();
+        assert!(progress_content.contains("- Status: Completed (100%)"));
 
         fs::remove_dir_all(temp_dir).ok();
     }

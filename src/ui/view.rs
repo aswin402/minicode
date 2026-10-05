@@ -1223,8 +1223,14 @@ impl TimelineView {
                         theme.destructive
                     };
 
+                    let bullet = if *success { "• " } else { "✖ " };
                     let mut spans = vec![
-                        Span::styled("• ", Style::default().fg(status_color)),
+                        Span::styled(
+                            bullet,
+                            Style::default()
+                                .fg(status_color)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(
                             format!("{} ", title),
                             Style::default()
@@ -1368,11 +1374,21 @@ impl TimelineView {
                     if !trimmed.is_empty() {
                         let usable_width = area.width.saturating_sub(2) as usize;
                         let max_content_width = usable_width.saturating_sub(6).max(20);
-                        for out_line in trimmed
-                            .lines()
-                            .take(crate::constants::UI_MAX_TOOL_OUTPUT_LINES)
-                        {
-                            let line_color = if out_line.starts_with('+') {
+                        let max_lines = if *success {
+                            crate::constants::UI_MAX_TOOL_OUTPUT_LINES
+                        } else {
+                            4
+                        };
+                        for raw_out_line in trimmed.lines().take(max_lines) {
+                            let out_line = if !*success && raw_out_line.contains("Raw arguments") {
+                                "[Arguments payload truncated: model exceeded single-call capacity]"
+                            } else {
+                                raw_out_line
+                            };
+
+                            let line_color = if !*success {
+                                theme.destructive
+                            } else if out_line.starts_with('+') {
                                 theme.success
                             } else if out_line.starts_with('-') {
                                 theme.destructive
@@ -1384,22 +1400,32 @@ impl TimelineView {
                                 theme.muted
                             };
 
+                            let border_color = if *success {
+                                theme.muted
+                            } else {
+                                theme.destructive
+                            };
+
                             let chunks = Self::split_line_into_chunks(out_line, max_content_width);
                             for (c_idx, chunk) in chunks.into_iter().enumerate() {
                                 let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
                                 lines.push(Line::from(vec![
-                                    Span::styled(pfx, Style::default().fg(theme.muted)),
+                                    Span::styled(pfx, Style::default().fg(border_color)),
                                     Span::styled(chunk, Style::default().fg(line_color)),
                                 ]));
                             }
                         }
-                        if trimmed.lines().count() > crate::constants::UI_MAX_TOOL_OUTPUT_LINES {
-                            let remaining = trimmed
-                                .lines()
-                                .count()
-                                .saturating_sub(crate::constants::UI_MAX_TOOL_OUTPUT_LINES);
+                        if trimmed.lines().count() > max_lines {
+                            let remaining = trimmed.lines().count().saturating_sub(max_lines);
                             lines.push(Line::from(vec![
-                                Span::styled("  │ ", Style::default().fg(theme.muted)),
+                                Span::styled(
+                                    "  │ ",
+                                    Style::default().fg(if *success {
+                                        theme.muted
+                                    } else {
+                                        theme.destructive
+                                    }),
+                                ),
                                 Span::styled(
                                     format!("... +{} lines (output folded)", remaining),
                                     Style::default().fg(theme.border),
@@ -1415,11 +1441,16 @@ impl TimelineView {
                     let (status_glyph, glyph_color, status_text) = if *success {
                         ("✓", theme.success, "completed")
                     } else {
-                        ("✗", theme.destructive, "failed")
+                        ("✖", theme.destructive, "failed")
                     };
 
+                    let foot_border = if *success {
+                        theme.muted
+                    } else {
+                        theme.destructive
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled("  └ ", Style::default().fg(theme.muted)),
+                        Span::styled("  └ ", Style::default().fg(foot_border)),
                         Span::styled(
                             format!("{} ", status_glyph),
                             Style::default()
@@ -1428,7 +1459,11 @@ impl TimelineView {
                         ),
                         Span::styled(
                             format!("{}{}", status_text, dur_str),
-                            Style::default().fg(theme.muted),
+                            Style::default().fg(if *success {
+                                theme.muted
+                            } else {
+                                theme.destructive
+                            }),
                         ),
                     ]));
                     lines.push(Line::from(String::new()));
@@ -1833,44 +1868,90 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::SystemStatus(status) => {
-                    let trimmed = status.trim_start();
-                    let prefixes = [
-                        ("✔ ", theme.success),
-                        ("✓ ", theme.success),
-                        ("✗ ", theme.destructive),
-                        ("✖ ", theme.destructive),
-                        ("ℹ ", theme.info),
-                        ("⏹ ", theme.warning),
-                        ("• ", theme.brand_accent),
-                        ("✨ ", theme.brand_accent),
-                        ("🛡️ ", theme.info),
-                        ("🛡 ", theme.info),
-                        ("🗑️ ", theme.destructive),
-                        ("🗑 ", theme.destructive),
-                        ("● ", theme.brand_accent),
-                        ("⚠ ", theme.warning),
-                    ];
-
-                    let mut matched = false;
-                    for (prefix, color) in prefixes {
-                        if let Some(rest) = trimmed.strip_prefix(prefix) {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    prefix,
-                                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(rest, Style::default().fg(theme.text_primary)),
-                            ]));
-                            matched = true;
-                            break;
+                    for raw_line in status.lines() {
+                        let normalized = raw_line
+                            .replace("⚠️", "⚠")
+                            .replace("🛑", "▲")
+                            .replace("🚀", "▶")
+                            .replace("⏳", "◷");
+                        let trimmed = normalized.trim();
+                        if trimmed.is_empty() {
+                            continue;
                         }
-                    }
+                        let prefixes = [
+                            ("✔ ", theme.success),
+                            ("✓ ", theme.success),
+                            ("✕ ", theme.destructive),
+                            ("✗ ", theme.destructive),
+                            ("✖ ", theme.destructive),
+                            ("▲ ", theme.warning),
+                            ("⚠ ", theme.warning),
+                            ("◷ ", theme.warning),
+                            ("⧖ ", theme.warning),
+                            ("ℹ ", theme.info),
+                            ("⏹ ", theme.warning),
+                            ("• ", theme.brand_accent),
+                            ("◆ ", theme.brand_accent),
+                            ("⚙ ", theme.muted),
+                            ("● ", theme.brand_accent),
+                        ];
 
-                    if !matched {
-                        lines.push(Line::from(vec![
-                            Span::styled("• ", Style::default().fg(theme.brand_accent)),
-                            Span::styled(status, Style::default().fg(theme.text_primary)),
-                        ]));
+                        let mut matched = false;
+                        for (prefix, color) in prefixes {
+                            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        prefix,
+                                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        rest.to_string(),
+                                        Style::default().fg(theme.text_primary),
+                                    ),
+                                ]));
+                                matched = true;
+                                break;
+                            }
+                        }
+
+                        if !matched {
+                            let lower = trimmed.to_lowercase();
+                            if lower.starts_with("error") || lower.contains("error:") {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        "✕ ",
+                                        Style::default()
+                                            .fg(theme.destructive)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        trimmed.to_string(),
+                                        Style::default().fg(theme.text_primary),
+                                    ),
+                                ]));
+                            } else if lower.contains("rate limit") || lower.contains("retrying") {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        "⚠ ",
+                                        Style::default()
+                                            .fg(theme.warning)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        trimmed.to_string(),
+                                        Style::default().fg(theme.text_primary),
+                                    ),
+                                ]));
+                            } else {
+                                lines.push(Line::from(vec![
+                                    Span::styled("• ", Style::default().fg(theme.brand_accent)),
+                                    Span::styled(
+                                        trimmed.to_string(),
+                                        Style::default().fg(theme.text_primary),
+                                    ),
+                                ]));
+                            }
+                        }
                     }
                 }
             }

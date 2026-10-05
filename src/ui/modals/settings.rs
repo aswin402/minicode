@@ -916,17 +916,27 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    if state.selected_index == 0 { "  ❯ " } else { "    " },
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    if state.selected_index == 0 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "🌐 Default Engine: ",
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("[ {} ]", def_engine_str),
                     if state.selected_index == 0 {
-                        Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.text_primary)
                     },
@@ -942,17 +952,27 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             let hl_chain = state.browser_headless_priority.join(" ➔ ");
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    if state.selected_index == 1 { "  ❯ " } else { "    " },
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    if state.selected_index == 1 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "⚡ Headless Mode Priority: ",
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("[ {} ]", hl_chain),
                     if state.selected_index == 1 {
-                        Style::default().fg(theme.success).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.text_primary)
                     },
@@ -971,12 +991,20 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             let gui_chain = state.browser_gui_priority.join(" ➔ ");
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    if state.selected_index == 2 { "  ❯ " } else { "    " },
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    if state.selected_index == 2 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "🖥️ GUI Headed Mode Priority: ",
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("[ {} ]", gui_chain),
@@ -999,13 +1027,21 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             // Item 3: Reset Preferences to Defaults
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    if state.selected_index == 3 { "  ❯ " } else { "    " },
-                    Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD),
+                    if state.selected_index == 3 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "↺ [ Reset Browser Preferences to System Defaults ]",
                     if state.selected_index == 3 {
-                        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.text_primary)
                     },
@@ -1291,16 +1327,20 @@ pub mod tests {
         assert_eq!(state.active_tab, SettingsTab::Probes);
         assert_eq!(state.selected_index, 0);
 
+        state.next_tab();
+        assert_eq!(state.active_tab, SettingsTab::Browser);
+        assert_eq!(state.selected_index, 0);
+
         // Wrap around
         state.next_tab();
         assert_eq!(state.active_tab, SettingsTab::Providers);
 
         // Prev tab
         state.prev_tab();
-        assert_eq!(state.active_tab, SettingsTab::Probes);
+        assert_eq!(state.active_tab, SettingsTab::Browser);
 
         state.prev_tab();
-        assert_eq!(state.active_tab, SettingsTab::Autonomy);
+        assert_eq!(state.active_tab, SettingsTab::Probes);
     }
 
     #[test]

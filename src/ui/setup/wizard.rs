@@ -461,6 +461,7 @@ mod tests {
 
     #[test]
     fn test_provider_badge_states() {
+        std::env::remove_var("MINIMAX_API_KEY");
         let mut config = Config::default();
         config.provider.default = "gemini".to_string();
 

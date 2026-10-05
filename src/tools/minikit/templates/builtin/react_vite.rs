@@ -227,7 +227,7 @@ pub fn react_vite() -> Stack {
         files: vec![
             StackFile {
                 path: "README.md".into(),
-                content: r###"# Onpkg Vite+React Template 🚀
+                content: r###"# MiniKit Vite+React Template 🚀
 
 A premium, highly-opinionated Vite + React starter template designed for scalability, type-safety, and modern developer experience.
 
@@ -385,7 +385,7 @@ MIT
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>onpkg vite+react</title>
+    <title>minikit vite+react</title>
   </head>
   <body>
     <div id="root"></div>
@@ -398,7 +398,7 @@ MIT
             StackFile {
                 path: "package.json".into(),
                 content: r###"{
-  "name": "onpkg-vite-react",
+  "name": "minikit-vite-react",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -1133,7 +1133,7 @@ export function Navbar() {
     <nav className="fixed top-0 left-0 right-0 h-16 border-b border-border/40 bg-background/80 backdrop-blur-md z-50 flex items-center justify-between px-6">
       <div className="flex items-center gap-8">
         <Link to="/" className="text-xl font-heading font-bold tracking-tight text-primary transition-opacity hover:opacity-80">
-          ONPKG
+          MiniKit
         </Link>
         <div className="hidden md:flex items-center gap-6">
           <Link to="/" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2">
@@ -1261,7 +1261,7 @@ export function HomePage() {
 
         <div className="text-center mb-12 max-w-2xl">
           <h1 className="text-6xl font-heading mb-6 tracking-tighter leading-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
-            Get started Onpkg <br /> Vite+React
+            Get started MiniKit <br /> Vite+React
           </h1>
           <p className="text-muted-foreground text-xl leading-relaxed">
             The ultimate developer setup with
@@ -1703,7 +1703,7 @@ pub fn react_vite_full() -> Stack {
         files: vec![
             StackFile {
                 path: "README.md".into(),
-                content: r###"# Onpkg Vite+React Template 🚀
+                content: r###"# MiniKit Vite+React Template 🚀
 
 A premium, highly-opinionated Vite + React starter template designed for scalability, type-safety, and modern developer experience.
 
@@ -1861,7 +1861,7 @@ MIT
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>onpkg vite+react</title>
+    <title>minikit vite+react</title>
   </head>
   <body>
     <div id="root"></div>
@@ -1874,7 +1874,7 @@ MIT
             StackFile {
                 path: "package.json".into(),
                 content: r###"{
-  "name": "onpkg-vite-react",
+  "name": "minikit-vite-react",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -2609,7 +2609,7 @@ export function Navbar() {
     <nav className="fixed top-0 left-0 right-0 h-16 border-b border-border/40 bg-background/80 backdrop-blur-md z-50 flex items-center justify-between px-6">
       <div className="flex items-center gap-8">
         <Link to="/" className="text-xl font-heading font-bold tracking-tight text-primary transition-opacity hover:opacity-80">
-          ONPKG
+          MiniKit
         </Link>
         <div className="hidden md:flex items-center gap-6">
           <Link to="/" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2">
@@ -2737,7 +2737,7 @@ export function HomePage() {
 
         <div className="text-center mb-12 max-w-2xl">
           <h1 className="text-6xl font-heading mb-6 tracking-tighter leading-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
-            Get started Onpkg <br /> Vite+React
+            Get started MiniKit <br /> Vite+React
           </h1>
           <p className="text-muted-foreground text-xl leading-relaxed">
             The ultimate developer setup with
@@ -3150,7 +3150,7 @@ pub fn react_vite_gsap() -> Stack {
         files: vec![
             StackFile {
                 path: "README.md".into(),
-                content: r####"# Onpkg Vite+React Kinetic Template 🚀
+                content: r####"# MiniKit Vite+React Kinetic Template 🚀
 
 A premium, highly-opinionated Vite + React starter template designed for creative visual web development with seamless smooth scrolling, physics-based UI motion, accessible components, and animated vector icons.
 
@@ -3331,7 +3331,7 @@ export default defineConfig([
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>onpkg vite+react</title>
+    <title>minikit vite+react</title>
   </head>
   <body>
     <div id="root"></div>
@@ -3342,8 +3342,8 @@ export default defineConfig([
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg___eslint__js.md".into(),
-                content: r###"# @eslint/js — onpkg docs
+                path: "minikit_docs/skills/minikit___eslint__js.md".into(),
+                content: r###"# @eslint/js — minikit docs
 > **Version**: 10.0.1 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@eslint/js
 
 ESLint JavaScript language implementation
@@ -3351,9 +3351,9 @@ ESLint JavaScript language implementation
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/@eslint/js.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/@eslint/js.md
 > Every project you add @eslint/js to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset @eslint/js --runtime bun`
+> To regenerate from original: `minicode skill reset @eslint/js --runtime bun`
 
 ## My Notes
 
@@ -3386,7 +3386,7 @@ import ... from '@eslint/js';
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg___hookform__resolvers.md".into(),
+                path: "minikit_docs/skills/minikit___hookform__resolvers.md".into(),
                 content: r###"# @hookform/resolvers
 
 > Schema validation adapters for react-hook-form — Zod, Yup, Valibot, Joi, and more
@@ -3394,8 +3394,8 @@ import ... from '@eslint/js';
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/@hookform/resolvers.md`
-> To regenerate from original: `onpkg docs reset @hookform/resolvers --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/@hookform/resolvers.md`
+> To regenerate from original: `minicode skill reset @hookform/resolvers --runtime bun`
 
 ---
 
@@ -3565,8 +3565,8 @@ useForm<z.input<typeof schema>, any, z.output<typeof schema>>({
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg___tailwindcss__vite.md".into(),
-                content: r###"# @tailwindcss/vite — onpkg docs
+                path: "minikit_docs/skills/minikit___tailwindcss__vite.md".into(),
+                content: r###"# @tailwindcss/vite — minikit docs
 > **Version**: 4.2.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@tailwindcss/vite
 
 A utility-first CSS framework for rapidly building custom user interfaces.
@@ -3574,9 +3574,9 @@ A utility-first CSS framework for rapidly building custom user interfaces.
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/@tailwindcss/vite.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/@tailwindcss/vite.md
 > Every project you add @tailwindcss/vite to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset @tailwindcss/vite --runtime bun`
+> To regenerate from original: `minicode skill reset @tailwindcss/vite --runtime bun`
 
 ## My Notes
 
@@ -3609,7 +3609,7 @@ import ... from '@tailwindcss/vite';
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg___tanstack__react-query.md".into(),
+                path: "minikit_docs/skills/minikit___tanstack__react-query.md".into(),
                 content: r####"# @tanstack/react-query
 
 > Server state management — fetching, caching, syncing async data in React
@@ -3617,8 +3617,8 @@ import ... from '@tailwindcss/vite';
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/@tanstack/react-query.md`
-> To regenerate from original: `onpkg docs reset @tanstack/react-query --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/@tanstack/react-query.md`
+> To regenerate from original: `minicode skill reset @tanstack/react-query --runtime bun`
 
 ---
 
@@ -3909,8 +3909,8 @@ export function useCreateUser() {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg___types__node.md".into(),
-                content: r####"# @types/node — onpkg docs
+                path: "minikit_docs/skills/minikit___types__node.md".into(),
+                content: r####"# @types/node — minikit docs
 > **Version**: 25.5.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@types/node
 
 TypeScript definitions for node
@@ -3918,9 +3918,9 @@ TypeScript definitions for node
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/@types/node.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/@types/node.md
 > Every project you add @types/node to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset @types/node --runtime bun`
+> To regenerate from original: `minicode skill reset @types/node --runtime bun`
 
 ## My Notes
 
@@ -3947,7 +3947,7 @@ These definitions were written by [Microsoft TypeScript](https://github.com/Micr
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_axios.md".into(),
+                path: "minikit_docs/skills/minikit_axios.md".into(),
                 content: r####"# axios
 
 > Promise-based HTTP client for the browser and Node.js
@@ -3955,9 +3955,9 @@ These definitions were written by [Microsoft TypeScript](https://github.com/Micr
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/axios.md`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/axios.md`
 > Every project you add axios to will use YOUR version of this file.
-> To regenerate from original: `onpkg docs reset axios --runtime bun`
+> To regenerate from original: `minicode skill reset axios --runtime bun`
 
 ---
 
@@ -4358,8 +4358,8 @@ await axios.get('/data', {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_eslint-plugin-react-hooks.md".into(),
-                content: r###"# eslint-plugin-react-hooks — onpkg docs
+                path: "minikit_docs/skills/minikit_eslint-plugin-react-hooks.md".into(),
+                content: r###"# eslint-plugin-react-hooks — minikit docs
 > **Version**: 7.0.1 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint-plugin-react-hooks
 
 ESLint rules for React Hooks
@@ -4367,9 +4367,9 @@ ESLint rules for React Hooks
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/eslint-plugin-react-hooks.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/eslint-plugin-react-hooks.md
 > Every project you add eslint-plugin-react-hooks to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset eslint-plugin-react-hooks --runtime bun`
+> To regenerate from original: `minicode skill reset eslint-plugin-react-hooks --runtime bun`
 
 ## My Notes
 
@@ -4402,8 +4402,8 @@ import ... from 'eslint-plugin-react-hooks';
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_eslint-plugin-react-refresh.md".into(),
-                content: r####"# eslint-plugin-react-refresh — onpkg docs
+                path: "minikit_docs/skills/minikit_eslint-plugin-react-refresh.md".into(),
+                content: r####"# eslint-plugin-react-refresh — minikit docs
 > **Version**: 0.5.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint-plugin-react-refresh
 
 Validate that your components can safely be updated with Fast Refresh
@@ -4411,9 +4411,9 @@ Validate that your components can safely be updated with Fast Refresh
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/eslint-plugin-react-refresh.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/eslint-plugin-react-refresh.md
 > Every project you add eslint-plugin-react-refresh to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset eslint-plugin-react-refresh --runtime bun`
+> To regenerate from original: `minicode skill reset eslint-plugin-react-refresh --runtime bun`
 
 ## My Notes
 
@@ -4647,8 +4647,8 @@ If you're using JSX inside `.js` files (which I don't recommend because it force
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_eslint.md".into(),
-                content: r####"# eslint — onpkg docs
+                path: "minikit_docs/skills/minikit_eslint.md".into(),
+                content: r####"# eslint — minikit docs
 > **Version**: 10.1.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint
 
 An AST-based pattern checker for JavaScript.
@@ -4656,9 +4656,9 @@ An AST-based pattern checker for JavaScript.
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/eslint.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/eslint.md
 > Every project you add eslint to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset eslint --runtime bun`
+> To regenerate from original: `minicode skill reset eslint --runtime bun`
 
 ## My Notes
 
@@ -5039,7 +5039,7 @@ Technology sponsors allow us to use their products and services for free as part
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_framer-motion.md".into(),
+                path: "minikit_docs/skills/minikit_framer-motion.md".into(),
                 content: r####"# framer-motion
 
 > Production-ready motion and physics gesture library for React
@@ -5047,8 +5047,8 @@ Technology sponsors allow us to use their products and services for free as part
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/framer-motion.md`
-> To regenerate from original: `onpkg docs reset framer-motion --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/framer-motion.md`
+> To regenerate from original: `minicode skill reset framer-motion --runtime bun`
 
 ---
 
@@ -5126,8 +5126,8 @@ export default function ToggleModal({ isOpen }: { isOpen: boolean }) {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_globals.md".into(),
-                content: r###"# globals — onpkg docs
+                path: "minikit_docs/skills/minikit_globals.md".into(),
+                content: r###"# globals — minikit docs
 > **Version**: 17.4.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/globals
 
 Global identifiers from different JavaScript environments
@@ -5135,9 +5135,9 @@ Global identifiers from different JavaScript environments
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/globals.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/globals.md
 > Every project you add globals to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset globals --runtime bun`
+> To regenerate from original: `minicode skill reset globals --runtime bun`
 
 ## My Notes
 
@@ -5191,7 +5191,7 @@ When analyzing code that is known to run outside of a CommonJS wrapper, for exam
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_gsap.md".into(),
+                path: "minikit_docs/skills/minikit_gsap.md".into(),
                 content: r####"# gsap
 
 > Professional-grade animation and scroll-triggered timelines for modern web apps
@@ -5199,8 +5199,8 @@ When analyzing code that is known to run outside of a CommonJS wrapper, for exam
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/gsap.md`
-> To regenerate from original: `onpkg docs reset gsap --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/gsap.md`
+> To regenerate from original: `minicode skill reset gsap --runtime bun`
 
 ---
 
@@ -5260,7 +5260,7 @@ gsap.to(".card-reveal", {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_lenis.md".into(),
+                path: "minikit_docs/skills/minikit_lenis.md".into(),
                 content: r####"# lenis
 
 > High-performance smooth scroll library for modern browsers
@@ -5268,8 +5268,8 @@ gsap.to(".card-reveal", {
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/lenis.md`
-> To regenerate from original: `onpkg docs reset lenis --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/lenis.md`
+> To regenerate from original: `minicode skill reset lenis --runtime bun`
 
 ---
 
@@ -5339,7 +5339,7 @@ useEffect(() => {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_lordicons.md".into(),
+                path: "minikit_docs/skills/minikit_lordicons.md".into(),
                 content: r####"# lordicons
 
 > Highly-interactive, vector-based animated icons for user interfaces
@@ -5347,8 +5347,8 @@ useEffect(() => {
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/lordicons.md`
-> To regenerate from original: `onpkg docs reset lordicons --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/lordicons.md`
+> To regenerate from original: `minicode skill reset lordicons --runtime bun`
 
 ---
 
@@ -5405,7 +5405,7 @@ Triggers indicate when and how the vector animation plays:
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_lottie.md".into(),
+                path: "minikit_docs/skills/minikit_lottie.md".into(),
                 content: r####"# lottie
 
 > Lightweight vector-based visual animations rendered in real-time
@@ -5413,8 +5413,8 @@ Triggers indicate when and how the vector animation plays:
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/lottie.md`
-> To regenerate from original: `onpkg docs reset lottie --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/lottie.md`
+> To regenerate from original: `minicode skill reset lottie --runtime bun`
 
 ---
 
@@ -5479,8 +5479,8 @@ const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').mat
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_lucide-react.md".into(),
-                content: r####"# lucide-react — onpkg docs
+                path: "minikit_docs/skills/minikit_lucide-react.md".into(),
+                content: r####"# lucide-react — minikit docs
 > **Version**: 1.6.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/lucide-react
 
 A Lucide icon library package for React applications.
@@ -5488,9 +5488,9 @@ A Lucide icon library package for React applications.
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/lucide-react.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/lucide-react.md
 > Every project you add lucide-react to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset lucide-react --runtime bun`
+> To regenerate from original: `minicode skill reset lucide-react --runtime bun`
 
 ## My Notes
 
@@ -5584,7 +5584,7 @@ You can find all our past and non-recurring financial contributors at [our Open 
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_react-dom.md".into(),
+                path: "minikit_docs/skills/minikit_react-dom.md".into(),
                 content: r###"# react-dom
 
 > React renderer for the browser DOM
@@ -5592,8 +5592,8 @@ You can find all our past and non-recurring financial contributors at [our Open 
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/react-dom.md`
-> To regenerate from original: `onpkg docs reset react-dom --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/react-dom.md`
+> To regenerate from original: `minicode skill reset react-dom --runtime bun`
 
 ---
 
@@ -5742,7 +5742,7 @@ import { useFormState } from 'react-dom'  // renamed to useActionState in React 
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_react-hook-form.md".into(),
+                path: "minikit_docs/skills/minikit_react-hook-form.md".into(),
                 content: r###"# react-hook-form
 
 > Performant, flexible form library for React using hooks
@@ -5750,8 +5750,8 @@ import { useFormState } from 'react-dom'  // renamed to useActionState in React 
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/react-hook-form.md`
-> To regenerate from original: `onpkg docs reset react-hook-form --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/react-hook-form.md`
+> To regenerate from original: `minicode skill reset react-hook-form --runtime bun`
 
 ---
 
@@ -5947,8 +5947,8 @@ const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_react-router-dom.md".into(),
-                content: r###"# react-router-dom — onpkg docs
+                path: "minikit_docs/skills/minikit_react-router-dom.md".into(),
+                content: r###"# react-router-dom — minikit docs
 > **Version**: 7.13.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/react-router-dom
 
 Declarative routing for React web applications
@@ -5956,9 +5956,9 @@ Declarative routing for React web applications
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/react-router-dom.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/react-router-dom.md
 > Every project you add react-router-dom to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset react-router-dom --runtime bun`
+> To regenerate from original: `minicode skill reset react-router-dom --runtime bun`
 
 ## My Notes
 
@@ -5991,7 +5991,7 @@ import ... from 'react-router-dom';
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_react.md".into(),
+                path: "minikit_docs/skills/minikit_react.md".into(),
                 content: r####"# react
 
 > JavaScript library for building user interfaces
@@ -5999,8 +5999,8 @@ import ... from 'react-router-dom';
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/react.md`
-> To regenerate from original: `onpkg docs reset react --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/react.md`
+> To regenerate from original: `minicode skill reset react --runtime bun`
 
 ---
 
@@ -6304,7 +6304,7 @@ function useLocalStorage<T>(key: string, initial: T) {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_shadcn.md".into(),
+                path: "minikit_docs/skills/minikit_shadcn.md".into(),
                 content: r####"# shadcn
 
 > Beautiful, accessible, fully-customizable UI components built on Radix Primitives
@@ -6312,8 +6312,8 @@ function useLocalStorage<T>(key: string, initial: T) {
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/shadcn.md`
-> To regenerate from original: `onpkg docs reset shadcn --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/shadcn.md`
+> To regenerate from original: `minicode skill reset shadcn --runtime bun`
 
 ---
 
@@ -6373,7 +6373,7 @@ export function AccordionDemo() {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_tailwindcss.md".into(),
+                path: "minikit_docs/skills/minikit_tailwindcss.md".into(),
                 content: r####"# tailwindcss
 
 > Utility-first CSS framework
@@ -6381,8 +6381,8 @@ export function AccordionDemo() {
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/tailwindcss.md`
-> To regenerate from original: `onpkg docs reset tailwindcss --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/tailwindcss.md`
+> To regenerate from original: `minicode skill reset tailwindcss --runtime bun`
 
 ---
 
@@ -7543,8 +7543,8 @@ EOF"####.into(),
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_typescript-eslint.md".into(),
-                content: r###"# typescript-eslint — onpkg docs
+                path: "minikit_docs/skills/minikit_typescript-eslint.md".into(),
+                content: r###"# typescript-eslint — minikit docs
 > **Version**: 8.57.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/typescript-eslint
 
 Tooling which enables you to use TypeScript with ESLint
@@ -7552,9 +7552,9 @@ Tooling which enables you to use TypeScript with ESLint
 
 ---
 
-> ✏️ Edit this file freely — it lives in ~/.onpkg/docs/bun/typescript-eslint.md
+> ✏️ Edit this file freely — it lives in ~/.minikit/docs/bun/typescript-eslint.md
 > Every project you add typescript-eslint to will get YOUR edited version.
-> To regenerate from original: `onpkg docs reset typescript-eslint --runtime bun`
+> To regenerate from original: `minicode skill reset typescript-eslint --runtime bun`
 
 ## My Notes
 
@@ -7587,7 +7587,7 @@ import ... from 'typescript-eslint';
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_typescript.md".into(),
+                path: "minikit_docs/skills/minikit_typescript.md".into(),
                 content: r###"# typescript
 
 > Typed superset of JavaScript
@@ -7595,8 +7595,8 @@ import ... from 'typescript-eslint';
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/typescript.md`
-> To regenerate from original: `onpkg docs reset typescript --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/typescript.md`
+> To regenerate from original: `minicode skill reset typescript --runtime bun`
 
 ---
 
@@ -7871,7 +7871,7 @@ const config = { port: 3000, host: 'localhost' } as const
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_vite.md".into(),
+                path: "minikit_docs/skills/minikit_vite.md".into(),
                 content: r####"# vite
 
 > Next-generation frontend build tool — instant dev server, fast HMR, optimized builds
@@ -7879,8 +7879,8 @@ const config = { port: 3000, host: 'localhost' } as const
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/vite.md`
-> To regenerate from original: `onpkg docs reset vite --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/vite.md`
+> To regenerate from original: `minicode skill reset vite --runtime bun`
 
 ---
 
@@ -8105,7 +8105,7 @@ build: {
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_zod.md".into(),
+                path: "minikit_docs/skills/minikit_zod.md".into(),
                 content: r####"# zod
 
 > TypeScript-first schema validation with static type inference
@@ -8113,8 +8113,8 @@ build: {
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/zod.md`
-> To regenerate from original: `onpkg docs reset zod --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/zod.md`
+> To regenerate from original: `minicode skill reset zod --runtime bun`
 
 ---
 
@@ -8601,7 +8601,7 @@ const UpdateUserSchema = z.object({
                 binary_content: None,
             },
             StackFile {
-                path: "onpkg_docs/onpkg_zustand.md".into(),
+                path: "minikit_docs/skills/minikit_zustand.md".into(),
                 content: r####"# zustand
 
 > Minimal, fast state management for React
@@ -8609,8 +8609,8 @@ const UpdateUserSchema = z.object({
 
 ---
 
-> ✏️ **This file is yours to edit** — it lives at `~/.onpkg/docs/bun/zustand.md`
-> To regenerate from original: `onpkg docs reset zustand --runtime bun`
+> ✏️ **This file is yours to edit** — it lives at `~/.minikit/docs/bun/zustand.md`
+> To regenerate from original: `minicode skill reset zustand --runtime bun`
 
 ---
 
@@ -8888,7 +8888,7 @@ const useStore = create<BearSlice & FishSlice>((...args) => ({
     "typescript-eslint": "^8.57.2",
     "vite": "^8.0.2"
   },
-  "name": "onpkg-vite-react",
+  "name": "minikit-vite-react",
   "private": true,
   "scripts": {
     "build": "tsc -b && vite build",
@@ -9216,14 +9216,14 @@ export function Footer() {
         <div className="md:col-span-2 space-y-4">
           <Link to="/" className="inline-flex items-center gap-2 text-xl font-heading font-extrabold tracking-tight text-primary hover:opacity-80 transition-opacity">
             <LordIcon src="https://cdn.lordicon.com/nocovwne.json" size={28} colors="primary:var(--color-primary),secondary:currentColor" />
-            <span>ONPKG</span>
+            <span>MiniKit</span>
           </Link>
           <p className="text-muted-foreground text-sm leading-relaxed max-w-sm font-body">
             The ultimate developer setup with Vite, React, GSAP, Framer Motion, and shadcn/ui. Build premium, highly-interactive web experiences offline.
           </p>
           <div className="flex items-center gap-4 pt-2">
             <a
-              href="https://github.com/aswin402/onpkg"
+              href="https://github.com/aswin402/minicode"
               target="_blank"
               rel="noreferrer"
               className="w-9 h-9 rounded-xl border border-border/50 bg-card/40 flex items-center justify-center text-muted-foreground hover:text-foreground hover:border-primary/40 hover:shadow-md hover:shadow-primary/5 transition-all duration-300"
@@ -9287,7 +9287,7 @@ export function Footer() {
 
       {/* Bottom Copyright bar */}
       <div className="max-w-6xl mx-auto border-t border-border/40 mt-10 pt-6 flex flex-col md:flex-row items-center justify-between gap-4 font-body text-xs text-muted-foreground">
-        <p>© {currentYear} Onpkg Kinetic Template. All rights reserved.</p>
+        <p>© {currentYear} MiniKit Template. All rights reserved.</p>
         <p className="flex items-center gap-1">
           Made with <Heart className="w-3.5 h-3.5 text-red-500 fill-red-500 animate-pulse" /> for high performance offline development.
         </p>
@@ -9518,7 +9518,7 @@ export function Navbar() {
       <div className="flex items-center gap-8">
         <Link to="/" className="text-xl font-heading font-bold tracking-tight text-primary transition-opacity hover:opacity-80 flex items-center gap-2">
           <LordIcon src="https://cdn.lordicon.com/nocovwne.json" size={28} colors="primary:var(--color-primary),secondary:currentColor" />
-          <span>ONPKG</span>
+          <span>MiniKit</span>
         </Link>
         <div className="hidden md:flex items-center gap-6">
           <Link to="/" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2">
@@ -10825,7 +10825,7 @@ export function HomePage() {
         <h1 className="hero-title text-5xl md:text-6xl font-heading font-extrabold mb-6 tracking-tighter leading-tight">
           Get started{' '}
           <span className="bg-gradient-to-r from-primary via-purple-500 to-indigo-500 bg-clip-text text-transparent">
-            Onpkg
+            MiniKit
           </span>{' '}
           <br /> Vite+React
         </h1>

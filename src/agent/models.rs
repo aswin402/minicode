@@ -306,6 +306,7 @@ impl DynamicModelResolver {
     }
 
     /// Returns the next fallback model for a provider when a specific model encounters a 404 or deprecation.
+    #[allow(dead_code)]
     pub fn resolve_next_fallback(
         provider: &str,
         failed_model: &str,
@@ -565,6 +566,7 @@ impl ModelFetcher {
     }
 
     /// Removes a model from disk cache when an API returns 404 (model not found / deprecated)
+    #[allow(dead_code)]
     pub fn invalidate_model(&self, provider: &str, model_id: &str) {
         let mut cache = self.load_cache();
         let norm = provider.to_lowercase();

@@ -2925,55 +2925,63 @@ impl<'a> App<'a> {
         );
 
         if is_crud {
-            let graph_file = self.workspace_root.join(".minicode").join("graph.json");
-            if !graph_file.exists() && !self.session_skipped_indexing {
-                self.pending_submission = Some(crate::app::PendingSubmission {
-                    prompt: prompt_to_run.clone(),
-                    display: message_to_display.to_string(),
-                });
-                self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
-                return Ok(CommandAction::Continue);
-            } else if graph_file.exists() && !self.session_skipped_drift {
-                let mut graph = crate::context::graph::CodeGraph::new();
-                if graph.load_cached(&self.workspace_root) {
-                    if let Ok(drift) = graph.check_drift(&self.workspace_root) {
-                        if drift.is_stale {
-                            self.pending_submission = Some(crate::app::PendingSubmission {
-                                prompt: prompt_to_run.clone(),
-                                display: message_to_display.to_string(),
-                            });
-                            self.modal =
-                                ModalState::new_workspace_drift(&self.workspace_root, &drift);
-                            return Ok(CommandAction::Continue);
-                        } else if drift.total_drift()
-                            >= crate::constants::DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD
-                        {
-                            tracing::info!(
-                                "Seamlessly updating minor code graph drift ({} files changed)",
-                                drift.total_drift()
-                            );
-                            if graph.incremental_update(&self.workspace_root).is_ok() {
-                                let _ = graph.save_to_disk(&self.workspace_root);
-                            }
-                        }
-                    }
-                } else {
-                    // Corrupted or unparseable graph.json: propose fresh workspace re-analysis
-                    tracing::warn!(
-                        "Existing .minicode/graph.json corrupted or unreadable; proposing workspace re-analysis"
-                    );
+            let (repo_state, _, _) =
+                crate::agent::orchestrator::WorkflowRouter::scan_repository_state(
+                    &self.workspace_root,
+                );
+
+            // Only prompt for CodeGraph indexing if the repository actually contains source code
+            if repo_state == crate::agent::orchestrator::RepoState::ExistingCodebase {
+                let graph_file = self.workspace_root.join(".minicode").join("graph.json");
+                if !graph_file.exists() && !self.session_skipped_indexing {
                     self.pending_submission = Some(crate::app::PendingSubmission {
                         prompt: prompt_to_run.clone(),
                         display: message_to_display.to_string(),
                     });
                     self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
                     return Ok(CommandAction::Continue);
+                } else if graph_file.exists() && !self.session_skipped_drift {
+                    let mut graph = crate::context::graph::CodeGraph::new();
+                    if graph.load_cached(&self.workspace_root) {
+                        if let Ok(drift) = graph.check_drift(&self.workspace_root) {
+                            if drift.is_stale {
+                                self.pending_submission = Some(crate::app::PendingSubmission {
+                                    prompt: prompt_to_run.clone(),
+                                    display: message_to_display.to_string(),
+                                });
+                                self.modal =
+                                    ModalState::new_workspace_drift(&self.workspace_root, &drift);
+                                return Ok(CommandAction::Continue);
+                            } else if drift.total_drift()
+                                >= crate::constants::DEFAULT_DRIFT_MINOR_SYNC_THRESHOLD
+                            {
+                                tracing::info!(
+                                    "Seamlessly updating minor code graph drift ({} files changed)",
+                                    drift.total_drift()
+                                );
+                                if graph.incremental_update(&self.workspace_root).is_ok() {
+                                    let _ = graph.save_to_disk(&self.workspace_root);
+                                }
+                            }
+                        }
+                    } else {
+                        // Corrupted or unparseable graph.json: propose fresh workspace re-analysis
+                        tracing::warn!(
+                            "Existing .minicode/graph.json corrupted or unreadable; proposing workspace re-analysis"
+                        );
+                        self.pending_submission = Some(crate::app::PendingSubmission {
+                            prompt: prompt_to_run.clone(),
+                            display: message_to_display.to_string(),
+                        });
+                        self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
+                        return Ok(CommandAction::Continue);
+                    }
                 }
             }
         }
 
-        self.timeline
-            .add_user_message(message_to_display.to_string());
+        // Display the user's actual full prompt in the TUI timeline (expanding any paste placeholders)
+        self.timeline.add_user_message(prompt_to_run.to_string());
 
         // Check for recognized autonomous intent to notify the user
         if let Some(m) = matched_intent {

@@ -5,7 +5,8 @@ use crate::dev::models::{
     RestartPolicy, RestartStats, ScheduleInfo, SpawnDevRequest,
 };
 use crate::dev::ports::{
-    arbitrate_port, detect_requested_port, rewrite_command_port, scan_ports_from_output,
+    arbitrate_port, detect_requested_port, rewrite_command_port, scan_busy_ports_from_output,
+    scan_ports_from_output,
 };
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, VecDeque};
@@ -128,6 +129,8 @@ impl DevProcessHandle {
         if !matches!(*status_lock, DevProcessStatus::Degraded(_)) {
             *status_lock = DevProcessStatus::Stopped;
         }
+        self.pid.store(0, Ordering::SeqCst);
+        self.pgid.store(0, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -316,11 +319,18 @@ pub async fn spawn_process_group_with_id(
                             lock.push_back(line.clone());
                         }
 
+                        // Check for busy/conflict ports first to prune stale hints
+                        let busy = scan_busy_ports_from_output(&line);
+                        if !busy.is_empty() {
+                            let mut p_lock = ports_c.write().await;
+                            p_lock.retain(|p| !busy.contains(p));
+                        }
+
                         let discovered = scan_ports_from_output(&line);
                         if !discovered.is_empty() {
                             let mut p_lock = ports_c.write().await;
                             for p in discovered {
-                                if !p_lock.contains(&p) {
+                                if !busy.contains(&p) && !p_lock.contains(&p) {
                                     p_lock.push(p);
                                 }
                             }
@@ -333,14 +343,35 @@ pub async fn spawn_process_group_with_id(
             // Stream stderr
             if let Some(stderr) = current_child.stderr.take() {
                 let logs_c = Arc::clone(&logs_clone);
+                let ports_c = Arc::clone(&ports_clone);
+                let status_c = Arc::clone(&status_clone);
                 tokio::spawn(async move {
                     let mut reader = BufReader::new(stderr).lines();
                     while let Ok(Some(line)) = reader.next_line().await {
-                        let mut lock = logs_c.write().await;
-                        if lock.len() >= MAX_RING_BUFFER_LINES {
-                            lock.pop_front();
+                        {
+                            let mut lock = logs_c.write().await;
+                            if lock.len() >= MAX_RING_BUFFER_LINES {
+                                lock.pop_front();
+                            }
+                            lock.push_back(format!("[STDERR] {}", line));
                         }
-                        lock.push_back(format!("[STDERR] {}", line));
+
+                        let busy = scan_busy_ports_from_output(&line);
+                        if !busy.is_empty() {
+                            let mut p_lock = ports_c.write().await;
+                            p_lock.retain(|p| !busy.contains(p));
+                        }
+
+                        let discovered = scan_ports_from_output(&line);
+                        if !discovered.is_empty() {
+                            let mut p_lock = ports_c.write().await;
+                            for p in discovered {
+                                if !busy.contains(&p) && !p_lock.contains(&p) {
+                                    p_lock.push(p);
+                                }
+                            }
+                            *status_c.write().await = DevProcessStatus::Healthy;
+                        }
                     }
                 });
             }
@@ -531,21 +562,26 @@ pub async fn spawn_process_group_with_id(
 /// Discovers all descendant processes, sends SIGTERM, polls, and falls back to SIGKILL for zero orphans.
 #[cfg(unix)]
 pub async fn terminate_process_group(pgid: u32) -> Result<()> {
-    if pgid == 0 || pgid == std::process::id() {
+    let my_pid = std::process::id();
+    let my_pgrp = unsafe { libc::getpgrp() };
+    let my_sid = unsafe { libc::getsid(0) };
+    let pgid_i32 = pgid as i32;
+
+    if pgid <= 1 || pgid == my_pid || pgid_i32 == my_pgrp || pgid_i32 == my_sid {
         return Ok(());
     }
-    let pgid_i32 = pgid as i32;
 
     // 1. Discover all child and grandchild processes in this tree
     let descendants = crate::dev::ports::find_all_descendants(pgid);
 
-    // 2. Send SIGTERM to the entire process group (-pgid), direct PID, and all descendants
+    // 2. Send SIGTERM to the process group (-pgid), direct PID, and descendants directly
     unsafe {
         let _ = libc::kill(-pgid_i32, libc::SIGTERM);
         let _ = libc::kill(pgid_i32, libc::SIGTERM);
         for &desc in &descendants {
-            let _ = libc::kill(desc as i32, libc::SIGTERM);
-            let _ = libc::kill(-(desc as i32), libc::SIGTERM);
+            if desc > 1 && desc != my_pid {
+                let _ = libc::kill(desc as i32, libc::SIGTERM);
+            }
         }
     }
 
@@ -555,7 +591,7 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
         let root_alive = unsafe { libc::kill(-pgid_i32, 0) == 0 || libc::kill(pgid_i32, 0) == 0 };
         let mut any_desc_alive = false;
         for &desc in &descendants {
-            if unsafe { libc::kill(desc as i32, 0) == 0 } {
+            if desc > 1 && desc != my_pid && unsafe { libc::kill(desc as i32, 0) == 0 } {
                 any_desc_alive = true;
                 break;
             }
@@ -570,22 +606,21 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
         let _ = libc::kill(-pgid_i32, libc::SIGKILL);
         let _ = libc::kill(pgid_i32, libc::SIGKILL);
         for &desc in &descendants {
-            let _ = libc::kill(desc as i32, libc::SIGKILL);
-            let _ = libc::kill(-(desc as i32), libc::SIGKILL);
+            if desc > 1 && desc != my_pid {
+                let _ = libc::kill(desc as i32, libc::SIGKILL);
+            }
         }
     }
 
     // 5. Final re-scan sweep to catch any late children that spawned during shutdown
     let late_descendants = crate::dev::ports::find_all_descendants(pgid);
     for late in late_descendants {
-        if late != std::process::id() {
+        if late > 1 && late != my_pid {
             unsafe {
                 let _ = libc::kill(late as i32, libc::SIGKILL);
-                let _ = libc::kill(-(late as i32), libc::SIGKILL);
             }
         }
     }
-
     // Wait a brief moment to reap
     tokio::time::sleep(Duration::from_millis(50)).await;
     Ok(())

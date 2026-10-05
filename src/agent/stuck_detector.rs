@@ -280,18 +280,6 @@ impl StuckDetector {
 
     /// Records a tool execution and evaluates circuit breaker policy.
     pub fn check(&mut self, tool_name: &str, args: &Value, success: bool) -> BreakerAction {
-        if self.tripped {
-            let last_type = self.detect_loop().unwrap_or(LoopType::ExecutionCollapse {
-                consecutive_failures: self.collapse_threshold,
-                tools: vec![tool_name.to_string()],
-            });
-            return BreakerAction::Trip {
-                reason: "🛑 [CIRCUIT BREAKER: TRIPPED] Execution was halted because previous loop warnings were ignored. Please review the blocker above and request guidance from the user."
-                    .to_string(),
-                loop_type: last_type,
-            };
-        }
-
         let args_hash = Self::compute_args_hash(args);
         let target_file = Self::extract_target_file(args);
 
@@ -307,8 +295,10 @@ impl StuckDetector {
             self.history.pop_front();
         }
 
-        // Successful execution clears failure streaks for target files, collapse, and repeated failures
+        // Successful execution clears failure streaks for target files, collapse, and repeated failures.
+        // It also untrips the breaker because forward progress is being made.
         if success {
+            self.tripped = false;
             self.warning_counts.retain(|k, _| {
                 !k.starts_with("file:") && !k.starts_with("collapse") && !k.ends_with(":true")
             });
@@ -316,7 +306,10 @@ impl StuckDetector {
 
         let loop_type = match self.detect_loop() {
             Some(lt) => lt,
-            None => return BreakerAction::Pass,
+            None => {
+                self.tripped = false;
+                return BreakerAction::Pass;
+            }
         };
 
         let key = loop_type.pattern_key();
@@ -541,16 +534,9 @@ impl StuckDetector {
                     "executed repeatedly"
                 };
                 format!(
-                    "============================================================\n\
-                     ⚠️ [CIRCUIT BREAKER TRIGGERED: CONSECUTIVE REPETITION]\n\
-                     You have called `{tool_name}` with identical arguments {count} times ({status_desc}).\n\
-                     STOP repeating this action immediately.\n\n\
-                     Prescriptive Guidance:\n\
-                     1. Do NOT re-execute `{tool_name}` with these identical arguments.\n\
-                     2. If the operation is failing, carefully inspect the diagnostic above and adjust your approach.\n\
-                     3. Consider using alternative search or inspection tools (e.g. locate_symbol, grep_search, read_file with broader bounds).\n\
-                     4. If you are uncertain of how to proceed, present your findings and ask the user for direction.\n\
-                     ============================================================"
+                    "│ ⚠ Loop Warning · Consecutive Repetition\n\
+                     │   Action: `{tool_name}` called with identical arguments {count} times ({status_desc}).\n\
+                     │   Next:   Do not repeat with identical arguments; inspect diagnostic and adjust approach."
                 )
             }
             LoopType::FileTargetThrashing {
@@ -559,16 +545,9 @@ impl StuckDetector {
                 last_tool,
             } => {
                 format!(
-                    "============================================================\n\
-                     ⚠️ [CIRCUIT BREAKER TRIGGERED: FILE TARGET THRASHING]\n\
-                     You have failed {consecutive_failures} consecutive file modification attempts on `{file}` (last tool: `{last_tool}`).\n\
-                     STOP blindly re-attempting edits on this file.\n\n\
-                     Prescriptive Guidance:\n\
-                     1. Re-read the file with `read_file` to confirm current line numbers and surrounding context.\n\
-                     2. If you are attempting a patch that fails to match, inspect exact lines with `grep_search`.\n\
-                     3. Consider using `locate_fault` or `ast_diff` to analyze AST structure.\n\
-                     4. If the file structure does not match expectations, ask the user for clarification rather than repeatedly trying edits.\n\
-                     ============================================================"
+                    "│ ⚠ Loop Warning · File Target Thrashing\n\
+                     │   Action: {consecutive_failures} consecutive file modification failures on `{file}` (last tool: `{last_tool}`).\n\
+                     │   Next:   Re-read file with `read_file` or check lines with `grep_search` before attempting another edit."
                 )
             }
             LoopType::ExecutionCollapse {
@@ -577,16 +556,9 @@ impl StuckDetector {
             } => {
                 let tools_str = tools.join(", ");
                 format!(
-                    "============================================================\n\
-                     ⚠️ [CIRCUIT BREAKER TRIGGERED: EXECUTION COLLAPSE]\n\
-                     The last {consecutive_failures} tool operations have ALL failed consecutively ({tools_str}).\n\
-                     Your current recovery strategy is not working.\n\n\
-                     Prescriptive Guidance:\n\
-                     1. Step back and analyze why recent commands have all failed.\n\
-                     2. Check workspace state with `get_git_status` or inspect error logs.\n\
-                     3. Formulate a fundamentally different hypothesis before invoking further tools.\n\
-                     4. If blocked, state the failure causes clearly and ask the user for guidance.\n\
-                     ============================================================"
+                    "│ ⚠ Loop Warning · Execution Collapse\n\
+                     │   Action: Last {consecutive_failures} tool operations failed consecutively ({tools_str}).\n\
+                     │   Next:   Analyze underlying errors, inspect workspace state, or formulate a new approach."
                 )
             }
             LoopType::PingPongOscillation {
@@ -595,28 +567,17 @@ impl StuckDetector {
                 cycles,
             } => {
                 format!(
-                    "============================================================\n\
-                     ⚠️ [CIRCUIT BREAKER TRIGGERED: PING-PONG OSCILLATION]\n\
-                     You are stuck in an alternating loop between `{tool_a}` and `{tool_b}` ({cycles} complete cycles).\n\
-                     STOP alternating between these two operations.\n\n\
-                     Prescriptive Guidance:\n\
-                     1. Step back and break this loop.\n\
-                     2. Synthesize the findings you already gathered from `{tool_a}` and `{tool_b}`.\n\
-                     3. Make a decisive move: apply a concrete code edit, run verification tests, or update the user.\n\
-                     ============================================================"
+                    "│ ⚠ Loop Warning · Ping-Pong Oscillation\n\
+                     │   Action: Alternating loop between `{tool_a}` and `{tool_b}` ({cycles} complete cycles).\n\
+                     │   Next:   Halt alternation, synthesize findings gathered so far, and apply a concrete action."
                 )
             }
             LoopType::TriangularOscillation { pattern, cycles } => {
                 let pat_str = pattern.join(" -> ");
                 format!(
-                    "============================================================\n\
-                     ⚠️ [CIRCUIT BREAKER TRIGGERED: CYCLIC OSCILLATION]\n\
-                     You are stuck in a cyclic loop: {pat_str} ({cycles} complete cycles).\n\
-                     STOP repeating this cycle.\n\n\
-                     Prescriptive Guidance:\n\
-                     1. Halt this repetitive sequence immediately.\n\
-                     2. Formulate a new hypothesis or report your blocker directly to the user.\n\
-                     ============================================================"
+                    "│ ⚠ Loop Warning · Cyclic Oscillation\n\
+                     │   Action: Cyclic loop detected: {pat_str} ({cycles} complete cycles).\n\
+                     │   Next:   Halt sequence, formulate a new hypothesis, or ask user for clarification."
                 )
             }
         }
@@ -625,13 +586,10 @@ impl StuckDetector {
     /// Formats a hard circuit-breaker trip message when warnings are ignored.
     pub fn format_trip_reason(&self, loop_type: &LoopType) -> String {
         format!(
-            "============================================================\n\
-             🛑 [CIRCUIT BREAKER HARD TRIP: RUNAWAY LOOP HALTED]\n\
-             The anti-thrashing circuit breaker has tripped and halted turn execution.\n\
-             Reason: {}\n\
-             Previous warnings were ignored and repetitive failure persisted.\n\
-             Turn execution stopped early to preserve tokens and prevent workspace corruption.\n\
-             ============================================================",
+            "│ 🛡 Circuit Breaker · Runaway Loop Halted\n\
+             │   Reason: {}\n\
+             │   Action: Turn halted early to preserve tokens and prevent workspace corruption.\n\
+             │   Next:   Review the blocker above, formulate a different approach, or ask the user.",
             loop_type.summary()
         )
     }
@@ -729,7 +687,7 @@ mod tests {
         let res2 = detector.record_and_check("patch_file", &args, false);
         assert!(res2.is_some());
         let msg = res2.unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: CONSECUTIVE REPETITION]"));
+        assert!(msg.contains("Loop Warning · Consecutive Repetition"));
         assert!(msg.contains("patch_file"));
         assert!(msg.contains("failing consecutively"));
     }
@@ -754,7 +712,7 @@ mod tests {
         let action = detector.check("patch_file", &args3, false);
         assert!(action.is_warning());
         let msg = action.intervention().unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: FILE TARGET THRASHING]"));
+        assert!(msg.contains("Loop Warning · File Target Thrashing"));
         assert!(msg.contains("src/calc.rs"));
     }
 
@@ -781,8 +739,8 @@ mod tests {
         );
         assert!(action.is_warning());
         let msg = action.intervention().unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: EXECUTION COLLAPSE]"));
-        assert!(msg.contains("4 tool operations have ALL failed"));
+        assert!(msg.contains("Loop Warning · Execution Collapse"));
+        assert!(msg.contains("Last 4 tool operations failed"));
     }
 
     #[test]
@@ -808,7 +766,7 @@ mod tests {
         assert!(act3
             .intervention()
             .unwrap()
-            .contains("HARD TRIP: RUNAWAY LOOP HALTED"));
+            .contains("Circuit Breaker · Runaway Loop Halted"));
     }
 
     #[test]
@@ -825,7 +783,7 @@ mod tests {
         let res3 = detector.record_and_check("read_file", &args, true);
         assert!(res3.is_some());
         let msg = res3.unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: CONSECUTIVE REPETITION]"));
+        assert!(msg.contains("Loop Warning · Consecutive Repetition"));
         assert!(msg.contains("3 times"));
     }
 
@@ -842,7 +800,7 @@ mod tests {
         let res = detector.record_and_check("read_file", &args_b, true);
         assert!(res.is_some());
         let msg = res.unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: PING-PONG OSCILLATION]"));
+        assert!(msg.contains("Loop Warning · Ping-Pong Oscillation"));
         assert!(msg.contains("2 complete cycles"));
     }
 
@@ -863,7 +821,7 @@ mod tests {
         let res = detector.record_and_check("read_file", &args_c, true);
         assert!(res.is_some());
         let msg = res.unwrap();
-        assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: CYCLIC OSCILLATION]"));
+        assert!(msg.contains("Loop Warning · Cyclic Oscillation"));
         assert!(msg.contains("grep_search -> locate_symbol -> read_file"));
     }
 
@@ -900,6 +858,24 @@ mod tests {
         }
 
         // At cycle 3 (6 calls), visual QA still passes without false positive!
+        assert!(!detector.is_tripped());
+    }
+
+    #[test]
+    fn test_successful_action_unlatches_circuit_breaker() {
+        let mut detector = StuckDetector::new();
+        let args_bad = json!({"path": "src/main.rs", "search": "foo"});
+        let args_good = json!({"path": "src/other.rs", "content": "bar"});
+
+        detector.check("patch_file", &args_bad, false);
+        detector.check("patch_file", &args_bad, false);
+        let act = detector.check("patch_file", &args_bad, false);
+        assert!(act.is_trip());
+        assert!(detector.is_tripped());
+
+        // Now a new successful operation on another file occurs
+        let act_good = detector.check("write_file", &args_good, true);
+        assert_eq!(act_good, BreakerAction::Pass);
         assert!(!detector.is_tripped());
     }
 }

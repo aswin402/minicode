@@ -154,11 +154,11 @@ impl StatusWidgets {
         }
 
         if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
-            let count = pool.worker_count();
-            if count > 0 {
+            let active = pool.active_worker_count();
+            if active > 0 {
                 left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
                 left_spans.push(Span::styled(
-                    format!("swarm:{} workers", count),
+                    format!("swarm:{} active", active),
                     Style::default()
                         .fg(ctx.theme.info)
                         .add_modifier(Modifier::BOLD),

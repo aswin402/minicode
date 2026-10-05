@@ -76,9 +76,9 @@ pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
 /// Chrome is preferred for GUI mode: full CDP + real rendering. Obscura's
 /// rendering pipeline suits snapshots; Firefox has the CDP caveat above.
 pub const GUI_PRIORITY: &[BrowserEngine] = &[
-    BrowserEngine::Firefox,
     BrowserEngine::Chrome,
     BrowserEngine::Obscura,
+    BrowserEngine::Firefox,
 ];
 
 /// Launch configuration resolved for a specific browser engine

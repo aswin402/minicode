@@ -259,6 +259,13 @@ impl SubagentState {
             SubagentState::Terminated => "terminated",
         }
     }
+
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            SubagentState::Starting | SubagentState::Running | SubagentState::WaitingForInput
+        )
+    }
 }
 
 /// Configuration settings for instantiating a subagent worker

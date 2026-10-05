@@ -196,6 +196,7 @@ impl SurgicalRepairEngine {
             unsafe {
                 use std::os::unix::process::CommandExt;
                 std_cmd.pre_exec(move || {
+                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                     crate::sandbox::landlock::apply_landlock_sandbox(&ws, true).map_err(|e| {
                         std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
@@ -225,6 +226,11 @@ impl SurgicalRepairEngine {
                 )
             }
         };
+
+        let child_pid = child.id().unwrap_or(0);
+        if child_pid > 0 {
+            crate::dev::registry::get_global_dev_registry().register_external_pid(child_pid);
+        }
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -258,21 +264,47 @@ impl SurgicalRepairEngine {
 
         let timeout = Duration::from_secs(REPAIR_VERIFY_TIMEOUT_SECS);
         let status = match tokio::time::timeout(timeout, run_fut).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return (false, format!("Process wait error: {}", e)),
+            Ok(Ok(s)) => {
+                if child_pid > 0 {
+                    crate::dev::registry::get_global_dev_registry()
+                        .unregister_external_pid(child_pid);
+                }
+                s
+            }
+            Ok(Err(e)) => {
+                if child_pid > 0 {
+                    crate::dev::registry::get_global_dev_registry()
+                        .unregister_external_pid(child_pid);
+                }
+                return (false, format!("Process wait error: {}", e));
+            }
             Err(_) => {
                 #[cfg(unix)]
-                if let Some(pid) = child.id() {
+                if child_pid > 0 {
+                    let p_i32 = child_pid as i32;
+                    let descendants = crate::dev::ports::find_all_descendants(child_pid);
                     unsafe {
-                        libc::kill(-(pid as i32), libc::SIGTERM);
+                        let _ = libc::kill(-p_i32, libc::SIGTERM);
+                        let _ = libc::kill(p_i32, libc::SIGTERM);
+                        for &d in &descendants {
+                            let _ = libc::kill(d as i32, libc::SIGTERM);
+                            let _ = libc::kill(-(d as i32), libc::SIGTERM);
+                        }
                     }
                     tokio::time::sleep(Duration::from_millis(
                         crate::constants::PROCESS_KILL_GRACE_PERIOD_MS,
                     ))
                     .await;
                     unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
+                        let _ = libc::kill(-p_i32, libc::SIGKILL);
+                        let _ = libc::kill(p_i32, libc::SIGKILL);
+                        for &d in &descendants {
+                            let _ = libc::kill(d as i32, libc::SIGKILL);
+                            let _ = libc::kill(-(d as i32), libc::SIGKILL);
+                        }
                     }
+                    crate::dev::registry::get_global_dev_registry()
+                        .unregister_external_pid(child_pid);
                 }
                 let _ = child.kill().await;
                 return (

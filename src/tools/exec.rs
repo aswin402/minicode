@@ -179,6 +179,27 @@ pub fn is_daemon_or_server_command(cmd: &str) -> bool {
         return false;
     }
 
+    // Commands that pipe to output filters (tail, head, grep, wc) expect immediate synchronous stdout
+    if lower.contains(" | tail")
+        || lower.contains(" | head")
+        || lower.contains(" | grep")
+        || lower.contains(" | cat")
+        || lower.contains(" | wc")
+    {
+        return false;
+    }
+
+    // Build, check, test, lint, and version check commands are synchronous batch operations, never daemons
+    if lower.contains("build")
+        || lower.contains("test")
+        || lower.contains("check")
+        || lower.contains("lint")
+        || lower.contains("--version")
+        || lower.contains("-v")
+    {
+        return false;
+    }
+
     if trimmed.ends_with('&') {
         return true;
     }
@@ -197,7 +218,6 @@ pub fn is_daemon_or_server_command(cmd: &str) -> bool {
         || lower.contains("yarn start")
         || lower.contains("bun dev")
         || lower.contains("bun run dev")
-        || lower.contains("vite")
         || lower.contains("cargo watch")
         || lower.contains("uvicorn ")
         || lower.contains("flask run")
@@ -206,6 +226,10 @@ pub fn is_daemon_or_server_command(cmd: &str) -> bool {
         || lower.contains("docker run")
         || lower.contains("docker compose up")
         || lower.contains("docker-compose up")
+        || lower.starts_with("vite ")
+        || lower == "vite"
+        || lower.starts_with("npx vite ")
+        || lower == "npx vite"
 }
 
 /// Spawns a persistent background dev server or daemon task under MiniDevRegistry / MiniTask Manager.
@@ -277,7 +301,7 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
 
         let mut output = String::new();
         output.push_str(&format!(
-            "🚀 Background task launched successfully and registered with MiniTask Manager:\n• Task ID: {}\n• Name: {}\n• Type: {}\n• PID: {}\n• Status: {}\n",
+            "Background task launched successfully and registered with MiniTask Manager:\n• Task ID: {}\n• Name: {}\n• Type: {}\n• PID: {}\n• Status: {}\n",
             updated.id.as_str(),
             updated.name,
             updated.process_type,

@@ -12,7 +12,7 @@ pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: ASK_USER_TOOL_NAME.to_string(),
-        description: "Ask the user one or more questions to clarify requirements, select architecture/stack/theme choices, collect configuration or credentials, or solicit design opinions. Pauses turn execution until the user responds via the interactive inquiry menu or provides answers. In non-interactive mode (-y), returns recommended or default values immediately without hanging.".to_string(),
+        description: "CRITICAL INTERACTIVE GATE: Ask the user one or more questions to clarify requirements, select architecture/stack/theme choices, collect configuration or credentials, or solicit design opinions. ALWAYS call this tool on Turn 1 whenever a prompt is open-ended or underspecified before creating files. Pauses turn execution until the user responds via the interactive inquiry menu or provides answers. In non-interactive mode (-y), returns recommended or default values immediately without hanging.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

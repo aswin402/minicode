@@ -83,21 +83,32 @@ pub fn read_file(
     Ok(output)
 }
 
-/// Atomically writes full content to a file via a temporary file, creating any missing parent directories.
-pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> Result<String> {
+/// Atomically writes content to a file via a temporary file, supporting overwrite or append mode.
+pub fn write_file_with_options(
+    workspace_root: &Path,
+    relative_path: &str,
+    content: &str,
+    append: bool,
+) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
-    // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
     let orig_content = if target_path.exists() {
         std::fs::read_to_string(&target_path).unwrap_or_default()
     } else {
         String::new()
     };
 
+    let effective_content = if append && !orig_content.is_empty() {
+        format!("{}{}", orig_content, content)
+    } else {
+        content.to_string()
+    };
+
+    // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
     crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
         &target_path,
         &orig_content,
-        content,
+        &effective_content,
     )
     .map_err(|reason| ToolError::PatchFailed {
         path: relative_path.to_string(),
@@ -128,7 +139,7 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
             source: e,
         })?;
 
-    file.write_all(content.as_bytes())
+    file.write_all(effective_content.as_bytes())
         .map_err(|e| ToolError::FileOp {
             path: relative_path.to_string(),
             source: e,
@@ -155,11 +166,20 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
         }
     })?;
 
-    let line_count = content.lines().count();
-    let mut msg = format!(
-        "Successfully wrote {} lines to {}",
-        line_count, relative_path
-    );
+    let total_lines = effective_content.lines().count();
+    let mut msg = if append {
+        format!(
+            "Successfully appended {} bytes (total {} lines) to {}",
+            content.len(),
+            total_lines,
+            relative_path
+        )
+    } else {
+        format!(
+            "Successfully wrote {} lines to {}",
+            total_lines, relative_path
+        )
+    };
 
     if let Some(feedback) =
         crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, relative_path)
@@ -169,6 +189,11 @@ pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> 
     }
 
     Ok(msg)
+}
+
+/// Atomically writes full content to a file via a temporary file, creating any missing parent directories.
+pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> Result<String> {
+    write_file_with_options(workspace_root, relative_path, content, false)
 }
 
 /// Diagnostic structure for nearest match during failed search-and-replace patching.
@@ -824,6 +849,30 @@ mod tests {
         assert!(msg.contains("[Expected Search Block]"));
         assert!(msg.contains("[Suggested Next Action]"));
         assert!(msg.contains("read_file(path: \"diag.rs\""));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_write_file_append_mode() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_append_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let rel_path = "document.txt";
+        let part1 = "Section 1\nHeader info\n";
+        write_file(&temp_dir, rel_path, part1).unwrap();
+
+        let part2 = "Section 2\nAdditional details\n";
+        let res = write_file_with_options(&temp_dir, rel_path, part2, true);
+        assert!(res.is_ok());
+
+        let raw_content = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
+        assert_eq!(raw_content, format!("{}{}", part1, part2));
+
+        let formatted = read_file(&temp_dir, rel_path, None, None).unwrap();
+        assert!(formatted.contains("Section 1"));
+        assert!(formatted.contains("Additional details"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

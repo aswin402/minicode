@@ -351,7 +351,13 @@ impl Provider for OpenAiCompatibleProvider {
                                                         in_reasoning_mode = false;
                                                         yield Ok(StreamChunk::Delta("</thought>".to_string()));
                                                     }
-                                                    yield Ok(StreamChunk::Delta(content.to_string()));
+                                                    // Suppress streaming inline tool call tags into chat stream
+                                                    if !accumulated_content.contains("<minimax:tool_call")
+                                                        && !accumulated_content.contains("<tool_call>")
+                                                        && !accumulated_content.contains("<tool_use>")
+                                                    {
+                                                        yield Ok(StreamChunk::Delta(content.to_string()));
+                                                    }
                                                 }
                                             }
 
@@ -474,12 +480,10 @@ impl Provider for OpenAiCompatibleProvider {
                 }));
             }
 
-            // Fallback: check for Hermes / Ollama inline XML <tool_call> tags if stream ended without explicit [DONE]
-            if accumulated_content.contains("<tool_call>") {
-                let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
-                for tc in inline_calls {
-                    yield Ok(StreamChunk::ToolCallChunk(tc));
-                }
+            // Fallback: check for Hermes / Ollama / MiniMax inline XML tool calls if stream ended without explicit [DONE]
+            let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
+            for tc in inline_calls {
+                yield Ok(StreamChunk::ToolCallChunk(tc));
             }
         };
 
@@ -532,30 +536,221 @@ fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {
 /// 2. Markdown codeblocks ```json ... ``` or ```tool_call ... ``` containing tool objects
 /// 3. Raw JSON tool objects or arrays emitted directly by local models (e.g. Qwen / Ollama)
 ///
-/// Used for local Hermes, Qwen, and Ollama models that omit SSE delta.tool_calls.
+/// Parses XML-formatted parameters like `<parameter name="key">value</parameter>`
+pub fn parse_xml_parameters(xml_body: &str) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    let mut search_pos = 0;
+    while let Some(start_idx) = xml_body[search_pos..].find("<parameter") {
+        let abs_start = search_pos + start_idx;
+        let tag_open_end = match xml_body[abs_start..].find('>') {
+            Some(i) => abs_start + i,
+            None => break,
+        };
+        let tag_header = &xml_body[abs_start..tag_open_end];
+        let name = if let Some(n_start) = tag_header.find("name=\"") {
+            let after = &tag_header[n_start + 6..];
+            after.split('"').next().unwrap_or("").trim()
+        } else if let Some(n_start) = tag_header.find("name='") {
+            let after = &tag_header[n_start + 6..];
+            after.split('\'').next().unwrap_or("").trim()
+        } else {
+            ""
+        };
+
+        let tag_close_end = match xml_body[tag_open_end + 1..].find("</parameter>") {
+            Some(i) => tag_open_end + 1 + i,
+            None => break,
+        };
+
+        let val_str = xml_body[tag_open_end + 1..tag_close_end].trim();
+        if !name.is_empty() {
+            let parsed_val = if (val_str.starts_with('{') && val_str.ends_with('}'))
+                || (val_str.starts_with('[') && val_str.ends_with(']'))
+                || val_str == "true"
+                || val_str == "false"
+                || val_str.parse::<i64>().is_ok()
+                || val_str.parse::<f64>().is_ok()
+            {
+                serde_json::from_str::<serde_json::Value>(val_str)
+                    .unwrap_or_else(|_| serde_json::Value::String(val_str.to_string()))
+            } else {
+                serde_json::Value::String(val_str.to_string())
+            };
+            map.insert(name.to_string(), parsed_val);
+        }
+
+        search_pos = tag_close_end + "</parameter>".len();
+    }
+
+    serde_json::Value::Object(map)
+}
+
+/// Parses tool calls from an XML wrapper like `<minimax:tool_call>...</minimax:tool_call>`
+/// or `<tool_use>...</tool_use>` or `<tool_call>...</tool_call>`.
+pub fn parse_xml_tool_call_block(block: &str) -> Vec<ToolCall> {
+    let mut calls = Vec::new();
+    let trimmed = block.trim();
+
+    // Check if inner content is pure JSON
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(arr) = val.as_array() {
+            for item in arr {
+                if let Some(tc) = parse_single_tool_call_value(item) {
+                    calls.push(tc);
+                }
+            }
+        } else if let Some(tc) = parse_single_tool_call_value(&val) {
+            calls.push(tc);
+        }
+        return calls;
+    }
+
+    // Check for Anthropic style <tool_use><name>tool</name><arguments>...</arguments></tool_use>
+    if let (Some(name_start), Some(name_end)) = (trimmed.find("<name>"), trimmed.find("</name>")) {
+        let tool_name = trimmed[name_start + 6..name_end].trim().to_string();
+        let args = if let (Some(args_start), Some(args_end)) =
+            (trimmed.find("<arguments>"), trimmed.find("</arguments>"))
+        {
+            let inner = trimmed[args_start + 11..args_end].trim();
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(inner) {
+                json_val
+            } else {
+                parse_xml_parameters(inner)
+            }
+        } else {
+            parse_xml_parameters(trimmed)
+        };
+
+        if !tool_name.is_empty() {
+            calls.push(ToolCall {
+                id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+                name: tool_name,
+                arguments: args,
+            });
+            return calls;
+        }
+    }
+
+    // Check for MiniMax / generic style: `<tool_name>...<parameter name="...">...</parameter>...</tool_name>`
+    let mut search_pos = 0;
+    while let Some(open_tag_start) = trimmed[search_pos..].find('<') {
+        let abs_open = search_pos + open_tag_start;
+        let Some(open_tag_end) = trimmed[abs_open..].find('>') else {
+            break;
+        };
+        let tag_header = trimmed[abs_open + 1..abs_open + open_tag_end].trim();
+
+        // Skip comments, closing tags, and parameter tags
+        if tag_header.starts_with('/')
+            || tag_header.starts_with('!')
+            || tag_header.starts_with("parameter")
+        {
+            search_pos = abs_open + open_tag_end + 1;
+            continue;
+        }
+
+        let tool_name = tag_header
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if tool_name.is_empty() {
+            search_pos = abs_open + open_tag_end + 1;
+            continue;
+        }
+
+        let close_tag = format!("</{}>", tool_name);
+        if let Some(close_idx) = trimmed[abs_open + open_tag_end + 1..].find(&close_tag) {
+            let content_start = abs_open + open_tag_end + 1;
+            let content_end = content_start + close_idx;
+            let inner_content = &trimmed[content_start..content_end];
+            let args = parse_xml_parameters(inner_content);
+
+            calls.push(ToolCall {
+                id: format!("call_{}", uuid::Uuid::new_v4().simple()),
+                name: tool_name,
+                arguments: args,
+            });
+
+            search_pos = content_end + close_tag.len();
+        } else {
+            search_pos = abs_open + open_tag_end + 1;
+        }
+    }
+
+    calls
+}
+
+/// Extracts inline tool calls from model output:
+/// 1. `<minimax:tool_call>` XML blocks containing `<tool_name><parameter name="...">...</tool_name>`
+/// 2. `<tool_call>...</tool_call>` tags (JSON or XML parameter format)
+/// 3. `<tool_use>...</tool_use>` tags (Anthropic style)
+/// 4. Standalone XML tool tags with `<parameter name=...>`
+/// 5. Markdown codeblocks ```json ... ``` or ```tool_call ... ``` containing tool objects
+/// 6. Raw JSON tool objects or arrays emitted directly by local models (e.g. Qwen / Ollama)
+///
+/// Used for MiniMax, Hermes, Qwen, Ollama, and local models that omit SSE delta.tool_calls.
 pub fn extract_inline_tool_calls(text: &str) -> (String, Vec<ToolCall>) {
     let mut cleaned = text.to_string();
     let mut tool_calls = Vec::new();
 
-    // 1. Check for <tool_call>...</tool_call> tags
+    // 1. Check for <minimax:tool_call>...</minimax:tool_call> tags
+    while let Some(start) = cleaned.find("<minimax:tool_call>") {
+        let tag_len = "<minimax:tool_call>".len();
+        if let Some(end) = cleaned[start + tag_len..].find("</minimax:tool_call>") {
+            let block = &cleaned[start + tag_len..start + tag_len + end];
+            let parsed_calls = parse_xml_tool_call_block(block);
+            tool_calls.extend(parsed_calls);
+            cleaned.replace_range(
+                start..start + tag_len + end + "</minimax:tool_call>".len(),
+                "",
+            );
+        } else {
+            break;
+        }
+    }
+
+    // 2. Check for <tool_call>...</tool_call> tags
     while let Some(start) = cleaned.find("<tool_call>") {
         let tag_len = "<tool_call>".len();
         if let Some(end) = cleaned[start + tag_len..].find("</tool_call>") {
-            let json_str = cleaned[start + tag_len..start + tag_len + end].trim();
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let Some(arr) = val.as_array() {
-                    for item in arr {
-                        if let Some(tc) = parse_single_tool_call_value(item) {
-                            tool_calls.push(tc);
-                        }
-                    }
-                } else if let Some(tc) = parse_single_tool_call_value(&val) {
-                    tool_calls.push(tc);
-                }
-            }
+            let block = &cleaned[start + tag_len..start + tag_len + end];
+            let parsed_calls = parse_xml_tool_call_block(block);
+            tool_calls.extend(parsed_calls);
             cleaned.replace_range(start..start + tag_len + end + "</tool_call>".len(), "");
         } else {
             break;
+        }
+    }
+
+    // 3. Check for <tool_use>...</tool_use> tags (Anthropic format)
+    while let Some(start) = cleaned.find("<tool_use>") {
+        let tag_len = "<tool_use>".len();
+        if let Some(end) = cleaned[start + tag_len..].find("</tool_use>") {
+            let block = &cleaned[start + tag_len..start + tag_len + end];
+            let parsed_calls = parse_xml_tool_call_block(block);
+            tool_calls.extend(parsed_calls);
+            cleaned.replace_range(start..start + tag_len + end + "</tool_use>".len(), "");
+        } else {
+            break;
+        }
+    }
+
+    // 4. Check for standalone XML tool tags containing <parameter name=
+    if tool_calls.is_empty() && cleaned.contains("<parameter") {
+        let parsed_calls = parse_xml_tool_call_block(&cleaned);
+        if !parsed_calls.is_empty() {
+            for tc in &parsed_calls {
+                let open = format!("<{}>", tc.name);
+                let close = format!("</{}>", tc.name);
+                if let (Some(s), Some(e)) = (cleaned.find(&open), cleaned.find(&close)) {
+                    if s < e {
+                        cleaned.replace_range(s..e + close.len(), "");
+                    }
+                }
+            }
+            tool_calls.extend(parsed_calls);
         }
     }
 
@@ -717,5 +912,58 @@ mod tests {
         assert_eq!(calls[0].name, "patch_file");
         assert_eq!(calls[0].arguments["path"], "src/index.ts");
         assert!(!cleaned.contains("patch_file"));
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_minimax_xml() {
+        let input = r#"I will create the active plan.
+<minimax:tool_call>
+<create_plan>
+<parameter name="steps">["Step 1: PRD", "Step 2: Architecture"]</parameter>
+<parameter name="title">minicode Landing Page Development</parameter>
+</create_plan>
+</minimax:tool_call>
+Let me proceed."#;
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_plan");
+        assert_eq!(
+            calls[0].arguments["title"],
+            "minicode Landing Page Development"
+        );
+        assert!(calls[0].arguments["steps"].is_array());
+        assert_eq!(calls[0].arguments["steps"].as_array().unwrap().len(), 2);
+        assert!(!cleaned.contains("<minimax:tool_call>"));
+        assert!(cleaned.contains("I will create the active plan."));
+        assert!(cleaned.contains("Let me proceed."));
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_anthropic_xml() {
+        let input = r#"<tool_use>
+<name>write_file</name>
+<arguments>
+{"path": "index.html", "content": "<h1>Hello</h1>"}
+</arguments>
+</tool_use>"#;
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "write_file");
+        assert_eq!(calls[0].arguments["path"], "index.html");
+        assert_eq!(calls[0].arguments["content"], "<h1>Hello</h1>");
+        assert_eq!(cleaned.trim(), "");
+    }
+
+    #[test]
+    fn test_extract_inline_tool_calls_standalone_xml() {
+        let input = r#"<create_plan>
+<parameter name="steps">["Build HTML", "Verify CSS"]</parameter>
+<parameter name="title">Website Development</parameter>
+</create_plan>"#;
+        let (cleaned, calls) = extract_inline_tool_calls(input);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "create_plan");
+        assert_eq!(calls[0].arguments["title"], "Website Development");
+        assert_eq!(cleaned.trim(), "");
     }
 }

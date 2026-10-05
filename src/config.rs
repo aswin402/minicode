@@ -112,7 +112,7 @@ fn default_temperature() -> f32 {
 }
 
 fn default_max_tokens() -> usize {
-    8192
+    16384
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -614,9 +614,9 @@ fn default_headless_priority() -> Vec<String> {
 
 fn default_gui_priority() -> Vec<String> {
     vec![
-        "firefox".to_string(),
         "chrome".to_string(),
         "obscura".to_string(),
+        "firefox".to_string(),
     ]
 }
 

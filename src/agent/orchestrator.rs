@@ -4,7 +4,7 @@ use crate::agent::subagent::{
 };
 use crate::error::{MinicodeError, Result, ToolError};
 use crate::git::worktree::WorktreeManager;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Result of an individual subagent fanout worker.
 #[allow(dead_code)]
@@ -345,6 +345,8 @@ impl MultiAgentOrchestrator {
 pub enum WorkflowArchetype {
     /// UI/frontend development, styling, components, or layout creation.
     UiDesign,
+    /// MiniKit project scaffolding, starter stacks, dependencies, and package management.
+    MiniKitScaffolding,
     /// AST slicing, code tracing, architecture exploration, or impact analysis.
     CodeExploration,
     /// Dev servers, background daemons, port monitoring, or runtime logs.
@@ -357,25 +359,68 @@ pub enum WorkflowArchetype {
     Standard,
 }
 
+/// Dynamic repository classification based on filesystem discovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoState {
+    /// Completely fresh workspace with no source code or documentation
+    FreshWorkspace,
+    /// Workspace containing documentation, markdown, or configs, but no application source code
+    DocsOnly,
+    /// Active software codebase with parseable source code files (.rs, .ts, .js, .py, etc.)
+    ExistingCodebase,
+}
+
 impl WorkflowArchetype {
     /// Returns the recommended tool categories for this execution archetype.
     pub fn recommended_categories(&self) -> Vec<crate::tools::category::ToolCategory> {
         use crate::tools::category::ToolCategory;
         match self {
-            Self::UiDesign => vec![ToolCategory::Blocks, ToolCategory::MiniKit],
+            Self::UiDesign => vec![
+                ToolCategory::Blocks,
+                ToolCategory::MiniKit,
+                ToolCategory::Web,
+                ToolCategory::Files,
+                ToolCategory::Agent,
+                ToolCategory::Dev,
+            ],
+            Self::MiniKitScaffolding => vec![
+                ToolCategory::MiniKit,
+                ToolCategory::Files,
+                ToolCategory::Exec,
+                ToolCategory::Blocks,
+                ToolCategory::Memory,
+                ToolCategory::Agent,
+                ToolCategory::Web,
+            ],
             Self::CodeExploration => vec![
                 ToolCategory::Codegraph,
                 ToolCategory::Search,
                 ToolCategory::Memory,
+                ToolCategory::Files,
             ],
-            Self::RuntimeDev => vec![ToolCategory::Dev, ToolCategory::Exec],
+            Self::RuntimeDev => vec![
+                ToolCategory::Dev,
+                ToolCategory::Exec,
+                ToolCategory::Web,
+                ToolCategory::Files,
+            ],
             Self::MultiPhaseEngineering => vec![
                 ToolCategory::MiniPower,
                 ToolCategory::Memory,
                 ToolCategory::Files,
                 ToolCategory::Exec,
+                ToolCategory::MiniKit,
+                ToolCategory::Blocks,
+                ToolCategory::Agent,
+                ToolCategory::Web,
+                ToolCategory::Dev,
             ],
-            Self::VaultSkills => vec![ToolCategory::Vault, ToolCategory::MiniKit],
+            Self::VaultSkills => vec![
+                ToolCategory::Vault,
+                ToolCategory::MiniKit,
+                ToolCategory::Files,
+                ToolCategory::Web,
+            ],
             Self::Standard => vec![],
         }
     }
@@ -440,7 +485,101 @@ impl WorkflowRouter {
             return WorkflowArchetype::VaultSkills;
         }
 
-        // 1. CodeGraph, AST Slicing & Architecture Exploration Archetype
+        // 1. MiniKit Architecture Stacks, Scaffolding & Dependencies Archetype
+        let has_minikit_term = contains_any(
+            &lower,
+            &[
+                "minikit",
+                "kit ",
+                "kit_",
+                "onpkg",
+                "scaffold",
+                "starter stack",
+                "stack template",
+                "add dep",
+                "install dep",
+                "cargo add",
+                "npm install",
+                "bun add",
+                "yarn add",
+                "pip install",
+                "drift",
+                "self-heal",
+            ],
+        );
+        let has_kit_action = has_any_word(&lower, &["stack", "package", "dependency"])
+            && contains_any(
+                &lower,
+                &["add", "install", "scaffold", "list", "show", "diff"],
+            );
+
+        if has_minikit_term || has_kit_action {
+            return WorkflowArchetype::MiniKitScaffolding;
+        }
+
+        // 2. UI Design, Landing Pages & Component Warehouse Archetype
+        let is_explicit_ui = contains_any(
+            &lower,
+            &[
+                "landing page",
+                "landing",
+                "sidebar",
+                "navbar",
+                "hero section",
+                "ui design",
+                "design token",
+                "tailwind",
+                "palette",
+                "gradient",
+                "dark mode",
+                "light mode",
+                "wireframe",
+            ],
+        ) || has_any_word(&lower, &["ui", "frontend", "css", "styling"]);
+
+        let has_ui_component_term = has_any_word(
+            &lower,
+            &[
+                "component",
+                "components",
+                "button",
+                "modal",
+                "card",
+                "dialog",
+            ],
+        );
+
+        // Disambiguate data structure / database terms from UI components
+        let has_data_backend_term = contains_any(
+            &lower,
+            &[
+                "database",
+                "hash table",
+                "sql table",
+                "pricing calculation",
+                "pricing algorithm",
+            ],
+        );
+
+        let has_explicit_plan_request = contains_any(
+            &lower,
+            &[
+                "detailed plan",
+                "power plan",
+                "superpower",
+                "acceptance criteria",
+                "verification barrier",
+            ],
+        );
+
+        if (is_explicit_ui || has_ui_component_term)
+            && !has_data_backend_term
+            && !has_explicit_plan_request
+        {
+            return WorkflowArchetype::UiDesign;
+        }
+
+        // 3. CodeGraph, AST Slicing & Architecture Exploration Archetype
         let has_graph_keyword = contains_any(
             &lower,
             &[
@@ -475,7 +614,7 @@ impl WorkflowRouter {
             return WorkflowArchetype::CodeExploration;
         }
 
-        // 2. Runtime Dev & Process Orchestration Archetype
+        // 4. Runtime Dev & Process Orchestration Archetype
         let has_process_term = contains_any(
             &lower,
             &[
@@ -558,7 +697,7 @@ impl WorkflowRouter {
             return WorkflowArchetype::RuntimeDev;
         }
 
-        // 3. Multi-Phase Engineering, Planning & TDD Archetype
+        // 5. Multi-Phase Engineering, Planning & TDD Archetype
         let has_planning_token = contains_any(
             &lower,
             &[
@@ -599,54 +738,6 @@ impl WorkflowRouter {
             return WorkflowArchetype::MultiPhaseEngineering;
         }
 
-        // 4. UI Design & Component Warehouse Archetype
-        let is_explicit_ui = contains_any(
-            &lower,
-            &[
-                "landing page",
-                "landing",
-                "sidebar",
-                "navbar",
-                "hero section",
-                "ui design",
-                "design token",
-                "tailwind",
-                "palette",
-                "gradient",
-                "dark mode",
-                "light mode",
-                "wireframe",
-            ],
-        ) || has_any_word(&lower, &["ui", "frontend", "css", "styling"]);
-
-        let has_ui_component_term = has_any_word(
-            &lower,
-            &[
-                "component",
-                "components",
-                "button",
-                "modal",
-                "card",
-                "dialog",
-            ],
-        );
-
-        // Disambiguate data structure / database terms from UI components
-        let has_data_backend_term = contains_any(
-            &lower,
-            &[
-                "database",
-                "hash table",
-                "sql table",
-                "pricing calculation",
-                "pricing algorithm",
-            ],
-        );
-
-        if (is_explicit_ui || has_ui_component_term) && !has_data_backend_term {
-            return WorkflowArchetype::UiDesign;
-        }
-
         WorkflowArchetype::Standard
     }
 
@@ -661,8 +752,37 @@ impl WorkflowRouter {
         let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
         let has_live_runtime = active_task_count > 0 || browser_live;
 
+        let mut sections: Vec<String> = Vec::new();
+
+        // 0. Dynamic Repository State & File Discovery
+        let (repo_state, code_files, doc_files) = Self::scan_repository_state(workspace_root);
+        sections.push(Self::enrich_repository_state(
+            workspace_root,
+            repo_state,
+            &code_files,
+            &doc_files,
+        ));
+        sections.push(Self::enrich_orchestrator_guidance(
+            workspace_root,
+            prompt,
+            repo_state,
+        ));
+        sections.push(Self::enrich_minipower_rules_and_freedom(
+            workspace_root,
+            prompt,
+        ));
+
+        // 1. Dynamic Plan Status Grounding (Oh My Pi / SWE-Agent Task Reconciler)
+        if let Some(plan_block) = Self::enrich_plan_status(workspace_root) {
+            sections.push(plan_block);
+        }
+
+        // 2. Base archetype enrichment
         let base_enrichment = match archetype {
             WorkflowArchetype::UiDesign => Self::enrich_ui_design(workspace_root, prompt),
+            WorkflowArchetype::MiniKitScaffolding => {
+                Self::enrich_minikit_scaffolding(workspace_root, prompt)
+            }
             WorkflowArchetype::CodeExploration => Self::enrich_code_exploration(prompt),
             WorkflowArchetype::RuntimeDev => Self::enrich_runtime_dev().await,
             WorkflowArchetype::MultiPhaseEngineering => {
@@ -675,26 +795,29 @@ impl WorkflowRouter {
         // State-Grounded Runtime Injection:
         // If background tasks or browser session are actively running and archetype was not RuntimeDev,
         // prepend the live dev services block so the agent is ALWAYS aware of its active runtime environment.
-        let combined_enrichment = match base_enrichment {
-            Some(mut b) => {
-                if has_live_runtime && archetype != WorkflowArchetype::RuntimeDev {
-                    if let Some(runtime_block) = Self::enrich_runtime_dev().await {
-                        b = format!("{}\n\n{}", runtime_block, b);
-                    }
-                }
-                Some(b)
+        if has_live_runtime && archetype != WorkflowArchetype::RuntimeDev {
+            if let Some(runtime_block) = Self::enrich_runtime_dev().await {
+                sections.push(runtime_block);
             }
-            None => {
-                if has_live_runtime && archetype != WorkflowArchetype::RuntimeDev {
-                    Self::enrich_runtime_dev().await
-                } else {
-                    None
-                }
-            }
-        };
+        }
 
-        // For engineering workflows (MultiPhaseEngineering or Standard), check if there are
-        // highly relevant universal gotchas learned from past sessions for the active prompt/stack
+        if let Some(base) = base_enrichment {
+            sections.push(base);
+        }
+
+        // 3. Dynamic Core Documentation Specifications (PRD, Specs, Architecture, Design)
+        if let Some(docs_block) = Self::enrich_core_documentation(workspace_root, prompt) {
+            sections.push(docs_block);
+        }
+
+        // 4. Hermes Progressive Skills Enrichment (Auto-activate when relevant)
+        if archetype != WorkflowArchetype::VaultSkills {
+            if let Some(skills_block) = Self::enrich_hermes_skills(workspace_root, prompt) {
+                sections.push(skills_block);
+            }
+        }
+
+        // 5. Universal learned gotchas for engineering workflows
         if matches!(
             archetype,
             WorkflowArchetype::MultiPhaseEngineering | WorkflowArchetype::Standard
@@ -703,7 +826,7 @@ impl WorkflowRouter {
             let lower = prompt.to_ascii_lowercase();
             let relevant_gotchas = store.find_relevant_gotchas(&lower);
             if !relevant_gotchas.is_empty() {
-                let mut gotcha_block = String::from("\n<universal_learned_gotchas>\n");
+                let mut gotcha_block = String::from("<universal_learned_gotchas>\n");
                 gotcha_block.push_str("  Known Pitfalls & Invariants (Learned from previous sessions across this machine):\n");
                 for g in relevant_gotchas.iter().take(3) {
                     gotcha_block.push_str(&format!(
@@ -713,18 +836,422 @@ impl WorkflowRouter {
                 }
                 gotcha_block.push_str("  Directive: Heed these hard-won lessons to prevent repeating previous compiler and runtime errors.\n");
                 gotcha_block.push_str("</universal_learned_gotchas>");
-
-                return match combined_enrichment {
-                    Some(mut b) => {
-                        b.push_str(&gotcha_block);
-                        Some(b)
-                    }
-                    None => Some(gotcha_block),
-                };
+                sections.push(gotcha_block);
             }
         }
 
-        combined_enrichment
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
+    }
+
+    /// Extracts live plan progress from working memory to ensure the agent is aware of
+    /// pending, in-progress, and completed tasks at each step.
+    fn enrich_plan_status(workspace_root: &Path) -> Option<String> {
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+        if !wm.has_active_plan() {
+            return None;
+        }
+
+        let tasks = wm.read_parsed_tasks();
+        if tasks.is_empty() {
+            return None;
+        }
+
+        let total = tasks.len();
+        let completed = tasks
+            .iter()
+            .filter(|t| {
+                t.status == crate::context::memory::working_memory::TaskItemStatus::Completed
+            })
+            .count();
+        let in_progress = tasks.iter().find(|t| {
+            t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
+        });
+
+        let mut out = String::from("<active_task_plan_status>\n");
+        out.push_str(&format!(
+            "  Execution Plan State: {}/{} tasks completed\n",
+            completed, total
+        ));
+        if let Some(active) = in_progress {
+            out.push_str(&format!(
+                "  ► Currently In Progress: \"{}\"\n",
+                active.title
+            ));
+        }
+        out.push_str("  Task Checklist:\n");
+        for t in &tasks {
+            let mark = match t.status {
+                crate::context::memory::working_memory::TaskItemStatus::Completed => "[x]",
+                crate::context::memory::working_memory::TaskItemStatus::InProgress => "[>]",
+                crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
+            };
+            out.push_str(&format!("    • {} {}\n", mark, t.title));
+        }
+        out.push_str("  Plan Reconciliation Invariant (Oh My Pi / SWE-Agent Standard):\n");
+        out.push_str("  • Keep focus strictly on the in-progress step.\n");
+        out.push_str("  • Upon completing a task's code or verification, call `update_progress` immediately so no completed steps linger as `[>]`.\n");
+        out.push_str("  • When the final task is verified, call `update_progress(step=\"active\", status=\"completed\")` to achieve 100% plan completion.\n");
+        out.push_str("  • Never batch all `update_progress` calls together at the end of a multi-step turn; advance tasks atomically as you execute.\n");
+        out.push_str("</active_task_plan_status>");
+        Some(out)
+    }
+
+    /// Dynamically scans workspace files and directories to detect if this is a fresh workspace,
+    /// docs-only workspace, or existing software codebase, without hardcoded names or rigid assumptions.
+    pub fn scan_repository_state(workspace_root: &Path) -> (RepoState, Vec<PathBuf>, Vec<PathBuf>) {
+        if !workspace_root.exists() {
+            return (RepoState::FreshWorkspace, Vec::new(), Vec::new());
+        }
+
+        let walker = ignore::WalkBuilder::new(workspace_root)
+            .hidden(true)
+            .git_ignore(true)
+            .max_depth(Some(4))
+            .filter_entry(|entry| {
+                let name = entry.file_name().to_string_lossy();
+                !matches!(
+                    name.as_ref(),
+                    "node_modules"
+                        | "target"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                        | "vendor"
+                        | ".venv"
+                        | "venv"
+                        | "__pycache__"
+                        | ".git"
+                        | ".minicode"
+                )
+            })
+            .build();
+
+        let mut code_files = Vec::new();
+        let mut doc_files = Vec::new();
+        let mut has_other_files = false;
+
+        const CODE_EXTS: &[&str] = &[
+            "rs", "ts", "tsx", "js", "jsx", "py", "go", "c", "cpp", "cc", "cxx", "h", "hpp",
+            "java", "kt", "kts", "swift", "rb", "php", "cs", "scala", "vue", "svelte", "html",
+            "css", "scss", "sass", "less", "sh", "bash", "zsh", "sql",
+        ];
+        const DOC_EXTS: &[&str] = &["md", "markdown", "mdown", "txt", "rst", "adoc", "org"];
+
+        for result in walker.flatten() {
+            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                let path = result.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if name.starts_with('.') {
+                    continue;
+                }
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    if CODE_EXTS.contains(&ext_lower.as_str()) {
+                        if code_files.len() < 30 {
+                            code_files.push(path.to_path_buf());
+                        }
+                    } else if DOC_EXTS.contains(&ext_lower.as_str()) {
+                        if doc_files.len() < 30 {
+                            doc_files.push(path.to_path_buf());
+                        }
+                    } else {
+                        has_other_files = true;
+                    }
+                } else {
+                    has_other_files = true;
+                }
+            }
+        }
+
+        let state = if !code_files.is_empty() {
+            RepoState::ExistingCodebase
+        } else if !doc_files.is_empty() || has_other_files {
+            RepoState::DocsOnly
+        } else {
+            RepoState::FreshWorkspace
+        };
+
+        (state, code_files, doc_files)
+    }
+
+    /// Injects dynamic repository state analysis into context so the agent knows whether
+    /// the workspace is fresh, docs-only, or an existing codebase, and what files are present.
+    pub fn enrich_repository_state(
+        workspace_root: &Path,
+        state: RepoState,
+        code_files: &[PathBuf],
+        doc_files: &[PathBuf],
+    ) -> String {
+        let mut out = String::from("<workspace_repository_state>\n");
+        match state {
+            RepoState::FreshWorkspace => {
+                out.push_str("  Status: Fresh Workspace (Zero prior code or docs files)\n");
+                out.push_str("  AST Indexing: Bypassed (no code to index).\n");
+                out.push_str("  Directive: If asked to build/create a project, enter Inception Workflow: create core specifications in `minikit_docs/core/` and scaffold via `kit_stack_add`.\n");
+            }
+            RepoState::DocsOnly => {
+                out.push_str("  Status: Documentation / Non-Coded Workspace (No application source code files)\n");
+                out.push_str("  AST Indexing: Bypassed (no code to index).\n");
+                out.push_str("  Discovered Documentation Files in Workspace:\n");
+                for d in doc_files.iter().take(6) {
+                    let rel = d.strip_prefix(workspace_root).unwrap_or(d);
+                    out.push_str(&format!("    • `{}`\n", rel.display()));
+                }
+                out.push_str("  Directive: Ground implementations in these existing docs before scaffolding.\n");
+            }
+            RepoState::ExistingCodebase => {
+                out.push_str(&format!(
+                    "  Status: Existing Software Codebase ({} source files detected)\n",
+                    code_files.len()
+                ));
+                out.push_str("  Key Source Files:\n");
+                for c in code_files.iter().take(6) {
+                    let rel = c.strip_prefix(workspace_root).unwrap_or(c);
+                    out.push_str(&format!("    • `{}`\n", rel.display()));
+                }
+                if !doc_files.is_empty() {
+                    out.push_str("  Documentation Files:\n");
+                    for d in doc_files.iter().take(4) {
+                        let rel = d.strip_prefix(workspace_root).unwrap_or(d);
+                        out.push_str(&format!("    • `{}`\n", rel.display()));
+                    }
+                }
+                out.push_str("  Directive: Ground changes in existing architecture and symbols (`locate_symbol`, `grep_search`). Maintain existing conventions.\n");
+            }
+        }
+        out.push_str("</workspace_repository_state>");
+        out
+    }
+
+    /// Injects dynamic orchestrator workflow guidance for fresh project inception,
+    /// specification synthesis, information completeness evaluation, ask_user gating,
+    /// and web research.
+    pub fn enrich_orchestrator_guidance(
+        _workspace_root: &Path,
+        prompt: &str,
+        state: RepoState,
+    ) -> String {
+        let mut out = String::from("<orchestrator_dynamic_guidance>\n");
+        let lower = prompt.to_ascii_lowercase();
+
+        let is_creation_intent = has_any_word(
+            &lower,
+            &[
+                "create",
+                "build",
+                "make",
+                "scaffold",
+                "develop",
+                "setup",
+                "bootstrap",
+                "start",
+            ],
+        ) && has_any_word(
+            &lower,
+            &[
+                "project", "app", "website", "landing", "page", "service", "api", "tool", "stack",
+                "system",
+            ],
+        );
+
+        let has_explicit_stack = {
+            let direct_stack_declarations = [
+                "use react",
+                "using react",
+                "with react",
+                "in react",
+                "react app",
+                "react project",
+                "react + vite",
+                "react/vite",
+                "use vite",
+                "using vite",
+                "with vite",
+                "use vue",
+                "using vue",
+                "with vue",
+                "in vue",
+                "vue app",
+                "vue project",
+                "use svelte",
+                "using svelte",
+                "with svelte",
+                "in svelte",
+                "svelte app",
+                "use nextjs",
+                "using nextjs",
+                "with nextjs",
+                "in nextjs",
+                "use next.js",
+                "using next.js",
+                "with next.js",
+                "in next.js",
+                "nextjs app",
+                "next.js app",
+                "use vanilla",
+                "using vanilla",
+                "vanilla html",
+                "pure html",
+                "static html",
+                "plain html",
+                "vanilla js",
+                "use tailwind",
+                "using tailwind",
+                "with tailwind",
+                "use fastapi",
+                "using fastapi",
+                "with fastapi",
+                "in fastapi",
+                "use flask",
+                "using flask",
+                "use django",
+                "using django",
+                "use express",
+                "using express",
+                "use hono",
+                "using hono",
+                "use actix",
+                "using actix",
+                "use axum",
+                "using axum",
+                "use astro",
+                "using astro",
+                "in rust",
+                "using rust",
+                "stack:",
+                "tech stack:",
+                "framework:",
+            ];
+            contains_any(&lower, &direct_stack_declarations)
+        };
+        let has_explicit_theme_or_style = has_any_word(
+            &lower,
+            &[
+                "dark",
+                "light",
+                "minimal",
+                "futuristic",
+                "cyberpunk",
+                "modern",
+                "neon",
+                "retro",
+                "monochrome",
+                "gradient",
+                "glassmorphism",
+                "aesthetic",
+                "palette",
+                "theme",
+            ],
+        );
+        let is_rich_prompt = has_explicit_stack && has_explicit_theme_or_style;
+
+        match state {
+            RepoState::FreshWorkspace | RepoState::DocsOnly => {
+                if is_creation_intent || state == RepoState::FreshWorkspace {
+                    out.push_str("  Autonomous Inception & Specification Architecture:\n");
+                    out.push_str("  1. Specification Synthesis First:\n");
+                    out.push_str("     Before creating application code files, establish core project specifications in `minikit_docs/core/`:\n");
+                    out.push_str("     • `prd.md`: Product Requirements Document (Core purpose, user stories, success metrics, constraints, non-goals)\n");
+                    out.push_str("     • `design.md`: Visual Design Specification (Theme tokens, typography, layout hierarchy, components, breakpoints)\n");
+                    out.push_str("     • `architecture.md`: Clean Architecture & Dependency Contract (Module boundaries, data flow, state management)\n");
+                    out.push_str("     • `spec.md`: Technical Invariants & Protocol Specification (APIs, contracts, error boundaries)\n");
+                    out.push_str("     • `todo.md`: Initialized via `create_plan` with verifiable bite-sized milestones.\n");
+
+                    if is_rich_prompt {
+                        out.push_str(
+                            "  2. Information Completeness: HIGH (Rich Specification Provided):\n",
+                        );
+                        out.push_str("     The user provided comprehensive stack and design specifications. DO NOT ask redundant questions!\n");
+                        out.push_str("     Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
+                    } else {
+                        out.push_str("  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n");
+                        out.push_str("     Target tech stack, design theme, or architectural bounds are not fully settled by the user.\n");
+                        out.push_str("     YOU MUST CALL `ask_user` ON TURN 1 to present 2-3 structured choices for:\n");
+                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Modern Vanilla HTML5/CSS3/ES6, Next.js, FastAPI)\n");
+                        out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
+                        out.push_str("       • Scope & Key Features\n");
+                        out.push_str("     DO NOT write code or create project files before asking! Once the user answers, create the detailed `.md` files in `minikit_docs/core/` and request plan approval.\n");
+                    }
+
+                    out.push_str("  3. Progressive Step-by-Step Task Advancement:\n");
+                    out.push_str("     • Call `update_progress` step-by-step immediately after each milestone or file is delivered.\n");
+                    out.push_str("     • NEVER batch all `update_progress` calls together at the very end of your turn!\n");
+                    out.push_str("     • Conclude the turn by verifying the final task and marking it completed.\n");
+                    out.push_str("  4. Starter Stacks & Anti-Monolith Invariant:\n");
+                    out.push_str("     • Scaffolding: Call `kit_stack_add` to scaffold starter project templates in 1 tool call rather than hand-authoring files from scratch.\n");
+                    out.push_str("     • NEVER write massive monolithic single files (>250-300 lines or >10KB). Decompose HTML, CSS, and JS into modular files to avoid JSON token truncation cutoffs.\n");
+                    out.push_str("     • UI Design: Call `block_palettes` for color tokens and `block_search` / `block_scaffold` for pre-built components.\n");
+                    out.push_str("  5. Research on Doubt / Uncertainty:\n");
+                    out.push_str("     If you have any doubt regarding modern library APIs, framework compatibility, or best practices, call `search_web` or `fetch_or_browse` to ground yourself before writing specifications or code.\n");
+                }
+            }
+            RepoState::ExistingCodebase => {
+                out.push_str("  Existing Codebase Engineering Architecture:\n");
+                out.push_str("  1. Grounding & CodeGraph: Inspect existing architecture, imports, and types (`locate_symbol`, `grep_search`, `read_file`) before writing code.\n");
+                out.push_str("  2. Invariants: Respect existing project patterns, styling, and coding conventions.\n");
+                out.push_str("  3. Living Specs: Inspect available `.md` documentation and update `minikit_docs/core/todo.md` via `create_plan` or `update_progress` as tasks complete.\n");
+                out.push_str("  4. Research: If troubleshooting unfamiliar libraries or legacy patterns, use `search_web` to look up official documentation.\n");
+                out.push_str("  5. MiniKit & Blocks: If adding new features, dependencies, or UI elements, leverage `kit_info`, `kit_add`, and MiniBlocks (`block_search`) to maintain modularity.\n");
+            }
+        }
+
+        out.push_str("</orchestrator_dynamic_guidance>");
+        out
+    }
+
+    /// MiniPower Methodology & Orchestrator Freedom Directive
+    /// Grounding the orchestrator with MiniPower's 6 core engineering pillars,
+    /// anti-rationalization guardrails ("Red Flags"), and complete tool autonomy.
+    fn enrich_minipower_rules_and_freedom(_workspace_root: &Path, _prompt: &str) -> String {
+        let mut out = String::from("<minipower_autonomous_engineering_rules>\n");
+        out.push_str("  MINIPOWER CORE METHODOLOGY & AGENT FREEDOM CONTRACT:\n");
+        out.push_str("  1. The 6 Engineering Pillars:\n");
+        out.push_str("     • Socratic Brainstorming: Clarify intent, surface trade-offs, and chunk specs before touching code (`power_brainstorm` or `ask_user`).\n");
+        out.push_str("     • Git Worktree Isolation: Protect the main branch by running complex tasks in isolated branches (`power_worktree_task`).\n");
+        out.push_str("     • Bite-Sized Planning: Atomic 2-5 min tasks with concrete acceptance tests (`power_plan` or `create_plan` + `todo.md`).\n");
+        out.push_str("     • Two-Stage Subagent Review: Automated Stage 1 (Spec Compliance) and Stage 2 (Code Quality) (`power_review`).\n");
+        out.push_str("     • Strict Red/Green TDD: Write failing tests first, make them green, refactor cleanly (`exec_cmd`).\n");
+        out.push_str("     • Evidence Before Assertions: Zero unverified claims; verified by exit code 0 (`power_verify`).\n\n");
+
+        out.push_str("  2. Anti-Rationalization Guardrails (\"Red Flags\" Reality Table):\n");
+        for (excuse, reality) in
+            crate::agent::minipower::MiniPowerEngine::anti_rationalization_table()
+        {
+            out.push_str(&format!("     • \"{}\" ➔ {}\n", excuse, reality));
+        }
+
+        out.push_str("\n  3. 4-Gate Pre-Completion Verification Barrier:\n");
+        out.push_str(
+            "     Never declare a feature or phase complete without satisfying all 4 gates:\n",
+        );
+        out.push_str("     • Gate 1 (Compiler & Syntax): Clean build with exit code 0 (e.g. `cargo check`, `tsc --noEmit`).\n");
+        out.push_str("     • Gate 2 (Test Suite & Regression): Running tests pass (e.g. `cargo test`, `npm test`, `pytest`).\n");
+        out.push_str("     • Gate 3 (Structural Integrity): Zero merge conflict markers (`<<<<<<<`), no dead imports or broken links.\n");
+        out.push_str("     • Gate 4 (Diff & Secret Protection): Zero leaked API keys, tokens, or credentials in git diff.\n");
+        out.push_str(
+            "     Invoke `power_verify` or run checks via `exec_cmd` before claiming success!\n\n",
+        );
+
+        out.push_str("  4. Tool Freedom & Ecosystem Synergy (202 Native Tools Available):\n");
+        out.push_str("     You have full freedom to choose and combine the highest-leverage tools for any task:\n");
+        out.push_str("     • MiniKit: `kit_stack_add` (scaffold templates), `kit_add` (install dependencies), `kit_sync` (reconcile manifest).\n");
+        out.push_str("     • MiniBlocks: `block_search`, `block_palettes`, `block_scaffold` — NEVER write 1,000+ line monolithic CSS/JS files! Decompose into modular components (<250 lines per file) to prevent JSON token truncation (`EOF while parsing a string`).\n");
+        out.push_str("     • MiniTask Vault: `minitask(action=\"start\")` to run dev servers/daemons, `minitask(action=\"status\")` / `minitask(action=\"resources\")` for telemetry, `minitask(action=\"stop\")` for teardown.\n");
+        out.push_str("     • Browser Automation: `browser_navigate`, `browser_screenshot`, `browser_snapshot`, `browser_close` to visually verify rendered web pages with real runtime evidence.\n");
+        out.push_str("     • CodeGraph AST: `code_explore`, `blast_radius`, `locate_symbol`, `diff_impact` for architectural navigation.\n");
+        out.push_str("     • Working Memory: `create_plan`, `update_progress` — call `update_progress` after each step so the user and live TUI stay in sync.\n");
+        out.push_str("     • MiniPower Execution: `power_status`, `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `power_worktree_task`.\n");
+        out.push_str("     • Interactive Inquiry: `ask_user` — When requirements, stacks, or design themes are ambiguous on Turn 1, ALWAYS ask first via `ask_user` before writing files!\n");
+
+        out.push_str("</minipower_autonomous_engineering_rules>");
+        out
     }
 
     #[allow(dead_code)]
@@ -855,14 +1382,24 @@ impl WorkflowRouter {
         }
 
         // Modular anti-monolith & dev server rules
-        out.push_str("  • Modular Code Architecture Invariant:\n");
-        out.push_str("    NEVER write massive monolithic files (>300 lines or >12KB) in a single tool call to avoid token truncation and JSON EOF errors.\n");
-        out.push_str("    Decompose frontend applications into separate modular files (`index.html`, `styles.css`, `app.js` or components) from turn 1.\n");
+        out.push_str("  • Interactive Clarification First (`ask_user`):\n");
+        out.push_str("    If the user prompt is broad, open-ended, or has multiple design directions or tech stacks (e.g. 'Build a web dashboard', 'Create an application', 'Add an analytics panel'):\n");
+        out.push_str("    YOU MUST CALL `ask_user` ON TURN 1 to confirm tech stack, color theme, and key sections before writing code!\n");
+        out.push_str("  • Instant Starter Stack Scaffolding (`kit_stack_add`):\n");
+        out.push_str("    To build a modern frontend, use `kit_stack_add` (e.g. `kit_stack_add(stack_name=\"react-vite-gsap\")` or `kit_stack_add(stack_name=\"static-website\")`) to scaffold the full project in 1 call rather than hand-authoring files.\n");
+        out.push_str("  • Strict Modular Code Architecture Contract (Anti-Monolith Invariant):\n");
+        out.push_str("    NEVER write massive monolithic files (>250-300 lines or >10KB) in a single tool call to avoid token truncation and JSON EOF errors.\n");
+        out.push_str(
+            "    Decompose frontend applications into separate modular files from turn 1:\n",
+        );
+        out.push_str("    • `index.html`: Semantic HTML skeleton only (<150 lines), linking to `styles.css` and `app.js`. NO massive inline <style> or <script> tags!\n");
+        out.push_str("    • `styles.css`: CSS variables, design tokens, typography, responsive layout (<250 lines).\n");
+        out.push_str("    • Modular JS: Split into focused modules (`app.js`, `components.js`, `api.js`, `theme.js`, <150 lines each).\n");
 
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
         if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
-            out.push_str("  • Bootstrap & Scaffolding Invariant:\n");
-            out.push_str("    Task plan is missing. Run `kit_sync` or `create_plan` to initialize `minikit_docs/core/todo.md` (with prd.md, design.md) to anchor architecture and tasks before modifying code.\n");
+            out.push_str("  • Task Planning Invariant:\n");
+            out.push_str("    When embarking on a new feature or multi-step work, use `create_plan` to structure tasks into `todo.md` with verification checks before modifying code.\n");
         }
 
         out.push_str("  • UI Component Warehouse Invariant:\n");
@@ -873,6 +1410,30 @@ impl WorkflowRouter {
         out.push_str("    To run and test the web application, use `minitask(action=\"start\")` or `exec_cmd`. Do NOT launch multiple competing servers. Cleanly close test servers and browser sessions when finished.\n");
 
         out.push_str("</recommended_miniblocks>");
+        Some(out)
+    }
+
+    fn enrich_minikit_scaffolding(_workspace_root: &Path, _prompt: &str) -> Option<String> {
+        let mut out = String::from("<minikit_scaffolding_guidance>\n");
+        out.push_str("  MiniKit Architecture, Starter Stacks & Dependency Engine Activated:\n");
+        out.push_str("  1. Interactive Clarification First (`ask_user`):\n");
+        out.push_str("     If user requirements or framework preferences are open-ended (e.g. choice of React vs Next.js vs static HTML vs FastAPI), call `ask_user` on Turn 1 to confirm before creating files.\n");
+        out.push_str("  2. Instant Starter Stacks (`kit_stack_add`):\n");
+        out.push_str("     Never manually author 15 boilerplate files from scratch! Inspect available stacks with `kit_stack_list`:\n");
+        let stacks = crate::tools::minikit::stacks::builtin::builtin_stacks();
+        for s in &stacks {
+            out.push_str(&format!(
+                "     • `{}` ({}): {}\n",
+                s.name, s.runtime, s.description
+            ));
+        }
+        out.push_str("     • Remote GitHub stacks: `gh:owner/repo` (e.g. `gh:shadcn-ui/ui`)\n");
+        out.push_str("     Run `kit_stack_add(stack_name=\"...\")` to scaffold with automated dependency installation in 1 tool call.\n");
+        out.push_str("  3. Safe Dependency Management (`kit_info` + `kit_add`):\n");
+        out.push_str("     When adding libraries (e.g. `zod`, `gsap`, `axum`), call `kit_info(name)` to inspect packages and `kit_add(name, is_dev)` to update manifests safely without breaking lockfiles.\n");
+        out.push_str("  4. Strict Modular Code Architecture Contract:\n");
+        out.push_str("     Write modular, cleanly scoped files under 250-300 lines rather than giant single files to prevent JSON EOF parsing cutoffs. Strictly separate HTML, CSS, and JS.\n");
+        out.push_str("</minikit_scaffolding_guidance>");
         Some(out)
     }
 
@@ -1029,27 +1590,25 @@ impl WorkflowRouter {
 
         let mut out = String::from("<autonomous_engineering_guidance>\n");
         out.push_str("  Autonomous 4-Gate Methodology Activated:\n");
+        out.push_str("  • Interactive Clarification First (`ask_user`): If user requirements, architecture, or tech stack choices are underspecified, call `ask_user` on Turn 1 before writing code.\n");
         out.push_str(&format!(
             "  1. Gate 1 (Intent Anchor): Define the goal and bite-sized milestones. Record progress in `{}/core/todo.md` using `create_plan` or direct file edits.\n",
             docs_name
         ));
         out.push_str(&format!(
-            "  2. Gate 2 (Architecture & Discovery): Consult relevant specs in `{}/core/` and verify dependencies before making changes.\n",
+            "  2. Gate 2 (Architecture & Discovery): Consult relevant specs in `{}/core/` and verify dependencies before making changes. Use `kit_stack_add` for project scaffolding and `kit_add` for packages.\n",
             docs_name
         ));
         out.push_str("  3. Gate 3 (TDD Implementation): Write or update tests FIRST. Verify failure (Red), then implement minimal code, then verify green.\n");
         out.push_str("  4. Gate 4 (Verification Barrier): Execute compiler/test checks (`cargo test -j 1 ...`, `npm test`, etc.) to confirm 0 errors before concluding.\n");
-        out.push_str("  5. Anti-Monolith Invariant: Write modular, cleanly scoped files under 300 lines rather than giant single files to prevent JSON EOF parsing cutoffs.\n");
+        out.push_str("  5. Anti-Monolith Invariant: Write modular, cleanly scoped files under 250-300 lines rather than giant single files to prevent JSON EOF parsing cutoffs. Strictly separate HTML, CSS, and JS.\n");
         out.push_str(
-            "  6. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd`.\n",
+            "  6. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd` or `minitask`.\n",
         );
 
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
         if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
-            out.push_str(&format!(
-                "  • Bootstrap Invariant: Run `kit_sync` or `create_plan` to initialize `{}/core/todo.md` and anchor milestones before creating source files.\n",
-                docs_name
-            ));
+            out.push_str("  • Task Planning: For multi-step tasks or new features, use `create_plan` to anchor bite-sized milestones before creating source files.\n");
         }
         out.push_str("  • UI Invariant: For frontend/UI tasks, query MiniBlocks (`block_search`, `block_palettes`) before writing components from scratch.\n");
         out.push_str("  • Plan Progress Invariant: Update tasks via `update_progress` as you complete each milestone to keep the Live Execution Plan in sync.\n");
@@ -1169,6 +1728,261 @@ impl WorkflowRouter {
             out.push_str("  Autonomous Action: Call `vault_bundle_list()` for curated stacks, `vault_search(query)` to find skills, `vault_ingest_source(uri)` to bookmark URLs/repos, or `vault_import_url(url)` to download skills.\n");
         }
         out.push_str("</minivault_skills_guidance>");
+        Some(out)
+    }
+
+    /// Dynamically discovers and extracts relevant project specifications from `.md` documentation files
+    /// in the workspace (`minikit_docs/core/`, `onpkg_docs/core/`, `docs/`, etc.) without hardcoding names.
+    fn enrich_core_documentation(workspace_root: &Path, prompt: &str) -> Option<String> {
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
+        let mut candidate_dirs: Vec<PathBuf> = Vec::new();
+        let core_dir = docs_dir.join("core");
+        if core_dir.is_dir() {
+            candidate_dirs.push(core_dir);
+        }
+        if docs_dir.is_dir() && docs_dir != workspace_root {
+            candidate_dirs.push(docs_dir);
+        }
+        let root_docs = workspace_root.join("docs");
+        if root_docs.is_dir() {
+            candidate_dirs.push(root_docs);
+        }
+
+        if candidate_dirs.is_empty() {
+            return None;
+        }
+
+        let mut discovered_docs: Vec<(String, String, String, usize)> = Vec::new(); // (filename, title, excerpt, score)
+        let lower_prompt = prompt.to_ascii_lowercase();
+        let prompt_tokens: Vec<&str> = lower_prompt
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|s| s.trim())
+            .filter(|s| s.len() >= 3)
+            .collect();
+
+        for dir in candidate_dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if !name.ends_with(".md")
+                    || name.eq_ignore_ascii_case("todo.md")
+                    || name.eq_ignore_ascii_case("notes.md")
+                {
+                    continue;
+                }
+
+                // Avoid duplicates across multiple dirs
+                if discovered_docs
+                    .iter()
+                    .any(|(n, _, _, _)| n.eq_ignore_ascii_case(name))
+                {
+                    continue;
+                }
+
+                let Ok(content) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                if content.trim().is_empty() || content.len() > 150_000 {
+                    continue;
+                }
+
+                let title = content
+                    .lines()
+                    .find(|l| l.trim_start().starts_with('#'))
+                    .map(|l| l.trim().trim_start_matches('#').trim().to_string())
+                    .unwrap_or_else(|| name.to_string());
+
+                let excerpt_lines: Vec<&str> = content.lines().take(25).collect();
+                let excerpt = excerpt_lines.join("\n");
+
+                let name_stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+
+                let mut score = 0;
+                for token in &prompt_tokens {
+                    if name_stem.contains(token) {
+                        score += 10;
+                    }
+                    if title.to_ascii_lowercase().contains(token) {
+                        score += 5;
+                    }
+                    if content[..content.len().min(2000)]
+                        .to_ascii_lowercase()
+                        .contains(token)
+                    {
+                        score += 1;
+                    }
+                }
+
+                discovered_docs.push((name.to_string(), title, excerpt, score));
+            }
+        }
+
+        if discovered_docs.is_empty() {
+            return None;
+        }
+
+        discovered_docs.sort_by(|a, b| b.3.cmp(&a.3));
+
+        let mut out = String::from("<project_core_specifications>\n");
+        out.push_str("  Available Project Documentation Specifications:\n");
+        for (name, title, _, score) in discovered_docs.iter().take(6) {
+            let score_note = if *score > 0 { " [matches prompt]" } else { "" };
+            out.push_str(&format!("  • `{}`: {}{}\n", name, title, score_note));
+        }
+
+        if let Some((top_name, top_title, top_excerpt, top_score)) = discovered_docs.first() {
+            if *top_score > 0 || discovered_docs.len() <= 3 {
+                out.push_str(&format!(
+                    "\n  Grounding Excerpt from `{}` ({}):\n",
+                    top_name, top_title
+                ));
+                for line in top_excerpt.lines().take(20) {
+                    out.push_str(&format!("    {}\n", line));
+                }
+            }
+        }
+
+        out.push_str("  Directive: Ground implementations, architecture, and constraints in these core specifications.\n");
+        out.push_str("</project_core_specifications>");
+        Some(out)
+    }
+
+    /// Hermes Agent progressive procedural knowledge activation:
+    /// Dynamically scans available built-in and MiniVault skills, matches them against the prompt
+    /// and project stack, and injects procedural rules and traps into context.
+    fn enrich_hermes_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
+        let lower_prompt = prompt.to_ascii_lowercase();
+
+        let builtins = crate::tools::minikit::builtin_skills::get_all_builtin_skills();
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let vault_skills = store.list_all_skills();
+        let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_root);
+
+        let mut matched_skills: Vec<(String, String, String, usize)> = Vec::new();
+
+        for b in builtins {
+            let mut score = 0;
+            let b_name_lower = b.name.to_ascii_lowercase();
+            let b_desc_lower = b.description.to_ascii_lowercase();
+
+            if crate::utils::has_word(&lower_prompt, &b_name_lower) {
+                score += 15;
+            }
+
+            for glob in b.globs {
+                let clean_glob = glob.trim_start_matches("*.").to_ascii_lowercase();
+                if lower_prompt.contains(&clean_glob) {
+                    score += 5;
+                }
+            }
+
+            for word in &[
+                "design",
+                "ui",
+                "ux",
+                "frontend",
+                "animation",
+                "react",
+                "next",
+                "api",
+                "fastapi",
+                "rust",
+                "style",
+                "theme",
+                "layout",
+                "component",
+            ] {
+                if crate::utils::has_word(&lower_prompt, word)
+                    && (b_name_lower.contains(word) || b_desc_lower.contains(word))
+                {
+                    score += 5;
+                }
+            }
+
+            let has_react = stack_info.framework == Some(crate::blocks::BlockFramework::React);
+            if (b_name_lower.contains("react") && has_react)
+                || (b_name_lower.contains("tailwind") && stack_info.has_tailwind)
+            {
+                score += 2;
+            }
+
+            if score >= 5 {
+                let excerpt_lines: Vec<&str> = b.content.lines().take(25).collect();
+                matched_skills.push((
+                    b.name.to_string(),
+                    b.description.to_string(),
+                    excerpt_lines.join("\n"),
+                    score,
+                ));
+            }
+        }
+
+        for s in vault_skills {
+            if s.is_active_in_project {
+                continue;
+            }
+            let mut score = 0;
+            let s_name_lower = s.name.to_ascii_lowercase();
+            let s_desc_lower = s.description.to_ascii_lowercase();
+
+            if crate::utils::has_word(&lower_prompt, &s_name_lower)
+                || crate::utils::has_word(&lower_prompt, &s_desc_lower)
+            {
+                score += 15;
+            }
+
+            for trigger in &s.frontmatter.triggers {
+                let trig_lower = trigger.to_ascii_lowercase();
+                if lower_prompt.contains(&trig_lower) {
+                    score += 8;
+                }
+            }
+
+            if score >= 5 {
+                let excerpt_lines: Vec<&str> = s.instructions.lines().take(25).collect();
+                matched_skills.push((s.name, s.description, excerpt_lines.join("\n"), score));
+            }
+        }
+
+        if matched_skills.is_empty() {
+            return None;
+        }
+
+        matched_skills.sort_by(|a, b| b.3.cmp(&a.3));
+
+        let mut out = String::from("<auto_activated_skills>\n");
+        out.push_str("  Hermes Progressive Skill Intelligence Activated:\n");
+        out.push_str(
+            "  The following domain skills automatically matched your prompt and project stack:\n",
+        );
+
+        for (name, desc, excerpt, _) in matched_skills.iter().take(2) {
+            out.push_str(&format!("  • Skill `{}`: {}\n", name, desc));
+            out.push_str("    Key Guidelines & Traps:\n");
+            for line in excerpt.lines().take(20) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with("---") {
+                    out.push_str(&format!("      {}\n", trimmed));
+                }
+            }
+        }
+        out.push_str(
+            "  Directive: Adhere strictly to these procedural skill guidelines for this task.\n",
+        );
+        out.push_str("</auto_activated_skills>");
         Some(out)
     }
 }
@@ -1302,6 +2116,22 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_router_classify_minikit_scaffolding() {
+        assert_eq!(
+            WorkflowRouter::classify("Scaffold a new react-vite-gsap stack"),
+            WorkflowArchetype::MiniKitScaffolding
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Add dependency zod using kit"),
+            WorkflowArchetype::MiniKitScaffolding
+        );
+        assert_eq!(
+            WorkflowRouter::classify("Check stack template diff and self-heal drift"),
+            WorkflowArchetype::MiniKitScaffolding
+        );
+    }
+
+    #[test]
     fn test_workflow_router_classify_standard() {
         assert_eq!(
             WorkflowRouter::classify("Fix typo on line 42 in main.rs"),
@@ -1341,5 +2171,176 @@ mod tests {
         assert!(enrichment_eng.is_some());
         let text_eng = enrichment_eng.unwrap();
         assert!(text_eng.contains("<autonomous_engineering_guidance>"));
+
+        let enrichment_kit = WorkflowRouter::enrich_context(
+            temp.path(),
+            "Scaffold react-vite stack",
+            WorkflowArchetype::MiniKitScaffolding,
+        )
+        .await;
+        let text_kit = enrichment_kit.unwrap();
+        assert!(text_kit.contains("<minikit_scaffolding_guidance>"));
+    }
+
+    #[tokio::test]
+    async fn test_workflow_router_enrich_plan_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(temp.path());
+        wm.init_plan(
+            "Test Feature",
+            &[
+                "Step 1: Create auth.rs".to_string(),
+                "Step 2: Create routes.rs".to_string(),
+                "Step 3: Run cargo test".to_string(),
+            ],
+        )
+        .unwrap();
+
+        // Initially 0/3 completed, step 1 in progress
+        let enrichment = WorkflowRouter::enrich_context(
+            temp.path(),
+            "What is next?",
+            WorkflowArchetype::Standard,
+        )
+        .await;
+        assert!(enrichment.is_some());
+        let text = enrichment.unwrap();
+        assert!(text.contains("<active_task_plan_status>"));
+        assert!(text.contains("0/3 tasks completed"));
+        assert!(text.contains("[ ] Step 1: Create auth.rs"));
+
+        // Mark step 1 completed
+        wm.update_progress("1", "completed").unwrap();
+        let enrichment2 =
+            WorkflowRouter::enrich_context(temp.path(), "Continue", WorkflowArchetype::Standard)
+                .await;
+        assert!(enrichment2.is_some());
+        let text2 = enrichment2.unwrap();
+        assert!(text2.contains("1/3 tasks completed"));
+        assert!(text2.contains("[x] Step 1: Create auth.rs"));
+        assert!(text2.contains("[>] Step 2: Create routes.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_workflow_router_enrich_core_docs() {
+        let temp = tempfile::tempdir().unwrap();
+        let core_dir = temp.path().join("minikit_docs").join("core");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::write(
+            core_dir.join("architecture.md"),
+            "# System Architecture Specification\nStrict modular boundaries with zero circular dependencies.\n",
+        )
+        .unwrap();
+
+        let enrichment = WorkflowRouter::enrich_context(
+            temp.path(),
+            "Review architecture and modular boundaries",
+            WorkflowArchetype::Standard,
+        )
+        .await;
+        assert!(enrichment.is_some());
+        let text = enrichment.unwrap();
+        assert!(text.contains("<project_core_specifications>"));
+        assert!(text.contains("architecture.md"));
+        assert!(text.contains("System Architecture Specification"));
+    }
+
+    #[tokio::test]
+    async fn test_workflow_router_enrich_hermes_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let enrichment = WorkflowRouter::enrich_context(
+            temp.path(),
+            "Create modern ui design with responsive css layout",
+            WorkflowArchetype::Standard,
+        )
+        .await;
+        assert!(enrichment.is_some());
+        let text = enrichment.unwrap();
+        assert!(text.contains("<auto_activated_skills>"));
+        assert!(text.contains("Hermes Progressive Skill Intelligence Activated"));
+    }
+
+    #[test]
+    fn test_scan_repository_state_fresh_docs_codebase() {
+        let temp_fresh = tempfile::tempdir().unwrap();
+        let (state_fresh, _, _) = WorkflowRouter::scan_repository_state(temp_fresh.path());
+        assert_eq!(state_fresh, RepoState::FreshWorkspace);
+
+        let temp_docs = tempfile::tempdir().unwrap();
+        std::fs::write(temp_docs.path().join("README.md"), "# Hello").unwrap();
+        let (state_docs, _, doc_files) = WorkflowRouter::scan_repository_state(temp_docs.path());
+        assert_eq!(state_docs, RepoState::DocsOnly);
+        assert_eq!(doc_files.len(), 1);
+
+        let temp_code = tempfile::tempdir().unwrap();
+        let src = temp_code.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+        let (state_code, code_files, _) = WorkflowRouter::scan_repository_state(temp_code.path());
+        assert_eq!(state_code, RepoState::ExistingCodebase);
+        assert_eq!(code_files.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_enrich_orchestrator_guidance_fresh_vs_existing() {
+        let temp = tempfile::tempdir().unwrap();
+
+        // 1. Fresh repo with underspecified prompt -> requires ask_user
+        let guidance_underspec = WorkflowRouter::enrich_orchestrator_guidance(
+            temp.path(),
+            "build a website",
+            RepoState::FreshWorkspace,
+        );
+        assert!(guidance_underspec.contains("Autonomous Inception & Specification Architecture"));
+        assert!(guidance_underspec.contains("Information Completeness: UNDERSPECIFIED"));
+        assert!(guidance_underspec.contains("YOU MUST CALL `ask_user` ON TURN 1"));
+
+        // 2. Fresh repo with rich prompt -> proceeds with spec synthesis directly
+        let guidance_rich = WorkflowRouter::enrich_orchestrator_guidance(
+            temp.path(),
+            "Create a modern dark futuristic landing page with react and vite including hero section, swarm dag, council review, and 150+ developer tools",
+            RepoState::FreshWorkspace,
+        );
+        assert!(
+            guidance_rich.contains("Information Completeness: HIGH (Rich Specification Provided)")
+        );
+        assert!(guidance_rich.contains("Synthesize detailed `.md` core files directly"));
+
+        // 3. Fresh repo with long descriptive product prompt but no explicit target build stack -> requires ask_user
+        let guidance_long_no_stack = WorkflowRouter::enrich_orchestrator_guidance(
+            temp.path(),
+            "Create a premium, modern landing page for minicode, an autonomous AI coding agent built for developers who want fast, reliable, secure software development. The overall design should feel cutting-edge, technical, minimal, and futuristic.",
+            RepoState::FreshWorkspace,
+        );
+        assert!(guidance_long_no_stack.contains("Information Completeness: UNDERSPECIFIED"));
+        assert!(guidance_long_no_stack.contains("YOU MUST CALL `ask_user` ON TURN 1"));
+
+        // 4. Existing codebase -> maintenance & grounding
+        let guidance_existing = WorkflowRouter::enrich_orchestrator_guidance(
+            temp.path(),
+            "refactor auth module",
+            RepoState::ExistingCodebase,
+        );
+        assert!(guidance_existing.contains("Existing Codebase Engineering Architecture"));
+        assert!(guidance_existing.contains("Inspect existing architecture"));
+    }
+
+    #[tokio::test]
+    async fn test_enrich_minipower_rules_and_freedom() {
+        let temp = tempfile::tempdir().unwrap();
+        let enrichment = WorkflowRouter::enrich_context(
+            temp.path(),
+            "Build fullstack web application",
+            WorkflowArchetype::Standard,
+        )
+        .await;
+        assert!(enrichment.is_some());
+        let text = enrichment.unwrap();
+        assert!(text.contains("<minipower_autonomous_engineering_rules>"));
+        assert!(text.contains("MINIPOWER CORE METHODOLOGY & AGENT FREEDOM CONTRACT"));
+        assert!(text.contains("The 6 Engineering Pillars"));
+        assert!(text.contains("Anti-Rationalization Guardrails"));
+        assert!(text.contains("4-Gate Pre-Completion Verification Barrier"));
+        assert!(text.contains("Tool Freedom & Ecosystem Synergy (202 Native Tools Available)"));
     }
 }

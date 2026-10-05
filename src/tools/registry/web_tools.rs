@@ -66,13 +66,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_snapshot".to_string(),
-            description: "Capture an accessible ARIA DOM snapshot of a given HTML string or URL to inspect interactive UI components.".to_string(),
+            description: "Capture an accessible ARIA DOM snapshot of the active browser page, a given URL, or raw HTML string to inspect interactive UI components.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "The URL of the page"
+                        "description": "The URL of the page (optional if already navigated)"
                     },
                     "html": {
                         "type": "string",
@@ -84,7 +84,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "Browser execution mode if fetching live URL"
                     }
                 },
-                "required": ["url"]
+                "required": []
             }),
         },
         ToolSchema {
@@ -695,14 +695,16 @@ pub async fn dispatch(
         ),
         "browser_snapshot" => Some(
             async {
-                let url = require_str(args, "url", "browser_snapshot")?;
+                let url_opt = opt_str(args, "url");
                 let mode = parse_browser_mode(args);
 
                 let html_opt = opt_str(args, "html");
                 let snapshot = if let Some(html) = html_opt {
-                    BrowserController::parse_html_to_aria_snapshot(url, html)
+                    let page_url = url_opt.unwrap_or("http://localhost");
+                    BrowserController::parse_html_to_aria_snapshot(page_url, html)
                 } else {
-                    BrowserController::snapshot_live_or_navigate(url, mode, workspace_root).await?
+                    BrowserController::snapshot_active_or_navigate(url_opt, mode, workspace_root)
+                        .await?
                 };
                 let report = BrowserController::format_snapshot_report(&snapshot);
                 Ok(report)
@@ -1180,5 +1182,21 @@ pub async fn dispatch(
             .await,
         ),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_browser_snapshot_schema_optional_url() {
+        let tools = get_schemas();
+        let snapshot_tool = tools.iter().find(|t| t.name == "browser_snapshot").unwrap();
+        let required = snapshot_tool.parameters["required"].as_array().unwrap();
+        assert!(
+            required.is_empty(),
+            "browser_snapshot url should be optional"
+        );
     }
 }

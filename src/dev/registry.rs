@@ -16,6 +16,22 @@ use uuid::Uuid;
 
 static GLOBAL_DEV_REGISTRY: OnceLock<Arc<MiniDevRegistry>> = OnceLock::new();
 
+#[inline]
+fn decrement_atomic_saturating(atomic: &AtomicU32) {
+    let mut current = atomic.load(Ordering::Relaxed);
+    while current > 0 {
+        match atomic.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 /// Returns the global MiniDevRegistry singleton.
 pub fn get_global_dev_registry() -> &'static Arc<MiniDevRegistry> {
     GLOBAL_DEV_REGISTRY.get_or_init(|| Arc::new(MiniDevRegistry::new()))
@@ -87,6 +103,11 @@ impl MiniDevRegistry {
                     for handle in handles {
                         let pid = handle.pid();
                         if pid == 0 {
+                            continue;
+                        }
+
+                        let status = handle.status.read().await.clone();
+                        if !status.is_alive() {
                             continue;
                         }
 
@@ -227,11 +248,7 @@ impl MiniDevRegistry {
                 if let Ok(mut set) = self.active_pids.lock() {
                     set.remove(&old_handle.pid());
                 }
-                let _ = self.cached_active_count.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |v| Some(v.saturating_sub(1)),
-                );
+                decrement_atomic_saturating(&self.cached_active_count);
             }
         }
 
@@ -413,11 +430,7 @@ impl MiniDevRegistry {
         if id.as_str() == "browser" || id.as_str() == "chrome" {
             let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
             if stopped {
-                let _ = self.cached_active_count.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |v| Some(v.saturating_sub(1)),
-                );
+                decrement_atomic_saturating(&self.cached_active_count);
                 return Ok(true);
             }
         }
@@ -452,11 +465,7 @@ impl MiniDevRegistry {
                 set.remove(&current_pid);
             }
         }
-        let _ = self
-            .cached_active_count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(1))
-            });
+        decrement_atomic_saturating(&self.cached_active_count);
         Ok(true)
     }
 
@@ -520,23 +529,24 @@ impl MiniDevRegistry {
         // 1. Terminate browser engine
         let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
 
-        if let Ok(mut set) = self.active_pgids.lock() {
-            set.clear();
-        }
-        if let Ok(mut set) = self.active_pids.lock() {
-            set.clear();
-        }
-
-        let lock = self.processes.read().await;
+        // 2. Concurrently terminate all managed process handles
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
         let mut count = 0;
-        for handle in lock.values() {
+        let mut term_futs = Vec::new();
+        for handle in handles {
             if handle.status.read().await.is_alive() {
-                let _ = handle.terminate().await;
                 count += 1;
+                term_futs.push(async move {
+                    let _ = handle.terminate().await;
+                });
             }
         }
+        futures::future::join_all(term_futs).await;
 
-        // Clean up any registered docker containers
+        // 3. Clean up any registered docker containers
         let dock_lock = self.docker_containers.read().await;
         for container_name in dock_lock.iter() {
             let _ = tokio::process::Command::new("docker")
@@ -545,19 +555,15 @@ impl MiniDevRegistry {
                 .await;
         }
 
-        // Clean up any registered browser sessions
-        let browser_lock = self.browser_pids.read().await;
-        for &pid in browser_lock.iter() {
-            #[cfg(unix)]
-            unsafe {
-                let _ = libc::kill(-(pid as i32), libc::SIGTERM);
-                let _ = libc::kill(-(pid as i32), libc::SIGKILL);
-                let _ = libc::kill(pid as i32, libc::SIGKILL);
-            }
-        }
-
-        // Force synchronous sweep of all remaining processes
+        // 4. Force synchronous sweep of all remaining processes, groups, descendants & children
         kill_all_sync();
+
+        if let Ok(mut set) = self.active_pgids.lock() {
+            set.clear();
+        }
+        if let Ok(mut set) = self.active_pids.lock() {
+            set.clear();
+        }
 
         self.cached_active_count.store(0, Ordering::Relaxed);
         self.cached_total_memory_mb.store(0, Ordering::Relaxed);
@@ -825,9 +831,7 @@ impl MiniDevRegistry {
                             handle_clone.append_log("✔ One-shot timer completed.").await;
                             let mut st = handle_clone.status.write().await;
                             *st = DevProcessStatus::Stopped;
-                            let _ = cached_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                                Some(v.saturating_sub(1))
-                            });
+                            decrement_atomic_saturating(&cached_active);
                             break;
                         }
 
@@ -836,9 +840,7 @@ impl MiniDevRegistry {
                                 handle_clone.append_log(format!("✔ Completed all {} scheduled iterations.", max)).await;
                                 let mut st = handle_clone.status.write().await;
                                 *st = DevProcessStatus::Stopped;
-                                let _ = cached_active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                                    Some(v.saturating_sub(1))
-                                });
+                                decrement_atomic_saturating(&cached_active);
                                 break;
                             }
                         }
@@ -873,10 +875,7 @@ impl MiniDevRegistry {
     /// Registers an external child PID (such as Chrome or a background subagent)
     /// to ensure it is terminated on minicode exit.
     pub fn register_external_pid(&self, pid: u32) {
-        if pid > 0 && pid != std::process::id() {
-            if let Ok(mut set) = self.active_pgids.lock() {
-                set.insert(pid);
-            }
+        if pid > 1 && pid != std::process::id() {
             if let Ok(mut set) = self.active_pids.lock() {
                 set.insert(pid);
             }
@@ -932,7 +931,28 @@ impl MiniDevRegistry {
             Default::default()
         };
 
-        let primary_port = ports.first().copied();
+        let primary_port = {
+            let listening_ports: Vec<u16> = ports
+                .iter()
+                .copied()
+                .filter(|&p| crate::dev::ports::is_port_listening(p))
+                .collect();
+            if listening_ports.len() == 1 {
+                listening_ports.first().copied()
+            } else if listening_ports.len() > 1 {
+                let my_desc = crate::dev::ports::find_all_descendants(current_pid);
+                let owned = listening_ports.iter().copied().find(|&p| {
+                    if let Some(owner) = crate::dev::ports::find_pid_by_port(p) {
+                        owner == current_pid || my_desc.contains(&owner)
+                    } else {
+                        false
+                    }
+                });
+                owned.or_else(|| listening_ports.last().copied())
+            } else {
+                ports.last().copied()
+            }
+        };
         let url = primary_port.map(|p| format!("http://localhost:{}", p));
         let restart_count = handle.restart_stats.read().await.restart_count;
         let port_resolution = handle.port_resolution.read().await.clone();
@@ -961,23 +981,48 @@ impl MiniDevRegistry {
 pub fn kill_all_sync() {
     let registry = get_global_dev_registry();
     let my_pid = std::process::id();
+    #[cfg(unix)]
+    let my_pgrp = unsafe { libc::getpgrp() };
+    #[cfg(unix)]
+    let my_sid = unsafe { libc::getsid(0) };
 
-    // 1. Gather all target root PIDs and PGIDs
-    let mut targets = HashSet::new();
-
+    // 1. Gather explicitly isolated process groups created by minicode
+    let mut target_pgids = HashSet::new();
     if let Ok(mut set) = registry.active_pgids.lock() {
         for &pgid in set.iter() {
-            if pgid > 0 && pgid != my_pid {
-                targets.insert(pgid);
+            #[cfg(unix)]
+            if pgid > 1 && pgid != my_pid && (pgid as i32) != my_pgrp && (pgid as i32) != my_sid {
+                target_pgids.insert(pgid);
+            }
+            #[cfg(not(unix))]
+            if pgid > 1 && pgid != my_pid {
+                target_pgids.insert(pgid);
             }
         }
         set.clear();
     }
 
+    if let Ok(procs) = registry.processes.try_read() {
+        for handle in procs.values() {
+            let pgid = handle.pgid();
+            #[cfg(unix)]
+            if pgid > 1 && pgid != my_pid && (pgid as i32) != my_pgrp && (pgid as i32) != my_sid {
+                target_pgids.insert(pgid);
+            }
+            #[cfg(not(unix))]
+            if pgid > 1 && pgid != my_pid {
+                target_pgids.insert(pgid);
+            }
+        }
+    }
+
+    // 2. Gather all direct child PIDs
+    let mut target_pids = HashSet::new();
+
     if let Ok(mut set) = registry.active_pids.lock() {
         for &pid in set.iter() {
-            if pid > 0 && pid != my_pid {
-                targets.insert(pid);
+            if pid > 1 && pid != my_pid {
+                target_pids.insert(pid);
             }
         }
         set.clear();
@@ -985,71 +1030,83 @@ pub fn kill_all_sync() {
 
     if let Ok(mut browsers) = registry.browser_pids.try_write() {
         for &pid in browsers.iter() {
-            if pid > 0 && pid != my_pid {
-                targets.insert(pid);
+            if pid > 1 && pid != my_pid {
+                target_pids.insert(pid);
             }
         }
         browsers.clear();
     }
 
-    if targets.is_empty() {
+    if let Ok(procs) = registry.processes.try_read() {
+        for handle in procs.values() {
+            let pid = handle.pid();
+            if pid > 1 && pid != my_pid {
+                target_pids.insert(pid);
+            }
+        }
+    }
+
+    if target_pgids.is_empty() && target_pids.is_empty() {
         return;
     }
 
     #[cfg(unix)]
     {
-        // 2. Discover ALL descendant PIDs across all target root processes via /proc
+        // Discover ALL descendant PIDs across all target root processes via /proc
         let mut all_descendants = HashSet::new();
-        for &target in &targets {
+        for &target in target_pids.iter().chain(target_pgids.iter()) {
             let desc = crate::dev::ports::find_all_descendants(target);
             for d in desc {
-                if d > 0 && d != my_pid {
+                if d > 1 && d != my_pid {
                     all_descendants.insert(d);
                 }
             }
         }
 
-        // 3. Phase 1: Graceful SIGTERM to process groups, direct PIDs, and descendants
+        // Phase 1: Graceful SIGTERM to verified process groups (-pgid) and direct PIDs (pid)
         unsafe {
-            for &t in &targets {
-                let _ = libc::kill(-(t as i32), libc::SIGTERM);
-                let _ = libc::kill(t as i32, libc::SIGTERM);
+            for &pgid in &target_pgids {
+                let _ = libc::kill(-(pgid as i32), libc::SIGTERM);
+                let _ = libc::kill(pgid as i32, libc::SIGTERM);
+            }
+            for &p in &target_pids {
+                let _ = libc::kill(p as i32, libc::SIGTERM);
             }
             for &d in &all_descendants {
                 let _ = libc::kill(d as i32, libc::SIGTERM);
-                let _ = libc::kill(-(d as i32), libc::SIGTERM);
             }
         }
 
-        // 4. Brief grace period
+        // Brief grace period
         std::thread::sleep(std::time::Duration::from_millis(50));
 
-        // 5. Phase 2: Forceful SIGKILL to eliminate every remaining process
+        // Phase 2: Forceful SIGKILL to verified process groups (-pgid) and direct PIDs (pid)
         unsafe {
-            for &t in &targets {
-                let _ = libc::kill(-(t as i32), libc::SIGKILL);
-                let _ = libc::kill(t as i32, libc::SIGKILL);
+            for &pgid in &target_pgids {
+                let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
+                let _ = libc::kill(pgid as i32, libc::SIGKILL);
+            }
+            for &p in &target_pids {
+                let _ = libc::kill(p as i32, libc::SIGKILL);
             }
             for &d in &all_descendants {
                 let _ = libc::kill(d as i32, libc::SIGKILL);
-                let _ = libc::kill(-(d as i32), libc::SIGKILL);
             }
         }
 
-        // 6. Final sweep: catch any late children that spawned during shutdown
-        for &t in &targets {
-            let late_desc = crate::dev::ports::find_all_descendants(t);
+        // Final sweep: catch any late children
+        for &target in target_pids.iter().chain(target_pgids.iter()) {
+            let late_desc = crate::dev::ports::find_all_descendants(target);
             for ld in late_desc {
-                if ld > 0 && ld != my_pid {
+                if ld > 1 && ld != my_pid {
                     unsafe {
                         let _ = libc::kill(ld as i32, libc::SIGKILL);
-                        let _ = libc::kill(-(ld as i32), libc::SIGKILL);
                     }
                 }
             }
         }
 
-        // 7. Reap any direct child processes that were terminated to release them from zombie state
+        // Reap any direct child processes that were terminated to release them from zombie state
         unsafe {
             let mut status = 0;
             while libc::waitpid(-1, &mut status, libc::WNOHANG) > 0 {}

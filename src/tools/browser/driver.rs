@@ -789,12 +789,43 @@ impl CdpClient {
                 "Runtime.evaluate",
                 json!({
                     "expression": safe_script,
-                    "returnByValue": true
+                    "returnByValue": true,
+                    "awaitPromise": true
                 }),
             )
             .await?;
 
         let val = res.get("result").and_then(|r| r.get("value"));
+        let is_empty_or_undefined = match &val {
+            None => true,
+            Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::String(s)) => s == "undefined" || s.trim().is_empty(),
+            _ => false,
+        };
+
+        if is_empty_or_undefined && script.contains("console.") {
+            if let Ok(console_res) = self
+                .send_command(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression": "(window.__minicode_console || []).slice(-8).join('\\n')",
+                        "returnByValue": true
+                    }),
+                )
+                .await
+            {
+                if let Some(logs) = console_res
+                    .get("result")
+                    .and_then(|r| r.get("value"))
+                    .and_then(|v| v.as_str())
+                {
+                    if !logs.trim().is_empty() {
+                        return Ok(logs.to_string());
+                    }
+                }
+            }
+        }
+
         match val {
             Some(serde_json::Value::String(s)) => Ok(s.clone()),
             Some(other) => Ok(other.to_string()),
@@ -1111,15 +1142,33 @@ impl CdpClient {
 /// can evaluate multi-statement scripts, assignments, and returns without syntax errors.
 pub fn prepare_cdp_script(script: &str) -> String {
     let trimmed = script.trim();
-    if trimmed.starts_with("(()") || trimmed.starts_with("(function") {
+    if trimmed.starts_with("(()")
+        || trimmed.starts_with("(function")
+        || trimmed.starts_with("(async")
+    {
         return script.to_string();
     }
-    // If it's a simple one-liner with no semicolons and no return:
-    if !trimmed.contains(';') && !trimmed.contains('\n') && !trimmed.contains("return ") {
+    let has_await = trimmed.contains("await ") || trimmed.starts_with("await ");
+    // If it's a simple one-liner with no semicolons, no await, and no return:
+    if !trimmed.contains(';')
+        && !trimmed.contains('\n')
+        && !trimmed.contains("return ")
+        && !has_await
+    {
         return script.to_string();
     }
-    // If it explicitly uses `return`:
-    if trimmed.contains("return ") || trimmed.contains("return;") {
+    // If it explicitly uses `return` or contains `await`:
+    if has_await {
+        if trimmed.contains("return ") || trimmed.contains("return;") {
+            format!("(async () => {{\n{}\n}})()", script)
+        } else {
+            format!(
+                "(async () => {{\n  try {{\n    return await eval({});\n  }} catch (_) {{\n    {}\n  }}\n}})()",
+                serde_json::to_string(script).unwrap_or_else(|_| format!("{:?}", script)),
+                script
+            )
+        }
+    } else if trimmed.contains("return ") || trimmed.contains("return;") {
         format!("(() => {{\n{}\n}})()", script)
     } else {
         // Multi-statement script without return: wrap so the completion value is returned

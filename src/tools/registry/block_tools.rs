@@ -427,13 +427,69 @@ pub async fn dispatch(
                     name_arg.and_then(|name| store.get_component_by_name(name))
                 });
 
-                let comp = comp.ok_or_else(|| {
-                    let target = id_arg.or(name_arg).unwrap_or("unknown");
-                    ToolError::ExecutionFailed(format!(
-                        "Component '{}' not found in MiniBlocks warehouse",
-                        target
-                    ))
-                })?;
+                let comp = match comp {
+                    Some(c) => c,
+                    None => {
+                        let target = id_arg.or(name_arg).unwrap_or("unknown");
+                        let target_uuid = Uuid::parse_str(target.trim()).ok();
+
+                        // 1. Check Color Palettes
+                        let format_palette = |p: &crate::blocks::models::BlockPalette| {
+                            format!(
+                                "# Color Palette: {}\n\n- **ID:** `{}`\n- **Tags:** {}\n- **Tokens:**\n  - Background: `{}`\n  - Surface: `{}`\n  - Accent: `{}`\n  - Text: `{}`\n\n```css\n{}\n```\n",
+                                p.name, p.id, p.tags.join(", "), p.colors[0], p.colors[1], p.colors[2], p.colors[3],
+                                p.to_css_variables()
+                            )
+                        };
+                        if let Some(uuid) = target_uuid {
+                            if let Some(p) = store.get_palette(&uuid) {
+                                return Ok(format_palette(p));
+                            }
+                        }
+                        if let Some(p) = store.list_palettes().into_iter().find(|p| p.name.eq_ignore_ascii_case(target)) {
+                            return Ok(format_palette(p));
+                        }
+
+                        // 2. Check Gradients
+                        if let Some(uuid) = target_uuid {
+                            if let Some(g) = store.get_gradient(&uuid) {
+                                return Ok(format!(
+                                    "# Gradient: {}\n\n- **ID:** `{}`\n- **CSS:** `{}`\n",
+                                    g.name, g.id, g.css
+                                ));
+                            }
+                        }
+                        if let Some(g) = store.list_gradients().into_iter().find(|g| g.name.eq_ignore_ascii_case(target)) {
+                            return Ok(format!(
+                                "# Gradient: {}\n\n- **ID:** `{}`\n- **CSS:** `{}`\n",
+                                g.name, g.id, g.css
+                            ));
+                        }
+
+                        // 3. Check Templates
+                        let format_template = |t: &crate::blocks::models::BlockTemplate| {
+                            format!(
+                                "# Layout Template: {}\n\n- **ID:** `{}`\n- **Description:** {}\n- **Components:** {}\n\n## Base Layout\n```html\n{}\n```\n",
+                                t.name, t.id, t.description, t.component_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", "),
+                                t.base_layout
+                            )
+                        };
+                        if let Some(uuid) = target_uuid {
+                            if let Some(t) = store.get_template(&uuid) {
+                                return Ok(format_template(t));
+                            }
+                        }
+                        if let Some(t) = store.list_templates().into_iter().find(|t| t.name.eq_ignore_ascii_case(target)) {
+                            return Ok(format_template(t));
+                        }
+
+                        return Err(ToolError::ExecutionFailed(format!(
+                            "Entity '{}' not found in MiniBlocks warehouse",
+                            target
+                        ))
+                        .into());
+                    }
+                };
 
                 let deps = if comp.dependencies.is_empty() {
                     "None".to_string()

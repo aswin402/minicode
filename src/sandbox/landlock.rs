@@ -23,76 +23,77 @@ pub fn apply_landlock_sandbox_with_opts(
         ABI,
     };
 
-    // If Landlock is not available on this kernel, return early without failing
-    if landlock::Ruleset::default()
-        .handle_access(AccessFs::from_all(ABI::V1))
-        .is_err()
-    {
-        tracing::warn!(
-            "Landlock not supported on this Linux kernel; proceeding without Landlock kernel-level filesystem enforcement"
-        );
-        return Ok(());
-    }
+    // Determine the highest available FS ABI supported by the running kernel (V4 -> V3 -> V2 -> V1)
+    let fs_abi = [ABI::V4, ABI::V3, ABI::V2, ABI::V1]
+        .into_iter()
+        .find(|&abi| {
+            Ruleset::default()
+                .handle_access(AccessFs::from_all(abi))
+                .and_then(|r| r.create())
+                .is_ok()
+        });
 
-    let ruleset = if !allow_network {
+    let fs_abi = match fs_abi {
+        Some(abi) => abi,
+        None => {
+            tracing::warn!(
+                "Landlock not supported on this Linux kernel; proceeding without Landlock kernel-level filesystem enforcement"
+            );
+            return Ok(());
+        }
+    };
+
+    let mut ruleset_created = if !allow_network {
         match Ruleset::default()
-            .handle_access(AccessFs::from_all(ABI::V1))
+            .handle_access(AccessFs::from_all(fs_abi))
             .and_then(|rs| rs.handle_access(AccessNet::ConnectTcp))
+            .and_then(|rs| rs.create())
         {
-            Ok(rs) => rs,
+            Ok(rc) => rc,
             Err(_) => {
                 tracing::warn!(
-                    "Landlock ABI V4 not supported on kernel — network restriction unavailable, process will have full network access"
+                    "Landlock network restriction unavailable on this kernel, process will have network access"
                 );
                 Ruleset::default()
-                    .handle_access(AccessFs::from_all(ABI::V1))
+                    .handle_access(AccessFs::from_all(fs_abi))
+                    .and_then(|rs| rs.create())
                     .map_err(|e| {
-                        SecurityError::Landlock(format!("Failed to configure FS ruleset: {}", e))
+                        SecurityError::Landlock(format!("Failed to create FS ruleset: {}", e))
                     })?
             }
         }
     } else {
         Ruleset::default()
-            .handle_access(AccessFs::from_all(ABI::V1))
-            .map_err(|e| {
-                SecurityError::Landlock(format!("Failed to configure FS ruleset: {}", e))
-            })?
-    };
-
-    let mut ruleset_created = match ruleset.create() {
-        Ok(rc) => rc,
-        Err(e) => {
-            let err_msg = format!("{}", e);
-            if err_msg.contains("ENOSYS")
-                || err_msg.contains("EOPNOTSUPP")
-                || err_msg.contains("Function not implemented")
-                || err_msg.contains("Operation not supported")
-                || err_msg.to_lowercase().contains("not supported")
-            {
-                tracing::warn!(
-                    error = %e,
-                    "Landlock not supported on this host kernel; proceeding without Landlock sandbox"
-                );
-                return Ok(());
-            }
-            return Err(SecurityError::Landlock(format!(
-                "Failed to create Landlock ruleset: {}",
-                e
-            ))
-            .into());
-        }
+            .handle_access(AccessFs::from_all(fs_abi))
+            .and_then(|rs| rs.create())
+            .map_err(|e| SecurityError::Landlock(format!("Failed to create FS ruleset: {}", e)))?
     };
 
     // Allow read/write or read-only within workspace root
     if let Ok(workspace_fd) = PathFd::new(workspace_root) {
         let access = if read_only {
-            AccessFs::from_read(ABI::V1)
+            AccessFs::from_read(fs_abi)
         } else {
-            AccessFs::from_all(ABI::V1)
+            AccessFs::from_all(fs_abi)
         };
         ruleset_created = ruleset_created
             .add_rule(PathBeneath::new(workspace_fd, access))
             .map_err(|e| SecurityError::Landlock(format!("Failed to add workspace rule: {}", e)))?;
+    }
+
+    // Allow read/traversal on ancestor directories of workspace root so getcwd() and path resolution succeed
+    let mut current_ancestor = workspace_root.parent();
+    while let Some(parent) = current_ancestor {
+        if parent.exists() {
+            if let Ok(parent_fd) = PathFd::new(parent) {
+                ruleset_created = ruleset_created
+                    .add_rule(PathBeneath::new(parent_fd, AccessFs::from_read(fs_abi)))
+                    .map_err(|e| {
+                        SecurityError::Landlock(format!("Failed to add ancestor rule: {}", e))
+                    })?;
+            }
+        }
+        current_ancestor = parent.parent();
     }
 
     // Allow read/write access to /tmp and shared memory/terminals for compilers, package managers, and lockfiles
@@ -101,7 +102,7 @@ pub fn apply_landlock_sandbox_with_opts(
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {
                 ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
                     .map_err(|e| {
                         SecurityError::Landlock(format!(
                             "Failed to add rw path rule {}: {}",
@@ -124,7 +125,7 @@ pub fn apply_landlock_sandbox_with_opts(
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {
                 ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)))
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
                     .map_err(|e| {
                         SecurityError::Landlock(format!(
                             "Failed to add dev file rule {}: {}",
@@ -145,6 +146,7 @@ pub fn apply_landlock_sandbox_with_opts(
         "/proc",
         "/opt",
         "/usr/local",
+        "/run",
     ];
 
     let home_dir = std::env::var("HOME").ok();
@@ -168,9 +170,9 @@ pub fn apply_landlock_sandbox_with_opts(
             if p.exists() {
                 if let Ok(fd) = PathFd::new(p) {
                     let access = if read_only {
-                        AccessFs::from_read(ABI::V1)
+                        AccessFs::from_read(fs_abi)
                     } else {
-                        AccessFs::from_all(ABI::V1)
+                        AccessFs::from_all(fs_abi)
                     };
                     ruleset_created = ruleset_created
                         .add_rule(PathBeneath::new(fd, access))
@@ -199,7 +201,7 @@ pub fn apply_landlock_sandbox_with_opts(
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {
                 ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(ABI::V1)))
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(fs_abi)))
                     .map_err(|e| {
                         SecurityError::Landlock(format!(
                             "Failed to add path rule for {}: {}",
@@ -216,7 +218,7 @@ pub fn apply_landlock_sandbox_with_opts(
         if p.exists() {
             if let Ok(fd) = PathFd::new(p) {
                 ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(ABI::V1)))
+                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(fs_abi)))
                     .map_err(|e| {
                         SecurityError::Landlock(format!(
                             "Failed to add system path rule {}: {}",

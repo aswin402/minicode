@@ -382,15 +382,33 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
     result
 }
 
-/// Forcefully reclaims a port by terminating the conflicting process, its process group, and all descendants.
+/// Scans process output for ports that failed to bind or were reported as busy/in-use.
+pub fn scan_busy_ports_from_output(line: &str) -> Vec<u16> {
+    let mut busy = HashSet::new();
+    let lower = line.to_lowercase();
+    if lower.contains("in use") || lower.contains("eaddrinuse") || lower.contains("already in use")
+    {
+        let ports = scan_ports_from_output(line);
+        for p in ports {
+            busy.insert(p);
+        }
+    }
+    let mut res: Vec<u16> = busy.into_iter().collect();
+    res.sort_unstable();
+    res
+}
+
+/// Forcefully reclaims a port by terminating the conflicting process and its direct descendants.
 #[cfg(unix)]
 pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
     let mut target_pids = std::collections::HashSet::new();
+    let my_pid = std::process::id();
+
     if let Some(pid) = initial_pid {
-        if pid > 0 && pid != std::process::id() {
+        if pid > 1 && pid != my_pid {
             target_pids.insert(pid);
             for desc in find_all_descendants(pid) {
-                if desc > 0 && desc != std::process::id() {
+                if desc > 1 && desc != my_pid {
                     target_pids.insert(desc);
                 }
             }
@@ -398,10 +416,10 @@ pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
     }
 
     if let Some(p) = find_pid_by_port(port) {
-        if p > 0 && p != std::process::id() {
+        if p > 1 && p != my_pid {
             target_pids.insert(p);
             for desc in find_all_descendants(p) {
-                if desc > 0 && desc != std::process::id() {
+                if desc > 1 && desc != my_pid {
                     target_pids.insert(desc);
                 }
             }
@@ -412,14 +430,12 @@ pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
         return !is_port_listening(port);
     }
 
-    // Step 1: Send SIGTERM to all target PIDs and their PGIDs
+    // Step 1: Send SIGTERM to all target PIDs directly (NEVER to external PGIDs)
     for &p in &target_pids {
-        unsafe {
-            let pgid = libc::getpgid(p as i32);
-            if pgid > 0 && pgid != std::process::id() as i32 {
-                let _ = libc::kill(-pgid, libc::SIGTERM);
+        if p > 1 && p != my_pid {
+            unsafe {
+                let _ = libc::kill(p as i32, libc::SIGTERM);
             }
-            let _ = libc::kill(p as i32, libc::SIGTERM);
         }
     }
 
@@ -431,14 +447,12 @@ pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
         }
     }
 
-    // Step 2: Send SIGKILL to all target PIDs and their PGIDs
+    // Step 2: Send SIGKILL to all target PIDs directly (NEVER to external PGIDs)
     for &p in &target_pids {
-        unsafe {
-            let pgid = libc::getpgid(p as i32);
-            if pgid > 0 && pgid != std::process::id() as i32 {
-                let _ = libc::kill(-pgid, libc::SIGKILL);
+        if p > 1 && p != my_pid {
+            unsafe {
+                let _ = libc::kill(p as i32, libc::SIGKILL);
             }
-            let _ = libc::kill(p as i32, libc::SIGKILL);
         }
     }
 
@@ -452,12 +466,8 @@ pub async fn force_reclaim_port(port: u16, initial_pid: Option<u32>) -> bool {
 
     // Final sweep: check if any late process took over
     if let Some(lp) = find_pid_by_port(port) {
-        if lp > 0 && lp != std::process::id() {
+        if lp > 1 && lp != my_pid {
             unsafe {
-                let pgid = libc::getpgid(lp as i32);
-                if pgid > 0 && pgid != std::process::id() as i32 {
-                    let _ = libc::kill(-pgid, libc::SIGKILL);
-                }
                 let _ = libc::kill(lp as i32, libc::SIGKILL);
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

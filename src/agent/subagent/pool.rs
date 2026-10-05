@@ -71,6 +71,23 @@ impl SubagentPool {
         self.workers.try_read().map(|w| w.len()).unwrap_or(0)
     }
 
+    /// Returns the number of currently active/running workers in the pool
+    pub fn active_worker_count(&self) -> usize {
+        if let Ok(workers) = self.workers.try_read() {
+            let mut count = 0;
+            for handle in workers.values() {
+                if let Ok(info) = handle.info.try_read() {
+                    if info.state.is_active() {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        } else {
+            0
+        }
+    }
+
     /// Returns a synchronous, non-blocking telemetry snapshot of all workers for TUI rendering
     pub fn snapshot_subagents(&self) -> Vec<SubagentInfo> {
         if let Ok(workers) = self.workers.try_read() {

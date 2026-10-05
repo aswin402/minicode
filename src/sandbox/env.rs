@@ -34,6 +34,19 @@ pub fn build_sanitized_command(program: &str, workspace: &Path) -> Command {
     cmd.env("MINICODE_WORKSPACE", workspace);
     cmd.env("MINICODE_SANDBOX", "1");
 
+    // 4. Ensure package managers like Bun have consistent temp and install paths on the same mount
+    if let Some(home) = dirs::home_dir() {
+        let bun_dir = home.join(".bun");
+        if std::env::var("BUN_INSTALL").is_err() && bun_dir.exists() {
+            cmd.env("BUN_INSTALL", &bun_dir);
+        }
+        if std::env::var("BUN_TMPDIR").is_err() {
+            let bun_tmp = bun_dir.join("tmp");
+            let _ = std::fs::create_dir_all(&bun_tmp);
+            cmd.env("BUN_TMPDIR", &bun_tmp);
+        }
+    }
+
     cmd
 }
 

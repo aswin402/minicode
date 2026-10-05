@@ -772,7 +772,7 @@ impl MiniKitRemoteManager {
         let (packages, dev_packages) =
             super::scaffolder::MiniKitScaffolder::extract_dependencies_from_workspace(&dest_dir);
 
-        // Generate minikit.json and onpkg.json if not present in the remote template
+        // Generate minikit.json if not present in the remote template
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         if !manifest_path.exists() {
             let manifest = serde_json::json!({
@@ -788,10 +788,6 @@ impl MiniKitRemoteManager {
             });
             let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
             let _ = fs::write(&manifest_path, &manifest_json);
-            let _ = fs::write(
-                dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE),
-                &manifest_json,
-            );
         }
 
         // Generate AGENTS.md instructions if not present
@@ -829,8 +825,6 @@ impl MiniKitRemoteManager {
         // Generate standard workflow docs
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(&docs_dir, &project_name, runtime);
-        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
-        super::sync::MiniKitSyncEngine::ensure_workflow_docs(&onpkg_docs, &project_name, runtime);
 
         let mut install_msg = String::new();
         if !no_install {

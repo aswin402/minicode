@@ -51,7 +51,7 @@ fn test_theme_modal_rendering() {
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    let modal = ModalState::new_theme_select("catppuccin", "dual_pillars");
+    let modal = ModalState::new_theme_select("catppuccin", "dual_pillars", "minimal", "cards");
 
     terminal
         .draw(|f| {
@@ -65,7 +65,7 @@ fn test_theme_modal_rendering() {
 
     assert!(content.contains("Theme & Animation Customization"));
     assert!(content.contains("1. Themes"));
-    assert!(content.contains("2. Loading Animations"));
+    assert!(content.contains("2. Animations"));
     assert!(content.contains("Aura Dark"));
     assert!(content.contains("Tokyo Night"));
     assert!(content.contains("Apply"));
