@@ -254,6 +254,18 @@ impl SetupWizard {
         base_url: &str,
         api_key: Option<&str>,
     ) -> Result<()> {
+        Self::apply_custom_provider_with_dirs(config, workspace, name, base_url, api_key, None)
+    }
+
+    /// Applies custom provider settings to config, sets as active, and saves to specified config directory.
+    pub fn apply_custom_provider_with_dirs(
+        config: &mut Config,
+        workspace: &Path,
+        name: &str,
+        base_url: &str,
+        api_key: Option<&str>,
+        custom_config_dir: Option<&Path>,
+    ) -> Result<()> {
         config
             .provider
             .custom_endpoints
@@ -269,7 +281,7 @@ impl SetupWizard {
         }
 
         config.provider.default = name.to_string();
-        ConfigMenu::save_all(config, workspace)?;
+        ConfigMenu::save_all_with_dirs(config, workspace, custom_config_dir)?;
 
         Self::print_receipt(
             &config.provider.default,
@@ -522,12 +534,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let mut config = Config::default();
 
-        let res = SetupWizard::apply_custom_provider(
+        let res = SetupWizard::apply_custom_provider_with_dirs(
             &mut config,
             temp_dir.path(),
             "local-vllm",
             "http://localhost:8000/v1",
             Some("sk-test-123456"),
+            Some(temp_dir.path()),
         );
         assert!(res.is_ok());
 

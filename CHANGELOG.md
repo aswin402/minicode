@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.50] — 2026-10-06
+
+### Dynamic Real-Time Context Token Engine, Zero Mock Diagnostics & Configuration Persistence Isolation
+
+#### 💡 Ideas & Inspirations
+- **Dynamic Real-Time Context Token Telemetry**: Previously, the context token gauge on the TUI status bar remained frozen (e.g. `5.7k / 204.8k`) throughout lengthy multi-tool turns because token usage was only updated at turn boundaries. By introducing `AgentEvent::ContextTokensUpdated` alongside incremental streaming chunk usage tracking and post-tool delta accumulation, users receive accurate, real-time context token consumption metrics throughout streaming and execution.
+- **Zero Mock / Dynamic Context Diagnostics**: Context diagnostics (`/context`, `/ctx`, `/kv`) previously included static mock placeholders (`"~2,400 tokens"`, `active_working_set_files = 1`). These have been completely eliminated in favor of live dynamic measurements: exact system prompt and tool schema token overhead, active modified files derived from git status, live task status from working memory, and dynamic KV cache stability metrics.
+- **Non-Destructive Configuration Merging & Test Suite Isolation**: Solved an issue where running test suites or updating binary versions could overwrite user settings (`config.toml`) with default values. All configuration saving now uses deep non-destructive TOML value merging to preserve custom themes, models, and custom providers, and unit tests are strictly sandboxed to temporary directories with zero access to `~/.config/minicode`.
+
+#### 🚀 Features & Changes
+- **Live Context Token Telemetry (`src/agent/types.rs`, `src/agent/loop.rs`, `src/app/mod.rs`, `src/logging/formatter.rs`)**:
+  - Added `AgentEvent::ContextTokensUpdated { turn_id, used_tokens, cached_tokens }` event variant.
+  - Emitted real-time token telemetry during streaming chunk usage receipts, non-streaming turn boundaries, and tool result appends.
+  - Implemented `App::current_context_tokens(&self)` dynamically computing live context usage from the timeline when idle and tracking active turn tokens during generation.
+  - Suppressed micro token update noise from terminal logging in `src/logging/formatter.rs`.
+- **Accurate Context Diagnostics Modal (`src/ui/modals/context_diagnostics.rs`, `src/app/commands.rs`, `src/app/modals.rs`)**:
+  - Added `system_and_tools_tokens: usize` field to `ContextDiagnosticsData`.
+  - Replaced hardcoded string `"~2,400 tokens"` with dynamic calculation based on active system prompt and registered tool schemas.
+  - Replaced hardcoded `active_working_set_files = 1` with live modified file counts from git and task plan tracking.
+  - Updated `/context`, `/tokens`, and cache pruning handlers to use `self.current_context_tokens()`.
+- **Config Persistence & Unit Test Isolation (`src/ui/configure.rs`, `src/ui/setup/wizard.rs`)**:
+  - Implemented `ConfigMenu::save_all_with_dirs` with optional custom configuration directory support.
+  - Implemented `merge_toml_values` to perform non-destructive table merging on save, preserving custom themes, animations, models, and provider configurations.
+  - Isolated `SetupWizard::apply_custom_provider_with_dirs` and updated `test_apply_custom_provider` to write exclusively to temporary directories, completely preventing test suites from overwriting `~/.config/minicode/config.toml`.
+
 ## [0.3.49] — 2026-10-05
 
 ### Minimal Circuit Breaker TUI, Chunked File Appending & Two-Tier Plan Synchronization

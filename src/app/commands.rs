@@ -1741,7 +1741,7 @@ impl<'a> App<'a> {
             let data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
                 &self.workspace_root,
                 &self.config,
-                self.last_turn_tokens,
+                self.current_context_tokens(),
                 self.cumulative_tokens,
                 self.last_turn_cached_tokens,
                 self.timeline.entries.len(),
@@ -1754,11 +1754,11 @@ impl<'a> App<'a> {
             let model_limit =
                 crate::agent::models::get_model_context_limit(&self.config.provider.model);
             let card = format!(
-                "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Last Turn Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
+                "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Active/Estimated Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
                 self.config.provider.default,
                 self.config.provider.model,
                 model_limit,
-                self.last_turn_tokens,
+                self.current_context_tokens(),
                 self.config.agent.warning_threshold * 100.0
             );
             self.timeline.add_status(card);

@@ -168,6 +168,18 @@ impl<'a> App<'a> {
                             self.cumulative_tokens.saturating_add(*total_tokens_used);
                     }
                 }
+                AgentEvent::ContextTokensUpdated {
+                    used_tokens,
+                    cached_tokens,
+                    ..
+                } => {
+                    if *used_tokens > 0 {
+                        self.last_turn_tokens = *used_tokens;
+                    }
+                    if *cached_tokens > 0 {
+                        self.last_turn_cached_tokens = *cached_tokens;
+                    }
+                }
                 AgentEvent::ContextCompacted {
                     tier,
                     turns_summarized,
@@ -259,6 +271,31 @@ impl<'a> App<'a> {
                 self.last_turn_tokens = total_chars / 4;
             }
         }
+    }
+
+    /// Returns the live or estimated current context token count from components
+    pub fn estimate_context_tokens(last_turn_tokens: usize, timeline: &TimelineView) -> usize {
+        if last_turn_tokens > 0 {
+            last_turn_tokens
+        } else {
+            let total_chars: usize = timeline
+                .entries
+                .iter()
+                .map(|e| match e {
+                    crate::ui::view::TimelineEntry::UserPrompt(s) => s.len(),
+                    crate::ui::view::TimelineEntry::ThoughtBlock { text, .. } => text.len(),
+                    crate::ui::view::TimelineEntry::AssistantMarkdown(s) => s.len(),
+                    crate::ui::view::TimelineEntry::ToolFinished { output, .. } => output.len(),
+                    _ => 0,
+                })
+                .sum();
+            total_chars / 4
+        }
+    }
+
+    /// Returns the live or estimated current context token count for UI and diagnostics
+    pub fn current_context_tokens(&self) -> usize {
+        Self::estimate_context_tokens(self.last_turn_tokens, &self.timeline)
     }
 
     /// Runs the full-screen interactive Ratatui TUI session in Aura Theme styling.
@@ -451,7 +488,7 @@ impl<'a> App<'a> {
                         provider: &self.config.provider.default,
                         model: &self.config.provider.model,
                         mcp_count: active_mcp_count,
-                        used_tokens: self.last_turn_tokens,
+                        used_tokens: self.current_context_tokens(),
                         max_context,
                         show_cost: self.config.ui.show_cost,
                         session_cost_usd: self.total_cost_usd,
@@ -498,12 +535,20 @@ impl<'a> App<'a> {
                     Some(agent_event) = event_rx.recv() => {
                         // If turn was cancelled or finished, ignore trailing stream/tool events
                         if !self.is_working {
-                            if let AgentEvent::TurnEnd { total_tokens_used, .. } = agent_event {
+                            if let AgentEvent::TurnEnd { total_tokens_used, cached_prompt_tokens, .. } = agent_event {
                                 if total_tokens_used > 0 {
                                     self.last_turn_tokens = total_tokens_used;
                                     self.cumulative_tokens = self.cumulative_tokens.saturating_add(total_tokens_used);
                                 }
+                                self.last_turn_cached_tokens = cached_prompt_tokens;
                                 self.cancel_token = None;
+                            } else if let AgentEvent::ContextTokensUpdated { used_tokens, cached_tokens, .. } = agent_event {
+                                if used_tokens > 0 {
+                                    self.last_turn_tokens = used_tokens;
+                                }
+                                if cached_tokens > 0 {
+                                    self.last_turn_cached_tokens = cached_tokens;
+                                }
                             }
                             continue;
                         }
@@ -523,6 +568,9 @@ impl<'a> App<'a> {
                             }
                             AgentEvent::StreamDelta { delta, .. } => {
                                 self.timeline.append_assistant_delta(&delta);
+                                // Real-time incremental context token tick during streaming
+                                let delta_tokens = delta.len().div_ceil(4);
+                                self.last_turn_tokens = self.last_turn_tokens.saturating_add(delta_tokens);
                                 if self.timeline.in_thought_mode {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::Thinking);
@@ -547,8 +595,22 @@ impl<'a> App<'a> {
                             } => {
                                 self.current_activity =
                                         Some(crate::ui::AgentActivity::Thinking);
+                                let output_tokens = output.len() / 4;
+                                self.last_turn_tokens = self.last_turn_tokens.saturating_add(output_tokens);
                                 self.timeline
                                     .finish_tool_call(&tool, success, output, duration_ms);
+                            }
+                            AgentEvent::ContextTokensUpdated {
+                                used_tokens,
+                                cached_tokens,
+                                ..
+                            } => {
+                                if used_tokens > 0 {
+                                    self.last_turn_tokens = used_tokens;
+                                }
+                                if cached_tokens > 0 {
+                                    self.last_turn_cached_tokens = cached_tokens;
+                                }
                             }
                             AgentEvent::TurnEnd {
                                 status,
@@ -939,7 +1001,7 @@ impl<'a> App<'a> {
                                     let data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
                                         &self.workspace_root,
                                         &self.config,
-                                        self.last_turn_tokens,
+                                        self.current_context_tokens(),
                                         self.cumulative_tokens,
                                         self.last_turn_cached_tokens,
                                         self.timeline.entries.len(),

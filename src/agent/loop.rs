@@ -909,6 +909,13 @@ impl AgentLoop {
                                 last_prompt_tokens = prompt_tokens;
                                 cumulative_completion_tokens += completion_tokens;
                                 last_cached_prompt_tokens = cached_prompt_tokens;
+                                let live_used = prompt_tokens.saturating_add(completion_tokens);
+                                let update_event = AgentEvent::ContextTokensUpdated {
+                                    turn_id,
+                                    used_tokens: live_used,
+                                    cached_tokens: cached_prompt_tokens,
+                                };
+                                let _ = event_sender.send(update_event);
                             }
                             Some(Ok(StreamChunk::Done)) => {
                                 break;
@@ -1012,6 +1019,13 @@ impl AgentLoop {
                             pending_tool_calls = tool_calls;
                             last_prompt_tokens = last_pt;
                             cumulative_completion_tokens = cum_ct;
+                            let live_used = last_pt.saturating_add(cum_ct);
+                            let update_event = AgentEvent::ContextTokensUpdated {
+                                turn_id,
+                                used_tokens: live_used,
+                                cached_tokens: last_cached_prompt_tokens,
+                            };
+                            let _ = event_sender.send(update_event);
                         }
                         Err(e) => {
                             if retry_count < max_retries {
@@ -1804,6 +1818,21 @@ impl AgentLoop {
                     }
                     break;
                 }
+
+                // Emit updated real-time context token count after tool results are added
+                let current_context_tokens = crate::context::compressor::ContextCompressor::new()
+                    .ok()
+                    .map(|c| c.count_messages_tokens(&self.messages))
+                    .filter(|&t| t > 0)
+                    .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
+                let live_used =
+                    current_context_tokens.max(last_prompt_tokens + cumulative_completion_tokens);
+                let update_event = AgentEvent::ContextTokensUpdated {
+                    turn_id,
+                    used_tokens: live_used,
+                    cached_tokens: last_cached_prompt_tokens,
+                };
+                let _ = event_sender.send(update_event);
 
                 // Check if we hit an explicit iteration limit while work was actively occurring
                 if max_iterations > 0 && iteration >= max_iterations {

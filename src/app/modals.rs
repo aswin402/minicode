@@ -1854,7 +1854,8 @@ impl<'a> App<'a> {
 
                     crate::context::budget::ccr_cache::CcrCache::clear();
 
-                    let used_tokens = self.last_turn_tokens;
+                    let used_tokens =
+                        Self::estimate_context_tokens(self.last_turn_tokens, &self.timeline);
                     let cumulative = self.cumulative_tokens;
                     let cached = self.last_turn_cached_tokens;
                     let msg_count = self.timeline.entries.len();

@@ -622,16 +622,54 @@ impl ConfigMenu {
     }
 
     pub fn save_all(config: &Config, workspace: &Path) -> Result<()> {
-        // 1. Save to global ~/.config/minicode/config.toml
-        if let Some(config_dir) = dirs::config_dir() {
-            let app_dir = config_dir.join(crate::constants::CONFIG_DIR_NAME);
+        Self::save_all_with_dirs(config, workspace, None)
+    }
+
+    pub fn save_all_with_dirs(
+        config: &Config,
+        workspace: &Path,
+        custom_config_dir: Option<&Path>,
+    ) -> Result<()> {
+        // 1. Determine target config directory
+        let app_dir = if let Some(dir) = custom_config_dir {
+            Some(dir.to_path_buf())
+        } else {
+            dirs::config_dir().map(|d| d.join(crate::constants::CONFIG_DIR_NAME))
+        };
+
+        if let Some(app_dir) = app_dir {
             let _ = std::fs::create_dir_all(&app_dir);
             let toml_path = app_dir.join(crate::constants::CONFIG_FILE_NAME);
-            let content =
-                toml::to_string_pretty(config).map_err(crate::error::ConfigError::TomlSerialize)?;
+
+            // Non-destructively merge with existing configuration to preserve user themes & preferences
+            let merged_value = if toml_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&toml_path) {
+                    if let Ok(mut existing_val) = toml::from_str::<toml::Value>(&content) {
+                        if let Ok(new_val) = toml::Value::try_from(config.clone()) {
+                            merge_toml_values(&mut existing_val, &new_val);
+                            existing_val
+                        } else {
+                            toml::Value::try_from(config.clone())
+                                .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                        }
+                    } else {
+                        toml::Value::try_from(config.clone())
+                            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                    }
+                } else {
+                    toml::Value::try_from(config.clone())
+                        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+                }
+            } else {
+                toml::Value::try_from(config.clone())
+                    .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+            };
+
+            let content = toml::to_string_pretty(&merged_value)
+                .map_err(crate::error::ConfigError::TomlSerialize)?;
             let _ = std::fs::write(&toml_path, content);
 
-            // Also write all configured API keys to global ~/.config/minicode/.env
+            // Also write all configured API keys to global/custom .env
             let global_env_path = app_dir.join(crate::constants::ENV_FILE_NAME);
             for (p, k) in &config.provider.api_keys {
                 let env_name = match p.as_str() {
@@ -664,6 +702,35 @@ impl ConfigMenu {
         );
 
         Ok(())
+    }
+}
+
+/// Helper that deeply merges TOML tables without overwriting established custom user settings with defaults
+fn merge_toml_values(target: &mut toml::Value, source: &toml::Value) {
+    if let (toml::Value::Table(target_table), toml::Value::Table(source_table)) =
+        (&mut *target, source)
+    {
+        for (k, v) in source_table {
+            if let Some(target_entry) = target_table.get_mut(k) {
+                // If the source value is just a generic default or empty, do not clobber user's custom settings
+                let is_default_or_empty = matches!(
+                    (k.as_str(), v.as_str()),
+                    ("theme", Some("auto"))
+                        | ("animation", Some("dual_pillars"))
+                        | ("todo_style", Some("tree"))
+                        | ("swarm_style", Some("stylish"))
+                        | ("default", Some(""))
+                        | ("model", Some(""))
+                );
+                if !is_default_or_empty {
+                    merge_toml_values(target_entry, v);
+                }
+            } else {
+                target_table.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        *target = source.clone();
     }
 }
 

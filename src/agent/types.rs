@@ -279,6 +279,13 @@ pub enum AgentEvent {
         savings_percent: usize,
     },
 
+    #[serde(rename = "context_tokens_updated")]
+    ContextTokensUpdated {
+        turn_id: usize,
+        used_tokens: usize,
+        cached_tokens: usize,
+    },
+
     #[serde(rename = "anti_thrash_tripped")]
     AntiThrashTripped {
         turn_id: usize,

@@ -43,6 +43,7 @@ pub struct ContextDiagnosticsData {
     pub working_memory_active: bool,
     pub working_memory_lines: usize,
     pub active_working_set_files: usize,
+    pub system_and_tools_tokens: usize,
     pub conversation_messages_count: usize,
     pub ccr_entries_count: usize,
     pub ccr_total_bytes: usize,
@@ -101,8 +102,19 @@ impl ContextDiagnosticsData {
             "0% (Standard Pricing)".to_string()
         };
 
-        let kv_anchor_status = "Active: <!-- KV_CACHE_ANCHOR --> prefix aligned".to_string();
-        let prefix_stability = "Byte-Identical Append-Only History (100% stable)".to_string();
+        let kv_anchor_status = if cached_tokens > 0 {
+            format!(
+                "Active: {} cached tokens ({:.1}% KV reuse)",
+                cached_tokens, cache_hit_pct
+            )
+        } else {
+            "Primed: System prompt + DOX prefix ready for hardware cache".to_string()
+        };
+        let prefix_stability = if used_tokens > 0 {
+            "Byte-Identical Append-Only History (Active session)".to_string()
+        } else {
+            "Ready for initial turn (zero drift)".to_string()
+        };
 
         // 1. Gather DOX rules
         let empty_files: Vec<&Path> = Vec::new();
@@ -171,7 +183,34 @@ impl ContextDiagnosticsData {
         let ccr_total_bytes = CcrCache::total_bytes();
 
         // 5. Active working set
-        let active_working_set_files = 1;
+        let active_working_set_files = {
+            let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+            let count = wm
+                .read_parsed_tasks()
+                .iter()
+                .filter(|t| {
+                    t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                        || t.status
+                            == crate::context::memory::working_memory::TaskItemStatus::Completed
+                })
+                .count();
+            if count > 0 {
+                count
+            } else if !dox_rules_files.is_empty() {
+                dox_rules_files.len()
+            } else {
+                1
+            }
+        };
+
+        // 6. Dynamic System Prompt & Tools Tokens
+        let sys_prompt =
+            crate::agent::prompt::PromptBuilder::build_system_prompt(workspace_root, None);
+        let all_schemas = crate::tools::ToolRegistry::get_tool_schemas();
+        let active_schemas =
+            crate::tools::ToolRegistry::filter_tools(config.agent.tool_mode, all_schemas);
+        let tools_json = serde_json::to_string(&active_schemas).unwrap_or_default();
+        let system_and_tools_tokens = (sys_prompt.len() + tools_json.len()) / 4;
 
         Self {
             model_name,
@@ -199,6 +238,7 @@ impl ContextDiagnosticsData {
             working_memory_active,
             working_memory_lines,
             active_working_set_files,
+            system_and_tools_tokens,
             conversation_messages_count: message_count,
             ccr_entries_count,
             ccr_total_bytes,
@@ -349,11 +389,12 @@ pub fn render_context_diagnostics(
             )]));
             content_lines.push(Line::from(""));
 
+            let system_tokens_desc = format!("~{} tokens", data.system_and_tools_tokens);
             let zones = [
                 (
                     "🛡️ System Prompt & Tools",
                     "Base identity, instructions, and compacted tool schemas",
-                    "~2,400 tokens",
+                    system_tokens_desc.as_str(),
                     "Fixed Baseline",
                 ),
                 (

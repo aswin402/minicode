@@ -457,6 +457,7 @@ impl HonoLogFormatter {
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
+            | AgentEvent::ContextTokensUpdated { .. }
             | AgentEvent::CommandList { .. } => None,
         }
     }
@@ -650,6 +651,7 @@ impl HonoLogFormatter {
             ),
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
+            | AgentEvent::ContextTokensUpdated { .. }
             | AgentEvent::CommandList { .. } => return None,
         };
 
