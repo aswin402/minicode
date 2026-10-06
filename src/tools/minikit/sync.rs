@@ -325,12 +325,30 @@ impl MiniKitSyncEngine {
         // 8. todo.md (Task Tracker & Macro Roadmap)
         let todo_path = core_dir.join("todo.md");
         if !todo_path.exists() {
-            let todo = "# Task Tracker (todo.md) 📋\n\n\
+            // Check if an active task_plan.md already exists in the workspace (.minicode/plan/task_plan.md)
+            let existing_plan = core_dir
+                .parent()
+                .and_then(|d| d.parent())
+                .map(|ws| ws.join(".minicode").join("plan").join("task_plan.md"))
+                .and_then(|p| {
+                    if p.exists() {
+                        fs::read_to_string(p).ok()
+                    } else {
+                        None
+                    }
+                });
+
+            let todo = if let Some(plan_text) = existing_plan {
+                format!("# Tasks & Todo: {}\n\n{}\n", project_name, plan_text.trim())
+            } else {
+                "# Task Tracker (todo.md) 📋\n\n\
                 ## Active Milestone\n\
                 - [x] Initial project setup and architecture sync\n\
                 - [ ] Implement core features\n\
                 - [ ] Add integration and unit tests\n\
-                - [ ] Verification and documentation\n";
+                - [ ] Verification and documentation\n"
+                    .to_string()
+            };
             fs::write(todo_path, todo).ok();
         }
 

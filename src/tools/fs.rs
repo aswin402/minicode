@@ -84,11 +84,14 @@ pub fn read_file(
 }
 
 /// Atomically writes content to a file via a temporary file, supporting overwrite or append mode.
+/// By default, to protect against accidental file clobbering when building large files across turns,
+/// modifying an existing non-empty file requires explicit intent: `overwrite: true` or `append: true`.
 pub fn write_file_with_options(
     workspace_root: &Path,
     relative_path: &str,
     content: &str,
     append: bool,
+    overwrite: bool,
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
@@ -97,6 +100,56 @@ pub fn write_file_with_options(
     } else {
         String::new()
     };
+
+    // Safe-Overwrite & Chunk Guard:
+    // If the file exists and is not empty, and neither append nor overwrite was explicitly granted:
+    if target_path.exists() && !orig_content.trim().is_empty() && !append && !overwrite {
+        // If content is identical, succeed idempotently without warning
+        if orig_content == content {
+            return Ok(format!(
+                "File '{}' is already up to date with identical content (no changes needed).",
+                relative_path
+            ));
+        }
+
+        let mut hint = String::new();
+        let trimmed_content = content.trim();
+        let trimmed_lower = trimmed_content.to_ascii_lowercase();
+
+        // Heuristic: Check if content appears to be an HTML fragment or section
+        if (relative_path.ends_with(".html") || relative_path.ends_with(".htm"))
+            && !trimmed_lower.contains("<!doctype")
+            && !trimmed_lower.contains("<html")
+            && (trimmed_lower.starts_with("<section")
+                || trimmed_lower.starts_with("<!--")
+                || trimmed_lower.starts_with("<div")
+                || trimmed_lower.starts_with("<main")
+                || trimmed_lower.starts_with("<footer")
+                || trimmed_lower.starts_with("<header"))
+        {
+            hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
+        } else if relative_path.ends_with(".css")
+            && !trimmed_lower.contains(":root")
+            && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'))
+        {
+            hint.push_str("\n\n💡 Chunk Detected: Your content looks like additional CSS rules/media queries. If you are adding styles in steps, pass `append: true` to avoid erasing previously written styles!");
+        }
+
+        return Err(ToolError::InvalidArguments {
+            name: "write_file".to_string(),
+            reason: format!(
+                "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
+                • To append new sections to the end of the file: pass `append: true`.\n\
+                • To completely replace and overwrite the file: pass `overwrite: true`.\n\
+                • To surgically edit specific lines: use `patch_file`.{}",
+                relative_path,
+                orig_content.lines().count(),
+                orig_content.len(),
+                hint
+            ),
+        }
+        .into());
+    }
 
     let effective_content = if append && !orig_content.is_empty() {
         format!("{}{}", orig_content, content)
@@ -193,7 +246,7 @@ pub fn write_file_with_options(
 
 /// Atomically writes full content to a file via a temporary file, creating any missing parent directories.
 pub fn write_file(workspace_root: &Path, relative_path: &str, content: &str) -> Result<String> {
-    write_file_with_options(workspace_root, relative_path, content, false)
+    write_file_with_options(workspace_root, relative_path, content, false, true)
 }
 
 /// Diagnostic structure for nearest match during failed search-and-replace patching.
@@ -864,7 +917,7 @@ mod tests {
         write_file(&temp_dir, rel_path, part1).unwrap();
 
         let part2 = "Section 2\nAdditional details\n";
-        let res = write_file_with_options(&temp_dir, rel_path, part2, true);
+        let res = write_file_with_options(&temp_dir, rel_path, part2, true, false);
         assert!(res.is_ok());
 
         let raw_content = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
@@ -873,6 +926,43 @@ mod tests {
         let formatted = read_file(&temp_dir, rel_path, None, None).unwrap();
         assert!(formatted.contains("Section 1"));
         assert!(formatted.contains("Additional details"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_write_file_safe_overwrite_guard() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_guard_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let rel_path = "index.html";
+        let chunk1 = "<!DOCTYPE html><html><head><title>Test</title></head><body>\n";
+        // First write creates file cleanly
+        let res1 = write_file_with_options(&temp_dir, rel_path, chunk1, false, false);
+        assert!(res1.is_ok());
+
+        let chunk2 = "<section>Hero</section>\n";
+        // Second write without append or overwrite is rejected by the safe-overwrite guard
+        let res2 = write_file_with_options(&temp_dir, rel_path, chunk2, false, false);
+        assert!(res2.is_err());
+        let err_str = res2.unwrap_err().to_string();
+        assert!(err_str.contains("already exists"));
+        assert!(err_str.contains("append: true"));
+
+        // Write with append: true succeeds
+        let res3 = write_file_with_options(&temp_dir, rel_path, chunk2, true, false);
+        assert!(res3.is_ok());
+        let content = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
+        assert!(content.contains(chunk1));
+        assert!(content.contains(chunk2));
+
+        // Write with overwrite: true replaces
+        let chunk3 = "<!DOCTYPE html><html><body>New Only</body></html>";
+        let res4 = write_file_with_options(&temp_dir, rel_path, chunk3, false, true);
+        assert!(res4.is_ok());
+        let content2 = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
+        assert_eq!(content2, chunk3);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

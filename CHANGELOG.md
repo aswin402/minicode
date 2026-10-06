@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.53] — 2026-10-06
+
+### Safe-Overwrite Guard, Visual DOM Health Telemetry & Scripted Large File Assembly
+
+#### 💡 Ideas & Inspirations
+- **Safe-Overwrite Guard (Preventing Truncated Multi-Chunk Clobbering)**: Analysis of real agent sessions (such as `minitest18`) revealed a critical failure mode: when a model encountered token generation limits mid-file and planned to emit remaining sections across sequential tool calls, it frequently omitted `append: true`. Standard file tools silently overwrote the target file with each new chunk, leaving only the final section (e.g. `<section class="modes">` without `<!DOCTYPE>`, `<head>`, or `<link rel="stylesheet">`). Inspired by Antigravity and Claude Code tool safety contracts, `write_file` now enforces a Safe-Overwrite Guard: any write to an existing non-empty file requires either `overwrite: true` or `append: true`. Self-healing heuristics also detect HTML/CSS fragment patterns and immediately instruct the agent to specify `append: true`.
+- **Visual DOM Health Telemetry in Screenshots (Evidence Before Assertions)**: Capturing a screenshot alone does not guarantee the agent understands whether a page rendered correctly. Returning only `"Screenshot saved to '...'"` created an ungrounded feedback loop where agents hallucinated that taking a screenshot proved the page was styled and functioning. By querying Chrome DevTools Protocol (CDP) for document title, stylesheet count, computed font family, browser default serif detection, body text length, and section count, screenshot tool responses now provide actionable visual evidence directly in the tool output.
+- **Scripted Large File Assembly (Claude Code, SWE-bench & OpenHands Patterns)**: For large, multi-section web assets or documentation (>250 lines), relying solely on single-turn JSON tool calls risks escaping errors and token limits. In addition to chunked writes via `append: true`, minicode now explicitly guides agents to use small Python or Bun builder scripts (`python3 -c "..."` or `python3 scripts/build.py`) and shell heredocs (`cat << 'EOF' >> file`) via `exec_cmd` for deterministic assembly.
+
+#### 🚀 Features & Changes
+- **Safe-Overwrite Guard & Fragment Detection (`src/tools/fs.rs`, `src/tools/registry/fs_tools.rs`)**:
+  - Added `overwrite` boolean parameter to `write_file` schema.
+  - Implemented non-destructive verification: if a target file exists and is non-empty, calling `write_file` without `overwrite: true` or `append: true` returns a clear error with remedial instructions.
+  - Added heuristic fragment detection for HTML/CSS chunks (e.g. `<section>`, `<!--`, `@media`) that suggests appending when `append: true` is missing.
+  - Preserved internal `write_file(workspace_root, rel_path, content)` signature defaulting to `overwrite: true` for internal tools like `patch_file` and scaffolder.
+  - Added unit test `test_write_file_safe_overwrite_guard` and updated `test_write_file_append_mode`.
+- **Visual DOM Health Telemetry (`src/tools/browser/mod.rs`)**:
+  - Enhanced `take_screenshot` to run an asynchronous JS DOM query via CDP before capturing images.
+  - Telemetry inspects `document.title`, `hasHead`, `hasBody`, `styleSheets.length`, `computedFont`, serif detection, section count, and text length.
+  - Formatted and appended `[DOM & Visual Health Observation]` directly into screenshot responses, alerting the agent immediately if stylesheets are missing or raw browser default fonts are displayed.
+- **Resolved Task Titles in Progress Tracking (`src/context/memory/working_memory.rs`)**:
+  - Updated `WorkingMemory::update_progress` so numeric step identifiers (e.g. `"1"`, `"2"`) are resolved to their matched task's full descriptive title in `progress.md` instead of recording bare numbers.
+- **Active Plan Synchronization with Core `todo.md` (`src/tools/minikit/sync.rs`)**:
+  - Updated `ensure_workflow_docs` so scaffolding `minikit_docs/core/todo.md` automatically carries over active tasks from `.minicode/plan/task_plan.md` when present, ensuring macro and micro plans stay synchronized from turn 1.
+- **System Prompt & Orchestrator Guidance (`src/agent/prompt.rs`, `src/agent/orchestrator.rs`)**:
+  - Updated Axiom 7 with safe-overwrite rules, multi-chunk guidelines, and scripted builder assembly options.
+  - Added items 10 (Safe-Overwrite Guard) and 11 (Visual Health Telemetry) to the prompt self-healing and error recovery protocol.
+  - Updated tool synergy guidance in `enrich_minipower_rules_and_freedom` with file system safety rules and DOM observation reminders.
+
 ## [0.3.52] — 2026-10-06
 
 ### Dev Server TCP Readiness Probe, Layout Collision Guardrails & Idempotent Progress Tracking

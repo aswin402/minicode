@@ -505,11 +505,106 @@ impl BrowserController {
             ))
         })?;
 
-        Ok(format!(
+        let health_probe_js = r#"(() => {
+            try {
+                const title = document.title || "";
+                const hasHead = !!document.head;
+                const hasBody = !!document.body;
+                const styleSheets = document.styleSheets ? document.styleSheets.length : 0;
+                const linkStyles = document.querySelectorAll('link[rel="stylesheet"]').length;
+                const styleTags = document.querySelectorAll('style').length;
+                const bodyComputed = (window.getComputedStyle && document.body) ? window.getComputedStyle(document.body) : null;
+                const fontFamily = bodyComputed ? bodyComputed.fontFamily : "";
+                const bgColor = bodyComputed ? bodyComputed.backgroundColor : "";
+                const isDefaultSerif = fontFamily.toLowerCase().includes("times") || fontFamily.toLowerCase().includes("serif");
+                const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
+                const semanticSections = document.querySelectorAll('section, main, article, nav, header, footer').length;
+                return JSON.stringify({
+                    title,
+                    hasHead,
+                    hasBody,
+                    styleSheets,
+                    linkStyles,
+                    styleTags,
+                    fontFamily,
+                    bgColor,
+                    isDefaultSerif,
+                    bodyTextLen,
+                    semanticSections
+                });
+            } catch(e) {
+                return JSON.stringify({ error: e.toString() });
+            }
+        })()"#;
+
+        let mut health_notes = Vec::new();
+        if let Ok(raw_json) = engine.cdp.evaluate_js(health_probe_js).await {
+            if let Ok(probe) = serde_json::from_str::<serde_json::Value>(&raw_json) {
+                let has_head = probe
+                    .get("hasHead")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let has_body = probe
+                    .get("hasBody")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let style_sheets = probe
+                    .get("styleSheets")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let link_styles = probe
+                    .get("linkStyles")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let style_tags = probe.get("styleTags").and_then(|v| v.as_u64()).unwrap_or(0);
+                let is_default_serif = probe
+                    .get("isDefaultSerif")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let font_family = probe
+                    .get("fontFamily")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let body_len = probe
+                    .get("bodyTextLen")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let sections = probe
+                    .get("semanticSections")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
+
+                if !has_head || !has_body {
+                    health_notes.push("⚠ CRITICAL DOM DEFECT: Document is missing `<head>` or `<body>` tag! Page structure is truncated or malformed HTML.".to_string());
+                }
+                if style_sheets == 0 && link_styles == 0 && style_tags == 0 {
+                    health_notes.push("⚠ UNSTYLED PAGE ALERT: 0 active stylesheets found! The page is rendering raw unstyled HTML. Check if `<link rel=\"stylesheet\">` is missing in index.html.".to_string());
+                } else if is_default_serif {
+                    health_notes.push(format!("⚠ UNSTYLED FONT WARNING: Page body is displaying default browser serif font ('{}'). Check if your CSS stylesheet was loaded.", font_family));
+                }
+                if body_len < 50 {
+                    health_notes.push("⚠ EMPTY BODY WARNING: Page body contains almost no text content (<50 characters). Check if content loaded properly.".to_string());
+                }
+
+                health_notes.push(format!(
+                    "• Page Title: \"{}\" | Stylesheets: {} active ({} linked, {} embedded) | Sections: {} | Body Text: {} chars",
+                    title, style_sheets, link_styles, style_tags, sections, body_len
+                ));
+            }
+        }
+
+        let mut msg = format!(
             "Screenshot saved to '{}' ({} bytes)",
             target_path.display(),
             png_bytes.len()
-        ))
+        );
+        if !health_notes.is_empty() {
+            msg.push_str("\n\n[DOM & Visual Health Observation]:\n");
+            msg.push_str(&health_notes.join("\n"));
+        }
+
+        Ok(msg)
     }
 
     /// Executes an atomic pipeline of browser actions sequentially in a single turn

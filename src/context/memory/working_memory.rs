@@ -1032,8 +1032,39 @@ impl WorkingMemory {
             }
         } else if is_any_modified {
             // Only append to progress.md if an actual status modification took place (idempotent progress tracking)
+            let resolved_title = {
+                let tasks = self.read_parsed_tasks();
+                if let Some(idx) = target_index {
+                    if idx >= 1 && idx <= tasks.len() {
+                        tasks[idx - 1].title.clone()
+                    } else {
+                        Self::sanitize_step_title(step)
+                    }
+                } else if is_target_active {
+                    tasks
+                        .iter()
+                        .find(|t| t.status == TaskItemStatus::InProgress)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_else(|| Self::sanitize_step_title(step))
+                } else if is_target_next {
+                    tasks
+                        .iter()
+                        .find(|t| t.status == TaskItemStatus::Pending)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_else(|| Self::sanitize_step_title(step))
+                } else {
+                    tasks
+                        .iter()
+                        .find(|t| {
+                            let t_lower = t.title.to_ascii_lowercase();
+                            t_lower.contains(&clean_needle) || clean_needle.contains(&t_lower)
+                        })
+                        .map(|t| t.title.clone())
+                        .unwrap_or_else(|| Self::sanitize_step_title(step))
+                }
+            };
             let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
-            let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, step);
+            let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, resolved_title);
             let _ = fs::OpenOptions::new()
                 .create(true)
                 .append(true)

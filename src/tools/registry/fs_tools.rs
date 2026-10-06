@@ -80,7 +80,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "write_file".to_string(),
-            description: "Create a new file, overwrite an existing file, or append content with `append: true`. Note: To prevent token truncation and JSON parsing EOF errors, keep individual writes under 200 lines (~8KB). For large files, write the initial skeleton first then append subsequent sections or use patch_file.".to_string(),
+            description: "Create a new file, append content, or overwrite an existing file. By default, to prevent accidental file clobbering when building large files, write_file protects against overwriting existing non-empty files unless `overwrite: true` or `append: true` is specified.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -94,7 +94,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "append": {
                         "type": "boolean",
-                        "description": "If true, appends content to the existing file rather than overwriting it (useful for large files chunked in steps)"
+                        "description": "If true, appends content to the existing file rather than overwriting it (essential for large files generated in sequential section chunks)"
+                    },
+                    "overwrite": {
+                        "type": "boolean",
+                        "description": "If true, explicitly allows replacing the entire contents of an existing file. Required when modifying an existing non-empty file without appending."
                     }
                 },
                 "required": ["path", "content"]
@@ -224,7 +228,8 @@ pub async fn dispatch(
             }
 
             let append = param::opt_bool(args, "append", false);
-            let res = fs::write_file_with_options(workspace_root, path, content, append);
+            let overwrite = param::opt_bool(args, "overwrite", false);
+            let res = fs::write_file_with_options(workspace_root, path, content, append, overwrite);
             if res.is_ok() {
                 let _ = crate::session::transaction::TransactionManager::record_mutation_post(
                     workspace_root,
