@@ -229,10 +229,28 @@ impl WorkingMemory {
         fs::write(self.task_plan_path(), &plan_content)
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        // If canonical `todo.md` does NOT exist yet, initialize it as the project's task list.
-        // If it ALREADY exists, do NOT overwrite it, because it contains the project's core roadmap!
+        // If canonical `todo.md` does NOT exist yet, or exists but contains zero task items,
+        // initialize it with the plan's task list.
         let todo_path = self.canonical_todo_path();
-        if !todo_path.exists() {
+        let should_write_todo = if !todo_path.exists() {
+            true
+        } else if let Ok(existing) = fs::read_to_string(&todo_path) {
+            let has_tasks = existing.lines().any(|l| {
+                let t = l.trim();
+                t.starts_with("- [ ]")
+                    || t.starts_with("* [ ]")
+                    || t.starts_with("- [>]")
+                    || t.starts_with("* [>]")
+                    || t.starts_with("- [x]")
+                    || t.starts_with("* [x]")
+                    || (t.contains("[ ]") || t.contains("[>]") || t.contains("[x]"))
+            });
+            !has_tasks
+        } else {
+            false
+        };
+
+        if should_write_todo && !steps.is_empty() {
             if let Some(parent) = todo_path.parent() {
                 let _ = fs::create_dir_all(parent);
                 let mut todo_content = format!(

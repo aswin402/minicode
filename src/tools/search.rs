@@ -147,6 +147,58 @@ pub fn grep_search(
     }
 }
 
+/// Converts a glob pattern (with support for *, **, ?, and {a,b,c} brace expansion) into a case-insensitive regex.
+pub fn glob_to_regex(pattern: &str) -> Option<Regex> {
+    let mut regex_str = String::from("(?i)^");
+    let mut chars = pattern.chars().peekable();
+    let mut brace_depth: usize = 0;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                        regex_str.push_str("(?:.*/)?");
+                    } else {
+                        regex_str.push_str(".*");
+                    }
+                } else {
+                    regex_str.push_str(".*");
+                }
+            }
+            '?' => regex_str.push('.'),
+            '{' => {
+                brace_depth += 1;
+                regex_str.push_str("(?:");
+            }
+            '}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                regex_str.push(')');
+            }
+            ',' if brace_depth > 0 => {
+                regex_str.push('|');
+            }
+            '.' | '+' | '(' | ')' | '[' | ']' | '^' | '$' | '|' | '\\' => {
+                regex_str.push('\\');
+                regex_str.push(c);
+            }
+            '}' => {
+                regex_str.push('\\');
+                regex_str.push('}');
+            }
+            _ => regex_str.push(c),
+        }
+    }
+    while brace_depth > 0 {
+        regex_str.push(')');
+        brace_depth -= 1;
+    }
+    regex_str.push('$');
+    Regex::new(&regex_str).ok()
+}
+
 /// Fast file locator finding files by name or glob pattern respecting `.gitignore`.
 pub fn file_search(
     workspace_root: &Path,
@@ -173,23 +225,13 @@ pub fn file_search(
     };
 
     let pat_lower = pattern.to_lowercase();
-    let is_glob = pattern.contains('*') || pattern.contains('?');
+    let is_glob = pattern.contains('*')
+        || pattern.contains('?')
+        || pattern.contains('{')
+        || pattern.contains('[');
 
     let file_regex: Option<Regex> = if is_glob {
-        let mut pattern_regex = String::from("(?i)^");
-        for c in pattern.chars() {
-            match c {
-                '*' => pattern_regex.push_str(".*"),
-                '?' => pattern_regex.push('.'),
-                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                    pattern_regex.push('\\');
-                    pattern_regex.push(c);
-                }
-                _ => pattern_regex.push(c),
-            }
-        }
-        pattern_regex.push('$');
-        Regex::new(&pattern_regex).ok()
+        glob_to_regex(pattern)
     } else {
         None
     };
@@ -313,5 +355,21 @@ mod tests {
         assert!(!res_sub.contains("src/main.rs"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_glob_to_regex_brace_expansion() {
+        let re = glob_to_regex("**/*.{tsx,jsx,ts,js,css}").unwrap();
+        assert!(re.is_match("src/components/App.tsx"));
+        assert!(re.is_match("index.css"));
+        assert!(re.is_match("main.ts"));
+        assert!(re.is_match("utils.js"));
+        assert!(!re.is_match("cargo.toml"));
+        assert!(!re.is_match("image.png"));
+
+        let re_multi = glob_to_regex("*.{rs,toml}").unwrap();
+        assert!(re_multi.is_match("main.rs"));
+        assert!(re_multi.is_match("Cargo.toml"));
+        assert!(!re_multi.is_match("main.py"));
     }
 }

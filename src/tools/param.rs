@@ -204,14 +204,51 @@ pub fn require_u64(args: &Value, key: &str, tool_name: &str) -> Result<u64, Tool
     })
 }
 
-/// Extracts an optional array of strings with permissive coercion (JSON array, single string, or comma-separated string)
+/// Extracts an optional array of strings with permissive coercion (JSON array of strings/objects, single string, or comma-separated string)
 #[allow(dead_code)]
 pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
     args.get(key).and_then(|v| {
         if let Some(arr) = v.as_array() {
             Some(
                 arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .filter_map(|x| {
+                        if let Some(s) = x.as_str() {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                Some(trimmed.to_string())
+                            } else {
+                                None
+                            }
+                        } else if let Some(obj) = x.as_object() {
+                            let title = obj
+                                .get("title")
+                                .or_else(|| obj.get("step"))
+                                .or_else(|| obj.get("task"))
+                                .or_else(|| obj.get("name"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim());
+                            let desc = obj
+                                .get("description")
+                                .or_else(|| obj.get("desc"))
+                                .or_else(|| obj.get("details"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim());
+                            match (title, desc) {
+                                (Some(t), Some(d)) if !t.is_empty() && !d.is_empty() => {
+                                    Some(format!("{}: {}", t, d))
+                                }
+                                (Some(t), _) if !t.is_empty() => Some(t.to_string()),
+                                (_, Some(d)) if !d.is_empty() => Some(d.to_string()),
+                                _ => obj
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty()),
+                            }
+                        } else {
+                            None
+                        }
+                    })
                     .collect(),
             )
         } else if let Some(s) = v.as_str() {
@@ -219,7 +256,13 @@ pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
             if trimmed.is_empty() {
                 Some(Vec::new())
             } else if trimmed.contains(',') {
-                Some(trimmed.split(',').map(|p| p.trim().to_string()).collect())
+                Some(
+                    trimmed
+                        .split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect(),
+                )
             } else {
                 Some(vec![trimmed.to_string()])
             }
@@ -388,5 +431,26 @@ mod tests {
         // Comma-separated string coerced to array
         let split = opt_string_array(&json!({"files": "x.rs, y.rs, z.rs"}), "files").unwrap();
         assert_eq!(split, vec!["x.rs", "y.rs", "z.rs"]);
+
+        // Objects with title and description coerced to string representations
+        let obj_arr = opt_string_array(
+            &json!({"steps": [
+                {"title": "Step 1", "description": "Do something"},
+                {"step": "Step 2"},
+                {"task": "Step 3", "details": "More details"},
+                {"name": "Step 4"}
+            ]}),
+            "steps",
+        )
+        .unwrap();
+        assert_eq!(
+            obj_arr,
+            vec![
+                "Step 1: Do something",
+                "Step 2",
+                "Step 3: More details",
+                "Step 4"
+            ]
+        );
     }
 }

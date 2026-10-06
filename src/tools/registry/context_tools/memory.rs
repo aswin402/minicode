@@ -77,8 +77,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "steps": {
                         "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Ordered list of action steps to complete the task"
+                        "items": {
+                            "anyOf": [
+                                { "type": "string" },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": { "type": "string" },
+                                        "description": { "type": "string" }
+                                    }
+                                }
+                            ]
+                        },
+                        "description": "Ordered list of action steps to complete the task (accepts strings or objects with title/description)"
                     }
                 },
                 "required": ["steps"]
@@ -225,26 +236,32 @@ pub async fn dispatch(
                 }
             })
         })()),
-        "create_plan" => Some((|| {
+        "create_plan" => Some((|| -> Result<String> {
             let title = param::opt_str(args, "title").unwrap_or("Task Plan");
-            let steps = param::opt_string_array(args, "steps").ok_or_else(|| {
-                ToolError::InvalidArguments {
+            let steps = param::opt_string_array(args, "steps")
+                .or_else(|| param::opt_string_array(args, "tasks"))
+                .or_else(|| param::opt_string_array(args, "plan"))
+                .ok_or_else(|| ToolError::InvalidArguments {
                     name: "create_plan".to_string(),
-                    reason: "Missing required argument 'steps'".to_string(),
-                }
-            })?;
+                    reason: "Missing required argument 'steps' (or 'tasks')".to_string(),
+                })?;
+            if steps.is_empty() {
+                return Err(ToolError::InvalidArguments {
+                    name: "create_plan".to_string(),
+                    reason: "Argument 'steps' must contain at least one task step (e.g. ['Step 1', 'Step 2'] or [{'title': 'Step 1', 'description': '...'}]). Empty plans are not allowed.".to_string(),
+                }.into());
+            }
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-            wm.init_plan(title, &steps).map(|_| {
-                let first_step = steps
-                    .first()
-                    .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
-                    .unwrap_or_else(|| "First step".to_string());
-                format!(
-                    "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md.\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
-                    steps.len(),
-                    first_step
-                )
-            })
+            wm.init_plan(title, &steps)?;
+            let first_step = steps
+                .first()
+                .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
+                .unwrap_or_else(|| "First step".to_string());
+            Ok(format!(
+                "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md.\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
+                steps.len(),
+                first_step
+            ))
         })()),
         "read_plan" => Some({
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);

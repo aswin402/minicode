@@ -45,10 +45,44 @@ pub struct CompactionStats {
     pub savings_percent: usize,
 }
 
+/// Helper to extract the primary substantive command from chained/prefixed shell strings
+/// (e.g. `cd /some/path && npm run build 2>&1` -> `npm run build`, `RUST_LOG=info cargo check` -> `cargo check`)
+pub fn extract_primary_command(command: &str) -> &str {
+    let mut s = command.trim();
+    // Strip trailing redirections like `2>&1`, `> /dev/null`, `&> ...`
+    if let Some(pos) = s.rfind("2>&1") {
+        s = s[..pos].trim();
+    }
+
+    // Split on shell separators `&&` or `;` and take the last command segment
+    if let Some(last_segment) = s.rsplit("&&").next() {
+        s = last_segment.trim();
+    }
+    if let Some(last_segment) = s.rsplit(';').next() {
+        s = last_segment.trim();
+    }
+
+    // Strip leading environment variable assignments like `FOO=bar ` or `VAR=1 `
+    loop {
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if let Some(first) = parts.first() {
+            if first.contains('=') && !first.starts_with('-') && !first.starts_with('/') {
+                if let Some(rest) = s.strip_prefix(first) {
+                    s = rest.trim();
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    s
+}
+
 /// Detects the compaction strategy for a given command line
 pub fn detect_strategy(command: &str) -> CompactStrategy {
-    let trimmed = command.trim();
-    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    let primary = extract_primary_command(command);
+    let parts: Vec<&str> = primary.split_whitespace().collect();
 
     if parts.is_empty() {
         return CompactStrategy::Generic;
@@ -92,7 +126,7 @@ pub fn detect_strategy(command: &str) -> CompactStrategy {
         }
         "npm" | "yarn" | "pnpm" | "bun" => CompactStrategy::Npm,
         "pytest" | "python" | "python3" => {
-            if trimmed.contains("pytest") || trimmed.contains("unittest") {
+            if primary.contains("pytest") || primary.contains("unittest") {
                 CompactStrategy::Pytest
             } else {
                 CompactStrategy::Generic
@@ -106,7 +140,7 @@ pub fn detect_strategy(command: &str) -> CompactStrategy {
             }
         }
         _ => {
-            if trimmed.starts_with("pytest") {
+            if primary.starts_with("pytest") {
                 CompactStrategy::Pytest
             } else {
                 CompactStrategy::Generic
@@ -445,5 +479,22 @@ mod tests {
         assert_eq!(stats.raw_bytes, 1000);
         assert_eq!(stats.compacted_bytes, 100);
         assert_eq!(stats.savings_percent, 90);
+    }
+
+    #[test]
+    fn test_chained_command_strategy_detection() {
+        assert_eq!(
+            detect_strategy("cd /path/to/project && npm run build 2>&1"),
+            CompactStrategy::Npm
+        );
+        assert_eq!(
+            detect_strategy("cd /path && cargo check"),
+            CompactStrategy::CargoCheck
+        );
+        assert_eq!(
+            detect_strategy("RUST_BACKTRACE=1 cargo test --lib"),
+            CompactStrategy::CargoTest
+        );
+        assert_eq!(detect_strategy("git diff HEAD~1"), CompactStrategy::GitDiff);
     }
 }

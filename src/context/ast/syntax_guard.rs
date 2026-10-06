@@ -126,7 +126,10 @@ impl SyntaxGuard {
                     // Handle aliases like 'Github as GithubIcon'
                     let ident = cleaned.split_whitespace().next().unwrap_or("");
                     let lower = ident.to_lowercase();
-                    if KNOWN_BRAND_ICONS.contains(&lower.as_str())
+                    let is_brand = KNOWN_BRAND_ICONS
+                        .iter()
+                        .any(|&brand| lower == brand || lower.starts_with(brand));
+                    if is_brand
                         && !brands
                             .iter()
                             .any(|b: &String| b.eq_ignore_ascii_case(ident))
@@ -367,5 +370,19 @@ mod tests {
 
         let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_lucide_brand_icon_variants_rejected() {
+        let path = PathBuf::from("src/components/Footer.tsx");
+        let orig = "";
+        let new = "import React from 'react';\nimport { GitHubAction, TwitterIcon, ArrowRight } from 'lucide-react';\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("[AST Import Barrier Rejected]"));
+        assert!(msg.contains("GitHubAction"));
+        assert!(msg.contains("TwitterIcon"));
     }
 }

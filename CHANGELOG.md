@@ -5,6 +5,37 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.55] — 2026-10-07
+
+### Working Memory Plan Invariants, Glob Brace Expansion, Brand Icon Variant Guards & Sandbox Toolchain Support
+
+#### 💡 Ideas & Inspirations
+- **Working Memory Plan Invariants (`create_plan` & `todo.md` Persistence)**: Deep forensic inspection of `minitest20` revealed that modern LLMs frequently format action plan steps as structured objects `[{"title": "...", "description": "..."}, ...]` rather than flat strings. Parameter extraction previously assumed strings only, producing an empty step list (`[]`), which initialized an empty 0-step task plan and an unpopulated `todo.md`. Subsequent `update_progress` calls failed with `No matching task step found`. `param::opt_string_array` now parses object structures (`title`, `step`, `task`, `name`, `value`, `description`), `create_plan` accepts aliases (`steps`, `tasks`, `plan`), schema definitions declare permissive object items, and empty plans are rejected with clear actionable guidance. Furthermore, `init_plan` ensures `todo.md` is populated even if a stub or empty file with zero task checkboxes already exists on disk.
+- **`file_search` Glob Brace Expansion (`**/*.{tsx,jsx,ts,js,css}`)**: When discovering files in newly scaffolded repositories, agents naturally issue multi-extension glob queries such as `**/*.{tsx,jsx,ts,js,css}`. The glob converter previously treated `{` and `}` as literal regex characters, failing to match any files and forcing agents to fall back to shell commands (`ls -la`). The glob-to-regex converter now natively supports brace expansion `{a,b,c}` -> `(?:a|b|c)` alongside recursive directory wildcards (`**`) and single wildcards (`*`, `?`).
+- **Brand Icon Variant Barrier (`GitHubAction`, `TwitterIcon`, etc.)**: While `SyntaxGuard` successfully blocked exact brand names like `Github` and `Twitter`, variant imports (e.g. `GitHubAction`, `GithubIcon`, `TwitterX`) evaded exact string matching. `SyntaxGuard` now applies prefix-aware matching across all known brand names, intercepting all brand variant exports before they hit disk.
+- **Landlock Sandbox Global Toolchain Whitelisting**: On Linux systems where users configure global toolchains (such as `~/.npm-global`, `~/.yarn`, `~/.pnpm`, `~/.deno`, `~/.fnm`), Landlock restrictions previously blocked global node/npm execution wrappers, causing build commands to exit abruptly with non-zero exit codes. These standard home tool directories are now whitelisted for seamless build execution.
+- **Command Compactor Chained Shell Detection**: When agents run compound shell commands like `cd /path && npm run build 2>&1`, the compactor now extracts the primary substantive command so exit-code-aware output compaction routes to specialized formatters rather than generic fallbacks.
+
+#### 🚀 Features & Changes
+- **Working Memory & Parameter Extraction (`src/tools/param.rs`, `src/tools/registry/context_tools/memory.rs`, `src/context/memory/working_memory.rs`)**:
+  - Enhanced `opt_string_array` to parse objects containing `title`, `step`, `task`, `name`, `value`, or `description`.
+  - Updated `create_plan` schema to accept objects or strings with full documentation.
+  - Added support for `tasks` and `plan` argument aliases in `create_plan`.
+  - Added strict validation rejecting 0-step empty plans.
+  - Guaranteed `todo.md` population in `WorkingMemory::init_plan` if existing file has zero task checkboxes.
+- **Glob Brace Expansion in File Search (`src/tools/search.rs`)**:
+  - Implemented `glob_to_regex` supporting `{a,b,c}` brace alternation, `**` recursive matching, and wildcard conversions.
+  - Updated `is_glob` detection to recognize `{` and `[` characters.
+  - Added unit test `test_glob_to_regex_brace_expansion`.
+- **Brand Icon AST Barrier (`src/context/ast/syntax_guard.rs`)**:
+  - Updated `extract_lucide_brand_imports` to catch brand name prefixes and variants (`GitHubAction`, `TwitterIcon`, etc.).
+  - Added unit test `test_lucide_brand_icon_variants_rejected`.
+- **Landlock Sandbox Whitelisting (`src/sandbox/landlock.rs`)**:
+  - Whitelisted `~/.npm-global`, `~/.yarn`, `~/.pnpm`, `~/.deno`, and `~/.fnm` for development toolchain access.
+- **Compactor Chained Command Detection (`src/tools/compactor.rs`)**:
+  - Implemented `extract_primary_command` to resolve the target executable in chained and redirected shell commands (`cd ... && npm run build 2>&1`).
+  - Added unit test `test_chained_command_strategy_detection`.
+
 ## [0.3.54] — 2026-10-06
 
 ### Single-Root Scaffolding, Brand Icon AST Barrier, Plan Auto-Advancement & Persistent Dev Server Invariants

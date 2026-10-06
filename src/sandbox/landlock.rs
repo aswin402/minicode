@@ -154,14 +154,19 @@ pub fn apply_landlock_sandbox_with_opts(
     // Allow read/write access to package manager caches (~/.npm, ~/.cache, ~/.cargo, ~/.pnpm-store, ~/.bun) for builds, dependency downloads, and locks
     if let Some(ref h) = home_dir {
         let npm_home = format!("{}/.npm", h);
+        let npm_global = format!("{}/.npm-global", h);
         let user_cache = format!("{}/.cache", h);
         let cargo_home = format!("{}/.cargo", h);
         let pnpm_store = format!("{}/.pnpm-store", h);
         let bun_home = format!("{}/.bun", h);
         let pnpm_local = format!("{}/.local/share/pnpm", h);
+        let yarn_home = format!("{}/.yarn", h);
+        let deno_home = format!("{}/.deno", h);
+        let fnm_home = format!("{}/.fnm", h);
 
         for rw_home_str in [
-            npm_home, user_cache, cargo_home, pnpm_store, bun_home, pnpm_local,
+            npm_home, npm_global, user_cache, cargo_home, pnpm_store, bun_home, pnpm_local,
+            yarn_home, deno_home, fnm_home,
         ] {
             let p = Path::new(&rw_home_str);
             if !p.exists() {
@@ -192,10 +197,24 @@ pub fn apply_landlock_sandbox_with_opts(
     let local_home = home_dir.as_ref().map(|h| format!("{}/.local", h));
     let config_home = home_dir.as_ref().map(|h| format!("{}/.config", h));
     let gitconfig = home_dir.as_ref().map(|h| format!("{}/.gitconfig", h));
+    let npm_global_ro = home_dir.as_ref().map(|h| format!("{}/.npm-global", h));
+    let yarn_home_ro = home_dir.as_ref().map(|h| format!("{}/.yarn", h));
+    let deno_home_ro = home_dir.as_ref().map(|h| format!("{}/.deno", h));
+    let fnm_home_ro = home_dir.as_ref().map(|h| format!("{}/.fnm", h));
 
-    for p_str in [rustup_home, nvm_home, local_home, config_home, gitconfig]
-        .into_iter()
-        .flatten()
+    for p_str in [
+        rustup_home,
+        nvm_home,
+        local_home,
+        config_home,
+        gitconfig,
+        npm_global_ro,
+        yarn_home_ro,
+        deno_home_ro,
+        fnm_home_ro,
+    ]
+    .into_iter()
+    .flatten()
     {
         let p = Path::new(&p_str);
         if p.exists() {
