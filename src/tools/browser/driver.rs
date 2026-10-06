@@ -536,14 +536,27 @@ impl CdpClient {
             .map_err(|e| ToolError::CommandExec(format!("Failed sending CDP command: {}", e)))?;
 
         let timeout_dur = Duration::from_millis(BROWSER_NAVIGATE_TIMEOUT_MS);
-        let res = tokio::time::timeout(timeout_dur, resp_rx)
-            .await
-            .map_err(|_| {
-                ToolError::CommandExec(format!("Timeout waiting for CDP method '{}'", method))
-            })?
-            .map_err(|_| {
-                ToolError::CommandExec(format!("CDP connection dropped during method '{}'", method))
-            })?;
+        let res = match tokio::time::timeout(timeout_dur, resp_rx).await {
+            Ok(Ok(val)) => val,
+            Ok(Err(_)) => {
+                let mut map = self.pending.lock().await;
+                map.remove(&id);
+                return Err(ToolError::CommandExec(format!(
+                    "CDP connection dropped during method '{}'",
+                    method
+                ))
+                .into());
+            }
+            Err(_) => {
+                let mut map = self.pending.lock().await;
+                map.remove(&id);
+                return Err(ToolError::CommandExec(format!(
+                    "Timeout waiting for CDP method '{}'",
+                    method
+                ))
+                .into());
+            }
+        };
 
         if let Some(err) = res.get("error") {
             let msg = err
@@ -751,8 +764,19 @@ impl CdpClient {
 
     /// Navigates to the specified URL and waits for network idle or settled DOM
     pub async fn navigate(&self, url: &str) -> Result<()> {
-        self.send_command("Page.navigate", json!({ "url": url }))
-            .await?;
+        let current_url = self
+            .evaluate_js("window.location.href")
+            .await
+            .unwrap_or_default();
+        let clean_current = current_url.trim_matches('"').trim_end_matches('/');
+        let clean_target = url.trim().trim_end_matches('/');
+
+        if !clean_current.is_empty() && clean_current == clean_target {
+            let _ = self.send_command("Page.reload", json!({})).await;
+        } else {
+            self.send_command("Page.navigate", json!({ "url": url }))
+                .await?;
+        }
         // Dynamically wait for network idle with fallback deadline
         let _ = self.wait_for_network_idle(Duration::from_millis(800)).await;
         // New document => reinstall the console shim.

@@ -5,6 +5,37 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.54] — 2026-10-06
+
+### Single-Root Scaffolding, Brand Icon AST Barrier, Plan Auto-Advancement & Persistent Dev Server Invariants
+
+#### 💡 Ideas & Inspirations
+- **Single-Root Architecture Scaffolding (Zero Extra Subdirectories & Zero Duplicate Docs)**: Deep forensic audit of multi-turn user sessions (such as `minitest19`) revealed that agents frequently passed `target_dir: "my-app"` when invoking `kit_stack_add`, unintentionally creating a nested subproject inside the workspace. Consequently, stack documentation templates were scaffolded into `my-app/minikit_docs/` while workspace inception specs had already been established in root `minikit_docs/`. This produced redundant directories, divergent documentation trees, and path misalignment for dev servers and test suites. Stack scaffolding now guarantees that documentation files (`minikit_docs/`) always route to the workspace root without overwriting existing specifications, workspace manifests (`minikit.json` and `AGENTS.md`) are synchronized at the root, and tool schemas explicitly mandate defaulting to `.` (workspace root).
+- **Brand Icon Pre-Write AST Barrier (`lucide-react`)**: Modern versions of `lucide-react` (v0.300+) removed all brand and social icons (`Github`, `Twitter`, `Discord`, `Linkedin`, `Facebook`, etc.) in favor of generic UI glyphs. Because LLM training distributions contain thousands of deprecated examples, agents consistently hallucinated importing these icons, triggering `TS2305: Module 'lucide-react' has no exported member` compilation failures that consumed dozens of corrective tool turns. Rather than waiting for a late `tsc` or bundler failure, `SyntaxGuard` now intercepts brand icon imports in TypeScript and JavaScript files prior to disk writes, instantly offering actionable guidance (inline SVG or generic UI equivalents).
+- **Plan Auto-Advancement & Progress Loop Convergence**: When a tool successfully produces a deliverable matching an active plan step on disk, `reconciled` tasks were previously tracked separately from scaffolding tasks. This caused the agent loop to omit immediate disk auto-advancement feedback, leading models to execute redundant batches of `update_progress` calls at the end of turns. Unifying step reconciliation ensures the model is immediately alerted upon deliverable verification on disk with progress counts and the next active step.
+- **Persistent Dev Server Invariant Across Turns**: The static system prompt previously instructed `Teardown: Stop dev servers with minitask(action="stop")`, which led agents to prematurely terminate background dev servers upon completing their turn. When building web applications, background dev servers (`is_daemon: true` or `minitask(action="start")`) must stay active so the human user can immediately interact with the application in their browser.
+- **Robust Browser Automation & Re-Navigation**: Fixed false-positive default serif font detection in visual DOM telemetry (which previously matched `"sans-serif"`), eliminated callback channel leaks on CDP command timeouts, and added clean page reloads when re-navigating to the active URL.
+
+#### 🚀 Features & Changes
+- **Single-Root Stack Scaffolding (`src/tools/minikit/scaffolder.rs`, `src/tools/minikit/remote.rs`, `src/tools/registry/minikit_tools.rs`)**:
+  - Routed stack documentation template files (`minikit_docs/`) to `workspace_root` rather than nested subdirectories, preserving existing specs untouched.
+  - Synchronized `minikit.json` and `AGENTS.md` at workspace root when scaffolding into subdirectories.
+  - Updated `kit_stack_add` schema description to explicitly instruct defaulting to `.` and forbidding redundant subdirectories.
+- **Brand Icon AST Import Barrier (`src/context/ast/syntax_guard.rs`)**:
+  - Implemented `extract_lucide_brand_imports` to detect deprecated social/brand icon imports from `lucide-react`.
+  - Added pre-write barrier in `check_syntax_barrier` rejecting newly introduced brand icon imports with concrete inline SVG guidance.
+  - Added comprehensive unit tests: `test_lucide_brand_icon_barrier_rejects` and `test_existing_lucide_brand_icon_allowed`.
+- **Plan Auto-Advancement Feedback (`src/agent/loop.rs`)**:
+  - Unified `total_reconciled` across file modifications (`write_file`, `patch_file`) and scaffolding tools (`kit_stack_add`, `block_scaffold`, `block_insert`).
+  - Emitted immediate `[Plan Auto-Advancement: Step deliverable verified on disk]` feedback into LLM observations, preventing end-of-turn update batching.
+- **Persistent Dev Server Invariant (`src/agent/prompt.rs`, `src/agent/orchestrator.rs`)**:
+  - Replaced prompt teardown instruction with explicit invariant to keep dev servers running across turns for user testing.
+  - Updated tool guidance to clarify that `minitask(action="stop")` is reserved for explicit user teardown requests.
+- **Browser Driver & DOM Telemetry Fixes (`src/tools/browser/mod.rs`, `src/tools/browser/driver.rs`)**:
+  - Fixed serif font regex so `"sans-serif"` is not flagged as an unstyled font.
+  - Cleaned up pending response channels on CDP command timeout to prevent memory leaks.
+  - Handled same-URL re-navigation via `Page.reload` for fresh DOM updates.
+
 ## [0.3.53] — 2026-10-06
 
 ### Safe-Overwrite Guard, Visual DOM Health Telemetry & Scripted Large File Assembly

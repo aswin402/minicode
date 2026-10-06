@@ -516,7 +516,8 @@ impl BrowserController {
                 const bodyComputed = (window.getComputedStyle && document.body) ? window.getComputedStyle(document.body) : null;
                 const fontFamily = bodyComputed ? bodyComputed.fontFamily : "";
                 const bgColor = bodyComputed ? bodyComputed.backgroundColor : "";
-                const isDefaultSerif = fontFamily.toLowerCase().includes("times") || fontFamily.toLowerCase().includes("serif");
+                const fLower = fontFamily.toLowerCase();
+                const isDefaultSerif = (fLower.includes("times") || /(^|[\s,])serif([\s,]|$)/i.test(fLower)) && !fLower.includes("sans-serif");
                 const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
                 const semanticSections = document.querySelectorAll('section, main, article, nav, header, footer').length;
                 return JSON.stringify({

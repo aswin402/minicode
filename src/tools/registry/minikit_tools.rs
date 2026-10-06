@@ -45,7 +45,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "target_dir": {
                         "type": "string",
-                        "description": "Optional target directory path relative to workspace or absolute. Defaults to current workspace."
+                        "description": "Optional target directory. Default to '.' (workspace root) or omit. DO NOT create nested subdirectories (e.g. do not pass 'my-app' or 'project-name') unless explicitly requested by the user or configuring a monorepo package."
                     },
                     "no_install": {
                         "type": "boolean",

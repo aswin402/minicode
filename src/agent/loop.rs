@@ -1693,6 +1693,7 @@ impl AgentLoop {
                             }
                             event_sender.send(res_event)?;
 
+                            let mut total_reconciled = 0;
                             if tool_result.success
                                 && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
                             {
@@ -1729,12 +1730,12 @@ impl AgentLoop {
                                     let reconciled =
                                         wm.reconcile_workspace_tasks(&[path_str.to_string()]);
                                     if reconciled > 0 {
+                                        total_reconciled += reconciled;
                                         self.emit_current_plan(Some(turn_id), &event_sender);
                                     }
                                 }
                             }
 
-                            let mut auto_reconciled_extra = 0;
                             if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
@@ -1743,8 +1744,9 @@ impl AgentLoop {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
                                 );
-                                auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
+                                let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
                                 if auto_reconciled_extra > 0 {
+                                    total_reconciled += auto_reconciled_extra;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
                             }
@@ -1762,7 +1764,7 @@ impl AgentLoop {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
                                 );
-                                if auto_reconciled_extra > 0 {
+                                if total_reconciled > 0 {
                                     if let Some(summary) = wm.read_active_plan_summary() {
                                         if let Some(ref next_active) = summary.active_task {
                                             output_for_llm.push_str(&format!(

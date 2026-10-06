@@ -822,8 +822,8 @@ impl MiniKitRemoteManager {
             let _ = fs::write(&agents_md_path, agents_md);
         }
 
-        // Generate standard workflow docs
-        let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
+        // Generate standard workflow docs under workspace root minikit_docs
+        let docs_dir = workspace_root.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(&docs_dir, &project_name, runtime);
 
         let mut install_msg = String::new();

@@ -743,7 +743,18 @@ impl MiniKitScaffolder {
             } else {
                 f.path.clone()
             };
-            let file_path = dest_dir.join(&clean_rel_path);
+            let is_doc = clean_rel_path.starts_with(crate::constants::MINIKIT_DOCS_DIR);
+            let file_path = if is_doc {
+                workspace_root.join(&clean_rel_path)
+            } else {
+                dest_dir.join(&clean_rel_path)
+            };
+
+            // If it is a documentation file and already exists in workspace_root, preserve existing specs
+            if is_doc && file_path.exists() {
+                continue;
+            }
+
             if let Some(parent) = file_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
                     path: parent.display().to_string(),
@@ -786,6 +797,12 @@ impl MiniKitScaffolder {
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
+        if dest_dir != workspace_root {
+            let root_manifest = workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE);
+            if !root_manifest.exists() {
+                fs::write(&root_manifest, &manifest_json).ok();
+            }
+        }
 
         // 3. Generate AGENTS.md instructions
         let agents_md = format!(
@@ -808,10 +825,16 @@ impl MiniKitScaffolder {
             stack.runtime,
             stack.runtime
         );
-        fs::write(dest_dir.join("AGENTS.md"), agents_md).ok();
+        fs::write(dest_dir.join("AGENTS.md"), &agents_md).ok();
+        if dest_dir != workspace_root {
+            let root_agents = workspace_root.join("AGENTS.md");
+            if !root_agents.exists() {
+                fs::write(&root_agents, &agents_md).ok();
+            }
+        }
 
-        // 4. Generate initial workflow docs under minikit_docs
-        let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
+        // 4. Generate initial workflow docs under workspace root minikit_docs
+        let docs_dir = workspace_root.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &docs_dir,
             &project_name,

@@ -1251,10 +1251,10 @@ impl WorkflowRouter {
 
         out.push_str("  4. Tool Freedom & Ecosystem Synergy (202 Native Tools Available):\n");
         out.push_str("     You have full freedom to choose and combine the highest-leverage tools for any task:\n");
-        out.push_str("     • MiniKit: `kit_stack_add` (scaffold templates), `kit_add` (install dependencies), `kit_sync` (reconcile manifest).\n");
+        out.push_str("     • MiniKit: `kit_stack_add` (scaffold templates directly into workspace root '.', do not create nested folders), `kit_add` (install dependencies), `kit_sync` (reconcile manifest).\n");
         out.push_str("     • File System Safety: `write_file(path, content, overwrite=true, append=true)` — Safe-overwrite guard active. Set `overwrite=true` to replace or `append=true` for chunked writes. For large multi-section files (>250 lines), use modular files, `append=true`, or scripted builder assembly (`python3 scripts/build.py` or `cat << 'EOF' >> file` via `exec_cmd`).\n");
         out.push_str("     • MiniBlocks: `block_search`, `block_palettes`, `block_scaffold` — NEVER write 1,000+ line monolithic CSS/JS files! Decompose into modular components (<250 lines per file) to prevent JSON token truncation (`EOF while parsing a string`).\n");
-        out.push_str("     • MiniTask Vault: `minitask(action=\"start\")` to run dev servers/daemons, `minitask(action=\"status\")` / `minitask(action=\"resources\")` for telemetry, `minitask(action=\"stop\")` for teardown.\n");
+        out.push_str("     • MiniTask Vault: `minitask(action=\"start\")` to run dev servers/daemons, `minitask(action=\"status\")` / `minitask(action=\"resources\")` for telemetry. Keep background dev servers running across turns for user testing; only call `minitask(action=\"stop\")` when user explicitly requests teardown.\n");
         out.push_str("     • Browser Automation: `browser_navigate`, `browser_screenshot`, `browser_snapshot`, `browser_close`. Inspect the returned `[DOM & Visual Health Observation]` telemetry (stylesheets count, computed font, serif detection) to verify visual rendering.\n");
         out.push_str("     • CodeGraph AST: `code_explore`, `blast_radius`, `locate_symbol`, `diff_impact` for architectural navigation.\n");
         out.push_str("     • Working Memory: `create_plan`, `update_progress` — call `update_progress` after each step so the user and live TUI stay in sync.\n");

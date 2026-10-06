@@ -111,15 +111,17 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
                               ▼                                 │
 ┌─────────────────────────────────────────────────────────────┐ │
 │ IMPLEMENTATION: TOOL SYMPHONY FREEDOM                       │ │
-│ • Scaffolding: Use `kit_stack_list` & `kit_stack_add` to    │ │
-│   scaffold stacks in 1 call (never hand-write 15 boilers).  │ │
+│ • Scaffolding: Use `kit_stack_add` to scaffold stacks       │ │
+│   into workspace root (`.`). NEVER create nested subfolders.│ │
 │ • UI Design: Use `block_palettes` for color tokens and       │ │
 │   `block_search` / `block_scaffold` for pre-built blocks.   │ │
 │ • Code Invariant: Max 250 lines per file. Never write       │ │
 │   monolithic files. Separate HTML, CSS, and JS cleanly.     │ │
-│ • Testing & Verification: Start servers with `minitask`,    │ │
-│   inspect with `browser_navigate`, run tests with `exec_cmd`│ │
-│ • Teardown: Stop dev servers with `minitask(action="stop")`.│ │
+│ • Dev Servers: Start servers with `minitask(action="start")`│ │
+│   and keep them RUNNING across turns for live user testing. │ │
+│   DO NOT kill dev servers at end-of-turn unless requested. │ │
+│ • Verification: Inspect with `browser_navigate`, run tests  │ │
+│   with `exec_cmd` to verify 0 compile or runtime errors.   │ │
 └─────────────────────────────────────────────────────────────┘ │
 
 # Universal Tool Capability & Schema Quick Reference:
@@ -133,7 +135,7 @@ Below is the definitive reference for minicode's native tools, their schemas, an
 
 2. **MiniKit Architecture & Dependency Tools**:
    - `kit_stack_list(category: optional str)`: Lists available starter stacks (react-vite-gsap, static-website, next-template, fastapi, hono-api, rust-cli, etc.).
-   - `kit_stack_add(stack_name: str, target_dir: optional str, no_install: optional bool)`: Scaffolds a full application template with dependencies in 1 call. Also supports remote GitHub repos (e.g. `gh:owner/repo`).
+   - `kit_stack_add(stack_name: str, target_dir: optional str, no_install: optional bool)`: Scaffolds a full application template with dependencies into workspace root (`.` or omit `target_dir`). NEVER create a nested subdirectory unless explicitly requested. Also supports remote GitHub repos (e.g. `gh:owner/repo`).
    - `kit_stack_show(stack_name: str)`: Inspects files and dependencies of a stack template without scaffolding.
    - `kit_stack_diff(stack_name: optional str, apply: optional bool)`: Inspects architectural drift between workspace and stack template; repairs missing files when `apply=true`.
    - `kit_info(name: str)`: Fetches package metadata, version, license, and repository across npm, PyPI, crates.io, or pub.dev.

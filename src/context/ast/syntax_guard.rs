@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::LazyLock;
 use tree_sitter::{Language, Node, Parser};
 
 /// Detailed description of a syntax error detected by Tree-sitter.
@@ -90,6 +91,54 @@ impl SyntaxGuard {
         }
     }
 
+    /// Extracts brand icon names imported from `lucide-react` (e.g. Github, Twitter, Discord).
+    pub fn extract_lucide_brand_imports(content: &str) -> Vec<String> {
+        static LUCIDE_IMPORT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r#"(?s)import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]"#)
+                .expect("valid lucide import regex")
+        });
+
+        const KNOWN_BRAND_ICONS: &[&str] = &[
+            "github",
+            "gitlab",
+            "twitter",
+            "discord",
+            "linkedin",
+            "facebook",
+            "instagram",
+            "youtube",
+            "twitch",
+            "slack",
+            "reddit",
+            "telegram",
+            "tiktok",
+            "whatsapp",
+        ];
+
+        let mut brands = Vec::new();
+        for cap in LUCIDE_IMPORT_RE.captures_iter(content) {
+            if let Some(matched) = cap.get(1) {
+                for item in matched.as_str().split(',') {
+                    let cleaned = item.trim();
+                    if cleaned.is_empty() || cleaned.starts_with("//") {
+                        continue;
+                    }
+                    // Handle aliases like 'Github as GithubIcon'
+                    let ident = cleaned.split_whitespace().next().unwrap_or("");
+                    let lower = ident.to_lowercase();
+                    if KNOWN_BRAND_ICONS.contains(&lower.as_str())
+                        && !brands
+                            .iter()
+                            .any(|b: &String| b.eq_ignore_ascii_case(ident))
+                    {
+                        brands.push(ident.to_string());
+                    }
+                }
+            }
+        }
+        brands
+    }
+
     /// Verifies whether the proposed candidate content introduces new syntax errors.
     ///
     /// - Returns `Ok(())` if:
@@ -103,6 +152,45 @@ impl SyntaxGuard {
         original_content: &str,
         new_content: &str,
     ) -> Result<(), String> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        // 0. Pre-write Semantic Barrier: Check for removed brand icons from 'lucide-react'
+        if ext == "ts"
+            || ext == "tsx"
+            || ext == "js"
+            || ext == "jsx"
+            || ext == "mjs"
+            || ext == "cjs"
+        {
+            let new_brands = Self::extract_lucide_brand_imports(new_content);
+            if !new_brands.is_empty() {
+                let orig_brands = Self::extract_lucide_brand_imports(original_content);
+                let introduced: Vec<_> = new_brands
+                    .into_iter()
+                    .filter(|b| !orig_brands.iter().any(|ob| ob.eq_ignore_ascii_case(b)))
+                    .collect();
+
+                if !introduced.is_empty() {
+                    let file_display = path.display();
+                    let icons_str = introduced.join(", ");
+                    return Err(format!(
+                        "[AST Import Barrier Rejected]:\n\
+                         The proposed edit to '{file_display}' attempts to import brand icon(s) [{icons_str}] from 'lucide-react'.\n\
+                         `lucide-react` does NOT export brand/social icons (Github, Twitter, Discord, Linkedin, etc.).\n\
+                         Importing them will break TypeScript and bundler builds (TS2305: Module '\"lucide-react\"' has no exported member '{icons_str}').\n\
+                         Guidance:\n\
+                         - Replace brand icons with inline SVG components (e.g. `<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" className=...><path d=\"...\"/></svg>`).\n\
+                         - Or use standard UI icons from 'lucide-react' such as `Globe`, `Share2`, `ExternalLink`, `Code2`, or `Terminal`.\n\
+                         - Disk contents were preserved untouched."
+                    ));
+                }
+            }
+        }
+
         let lang = match Self::language_for_path(path) {
             Some(l) => l,
             None => return Ok(()),
@@ -254,5 +342,30 @@ mod tests {
         assert!(res.is_err());
         let msg = res.unwrap_err();
         assert!(msg.contains("[AST Syntax Barrier Rejected]"));
+    }
+
+    #[test]
+    fn test_lucide_brand_icon_barrier_rejects() {
+        let path = PathBuf::from("src/components/Footer.tsx");
+        let orig = "";
+        let new = "import React from 'react';\nimport { Github, Twitter, ArrowRight } from 'lucide-react';\nexport function Footer() { return <footer><Github /></footer>; }\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("[AST Import Barrier Rejected]"));
+        assert!(msg.contains("Github"));
+        assert!(msg.contains("Twitter"));
+        assert!(msg.contains("lucide-react"));
+    }
+
+    #[test]
+    fn test_existing_lucide_brand_icon_allowed() {
+        let path = PathBuf::from("src/components/Footer.tsx");
+        let orig = "import { Github } from 'lucide-react';\n";
+        let new = "import { Github, ArrowRight } from 'lucide-react';\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_ok());
     }
 }
