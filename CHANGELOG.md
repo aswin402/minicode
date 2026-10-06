@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.51] — 2026-10-06
+
+### Two-Tier Planning Architecture, Socratic Inception Gate & Sequential Atomic Step Execution
+
+#### 💡 Ideas & Inspirations
+- **Two-Tier Planning Architecture**: Distinctly separated Tier 1 high-level roadmap milestones (`minikit_docs/core/todo.md` / `todo.md`) from Tier 2 tactical execution steps (`.minicode/plan/task_plan.md`). Tier 1 is viewable in the `/todo` modal, while Tier 2 is dynamically rendered in the active TUI dock widget directly above thinking.
+- **Eliminating End-of-Turn Progress Batching**: In lengthy multi-tool turns, models often accumulated 80+ tool operations before calling `update_progress` 15+ times retrospectively in the final 45 seconds of the turn. Inspired by SWE-bench best practices and Obra Superpowers, minicode now injects active step reminders into `output_for_llm` on every tool turn, keeping the model strictly focused on completing and marking one step at a time.
+- **Socratic `ask_user` Inception Gate**: Removed prompt restrictions that discouraged agents from asking questions when keywords matched high-level stacks and themes. Mandated that Step 1 of any new feature or project plan must be an interactive alignment via `ask_user` to settle layout, component priorities, and aesthetic nuances before scaffolding or writing application code.
+
+#### 🚀 Features & Changes
+- **Dynamic Live TUI Plan Dock (`src/agent/types.rs`, `src/agent/loop.rs`, `src/app/mod.rs`)**:
+  - Added `phase_label: Option<String>` to `AgentEvent::PlanUpdated`.
+  - Updated `emit_current_plan` to broadcast the active phase header dynamically from `task_plan.md`.
+  - Updated TUI runtime event loop and session hydration in `src/app/mod.rs` to render the exact phase title (e.g. `Phase 1: Requirements & Design Spec`) in the dock header rather than a generic `"Plan"`.
+- **Active Step Injection into Tool Outputs (`src/agent/loop.rs`, `src/tools/registry/context_tools/memory.rs`)**:
+  - Injected `[Active MiniPower Step: [>] "<active_task>" (Step K/N)...]` directly into tool output strings after each execution.
+  - Enhanced `create_plan` and `update_progress` returns to provide clear next-step indicators and explicit warnings against batching progress updates.
+  - Updated `init_plan` in `src/context/memory/working_memory.rs` to automatically initialize Step 1 as `[>]` (InProgress) and steps 2..N as `[ ]` (Pending), while recording the active step in `progress.md`.
+- **Socratic Inception & Orchestrator Freedom (`src/agent/orchestrator.rs`, `src/agent/prompt.rs`, `src/agent/minipower/mod.rs`)**:
+  - Replaced `DO NOT ask redundant questions!` directive with Socratic Inception guidance for both rich and underspecified prompts.
+  - Enforced Socratic Inception Gate in `format_plan_prompt` and system prompt Section 6.
+  - Added auto-reconciliation notices to `output_for_llm` when target file deliverables are verified on disk.
+
 ## [0.3.50] — 2026-10-06
 
 ### Dynamic Real-Time Context Token Engine, Zero Mock Diagnostics & Configuration Persistence Isolation

@@ -1398,8 +1398,8 @@ mod tests {
         assert!(start_res.contains(&format!("{} occupied", bound_port)));
 
         // Clean up
-        let kill_args = json!({ "action": "kill_all" });
-        let _ = dispatch("minitask", &kill_args, temp.path()).await;
+        let stop_args = json!({ "action": "stop", "name": "auto-shift-service" });
+        let _ = dispatch("minitask", &stop_args, temp.path()).await;
     }
 
     #[tokio::test]
@@ -1429,8 +1429,8 @@ mod tests {
         assert!(list_res.contains("30s"));
 
         // Clean up
-        let kill_args = json!({ "action": "kill_all" });
-        let _ = dispatch("minitask", &kill_args, temp.path()).await;
+        let stop_args = json!({ "action": "stop", "name": "system-heartbeat" });
+        let _ = dispatch("minitask", &stop_args, temp.path()).await;
     }
 
     #[tokio::test]

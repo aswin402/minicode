@@ -235,9 +235,14 @@ pub async fn dispatch(
             })?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.init_plan(title, &steps).map(|_| {
+                let first_step = steps
+                    .first()
+                    .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
+                    .unwrap_or_else(|| "First step".to_string());
                 format!(
-                    "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md",
-                    steps.len()
+                    "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md.\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
+                    steps.len(),
+                    first_step
                 )
             })
         })()),
@@ -262,8 +267,25 @@ pub async fn dispatch(
                     param::require_str(args, "status", "update_progress").unwrap_err()
                 })?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-            wm.update_progress(step, status)
-                .map(|_| format!("✔ Updated step '{}' status to '{}'", step, status))
+            wm.update_progress(step, status).map(|_| {
+                if let Some(summary) = wm.read_active_plan_summary() {
+                    if let Some(ref next_active) = summary.active_task {
+                        format!(
+                            "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now. Do not batch progress updates!",
+                            step, status, summary.completed_tasks, summary.total_tasks, next_active
+                        )
+                    } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
+                        format!(
+                            "🎉 All {} tasks in active plan completed (100%)!",
+                            summary.total_tasks
+                        )
+                    } else {
+                        format!("✔ Updated step '{}' status to '{}'", step, status)
+                    }
+                } else {
+                    format!("✔ Updated step '{}' status to '{}'", step, status)
+                }
+            })
         })()),
         "archive_plan" => Some({
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);

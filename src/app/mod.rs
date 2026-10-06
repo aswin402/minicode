@@ -214,6 +214,7 @@ impl<'a> App<'a> {
                     self.timeline.add_status(format!("⚠ Guidance: {}", line));
                 }
                 AgentEvent::PlanUpdated {
+                    phase_label,
                     total_tasks,
                     completed_tasks,
                     active_task,
@@ -242,7 +243,7 @@ impl<'a> App<'a> {
                             })
                             .collect();
                         self.active_plan = Some(crate::ui::view::LivePlanBlock {
-                            title: "Plan".to_string(),
+                            title: phase_label.clone().unwrap_or_else(|| "Plan".to_string()),
                             total_tasks: *total_tasks,
                             completed_tasks: *completed_tasks,
                             active_task: active_task.clone(),
@@ -762,6 +763,7 @@ impl<'a> App<'a> {
                                 );
                             }
                             AgentEvent::PlanUpdated {
+                                phase_label,
                                 total_tasks,
                                 completed_tasks,
                                 active_task,
@@ -790,7 +792,9 @@ impl<'a> App<'a> {
                                         })
                                         .collect();
                                     self.active_plan = Some(crate::ui::view::LivePlanBlock {
-                                        title: "Plan".to_string(),
+                                        title: phase_label
+                                            .clone()
+                                            .unwrap_or_else(|| "Plan".to_string()),
                                         total_tasks,
                                         completed_tasks,
                                         active_task,

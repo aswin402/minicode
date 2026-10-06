@@ -222,7 +222,8 @@ impl WorkingMemory {
         );
         for (idx, step) in steps.iter().enumerate() {
             let clean = Self::sanitize_step_title(step);
-            plan_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
+            let marker = if idx == 0 { "[>]" } else { "[ ]" };
+            plan_content.push_str(&format!("{}. {} {}\n", idx + 1, marker, clean));
         }
 
         fs::write(self.task_plan_path(), &plan_content)
@@ -240,15 +241,20 @@ impl WorkingMemory {
                 );
                 for (idx, step) in steps.iter().enumerate() {
                     let clean = Self::sanitize_step_title(step);
-                    todo_content.push_str(&format!("{}. [ ] {}\n", idx + 1, clean));
+                    let marker = if idx == 0 { "[>]" } else { "[ ]" };
+                    todo_content.push_str(&format!("{}. {} {}\n", idx + 1, marker, clean));
                 }
                 let _ = fs::write(&todo_path, todo_content);
             }
         }
 
+        let first_step_clean = steps
+            .first()
+            .map(|s| Self::sanitize_step_title(s))
+            .unwrap_or_default();
         let initial_progress = format!(
-            "# Progress Tracker\n\n> Initialized: {}\n\n- Active Goal: {}\n- Status: In Progress\n",
-            timestamp, title
+            "# Progress Tracker\n\n> Initialized: {}\n\n- Active Goal: {}\n- Status: In Progress\n\n- [{}] **In Progress**: {}\n",
+            timestamp, title, timestamp, first_step_clean
         );
         fs::write(self.progress_path(), initial_progress)
             .map_err(|e| ContextError::Memory(e.to_string()))?;
@@ -1493,7 +1499,7 @@ mod tests {
         // Read plan
         let plan = wm.read_plan().unwrap().unwrap();
         assert!(plan.contains("Build v0.1.0 API"));
-        assert!(plan.contains("1. [ ] Scaffold API endpoints"));
+        assert!(plan.contains("1. [>] Scaffold API endpoints"));
 
         // Append finding
         wm.append_finding("Discovered existing axum router in src/routes.rs")
@@ -1656,7 +1662,8 @@ mod tests {
         let tasks = wm.read_parsed_tasks();
         assert_eq!(tasks.len(), 3);
         assert_eq!(tasks[0].title, "Setup environment");
-        assert_eq!(tasks[0].status, TaskItemStatus::Pending);
+        assert_eq!(tasks[0].status, TaskItemStatus::InProgress);
+        assert_eq!(tasks[1].status, TaskItemStatus::Pending);
 
         // 1. Update by 1-based index "1" to completed -> should auto-advance step 2 to InProgress!
         wm.update_progress("1", "completed").unwrap();

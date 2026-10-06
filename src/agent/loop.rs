@@ -1734,6 +1734,7 @@ impl AgentLoop {
                                 }
                             }
 
+                            let mut auto_reconciled_extra = 0;
                             if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
@@ -1742,18 +1743,53 @@ impl AgentLoop {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
                                 );
-                                let reconciled = wm.reconcile_workspace_tasks(&[]);
-                                if reconciled > 0 {
+                                auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
+                                if auto_reconciled_extra > 0 {
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
                             }
 
                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
-                            let output_for_llm =
+                            let mut output_for_llm =
                                 crate::context::budget::ObservationPruner::prune_for_llm(
                                     &tool_call.name,
                                     &tool_result.output,
                                 );
+
+                            // Dynamic Step Grounding & Progress Invariant Injection:
+                            // Remind the agent of its active step so it executes atomically and never batches at the end
+                            if tool_call.name != "update_progress" {
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                if auto_reconciled_extra > 0 {
+                                    if let Some(summary) = wm.read_active_plan_summary() {
+                                        if let Some(ref next_active) = summary.active_task {
+                                            output_for_llm.push_str(&format!(
+                                                "\n\n[Plan Auto-Advancement: Step deliverable verified on disk. Progress: {}/{} tasks completed. Next Active Step: [>] \"{}\". Focus ONLY on this step now.]",
+                                                summary.completed_tasks, summary.total_tasks, next_active
+                                            ));
+                                        } else if summary.completed_tasks == summary.total_tasks
+                                            && summary.total_tasks > 0
+                                        {
+                                            output_for_llm.push_str(&format!(
+                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan completed (100%)!]",
+                                                summary.total_tasks
+                                            ));
+                                        }
+                                    }
+                                } else if let Some(summary) = wm.read_active_plan_summary() {
+                                    if let Some(ref active) = summary.active_task {
+                                        output_for_llm.push_str(&format!(
+                                            "\n\n[Active MiniPower Step: [>] \"{}\" (Step {}/{}). If this step is completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Do not batch progress updates at the end!]",
+                                            active,
+                                            summary.completed_tasks.saturating_add(1),
+                                            summary.total_tasks
+                                        ));
+                                    }
+                                }
+                            }
+
                             self.messages.push(Message::tool_result(
                                 tool_call.id,
                                 tool_call.name.clone(),
@@ -2621,6 +2657,7 @@ impl AgentLoop {
         if let Some(summary) = wm.read_active_plan_summary() {
             let event = AgentEvent::PlanUpdated {
                 turn_id,
+                phase_label: Some(summary.phase_label.clone()),
                 total_tasks: summary.total_tasks,
                 completed_tasks: summary.completed_tasks,
                 active_task: summary.active_task,
@@ -2631,6 +2668,7 @@ impl AgentLoop {
         } else {
             let event = AgentEvent::PlanUpdated {
                 turn_id,
+                phase_label: None,
                 total_tasks: 0,
                 completed_tasks: 0,
                 active_task: None,

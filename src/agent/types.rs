@@ -262,6 +262,8 @@ pub enum AgentEvent {
     PlanUpdated {
         #[serde(skip_serializing_if = "Option::is_none")]
         turn_id: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase_label: Option<String>,
         total_tasks: usize,
         completed_tasks: usize,
         #[serde(skip_serializing_if = "Option::is_none")]

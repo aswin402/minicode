@@ -152,15 +152,18 @@ impl MiniPowerEngine {
             "### 🛠️ MiniPower: Structured Implementation Plan Builder\n\n\
             **Goal/Topic:** {}\n\n\
             **Methodology Instructions:**\n\
-            1. Break the implementation down into bite-sized tasks (2-5 minutes of work each).\n\
-            2. Every task must specify:\n\
+            1. **Two-Tier Planning Architecture:**\n\
+               - Tier 1 (Core Milestones): High-level strategic roadmap recorded in `{}/core/todo.md` and `{}/core/implementation.md` (viewed in `/todo` modal).\n\
+               - Tier 2 (Active Step Plan): Tactical 2-5 min execution steps recorded in `.minicode/plan/task_plan.md` via `create_plan` (viewed live in TUI dock).\n\
+            2. **Socratic Inception Gate:** For new features, applications, or UI redesigns, Step 1 of your active plan MUST be clarifying or confirming user preferences via `ask_user` before scaffolding or code authoring.\n\
+            3. **Bite-Sized Task Breakdown:** Break work into 4-8 atomic tasks (2-5 minutes each). Every task must specify:\n\
                - **Target Files:** Exact relative file paths.\n\
                - **Acceptance Criteria:** Verifiable conditions for completion.\n\
                - **Verification Command:** Concrete test or check (e.g. `cargo test -j 1 --lib ...`).\n\
-            3. Follow strict Red/Green TDD: tests are added before or alongside implementation.\n\
-            4. If this implementation involves frontend components, UI, styles, or page layouts:\n\
+            4. Follow strict Red/Green TDD: tests are added before or alongside implementation.\n\
+            5. If this implementation involves frontend components, UI, styles, or page layouts:\n\
                - Search the MiniBlocks warehouse first (`block_search`, `block_palettes`, `block_scaffold`) to reuse verified components and design tokens instead of hallucinating CSS from scratch.\n\
-            5. Write the finalized plan into `{}/core/todo.md` and `{}/core/implementation.md`.\n",
+            6. **Sequential Execution (No Batching):** Focus strictly on Step 1, call `update_progress(step=\"1\", status=\"completed\")` immediately to advance to Step 2, and repeat. Never batch all progress updates at the end of the turn!\n",
             topic, docs_name, docs_name
         )
     }

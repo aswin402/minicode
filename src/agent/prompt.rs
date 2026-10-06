@@ -30,11 +30,14 @@ You pair-program with the user to inspect repositories, debug code, design archi
    - Minimum working code: Write the absolute minimal implementation that passes tests.
 4. **Surgical Changes**: Touch strictly what is required for the task. Never reformat, clean up, or alter unrelated code, comments, or imports.
 5. **Goal-Driven Verification**: Every modification must be verified with compiler checks or automated tests before concluding. Evidence before assertions always.
-6. **Planning & Live Task Reconciliation (Progressive Step-by-Step Advancement)**:
-   - For multi-step work, initialize a structured task plan with `create_plan` to anchor verifiable milestones in `.minicode/plan/task_plan.md`.
-   - Work through your plan sequentially, 1-2 steps at a time. Call `update_progress` step-by-step immediately after each milestone or file deliverable is completed.
-   - NEVER batch all `update_progress` calls together at the very end of your turn! Update tasks incrementally so the live TUI execution timeline and inline todo widget stay synchronized for the user.
-   - Conclude your turn by running verification (e.g. `exec_cmd` with tests/compiler or `browser_navigate`) and marking the final task completed (`[x]`). Never conclude your turn with remaining tasks in progress (`[>]`) or pending (`[ ]`) when their work has already been completed.
+6. **Two-Tier Planning & Live Task Reconciliation (Progressive Step-by-Step Advancement)**:
+   - **Two-Tier Planning Architecture**:
+     • **Tier 1 (Core Project Milestones)**: Canonical `minikit_docs/core/todo.md` (or `todo.md`) records high-level project roadmap milestones. Displayed in the `/todo` modal.
+     • **Tier 2 (Active MiniPower Step Plan)**: Stored in `.minicode/plan/task_plan.md` via `create_plan`. Records tactical 2-5 minute execution steps and is dynamically rendered live in the TUI dock widget above thinking.
+   - **Socratic Inception Gate**: When creating a new feature, app, or UI design, Step 1 of your active plan MUST be interactive clarification via `ask_user` (e.g. asking for layout preference, theme accents, or component priorities) before scaffolding or writing application files.
+   - **Sequential Atomic Execution**: Focus strictly on the active step `[>]`. Immediately upon completing a step or delivering its file, call `update_progress(step="...", status="completed")` to advance to the next step.
+   - **NEVER Batch Progress Updates**: NEVER execute all code in one go and batch `update_progress` calls at the very end of your turn! Incremental updates keep the live TUI execution timeline and inline todo dock synchronized for the user.
+   - **Conclude Cleanly**: Conclude your turn by running verification (e.g. `exec_cmd` with tests/compiler or `browser_navigate`) and marking the final task completed (`[x]`). Never conclude your turn with remaining tasks in progress (`[>]`) or pending (`[ ]`) when their work has already been completed.
 7. **Large Code Writing & Modular Architecture (Zero JSON Truncation)**:
    - Avoid massive monolithic files. LLM token limits truncate single tool call JSON payloads exceeding ~25KB, resulting in `EOF while parsing a string` errors.
    - Decompose projects into clean modular files (e.g. separate `index.html`, `styles.css`, `app.js`, or distinct component modules).
@@ -593,37 +596,62 @@ impl PromptBuilder {
             recency.push_str("  </project_bootstrap_guidance>\n");
         }
 
-        // 10. Active MiniPower Plan & Pending Tasks (from core/todo.md or legacy todo.md)
-        let resolved_todo = crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");
-        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
-        let todo_candidates = [
-            resolved_todo,
-            docs_dir.join("todo.md"),
-            workspace_dir.join("todo.md"),
-        ];
-        for todo_path in &todo_candidates {
-            if todo_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(todo_path) {
-                    let pending: Vec<&str> = content
-                        .lines()
-                        .filter(|l| {
-                            let trimmed = l.trim();
-                            trimmed.starts_with("- [ ]")
-                                || trimmed.starts_with("* [ ]")
-                                || trimmed.starts_with("- [>]")
-                                || trimmed.starts_with("* [>]")
-                        })
-                        .take(5)
-                        .collect();
-                    if !pending.is_empty() {
-                        recency.push_str("  <minipower_active_plan>\n");
-                        let rel_path = todo_path.strip_prefix(workspace_dir).unwrap_or(todo_path);
-                        recency.push_str(&format!("    Source: {}\n", rel_path.display()));
-                        for task in pending {
-                            recency.push_str(&format!("    {}\n", task.trim()));
+        // 10. Active MiniPower Plan & Pending Tasks (prioritizes active task plan, falls back to roadmap)
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_dir);
+        if let Some(summary) = wm.read_active_plan_summary() {
+            recency.push_str("  <minipower_active_plan>\n");
+            recency.push_str(&format!("    Phase / Goal: {}\n", summary.phase_label));
+            recency.push_str(&format!(
+                "    Progress: {}/{} tasks completed\n",
+                summary.completed_tasks, summary.total_tasks
+            ));
+            if let Some(ref active) = summary.active_task {
+                recency.push_str(&format!("    ► Current Step: [>] \"{}\"\n", active));
+            }
+            recency.push_str("    Task Steps:\n");
+            for task in &summary.tasks {
+                let badge = match task.status {
+                    crate::context::memory::working_memory::TaskItemStatus::Completed => "[x]",
+                    crate::context::memory::working_memory::TaskItemStatus::InProgress => "[>]",
+                    crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
+                };
+                recency.push_str(&format!("      • {} {}\n", badge, task.title));
+            }
+            recency.push_str("    INVARIANT: Focus strictly on executing the current step ([>]). Once completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Never batch progress updates!\n");
+            recency.push_str("  </minipower_active_plan>\n");
+        } else {
+            let resolved_todo = crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");
+            let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
+            let todo_candidates = [
+                resolved_todo,
+                docs_dir.join("todo.md"),
+                workspace_dir.join("todo.md"),
+            ];
+            for todo_path in &todo_candidates {
+                if todo_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(todo_path) {
+                        let pending: Vec<&str> = content
+                            .lines()
+                            .filter(|l| {
+                                let trimmed = l.trim();
+                                trimmed.starts_with("- [ ]")
+                                    || trimmed.starts_with("* [ ]")
+                                    || trimmed.starts_with("- [>]")
+                                    || trimmed.starts_with("* [>]")
+                            })
+                            .take(5)
+                            .collect();
+                        if !pending.is_empty() {
+                            recency.push_str("  <minipower_active_plan>\n");
+                            let rel_path =
+                                todo_path.strip_prefix(workspace_dir).unwrap_or(todo_path);
+                            recency.push_str(&format!("    Source: {}\n", rel_path.display()));
+                            for task in pending {
+                                recency.push_str(&format!("    {}\n", task.trim()));
+                            }
+                            recency.push_str("  </minipower_active_plan>\n");
+                            break;
                         }
-                        recency.push_str("  </minipower_active_plan>\n");
-                        break;
                     }
                 }
             }

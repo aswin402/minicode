@@ -1168,21 +1168,31 @@ impl WorkflowRouter {
                         out.push_str(
                             "  2. Information Completeness: HIGH (Rich Specification Provided):\n",
                         );
-                        out.push_str("     The user provided comprehensive stack and design specifications. DO NOT ask redundant questions!\n");
-                        out.push_str("     Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
+                        out.push_str("     The user provided initial stack/theme directives, but critical design nuances, layout priorities, and component details remain open.\n");
+                        out.push_str("     • Include Step 1 in your active plan: \"Clarify key feature priorities and theme nuances with user via ask_user\".\n");
+                        out.push_str("     • Call `ask_user` to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before scaffolding or writing application code.\n");
+                        out.push_str("     • Once confirmed, Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
                     } else {
-                        out.push_str("  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n");
+                        out.push_str(
+                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
+                        );
                         out.push_str("     Target tech stack, design theme, or architectural bounds are not fully settled by the user.\n");
-                        out.push_str("     YOU MUST CALL `ask_user` ON TURN 1 to present 2-3 structured choices for:\n");
+                        out.push_str("     • Include Step 1 in your active plan: \"Clarify tech stack, design aesthetic, and scope with user via ask_user\".\n");
+                        out.push_str("     • YOU MUST CALL `ask_user` ON TURN 1 to present 2-3 structured choices for:\n");
                         out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Modern Vanilla HTML5/CSS3/ES6, Next.js, FastAPI)\n");
                         out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
                         out.push_str("       • Scope & Key Features\n");
-                        out.push_str("     DO NOT write code or create project files before asking! Once the user answers, create the detailed `.md` files in `minikit_docs/core/` and request plan approval.\n");
+                        out.push_str("     DO NOT write code or create project files before asking! Once the user answers, create the detailed `.md` files in `minikit_docs/core/` and advance to the next step.\n");
                     }
 
-                    out.push_str("  3. Progressive Step-by-Step Task Advancement:\n");
-                    out.push_str("     • Call `update_progress` step-by-step immediately after each milestone or file is delivered.\n");
-                    out.push_str("     • NEVER batch all `update_progress` calls together at the very end of your turn!\n");
+                    out.push_str(
+                        "  3. Two-Tier Planning & Progressive Step-by-Step Task Advancement:\n",
+                    );
+                    out.push_str("     • Tier 1 (Core Roadmap): `minikit_docs/core/todo.md` tracks high-level strategic milestones (viewed in /todo modal).\n");
+                    out.push_str("     • Tier 2 (Active MiniPower Step Plan): `.minicode/plan/task_plan.md` tracks atomic 2-5 min tactical execution steps (viewed live in TUI dock).\n");
+                    out.push_str("     • Call `create_plan` with 4-8 focused, bite-sized steps. Step 1 should be interactive clarification via `ask_user`.\n");
+                    out.push_str("     • Execute sequentially: work on Step 1, call `update_progress(step=\"1\", status=\"completed\")` immediately to advance to Step 2, and repeat.\n");
+                    out.push_str("     • NEVER batch all `update_progress` calls together at the very end of your turn! The live TUI dock displays your progress in real-time.\n");
                     out.push_str("     • Conclude the turn by verifying the final task and marking it completed.\n");
                     out.push_str("  4. Starter Stacks & Anti-Monolith Invariant:\n");
                     out.push_str("     • Scaffolding: Call `kit_stack_add` to scaffold starter project templates in 1 tool call rather than hand-authoring files from scratch.\n");
@@ -1248,7 +1258,7 @@ impl WorkflowRouter {
         out.push_str("     • CodeGraph AST: `code_explore`, `blast_radius`, `locate_symbol`, `diff_impact` for architectural navigation.\n");
         out.push_str("     • Working Memory: `create_plan`, `update_progress` — call `update_progress` after each step so the user and live TUI stay in sync.\n");
         out.push_str("     • MiniPower Execution: `power_status`, `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `power_worktree_task`.\n");
-        out.push_str("     • Interactive Inquiry: `ask_user` — When requirements, stacks, or design themes are ambiguous on Turn 1, ALWAYS ask first via `ask_user` before writing files!\n");
+        out.push_str("     • Interactive Inquiry & Socratic Inception: `ask_user` — When initiating features, apps, or UI designs, make Step 1 of your plan an interactive consultation via `ask_user` to align on user preferences, feature priorities, and aesthetic nuances before writing code.\n");
 
         out.push_str("</minipower_autonomous_engineering_rules>");
         out
@@ -2207,7 +2217,7 @@ mod tests {
         let text = enrichment.unwrap();
         assert!(text.contains("<active_task_plan_status>"));
         assert!(text.contains("0/3 tasks completed"));
-        assert!(text.contains("[ ] Step 1: Create auth.rs"));
+        assert!(text.contains("[>] Step 1: Create auth.rs"));
 
         // Mark step 1 completed
         wm.update_progress("1", "completed").unwrap();
