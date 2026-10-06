@@ -596,10 +596,16 @@ pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 // === Model Provider Endpoints & Timeouts ===
 /// Default timeout in seconds for fetching live models
 pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
+/// Default provider connect timeout for establishing TCP/TLS connection (seconds)
+pub const PROVIDER_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Default provider idle read timeout between received chunks/tokens (seconds).
+/// Prevents premature disconnection during complex reasoning and large generation
+/// while still detecting hung/dead connections.
+pub const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
 /// Default provider timeout for streaming completions (seconds)
-pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 90;
+pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 300;
 /// Default provider timeout for non-streaming requests (seconds)
-pub const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 60;
+pub const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 180;
 /// Gemini API base URL (without trailing path)
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 /// OpenRouter API base URL

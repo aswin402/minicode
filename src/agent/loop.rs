@@ -941,14 +941,24 @@ impl AgentLoop {
                         let err_msg = err.to_string().to_lowercase();
                         let is_benign_eof = err_msg.contains("stream ended")
                             || err_msg.contains("connection reset")
-                            || err_msg.contains("broken pipe");
+                            || err_msg.contains("broken pipe")
+                            || err_msg.contains("unexpected eof")
+                            || err_msg.contains("connection closed")
+                            || err_msg.contains("error decoding response body")
+                            || err_msg.contains("incomplete message")
+                            || err_msg.contains("channel closed");
 
-                        if is_benign_eof
-                            && (!iteration_text.is_empty() || !pending_tool_calls.is_empty())
-                        {
+                        if !pending_tool_calls.is_empty() {
                             tracing::info!(
-                                "Tolerating trailing stream closure after receiving response ({} chars)",
-                                iteration_text.len()
+                                "Tolerating trailing stream closure after receiving {} complete tool calls: {}",
+                                pending_tool_calls.len(),
+                                err_msg
+                            );
+                        } else if is_benign_eof && !iteration_text.trim().is_empty() {
+                            tracing::info!(
+                                "Tolerating trailing stream closure after receiving response ({} chars): {}",
+                                iteration_text.len(),
+                                err_msg
                             );
                         } else if retry_count < max_retries {
                             retry_count += 1;
@@ -3273,6 +3283,72 @@ mod inquiry_tests {
         assert!(turn.tool_results[0]
             .output
             .contains("requires at least one question"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    struct TrailingErrorToolCallProvider {
+        spent: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Provider for TrailingErrorToolCallProvider {
+        fn name(&self) -> &str {
+            "trailing-error-provider"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            let was_spent = self.spent.swap(true, std::sync::atomic::Ordering::SeqCst);
+            if was_spent {
+                let s = async_stream::stream! {
+                    yield Ok(StreamChunk::Done);
+                };
+                return Ok(Box::pin(s));
+            }
+
+            let s = async_stream::stream! {
+                yield Ok(StreamChunk::Delta("I will find files.\n".to_string()));
+                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                    id: "call_trailing_test".to_string(),
+                    name: "file_search".to_string(),
+                    arguments: serde_json::json!({ "pattern": "*" }),
+                }));
+                // Trailing network closure after tool call was emitted
+                yield Err(crate::error::ProviderError::StreamDecode(
+                    "SSE stream error: error decoding response body".to_string(),
+                ).into());
+            };
+            Ok(Box::pin(s))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_trailing_stream_closure_with_tool_calls_tolerated() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_trailing_err_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(TrailingErrorToolCallProvider {
+            spent: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let turn = agent_loop
+            .execute_turn("list files", tx, None)
+            .await
+            .expect("turn should succeed by tolerating trailing stream closure");
+
+        assert_eq!(turn.tool_results.len(), 1);
+        assert_eq!(turn.tool_results[0].tool_name, "file_search");
+        assert!(turn.tool_results[0].success);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

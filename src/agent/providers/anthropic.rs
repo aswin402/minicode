@@ -16,9 +16,13 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_STREAM_TIMEOUT_SECS,
+            .connect_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS,
             ))
+            .read_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+            ))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .build()
             .unwrap_or_default();
 
@@ -36,9 +40,13 @@ impl AnthropicProvider {
         default_model: impl Into<String>,
     ) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_STREAM_TIMEOUT_SECS,
+            .connect_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS,
             ))
+            .read_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+            ))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .build()
             .unwrap_or_default();
 
@@ -584,7 +592,45 @@ impl Provider for AnthropicProvider {
                         if err_str.to_lowercase().contains("stream ended") {
                             break;
                         }
-                        yield Err(ProviderError::StreamDecode(format!("Anthropic SSE stream error: {}", err_str)).into());
+
+                        // If tool calls were already completely accumulated before the stream broke,
+                        // drain them first so AgentLoop has a chance to execute them
+                        let mut parsed_any_tool_calls = false;
+                        for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&args_str) {
+                                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                                    id,
+                                    name,
+                                    arguments: val,
+                                }));
+                                parsed_any_tool_calls = true;
+                            }
+                        }
+
+                        if parsed_any_tool_calls {
+                            tracing::warn!(
+                                error = %err_str,
+                                "Anthropic SSE stream terminated with trailing error after emitting valid tool calls"
+                            );
+                            break;
+                        }
+
+                        let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
+                            if te.is_timeout() {
+                                ProviderError::Network(format!(
+                                    "Anthropic SSE stream read timeout (no data received for {}s)",
+                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                                ))
+                            } else if te.is_connect() {
+                                ProviderError::Network(format!("Anthropic SSE stream connection error: {}", te))
+                            } else {
+                                ProviderError::StreamDecode(format!("Anthropic SSE stream transport error: {}", te))
+                            }
+                        } else {
+                            ProviderError::StreamDecode(format!("Anthropic SSE stream error: {}", err_str))
+                        };
+
+                        yield Err(classified_err.into());
                         break;
                     }
                 }

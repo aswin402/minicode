@@ -15,9 +15,13 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_REQUEST_TIMEOUT_SECS,
+            .connect_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS,
             ))
+            .read_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+            ))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .build()
             .unwrap_or_default();
 
@@ -380,7 +384,23 @@ impl Provider for GeminiProvider {
                         if err_str.to_lowercase().contains("stream ended") {
                             break;
                         }
-                        yield Err(ProviderError::StreamDecode(format!("EventSource stream error: {}", err_str)).into());
+
+                        let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
+                            if te.is_timeout() {
+                                ProviderError::Network(format!(
+                                    "Gemini SSE stream read timeout (no data received for {}s)",
+                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                                ))
+                            } else if te.is_connect() {
+                                ProviderError::Network(format!("Gemini SSE stream connection error: {}", te))
+                            } else {
+                                ProviderError::StreamDecode(format!("Gemini SSE stream transport error: {}", te))
+                            }
+                        } else {
+                            ProviderError::StreamDecode(format!("Gemini SSE stream error: {}", err_str))
+                        };
+
+                        yield Err(classified_err.into());
                         break;
                     }
                 }

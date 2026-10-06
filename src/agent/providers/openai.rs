@@ -22,9 +22,13 @@ impl OpenAiCompatibleProvider {
         default_model: impl Into<String>,
     ) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_STREAM_TIMEOUT_SECS,
+            .connect_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS,
             ))
+            .read_timeout(std::time::Duration::from_secs(
+                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+            ))
+            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .build()
             .unwrap_or_default();
 
@@ -447,7 +451,45 @@ impl Provider for OpenAiCompatibleProvider {
                         if err_str.to_lowercase().contains("stream ended") {
                             break;
                         }
-                        yield Err(ProviderError::StreamDecode(format!("SSE stream error: {}", err_str)).into());
+
+                        // If tool calls were already completely accumulated before the stream broke,
+                        // drain them first so AgentLoop has a chance to execute them
+                        let mut parsed_any_tool_calls = false;
+                        for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&args_str) {
+                                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                                    id,
+                                    name,
+                                    arguments: val,
+                                }));
+                                parsed_any_tool_calls = true;
+                            }
+                        }
+
+                        if parsed_any_tool_calls {
+                            tracing::warn!(
+                                error = %err_str,
+                                "SSE stream terminated with trailing error after emitting valid tool calls"
+                            );
+                            break;
+                        }
+
+                        let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
+                            if te.is_timeout() {
+                                ProviderError::Network(format!(
+                                    "SSE stream read timeout (no data received for {}s)",
+                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                                ))
+                            } else if te.is_connect() {
+                                ProviderError::Network(format!("SSE stream connection error: {}", te))
+                            } else {
+                                ProviderError::StreamDecode(format!("SSE stream transport error: {}", te))
+                            }
+                        } else {
+                            ProviderError::StreamDecode(format!("SSE stream error: {}", err_str))
+                        };
+
+                        yield Err(classified_err.into());
                         break;
                     }
                 }
@@ -965,5 +1007,17 @@ Let me proceed."#;
         assert_eq!(calls[0].name, "create_plan");
         assert_eq!(calls[0].arguments["title"], "Website Development");
         assert_eq!(cleaned.trim(), "");
+    }
+
+    #[test]
+    fn test_provider_client_initialization() {
+        let provider = OpenAiCompatibleProvider::new(
+            "minimax",
+            "test-key",
+            crate::constants::MINIMAX_BASE_URL,
+            "MiniMax-M2.7",
+        );
+        assert_eq!(provider.name(), "minimax");
+        assert_eq!(provider.default_model(), "MiniMax-M2.7");
     }
 }

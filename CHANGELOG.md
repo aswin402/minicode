@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.56] — 2026-10-07
+
+### Long-Horizon Streaming Idle Timeouts, Trailing Stream Drop Recovery & Provider Tool Call Draining
+
+#### 💡 Ideas & Inspirations
+- **Idle Read Timeout Paradigm for SSE / LLM Streaming**: Forensic diagnosis of `minitest21` revealed that during complex, long-horizon generation (e.g. generating a 15-section technical landing page with deep reasoning models like MiniMax-M2.7, Claude 3.7 Thinking, o1/o3-mini, or Gemini Thinking), generations easily take 2-4 minutes from start to finish. Minicode previously configured an overall hard `.timeout(90s)` on the `reqwest::Client`. In `reqwest`, `.timeout()` sets an unconditional deadline for the entire HTTP transaction from connect to final byte. At second 90.00, reqwest aborted the connection with `error decoding response body: operation timed out`, which surfaced as `SSE stream error: error decoding response body`. Minicode retried 3 times with the exact same request, each failing at second 90 (totaling 6 minutes and 12 seconds) before crashing. We replaced total client timeout with `.connect_timeout(30s)`, `.read_timeout(300s)`, and `.tcp_keepalive(30s)`. The read timeout resets on **every chunk/token received**, ensuring long streaming generations never time out mid-flight while dead/stalled connections are still safely caught.
+- **Trailing Stream Drop Recovery**: When an LLM finishes generating complete, valid tool calls (or substantial response text) into `pending_tool_calls`, intermediate reverse proxies or servers occasionally close the connection abruptly without a clean SSE `[DONE]` terminator, yielding trailing errors like `error decoding response body`, `stream ended`, `unexpected eof`, or `connection reset`. In `src/agent/loop.rs`, `AgentLoop` now inspects `!pending_tool_calls.is_empty()` and tolerates trailing stream closures, proceeding to execute the successfully parsed tool calls rather than discarding all generated code and crashing the turn.
+- **Provider Tool Call Accumulator Draining**: In `src/agent/providers/openai.rs` and `anthropic.rs`, if an SSE stream experiences a transport error after valid tool calls have already been assembled in `tool_calls_accumulator`, the provider now drains and yields these complete tool calls to `AgentLoop` before closing the stream, giving the agent a chance to execute the work already produced by the model.
+
+#### 🚀 Features & Changes
+- **Provider Streaming Client Overhaul (`src/agent/providers/openai.rs`, `anthropic.rs`, `gemini.rs`, `src/constants.rs`)**:
+  - Replaced hard overall `.timeout()` with `.connect_timeout(30s)`, `.read_timeout(300s)`, and `.tcp_keepalive(30s)`.
+  - Added `PROVIDER_CONNECT_TIMEOUT_SECS` (30s) and `PROVIDER_STREAM_IDLE_TIMEOUT_SECS` (300s) constants.
+  - Increased `PROVIDER_STREAM_TIMEOUT_SECS` to 300s and `PROVIDER_REQUEST_TIMEOUT_SECS` to 180s.
+  - Classified transport errors into actionable categories (`is_timeout()` -> `ProviderError::Network("SSE stream read timeout...")`, `is_connect()` -> connection error).
+- **Stream Drop Tolerance & Recovery (`src/agent/loop.rs`)**:
+  - In `AgentLoop`, tolerates trailing stream closure (`stream ended`, `connection reset`, `broken pipe`, `unexpected eof`, `connection closed`, `error decoding response body`, `channel closed`) if `!pending_tool_calls.is_empty()`.
+  - Added unit test `test_trailing_stream_closure_with_tool_calls_tolerated`.
+- **Tool Call Accumulator Draining (`src/agent/providers/openai.rs`, `anthropic.rs`)**:
+  - Drains valid tool calls from `tool_calls_accumulator` upon stream transport errors before terminating.
+  - Added unit test `test_provider_client_initialization`.
+
 ## [0.3.55] — 2026-10-07
 
 ### Working Memory Plan Invariants, Glob Brace Expansion, Brand Icon Variant Guards & Sandbox Toolchain Support
