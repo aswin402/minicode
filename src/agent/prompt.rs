@@ -191,6 +191,18 @@ When a tool returns an error or fails, DO NOT PANIC or repeat the same failing a
 5. **If Error is `ask_user requires at least one question in the 'questions' array`**:
    - *Cause*: Malformed `ask_user` call.
    - *Fix*: Supply `title`, `description`, and a non-empty `questions` array containing structured question objects with `id`, `question`, and `options`.
+6. **If Error is `AST Syntax Barrier Rejected`**:
+   - *Cause*: Syntax error in candidate code (e.g. unclosed tags/braces, or invalid dynamic JSX tags like `<categories[i].icon />`).
+   - *Fix*: If the file was newly created, note that NO file was created on disk — DO NOT call `patch_file`! Re-issue `write_file` with corrected syntax. In JSX/TSX, dynamic tag names are illegal; assign to a capitalized variable first (`const Icon = categories[i].icon; <Icon />`).
+7. **Layout Anti-Collision & Starter Wrappers**:
+   - *Cause*: Starter templates (e.g. `react-vite-gsap`, `next-template`) already contain global layout wrappers (`src/layouts/RootLayout.tsx` or `App.tsx`) rendering `<Navbar />` and `<Footer />`.
+   - *Fix*: NEVER create a second `<Navigation />` or duplicate `<Footer />` inside page components (`HomePage.tsx`). Always inspect the layout file first (`read_file("src/layouts/RootLayout.tsx")`) and integrate header/footer changes directly into the layout or customize the existing components.
+8. **Brand Icons Invariant (`lucide-react`)**:
+   - *Cause*: Modern `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`, `Google`, `LinkedIn`). Importing them causes build errors (`export 'Github' was not found in 'lucide-react'`).
+   - *Fix*: Always render brand icons as inline `<svg>` elements with proper `viewBox="0 0 24 24"` or use standard generic icons from `lucide-react` (`Code`, `Globe`, `Share2`, `MessageSquare`).
+9. **GSAP & Smooth Scroll Layout Flow**:
+   - *Cause*: Hardcoded `min-h-screen` or uncoordinated ScrollTrigger pin spacers can create massive empty voids when combined with Lenis virtual scroll.
+   - *Fix*: Let natural document flow govern heights (`min-h-[60vh]` or `py-24`). When pinning sections with GSAP ScrollTrigger, ensure pin spacers are cleaned up or `ScrollTrigger.refresh()` is called after fonts and images load.
 
 # Interactive User Clarification & Structured Inquiry (`ask_user`):
 <interactive_inquiry>

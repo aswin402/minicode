@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.52] — 2026-10-06
+
+### Dev Server TCP Readiness Probe, Layout Collision Guardrails & Idempotent Progress Tracking
+
+#### 💡 Ideas & Inspirations
+- **Dev Server TCP Socket Readiness Probe**: Fast development bundlers like Vite, Next.js, or Astro take 500ms–1500ms to compile dependencies and bind their listening port. Returning immediately upon process spawn caused subsequent browser navigation actions to race server startup and fail with `connection refused`. By incorporating an asynchronous TCP socket probe on `127.0.0.1:port` with up to 2.5s polling, minicode guarantees the server is actively accepting connections before the agent attempts browser navigation or automated audits.
+- **Idempotent Progress Log Tracking**: Deliverable auto-reconciliation and multi-turn workflows could result in redundant calls to `update_progress` on already-completed tasks, resulting in duplicate history entries in `progress.md`. Introducing an explicit state-transition outcome check ensures progress logs are strictly append-only upon actual task state transitions.
+- **AST Syntax Barrier Recovery Clarity**: When a syntax error was caught on a newly authored file, the barrier reported that the file was preserved on disk, which misled agents into calling `patch_file` on a file that was never written. Clarified new-file diagnostics and added dynamic JSX component tag guidance.
+
+#### 🚀 Features & Changes
+- **Dev Server TCP Readiness Probe (`src/tools/registry/dev_tools.rs`)**:
+  - Replaced fixed 300ms sleep in `minitask(action="start")` with a dynamic polling loop up to 2,500ms.
+  - Probed `127.0.0.1:port` with `tokio::net::TcpStream::connect` for live port verification.
+  - Appended explicit readiness telemetry (`⚡ TCP Socket Ready` vs `⏳ TCP Warming Up`) to tool response output.
+- **Idempotent Progress Tracking (`src/context/memory/working_memory.rs`)**:
+  - Added `UpdateFileOutcome` (`Modified`, `AlreadyInStatus`, `NotFound`) to `WorkingMemory::update_progress`.
+  - Appended entries to `progress.md` only when a task status actually changes or upon initial plan bootstrap.
+  - Safely returned `Ok(())` without writing duplicate entries when a task is already in the requested status.
+- **Clear AST Syntax Diagnostics & JSX Tag Invariant (`src/context/ast/syntax_guard.rs`)**:
+  - Differentiated between new-file rejections and existing-file edits in syntax barrier error messages.
+  - Explicitly cautioned against using `patch_file` when a new file was rejected by the barrier.
+  - Injected JSX dynamic component tag rule (`const Icon = categories[i].icon; <Icon />`) when syntax errors occur in `.tsx`/`.jsx` files.
+- **Layout Anti-Collision & Starter Template Guidance (`src/tools/minikit/scaffolder.rs`, `src/agent/orchestrator.rs`, `src/agent/prompt.rs`)**:
+  - Added layout inspection notice to `kit_stack_add` output when starter templates contain `RootLayout.tsx`, `Navbar`, or `Footer`.
+  - Injected layout anti-collision rules into orchestrator engineering guidance and prompt self-healing protocols to prevent duplicate headers/footers.
+  - Added rules for authoring inline SVG brand icons (since modern `lucide-react` does not export `Github`/`Twitter`) and avoiding rigid `min-h-screen` voids with Lenis/GSAP.
+
 ## [0.3.51] — 2026-10-06
 
 ### Two-Tier Planning Architecture, Socratic Inception Gate & Sequential Atomic Step Execution

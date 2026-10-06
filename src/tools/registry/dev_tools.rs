@@ -377,14 +377,49 @@ pub async fn dispatch(
 
                 let summary = registry.spawn(workspace_root, req).await?;
 
-                // Brief grace pause to allow early port output detection from stdout
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                // TCP Readiness Probe Loop:
+                // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-1500ms to bind to their port.
+                // Rather than returning immediately after 300ms (which causes browser_navigate to hit ECONNREFUSED),
+                // probe localhost:port for up to 2.5s until TCP socket accepts connections.
+                let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+                let mut live_summary = summary.clone();
+                let mut tcp_ready = false;
+                let mut target_port = None;
 
-                // Re-fetch live summary with detected ports
-                let live_summary = registry.get(&summary.id).await.unwrap_or(summary);
+                while tokio::time::Instant::now() < probe_deadline {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    if let Some(curr) = registry.get(&summary.id).await {
+                        live_summary = curr;
+                    }
+                    if live_summary.status != crate::dev::models::DevProcessStatus::Running {
+                        break;
+                    }
+                    target_port = live_summary
+                        .ports
+                        .first()
+                        .copied()
+                        .or(port_hint)
+                        .or_else(|| {
+                            live_summary.url.as_ref().and_then(|u| {
+                                u.split(':').next_back()?.trim_end_matches('/').parse::<u16>().ok()
+                            })
+                        });
 
-                let url_str = live_summary
-                    .url
+                    if let Some(port) = target_port {
+                        if let Ok(Ok(_)) = tokio::time::timeout(
+                            Duration::from_millis(150),
+                            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                        ).await {
+                            tcp_ready = true;
+                            break;
+                        }
+                    }
+                }
+
+                let derived_url = live_summary.url.clone().or_else(|| {
+                    target_port.map(|p| format!("http://localhost:{}", p))
+                });
+                let url_str = derived_url
                     .as_deref()
                     .unwrap_or("(port scanning in progress...)");
 
@@ -398,6 +433,20 @@ pub async fn dispatch(
                     url_str,
                     live_summary.ports,
                 );
+
+                if tcp_ready {
+                    if let Some(p) = target_port {
+                        msg.push_str(&format!(
+                            "\n• ⚡ TCP Socket Ready: http://localhost:{} is actively listening and verified responsive! (Safe for browser_navigate)",
+                            p
+                        ));
+                    }
+                } else if let Some(p) = target_port {
+                    msg.push_str(&format!(
+                        "\n• ⏳ TCP Warming Up: Port {} detected; dev server is still compiling/starting. If navigating immediately, brief delay may occur.",
+                        p
+                    ));
+                }
 
                 if let Some(crate::dev::models::PortResolution::Shifted { requested, resolved, conflict }) = &live_summary.port_resolution {
                     let p_str = conflict.conflicting_pid.map(|p| format!("PID {}", p)).unwrap_or_else(|| "PID unknown".to_string());

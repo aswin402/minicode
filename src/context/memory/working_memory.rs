@@ -701,18 +701,6 @@ impl WorkingMemory {
         let dir = self.plan_dir();
         fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
-        let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, step);
-
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.progress_path())
-            .map_err(|e| ContextError::Memory(e.to_string()))?;
-
-        file.write_all(entry.as_bytes())
-            .map_err(|e| ContextError::Memory(e.to_string()))?;
-
         let status_clean = status
             .trim()
             .to_ascii_lowercase()
@@ -793,13 +781,20 @@ impl WorkingMemory {
         let is_target_next = step_trimmed.eq_ignore_ascii_case("next");
         let clean_needle = Self::sanitize_step_title(step_trimmed).to_ascii_lowercase();
 
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum UpdateFileOutcome {
+            Modified,
+            AlreadyInStatus,
+            NotFound,
+        }
+
         // Helper to update a target markdown plan file
-        let update_file = |path: &Path| -> bool {
+        let update_file = |path: &Path| -> UpdateFileOutcome {
             if !path.exists() {
-                return false;
+                return UpdateFileOutcome::NotFound;
             }
             let Ok(content) = fs::read_to_string(path) else {
-                return false;
+                return UpdateFileOutcome::NotFound;
             };
 
             // First pass: identify all parsed task items with their line indices
@@ -811,7 +806,7 @@ impl WorkingMemory {
             }
 
             if parsed_items.is_empty() {
-                return false;
+                return UpdateFileOutcome::NotFound;
             }
 
             // Determine matching item index in parsed_items
@@ -866,7 +861,7 @@ impl WorkingMemory {
             };
 
             let Some(target_pos) = matched_idx else {
-                return false;
+                return UpdateFileOutcome::NotFound;
             };
 
             let current_status = parsed_items[target_pos].1.status;
@@ -874,7 +869,7 @@ impl WorkingMemory {
                 || (is_active && current_status == TaskItemStatus::InProgress)
                 || (is_pending && current_status == TaskItemStatus::Pending)
             {
-                return true;
+                return UpdateFileOutcome::AlreadyInStatus;
             }
 
             let target_line_idx = parsed_items[target_pos].0;
@@ -948,17 +943,17 @@ impl WorkingMemory {
             if modified {
                 let updated = updated_lines.join("\n");
                 let _ = fs::write(path, updated);
-                true
+                UpdateFileOutcome::Modified
             } else {
-                false
+                UpdateFileOutcome::NotFound
             }
         };
 
-        let updated_plan = update_file(&self.task_plan_path());
-        let updated_todo = update_file(&self.canonical_todo_path());
+        let outcome_plan = update_file(&self.task_plan_path());
+        let outcome_todo = update_file(&self.canonical_todo_path());
 
         // Also synchronize IntentLedger if active on disk
-        let mut updated_intent = false;
+        let mut intent_outcome = UpdateFileOutcome::NotFound;
         let intent_path = self
             .workspace_root
             .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
@@ -973,23 +968,38 @@ impl WorkingMemory {
                         || clean_step.contains(&title_lower)
                         || target_index.map(|i| i - 1) == Some(item_idx)
                     {
-                        item.status = if is_done {
+                        let target_intent_status = if is_done {
                             crate::context::memory::intent::RequirementStatus::Completed
                         } else if is_active {
                             crate::context::memory::intent::RequirementStatus::InProgress
                         } else {
                             crate::context::memory::intent::RequirementStatus::Pending
                         };
-                        updated_intent = true;
+                        if item.status == target_intent_status {
+                            if intent_outcome != UpdateFileOutcome::Modified {
+                                intent_outcome = UpdateFileOutcome::AlreadyInStatus;
+                            }
+                        } else {
+                            item.status = target_intent_status;
+                            intent_outcome = UpdateFileOutcome::Modified;
+                        }
                     }
                 }
-                if updated_intent {
+                if intent_outcome == UpdateFileOutcome::Modified {
                     let _ = ledger.save_to_disk(&intent_path);
                 }
             }
         }
 
-        if !updated_plan && !updated_todo && !updated_intent {
+        let is_any_modified = outcome_plan == UpdateFileOutcome::Modified
+            || outcome_todo == UpdateFileOutcome::Modified
+            || intent_outcome == UpdateFileOutcome::Modified;
+
+        let is_any_already = outcome_plan == UpdateFileOutcome::AlreadyInStatus
+            || outcome_todo == UpdateFileOutcome::AlreadyInStatus
+            || intent_outcome == UpdateFileOutcome::AlreadyInStatus;
+
+        if !is_any_modified && !is_any_already {
             let available_tasks = self.read_parsed_tasks();
             if available_tasks.is_empty()
                 && !self.task_plan_path().exists()
@@ -1000,6 +1010,13 @@ impl WorkingMemory {
                 let _ = self.init_plan("Development Plan", &[clean_title]);
                 let _ = update_file(&self.task_plan_path());
                 let _ = update_file(&self.canonical_todo_path());
+                let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+                let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, step);
+                let _ = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.progress_path())
+                    .and_then(|mut f| f.write_all(entry.as_bytes()));
             } else {
                 let pending_list = available_tasks
                     .iter()
@@ -1013,6 +1030,15 @@ impl WorkingMemory {
                 ))
                 .into());
             }
+        } else if is_any_modified {
+            // Only append to progress.md if an actual status modification took place (idempotent progress tracking)
+            let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+            let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, step);
+            let _ = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.progress_path())
+                .and_then(|mut f| f.write_all(entry.as_bytes()));
         }
 
         // When all tasks in the active plan are completed, ensure progress.md reflects Completed (100%)

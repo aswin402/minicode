@@ -1622,6 +1622,9 @@ impl WorkflowRouter {
         }
         out.push_str("  • UI Invariant: For frontend/UI tasks, query MiniBlocks (`block_search`, `block_palettes`) before writing components from scratch.\n");
         out.push_str("  • Plan Progress Invariant: Update tasks via `update_progress` as you complete each milestone to keep the Live Execution Plan in sync.\n");
+        out.push_str("  • Layout Anti-Collision Invariant: Starter stacks (e.g. `react-vite-gsap`, `next-template`) wrap pages inside a root layout (e.g. `src/layouts/RootLayout.tsx`) that already renders `<Navbar />` and `<Footer />`. Inspect `RootLayout.tsx` first! NEVER duplicate `<Navigation />` or `<Footer />` inside page components (`HomePage.tsx`).\n");
+        out.push_str("  • Brand Icons Invariant: Modern `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard generic icons (`Code`, `Globe`, `Share2`).\n");
+        out.push_str("  • Smooth Scroll Flow: When combining GSAP ScrollTrigger with smooth scroll (Lenis), avoid hardcoded rigid heights (`h-screen`, `min-h-screen`) across multiple sequential sections without flow spacing. Let natural content flow govern section heights.\n");
 
         out.push_str("</autonomous_engineering_guidance>");
         Some(out)

@@ -824,16 +824,26 @@ impl MiniKitScaffolder {
             install_msg = Self::run_package_installer(&stack.runtime, &dest_dir);
         }
 
+        let has_starter_layout = stack.files.iter().any(|f| {
+            f.path.contains("RootLayout") || f.path.contains("Navbar") || f.path.contains("Footer")
+        });
+        let layout_notice = if has_starter_layout {
+            "\n• ⚡ Layout Architecture: This starter template already includes a global layout wrapper (e.g. `src/layouts/RootLayout.tsx` with `<Navbar />` and `<Footer />`).\n  DO NOT duplicate `<Navbar />` or `<Footer />` inside page components (`HomePage.tsx`). Modify `RootLayout.tsx` or the existing components directly to customize navigation."
+        } else {
+            ""
+        };
+
         Ok(format!(
             "✔ Successfully scaffolded stack `{}` in `{}`\n\
             • Files created: {} files\n\
             • Manifest: minikit.json, AGENTS.md, minikit_docs/\n\
-            • Runtime: {}\n{}",
+            • Runtime: {}\n{}{}",
             stack.name,
             dest_dir.display(),
             files_count,
             stack.runtime,
-            install_msg
+            install_msg,
+            layout_notice
         ))
     }
 

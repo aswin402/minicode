@@ -152,6 +152,30 @@ impl SyntaxGuard {
         };
 
         let col_indent = " ".repeat(col.saturating_sub(1));
+        let is_new_file = original_content.trim().is_empty();
+        let file_status_note = if is_new_file {
+            "NOTE: This was a NEW file. Because syntax validation failed, NO file was written to disk.\n\
+             Do NOT use 'patch_file'. You must re-issue 'write_file' with the full corrected content."
+        } else {
+            "The original file on disk was preserved untouched."
+        };
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
+
+        let mut guidance = Vec::new();
+        guidance.push(
+            "Correct the syntax (check for missing or unclosed braces, quotes, or tags) and retry.",
+        );
+        if is_jsx_or_tsx {
+            guidance.push("JSX Rule: Dynamic component tags like '<categories[i].icon />' or '<items[0] />' are invalid JSX syntax. Assign the component to a capitalized local variable first: 'const Icon = categories[i].icon;' then render '<Icon className=... />'.");
+        }
+        let guidance_str = guidance.join("\n- ");
+
         let diagnostic = format!(
             "[AST Syntax Barrier Rejected]:\n\
              The proposed edit to '{file_display}' introduces a syntax error at line {line}:{col}:\n\
@@ -159,8 +183,8 @@ impl SyntaxGuard {
              {line:>4} | {snippet}\n\
                   | {col_indent}^ {kind}\n\
              ------------------------------------------------------------\n\
-             The original file on disk was preserved untouched.\n\
-             Suggested Next Action: Correct the syntax (check for missing or unclosed braces/parentheses) and retry the edit."
+             {file_status_note}\n\
+             Guidance:\n- {guidance_str}"
         );
 
         Err(diagnostic)
