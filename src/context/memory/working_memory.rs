@@ -797,6 +797,10 @@ impl WorkingMemory {
         let is_target_active = step_trimmed.eq_ignore_ascii_case("active")
             || step_trimmed.eq_ignore_ascii_case("current");
         let is_target_next = step_trimmed.eq_ignore_ascii_case("next");
+        let is_target_all_remaining = step_trimmed.eq_ignore_ascii_case("all")
+            || step_trimmed.eq_ignore_ascii_case("remaining")
+            || step_trimmed.eq_ignore_ascii_case("rest")
+            || step_trimmed.starts_with("remaining");
         let clean_needle = Self::sanitize_step_title(step_trimmed).to_ascii_lowercase();
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -814,6 +818,32 @@ impl WorkingMemory {
             let Ok(content) = fs::read_to_string(path) else {
                 return UpdateFileOutcome::NotFound;
             };
+
+            if is_target_all_remaining && is_done {
+                let mut updated_lines = Vec::new();
+                let mut any_modified = false;
+                for line in content.lines() {
+                    if line.contains("[ ]") {
+                        updated_lines.push(line.replacen("[ ]", "[x]", 1));
+                        any_modified = true;
+                    } else if line.contains("[>]") {
+                        updated_lines.push(line.replacen("[>]", "[x]", 1));
+                        any_modified = true;
+                    } else if line.contains("[/]") {
+                        updated_lines.push(line.replacen("[/]", "[x]", 1));
+                        any_modified = true;
+                    } else {
+                        updated_lines.push(line.to_string());
+                    }
+                }
+                if any_modified {
+                    let updated = updated_lines.join("\n");
+                    let _ = fs::write(path, updated);
+                    return UpdateFileOutcome::Modified;
+                } else {
+                    return UpdateFileOutcome::AlreadyInStatus;
+                }
+            }
 
             // First pass: identify all parsed task items with their line indices
             let mut parsed_items = Vec::new();
@@ -1232,8 +1262,9 @@ impl WorkingMemory {
 
             // Semantic heuristic: If candidate files were not explicitly extracted from task title,
             // but files were modified in this turn and the task is InProgress or Pending:
-            // Check if any significant word from the task title matches the modified file paths,
-            // or if this is a general scaffold/init/setup task and new project files were produced.
+            // 1. Check if any significant word from the task title matches the modified file paths.
+            // 2. Check if the content of modified files contains semantic section anchors, comments, or symbols matching the task.
+            // 3. Check if this is a general scaffold/init/setup task and new project files were produced.
             if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
                 let significant_words: Vec<&str> = task_lower
                     .split_whitespace()
@@ -1241,7 +1272,20 @@ impl WorkingMemory {
                     .filter(|w| {
                         w.len() >= 4
                             && ![
-                                "with", "from", "that", "this", "then", "into", "page", "section",
+                                "with",
+                                "from",
+                                "that",
+                                "this",
+                                "then",
+                                "into",
+                                "page",
+                                "section",
+                                "build",
+                                "create",
+                                "make",
+                                "implement",
+                                "add",
+                                "setup",
                             ]
                             .contains(w)
                     })
@@ -1252,6 +1296,66 @@ impl WorkingMemory {
                         let m_lower = m.to_ascii_lowercase();
                         significant_words.iter().any(|kw| m_lower.contains(kw))
                     });
+
+                // In-file semantic section & symbol verification:
+                // When candidate files are not named in task title (e.g. "Build Hero section"),
+                // inspect the content of the modified text files on disk (e.g. index.html, styles.css, App.tsx)
+                // to verify if the deliverable was actually written to disk as an HTML ID/class/comment or code symbol.
+                let content_matched = if !keyword_matched && !significant_words.is_empty() {
+                    modified_files.iter().any(|m| {
+                        let file_path = self.workspace_root.join(m);
+                        if !file_path.is_file() {
+                            return false;
+                        }
+                        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        let is_text = matches!(
+                            ext,
+                            "html"
+                                | "css"
+                                | "js"
+                                | "jsx"
+                                | "ts"
+                                | "tsx"
+                                | "rs"
+                                | "py"
+                                | "vue"
+                                | "svelte"
+                                | "json"
+                                | "md"
+                        );
+                        if !is_text {
+                            return false;
+                        }
+                        let Ok(content) = fs::read_to_string(&file_path) else {
+                            return false;
+                        };
+                        let content_lower = content.to_ascii_lowercase();
+
+                        significant_words.iter().any(|kw| {
+                            content_lower.contains(&format!("id=\"{}\"", kw))
+                                || content_lower.contains(&format!("id='{}'", kw))
+                                || content_lower.contains(&format!("class=\"{}\"", kw))
+                                || content_lower.contains(&format!("class='{}'", kw))
+                                || content_lower.contains(&format!("<!-- {}", kw))
+                                || content_lower.contains(&format!("/* --- {}", kw))
+                                || content_lower.contains(&format!("/* {}", kw))
+                                || content_lower.contains(&format!("// {}", kw))
+                                || content_lower.contains(&format!(".{} ", kw))
+                                || content_lower.contains(&format!(".{}{{", kw))
+                                || content_lower.contains(&format!("#{} ", kw))
+                                || content_lower.contains(&format!("#{}{{", kw))
+                                || content_lower.contains(&format!("fn {}", kw))
+                                || content_lower.contains(&format!("function {}", kw))
+                                || content_lower.contains(&format!("const {}", kw))
+                                || content_lower.contains(&format!("class {}", kw))
+                                || content_lower.contains(&format!("# {}", kw))
+                                || content_lower.contains(&format!("## {}", kw))
+                                || content_lower.contains(&format!("### {}", kw))
+                        })
+                    })
+                } else {
+                    false
+                };
 
                 let is_setup_task = crate::utils::has_any_word(
                     &task_lower,
@@ -1272,7 +1376,7 @@ impl WorkingMemory {
                             || m.contains("vite.config")
                     });
 
-                if keyword_matched || setup_matched {
+                if keyword_matched || content_matched || setup_matched {
                     file_satisfied = true;
                 }
             }
@@ -1980,6 +2084,66 @@ mod tests {
 
         let progress_content = fs::read_to_string(wm.progress_path()).unwrap();
         assert!(progress_content.contains("- Status: Completed (100%)"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_reconcile_in_file_html_sections_and_bulk_remaining() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_html_sections_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Scaffold project and core files".to_string(),
+            "Build Hero section with terminal preview".to_string(),
+            "Build Philosophy section".to_string(),
+            "Build Autonomous Swarm section".to_string(),
+            "Final testing and verification".to_string(),
+        ];
+        wm.init_plan("Landing Page Plan", &steps).unwrap();
+
+        // Write index.html containing semantic section IDs/comments
+        let html_content = r#"<!DOCTYPE html>
+<html>
+<head><title>minicode</title></head>
+<body>
+  <!-- HERO -->
+  <section id="hero" class="hero"><h1>Hero</h1></section>
+  <!-- PHILOSOPHY -->
+  <section id="philosophy"><h2>Philosophy</h2></section>
+  <!-- SWARM -->
+  <section id="swarm"><h2>Swarm</h2></section>
+</body>
+</html>"#;
+        fs::write(temp_dir.join("index.html"), html_content).unwrap();
+
+        // Reconcile workspace tasks against index.html
+        let reconciled = wm.reconcile_workspace_tasks(&["index.html".to_string()]);
+        assert!(
+            reconciled >= 4,
+            "Expected at least 4 tasks reconciled, got {}",
+            reconciled
+        );
+
+        let tasks = wm.read_parsed_tasks();
+        assert_eq!(tasks[0].status, TaskItemStatus::Completed);
+        assert_eq!(tasks[1].status, TaskItemStatus::Completed);
+        assert_eq!(tasks[2].status, TaskItemStatus::Completed);
+        assert_eq!(tasks[3].status, TaskItemStatus::Completed);
+
+        // Test bulk remaining completion via "remaining"
+        let res = wm.update_progress("remaining", "completed");
+        assert!(res.is_ok());
+
+        let final_tasks = wm.read_parsed_tasks();
+        assert_eq!(final_tasks[4].status, TaskItemStatus::Completed);
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.completed_tasks, 5);
+        assert_eq!(summary.total_tasks, 5);
 
         fs::remove_dir_all(temp_dir).ok();
     }

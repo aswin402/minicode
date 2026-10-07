@@ -1173,14 +1173,14 @@ impl WorkflowRouter {
                         out.push_str("     • Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
                     } else {
                         out.push_str(
-                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Recommended):\n",
+                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
                         );
-                        out.push_str("     Target tech stack, design theme, or architectural bounds are not explicitly settled by the user.\n");
-                        out.push_str("     • Interactive Inquiry (`ask_user`) is available to present 2-3 structured choices for:\n");
-                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Modern Vanilla HTML5/CSS3/ES6, Next.js, FastAPI)\n");
+                        out.push_str("     Target tech stack, framework, or design theme is not explicitly settled by the user in the prompt.\n");
+                        out.push_str("     • Interactive Inquiry (`ask_user`) is available and required to present 2-3 structured choices for:\n");
+                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Next.js, or Modern Vanilla HTML5/CSS3/ES6)\n");
                         out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
                         out.push_str("       • Scope & Key Features\n");
-                        out.push_str("     • Pull user decisions via `ask_user` before scaffolding, or proceed if the desired architecture is clear from repository context.\n");
+                        out.push_str("     • Do not guess or unilaterally scaffold an arbitrary framework without user alignment.\n");
                     }
 
                     out.push_str(
@@ -1368,7 +1368,35 @@ impl WorkflowRouter {
             }
         }
 
-        let palettes = store.list_palettes();
+        let theme_words: Vec<&str> = [
+            "cyberpunk",
+            "futuristic",
+            "dark",
+            "neon",
+            "minimal",
+            "modern",
+            "retro",
+            "light",
+            "monochrome",
+            "purple",
+            "terminal",
+        ]
+        .iter()
+        .filter(|&&w| lower.contains(w))
+        .copied()
+        .collect();
+        let query = if !theme_words.is_empty() {
+            theme_words.join(" ")
+        } else {
+            "dark".to_string()
+        };
+        let mut palettes = store.search_palettes(&query);
+        if palettes.is_empty() {
+            palettes = store.search_palettes("dark");
+        }
+        if palettes.is_empty() {
+            palettes = store.list_palettes();
+        }
 
         let mut out = String::from("<recommended_miniblocks>\n");
         out.push_str("  Autonomous UI Warehouse Guidance:\n");
@@ -1394,14 +1422,14 @@ impl WorkflowRouter {
         }
 
         if !palettes.is_empty() {
-            out.push_str("  3. Available color palette tokens:\n");
+            out.push_str("  3. Verified Theme Palettes & CSS Design Tokens:\n");
             for p in palettes.iter().take(2) {
                 out.push_str(&format!(
-                    "     • `{}` (Colors: [Background: {}, Surface: {}, Accent: {}, Text: {}])\n",
+                    "     • `{}`:\n       [CSS Tokens: --bg: {}; --surface: {}; --accent: {}; --text: {};]\n",
                     p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
                 ));
             }
-            out.push_str("     Action: Pass palette name to `block_scaffold(palette=\"...\")` for automated theme tokens.\n");
+            out.push_str("     Action: Use these verified CSS variables directly or pass palette name to `block_scaffold(palette=\"...\")` instead of inventing unverified hex colors.\n");
         }
 
         // Modular anti-monolith & dev server rules

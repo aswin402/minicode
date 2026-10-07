@@ -204,16 +204,17 @@ pub fn generate_context_helpers(
     let has_explicit_stack = crate::agent::orchestrator::has_any_word(
         &lower,
         &[
-            "react", "vite", "nextjs", "next.js", "vue", "svelte", "fastapi", "flask", "django",
-            "express", "hono", "actix", "axum", "astro", "vanilla", "html", "tailwind",
+            "react", "vite", "nextjs", "vue", "svelte", "fastapi", "flask", "django", "express",
+            "hono", "actix", "axum", "astro", "vanilla", "html", "tailwind",
         ],
-    );
+    ) || lower.contains("next.js")
+        || lower.contains("nextjs");
 
     if is_fresh_workspace && !has_explicit_stack {
         helpers.push(
-            "• 💡 Feature Helper (Interactive Inquiry & MiniKit): The target tech stack is not explicitly named in the prompt. \
-            You can call `ask_user` at any point to present 2-3 structured choices (e.g. React+Vite+Tailwind, Next.js, or Modern Static HTML) \
-            and visual themes to the user, or use `kit_stack_add` to establish your chosen foundation.".to_string()
+            "• 💡 Feature Helper (Interactive Inquiry & MiniKit): Fresh workspace with no explicit tech stack or framework specified. \
+            Invoke `ask_user` now to present 2-3 concrete stack options (e.g. React+Vite+Tailwind, Next.js, or Modern Static HTML) \
+            and visual theme choices. Do not guess or unilaterally assume a framework without user confirmation.".to_string()
         );
     } else if is_fresh_workspace {
         helpers.push(
@@ -226,7 +227,7 @@ pub fn generate_context_helpers(
     let is_ui_task = crate::agent::orchestrator::has_any_word(
         &lower,
         &[
-            "landing page",
+            "landing",
             "website",
             "dashboard",
             "component",
@@ -241,12 +242,54 @@ pub fn generate_context_helpers(
             "theme",
             "palette",
         ],
-    );
+    ) || lower.contains("landing page");
     if is_ui_task {
-        helpers.push(
-            "• 🎨 Feature Helper (MiniBlocks): UI creation detected. Use `block_palettes` to discover verified color tokens \
-            and `block_search` / `block_scaffold` for pre-built components instead of inventing CSS/JSX from scratch.".to_string()
-        );
+        let store_lock = crate::blocks::get_global_block_store();
+        let store = match store_lock.read() {
+            Ok(s) => Some(s),
+            Err(e) => Some(e.into_inner()),
+        };
+
+        let mut palette_hint = String::new();
+        if let Some(store) = store {
+            let theme_words: Vec<&str> = [
+                "cyberpunk",
+                "futuristic",
+                "dark",
+                "neon",
+                "minimal",
+                "modern",
+                "retro",
+                "light",
+                "monochrome",
+            ]
+            .iter()
+            .filter(|&&w| lower.contains(w))
+            .copied()
+            .collect();
+            let query = if !theme_words.is_empty() {
+                theme_words.join(" ")
+            } else {
+                "dark".to_string()
+            };
+            let mut matches = store.search_palettes(&query);
+            if matches.is_empty() {
+                matches = store.search_palettes("dark");
+            }
+            if let Some(p) = matches.first() {
+                palette_hint = format!(
+                    " Verified theme palette '{}' [Tokens: --bg: {}, --surface: {}, --accent: {}, --text: {}]. \
+                    Use these verified tokens in your styles or call `block_scaffold(palette=\"{}\")` for pre-themed components.",
+                    p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3], p.name
+                );
+            }
+        }
+
+        helpers.push(format!(
+            "• 🎨 Feature Helper (MiniBlocks): UI creation detected.{} \
+            Query `block_search` / `block_scaffold` for pre-built components instead of inventing CSS/JSX from scratch.",
+            palette_hint
+        ));
     }
 
     // 3. MiniTask Helper: Multi-step task or complex feature
