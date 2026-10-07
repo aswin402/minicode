@@ -1156,32 +1156,37 @@ impl WorkflowRouter {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
                 if is_creation_intent || state == RepoState::FreshWorkspace {
                     out.push_str("  Autonomous Inception & Specification Architecture:\n");
-                    out.push_str("  1. Specification Synthesis First:\n");
-                    out.push_str("     Before creating application code files, establish core project specifications in `minikit_docs/core/`:\n");
+                    if !is_rich_prompt {
+                        out.push_str(
+                            "  1. Technical Foundation Alignment (Action Required: `ask_user`):\n",
+                        );
+                        out.push_str("     Target tech stack, framework, or design theme is not explicitly settled by the user in the prompt.\n");
+                        out.push_str("     • Your FIRST action MUST be to invoke `ask_user` to present 2-3 structured choices for:\n");
+                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Next.js, or Modern Vanilla HTML5/CSS3/ES6)\n");
+                        out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
+                        out.push_str("       • Scope & Key Features\n");
+                        out.push_str("     • Do NOT write files or scaffold before calling `ask_user` to align with the user on their preferred architecture.\n");
+                        out.push_str(
+                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
+                        );
+                        out.push_str("     Interactive Inquiry (`ask_user`) is available and required to clarify technical foundation.\n");
+                        out.push_str("  3. Specification Synthesis (After User Alignment):\n");
+                        out.push_str("     Once the user confirms choices via `ask_user`, establish core project specifications in `minikit_docs/core/`:\n");
+                    } else {
+                        out.push_str(
+                            "  1. Information Completeness: HIGH (Rich Specification Provided):\n",
+                        );
+                        out.push_str("     The user provided initial stack/theme directives, but critical design nuances, layout priorities, and component details remain open.\n");
+                        out.push_str("     • You have full autonomy to proceed directly, or call `ask_user` at any time to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before or during implementation.\n");
+                        out.push_str("     • Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
+                        out.push_str("  2. Specification Synthesis First:\n");
+                        out.push_str("     Establish core project specifications in `minikit_docs/core/`:\n");
+                    }
                     out.push_str("     • `prd.md`: Product Requirements Document (Core purpose, user stories, success metrics, constraints, non-goals)\n");
                     out.push_str("     • `design.md`: Visual Design Specification (Theme tokens, typography, layout hierarchy, components, breakpoints)\n");
                     out.push_str("     • `architecture.md`: Clean Architecture & Dependency Contract (Module boundaries, data flow, state management)\n");
                     out.push_str("     • `spec.md`: Technical Invariants & Protocol Specification (APIs, contracts, error boundaries)\n");
                     out.push_str("     • `todo.md`: Initialized via `create_plan` with verifiable bite-sized milestones.\n");
-
-                    if is_rich_prompt {
-                        out.push_str(
-                            "  2. Information Completeness: HIGH (Rich Specification Provided):\n",
-                        );
-                        out.push_str("     The user provided initial stack/theme directives, but critical design nuances, layout priorities, and component details remain open.\n");
-                        out.push_str("     • You have full autonomy to proceed directly, or call `ask_user` at any time to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before or during implementation.\n");
-                        out.push_str("     • Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
-                    } else {
-                        out.push_str(
-                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
-                        );
-                        out.push_str("     Target tech stack, framework, or design theme is not explicitly settled by the user in the prompt.\n");
-                        out.push_str("     • Interactive Inquiry (`ask_user`) is available and required to present 2-3 structured choices for:\n");
-                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Next.js, or Modern Vanilla HTML5/CSS3/ES6)\n");
-                        out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
-                        out.push_str("       • Scope & Key Features\n");
-                        out.push_str("     • Do not guess or unilaterally scaffold an arbitrary framework without user alignment.\n");
-                    }
 
                     out.push_str(
                         "  3. Two-Tier Planning & Progressive Step-by-Step Task Advancement:\n",
