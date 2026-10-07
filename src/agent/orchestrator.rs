@@ -432,7 +432,7 @@ fn contains_any(text: &str, phrases: &[&str]) -> bool {
 }
 
 #[inline]
-fn has_any_word(text: &str, words: &[&str]) -> bool {
+pub(crate) fn has_any_word(text: &str, words: &[&str]) -> bool {
     words.iter().any(|&w| crate::utils::has_word(text, w))
 }
 
@@ -1034,7 +1034,7 @@ impl WorkflowRouter {
     /// specification synthesis, information completeness evaluation, ask_user gating,
     /// and web research.
     pub fn enrich_orchestrator_guidance(
-        _workspace_root: &Path,
+        workspace_root: &Path,
         prompt: &str,
         state: RepoState,
     ) -> String {
@@ -1169,20 +1169,18 @@ impl WorkflowRouter {
                             "  2. Information Completeness: HIGH (Rich Specification Provided):\n",
                         );
                         out.push_str("     The user provided initial stack/theme directives, but critical design nuances, layout priorities, and component details remain open.\n");
-                        out.push_str("     • Include Step 1 in your active plan: \"Clarify key feature priorities and theme nuances with user via ask_user\".\n");
-                        out.push_str("     • Call `ask_user` to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before scaffolding or writing application code.\n");
-                        out.push_str("     • Once confirmed, Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
+                        out.push_str("     • You have full autonomy to proceed directly, or call `ask_user` at any time to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before or during implementation.\n");
+                        out.push_str("     • Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
                     } else {
                         out.push_str(
-                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
+                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Recommended):\n",
                         );
-                        out.push_str("     Target tech stack, design theme, or architectural bounds are not fully settled by the user.\n");
-                        out.push_str("     • Include Step 1 in your active plan: \"Clarify tech stack, design aesthetic, and scope with user via ask_user\".\n");
-                        out.push_str("     • YOU MUST CALL `ask_user` ON TURN 1 to present 2-3 structured choices for:\n");
+                        out.push_str("     Target tech stack, design theme, or architectural bounds are not explicitly settled by the user.\n");
+                        out.push_str("     • Interactive Inquiry (`ask_user`) is available to present 2-3 structured choices for:\n");
                         out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Modern Vanilla HTML5/CSS3/ES6, Next.js, FastAPI)\n");
                         out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
                         out.push_str("       • Scope & Key Features\n");
-                        out.push_str("     DO NOT write code or create project files before asking! Once the user answers, create the detailed `.md` files in `minikit_docs/core/` and advance to the next step.\n");
+                        out.push_str("     • Pull user decisions via `ask_user` before scaffolding, or proceed if the desired architecture is clear from repository context.\n");
                     }
 
                     out.push_str(
@@ -1190,7 +1188,7 @@ impl WorkflowRouter {
                     );
                     out.push_str("     • Tier 1 (Core Roadmap): `minikit_docs/core/todo.md` tracks high-level strategic milestones (viewed in /todo modal).\n");
                     out.push_str("     • Tier 2 (Active MiniPower Step Plan): `.minicode/plan/task_plan.md` tracks atomic 2-5 min tactical execution steps (viewed live in TUI dock).\n");
-                    out.push_str("     • Call `create_plan` with 4-8 focused, bite-sized steps. Step 1 should be interactive clarification via `ask_user`.\n");
+                    out.push_str("     • Call `create_plan` with 4-8 focused, bite-sized steps to structure your execution roadmap.\n");
                     out.push_str("     • Execute sequentially: work on Step 1, call `update_progress(step=\"1\", status=\"completed\")` immediately to advance to Step 2, and repeat.\n");
                     out.push_str("     • NEVER batch all `update_progress` calls together at the very end of your turn! The live TUI dock displays your progress in real-time.\n");
                     out.push_str("     • Conclude the turn by verifying the final task and marking it completed.\n");
@@ -1209,6 +1207,20 @@ impl WorkflowRouter {
                 out.push_str("  3. Living Specs: Inspect available `.md` documentation and update `minikit_docs/core/todo.md` via `create_plan` or `update_progress` as tasks complete.\n");
                 out.push_str("  4. Research: If troubleshooting unfamiliar libraries or legacy patterns, use `search_web` to look up official documentation.\n");
                 out.push_str("  5. MiniKit & Blocks: If adding new features, dependencies, or UI elements, leverage `kit_info`, `kit_add`, and MiniBlocks (`block_search`) to maintain modularity.\n");
+            }
+        }
+
+        let helpers = crate::agent::features::generate_context_helpers(
+            workspace_root,
+            prompt,
+            is_creation_intent || state == RepoState::FreshWorkspace,
+        );
+        if !helpers.is_empty() {
+            out.push_str("\n  Subsystem Affordances & Active Feature Helpers:\n");
+            for helper in helpers {
+                out.push_str("  ");
+                out.push_str(&helper);
+                out.push('\n');
             }
         }
 
@@ -1259,7 +1271,7 @@ impl WorkflowRouter {
         out.push_str("     • CodeGraph AST: `code_explore`, `blast_radius`, `locate_symbol`, `diff_impact` for architectural navigation.\n");
         out.push_str("     • Working Memory: `create_plan`, `update_progress` — call `update_progress` after each step so the user and live TUI stay in sync.\n");
         out.push_str("     • MiniPower Execution: `power_status`, `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `power_worktree_task`.\n");
-        out.push_str("     • Interactive Inquiry & Socratic Inception: `ask_user` — When initiating features, apps, or UI designs, make Step 1 of your plan an interactive consultation via `ask_user` to align on user preferences, feature priorities, and aesthetic nuances before writing code.\n");
+        out.push_str("     • Interactive Inquiry (`ask_user`): Ambient human-in-the-loop consultation. Use whenever you need clarification, user preferences, or decisions on trade-offs at any point during execution.\n");
 
         out.push_str("</minipower_autonomous_engineering_rules>");
         out
@@ -1393,9 +1405,8 @@ impl WorkflowRouter {
         }
 
         // Modular anti-monolith & dev server rules
-        out.push_str("  • Interactive Clarification First (`ask_user`):\n");
-        out.push_str("    If the user prompt is broad, open-ended, or has multiple design directions or tech stacks (e.g. 'Build a web dashboard', 'Create an application', 'Add an analytics panel'):\n");
-        out.push_str("    YOU MUST CALL `ask_user` ON TURN 1 to confirm tech stack, color theme, and key sections before writing code!\n");
+        out.push_str("  • Interactive Inquiry & Human-in-the-Loop (`ask_user`):\n");
+        out.push_str("    If user requirements, architecture choices, or tech stacks are open-ended, call `ask_user` to present structured options to the user rather than guessing!\n");
         out.push_str("  • Instant Starter Stack Scaffolding (`kit_stack_add`):\n");
         out.push_str("    To build a modern frontend, use `kit_stack_add` (e.g. `kit_stack_add(stack_name=\"react-vite-gsap\")` or `kit_stack_add(stack_name=\"static-website\")`) to scaffold the full project in 1 call rather than hand-authoring files.\n");
         out.push_str("  • Strict Modular Code Architecture Contract (Anti-Monolith Invariant):\n");
@@ -2299,7 +2310,7 @@ mod tests {
     async fn test_enrich_orchestrator_guidance_fresh_vs_existing() {
         let temp = tempfile::tempdir().unwrap();
 
-        // 1. Fresh repo with underspecified prompt -> requires ask_user
+        // 1. Fresh repo with underspecified prompt -> suggests ask_user & MiniKit
         let guidance_underspec = WorkflowRouter::enrich_orchestrator_guidance(
             temp.path(),
             "build a website",
@@ -2307,7 +2318,9 @@ mod tests {
         );
         assert!(guidance_underspec.contains("Autonomous Inception & Specification Architecture"));
         assert!(guidance_underspec.contains("Information Completeness: UNDERSPECIFIED"));
-        assert!(guidance_underspec.contains("YOU MUST CALL `ask_user` ON TURN 1"));
+        assert!(guidance_underspec.contains("Interactive Inquiry (`ask_user`) is available"));
+        assert!(guidance_underspec.contains("Subsystem Affordances & Active Feature Helpers"));
+        assert!(guidance_underspec.contains("Feature Helper (Interactive Inquiry & MiniKit)"));
 
         // 2. Fresh repo with rich prompt -> proceeds with spec synthesis directly
         let guidance_rich = WorkflowRouter::enrich_orchestrator_guidance(
@@ -2320,14 +2333,14 @@ mod tests {
         );
         assert!(guidance_rich.contains("Synthesize detailed `.md` core files directly"));
 
-        // 3. Fresh repo with long descriptive product prompt but no explicit target build stack -> requires ask_user
+        // 3. Fresh repo with long descriptive product prompt but no explicit target build stack -> suggests ask_user
         let guidance_long_no_stack = WorkflowRouter::enrich_orchestrator_guidance(
             temp.path(),
             "Create a premium, modern landing page for minicode, an autonomous AI coding agent built for developers who want fast, reliable, secure software development. The overall design should feel cutting-edge, technical, minimal, and futuristic.",
             RepoState::FreshWorkspace,
         );
         assert!(guidance_long_no_stack.contains("Information Completeness: UNDERSPECIFIED"));
-        assert!(guidance_long_no_stack.contains("YOU MUST CALL `ask_user` ON TURN 1"));
+        assert!(guidance_long_no_stack.contains("Interactive Inquiry (`ask_user`) is available"));
 
         // 4. Existing codebase -> maintenance & grounding
         let guidance_existing = WorkflowRouter::enrich_orchestrator_guidance(

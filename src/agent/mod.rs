@@ -4,6 +4,7 @@ pub mod complexity;
 pub mod council;
 pub mod critic;
 pub mod dag;
+pub mod features;
 pub mod hypothesis;
 pub mod inquiry;
 pub mod intent;

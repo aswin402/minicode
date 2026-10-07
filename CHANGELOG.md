@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.58] — 2026-10-07
+
+### Declarative Feature Management, Ambient Human-in-the-Loop Inquiry & Dynamic Context Affordances
+
+#### 💡 Ideas & Inspirations
+- **Shift from Imperative Micro-Management to Declarative Affordances**: In complex real-world prompts (such as `minitest22`'s 4,000-character landing page specification), rigid imperative mandates like `"YOU MUST CALL ask_user ON TURN 1"` create artificial friction and logical contradictions. Reasoning models (MiniMax, Claude 3.7, o1/o3-mini, Gemini Thinking) evaluate the exhaustive detail, conclude the task is explicit rather than ambiguous, and bypass the rigid rule. Furthermore, turn-locking `ask_user` to "Turn 1" prevented agents from consulting users when architectural forks or trade-offs arose later in execution. Minicode now treats its core subsystems as first-class **Declarative Affordances**—explaining what capabilities exist, why they exist, and when to reach for them—granting the agent full agency while keeping it grounded.
+- **Ambient Human-in-the-Loop (HITL) Inquiry (`ask_user`)**: `ask_user` is now defined as an ambient direct communication channel available at **any turn** in the session. Whenever tech stack choices, design aesthetic preferences, missing credentials, or unexpected trade-offs arise, the agent pulls decisions from the human rather than guessing.
+- **Architectural Subsystems Catalog & Dynamic Context Helpers (`src/agent/features.rs`)**: Modeled after modern capability catalogs in Claude Code and LangGraph, minicode introduces a centralized `features.rs` subsystem registry covering its 7 core pillars (`Inquiry`, `MiniKit`, `MiniTask`, `MiniBlocks`, `MiniPowers`, `Obscura Browser`, and `CodeGraph`). Dynamic context helpers evaluate workspace state and inject non-intrusive affordance suggestions (e.g. suggesting `ask_user` & `kit_stack_add` when tech stack is undeclared, or `MiniBlocks` when crafting UI components) without rigid procedural constraints.
+
+#### 🚀 Features & Changes
+- **Feature Management & Subsystems Subsystem (`src/agent/features.rs`, `src/agent/mod.rs`)**:
+  - Implemented `AgentFeature` enum representing minicode's 7 architectural subsystems.
+  - Implemented `format_features_catalog()` for declarative prompt exposure.
+  - Implemented `generate_context_helpers()` for dynamic, state-aware feature suggestions.
+- **Declarative Prompt Axioms (`src/agent/prompt.rs`)**:
+  - Refactored Axiom 1 to "Human-in-the-Loop Clarification (`ask_user` Capability)", removing turn-specific constraints.
+  - Refactored Socratic Inception gate to "Human-in-the-Loop Alignment".
+  - Injected `format_features_catalog()` into static system prompt assembly.
+- **Orchestrator Guidance Modernization (`src/agent/orchestrator.rs`)**:
+  - Replaced rigid `"YOU MUST CALL ask_user ON TURN 1"` mandates with declarative information completeness guidance.
+  - Integrated `features::generate_context_helpers()` into dynamic guidance output.
+  - Updated orchestrator unit tests.
+
 ## [0.3.57] — 2026-10-07
 
 ### Scaffolder Proactive Guidance, Modern ESM Vite Path Aliases & Zero-Friction Template Modernization
