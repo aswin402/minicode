@@ -1211,7 +1211,7 @@ impl WorkflowRouter {
                 out.push_str("  2. Invariants: Respect existing project patterns, styling, and coding conventions.\n");
                 out.push_str("  3. Living Specs: Inspect available `.md` documentation and update `minikit_docs/core/todo.md` via `create_plan` or `update_progress` as tasks complete.\n");
                 out.push_str("  4. Research: If troubleshooting unfamiliar libraries or legacy patterns, use `search_web` to look up official documentation.\n");
-                out.push_str("  5. MiniKit & Blocks: If adding new features, dependencies, or UI elements, leverage `kit_info`, `kit_add`, and MiniBlocks (`block_search`) to maintain modularity.\n");
+                out.push_str("  5. MiniBlocks & Packages: For dependencies, run the native package manager via `exec_cmd` (`bun add`, `npm install`, `cargo add`). MiniKit is strictly for templates. Leverage MiniBlocks (`block_search`) for UI components.\n");
             }
         }
 
@@ -1268,7 +1268,7 @@ impl WorkflowRouter {
 
         out.push_str("  4. Tool Freedom & Ecosystem Synergy (202 Native Tools Available):\n");
         out.push_str("     You have full freedom to choose and combine the highest-leverage tools for any task:\n");
-        out.push_str("     • MiniKit: `kit_stack_add` (scaffold templates directly into workspace root '.', do not create nested folders), `kit_add` (install dependencies), `kit_sync` (reconcile manifest).\n");
+        out.push_str("     • MiniKit Scaffolding: `kit_stack_add` (scaffold templates directly into workspace root '.', do not create nested folders). For dependencies, use native package managers via `exec_cmd` (`bun add`, `npm install`, `cargo add`).\n");
         out.push_str("     • File System Safety: `write_file(path, content, overwrite=true, append=true)` — Safe-overwrite guard active. Set `overwrite=true` to replace or `append=true` for chunked writes. For large multi-section files (>250 lines), use modular files, `append=true`, or scripted builder assembly (`python3 scripts/build.py` or `cat << 'EOF' >> file` via `exec_cmd`).\n");
         out.push_str("     • MiniBlocks: `block_search`, `block_palettes`, `block_scaffold` — NEVER write 1,000+ line monolithic CSS/JS files! Decompose into modular components (<250 lines per file) to prevent JSON token truncation (`EOF while parsing a string`).\n");
         out.push_str("     • MiniTask Vault: `minitask(action=\"start\")` to run dev servers/daemons, `minitask(action=\"status\")` / `minitask(action=\"resources\")` for telemetry. Keep background dev servers running across turns for user testing; only call `minitask(action=\"stop\")` when user explicitly requests teardown.\n");
@@ -1484,8 +1484,8 @@ impl WorkflowRouter {
         }
         out.push_str("     • Remote GitHub stacks: `gh:owner/repo` (e.g. `gh:shadcn-ui/ui`)\n");
         out.push_str("     Run `kit_stack_add(stack_name=\"...\")` to scaffold with automated dependency installation in 1 tool call.\n");
-        out.push_str("  3. Safe Dependency Management (`kit_info` + `kit_add`):\n");
-        out.push_str("     When adding libraries (e.g. `zod`, `gsap`, `axum`), call `kit_info(name)` to inspect packages and `kit_add(name, is_dev)` to update manifests safely without breaking lockfiles.\n");
+        out.push_str("  3. Native Runtime Dependency Management:\n");
+        out.push_str("     When adding libraries (e.g. `zod`, `gsap`, `lucide-react`, `axum`), run the project's native package manager via `exec_cmd` (e.g. `bun add <pkg>`, `npm install <pkg>`, `cargo add <pkg>`). MiniKit is strictly for templates. Native package managers resolve peer dependencies and lockfiles cleanly.\n");
         out.push_str("  4. Strict Modular Code Architecture Contract:\n");
         out.push_str("     Write modular, cleanly scoped files under 250-300 lines rather than giant single files to prevent JSON EOF parsing cutoffs. Strictly separate HTML, CSS, and JS.\n");
         out.push_str("</minikit_scaffolding_guidance>");
@@ -1651,7 +1651,7 @@ impl WorkflowRouter {
             docs_name
         ));
         out.push_str(&format!(
-            "  2. Gate 2 (Architecture & Discovery): Consult relevant specs in `{}/core/` and verify dependencies before making changes. Use `kit_stack_add` for project scaffolding and `kit_add` for packages.\n",
+            "  2. Gate 2 (Architecture & Discovery): Consult relevant specs in `{}/core/` and verify dependencies before making changes. Use `kit_stack_add` for project scaffolding and native package managers via `exec_cmd` for packages.\n",
             docs_name
         ));
         out.push_str("  3. Gate 3 (TDD Implementation): Write or update tests FIRST. Verify failure (Red), then implement minimal code, then verify green.\n");

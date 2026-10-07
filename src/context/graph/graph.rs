@@ -299,11 +299,19 @@ impl CodeGraph {
         self.symbol_to_file.clear();
         self.file_to_symbols.clear();
 
-        let walker = WalkBuilder::new(workspace_root)
+        let mut builder = WalkBuilder::new(workspace_root);
+        builder
             .hidden(true)
             .parents(true)
             .git_ignore(true)
-            .build();
+            .filter_entry(|entry| {
+                if let Some(name) = entry.file_name().to_str() {
+                    !crate::context::walker::is_excluded_dir_name(name)
+                } else {
+                    true
+                }
+            });
+        let walker = builder.build();
 
         let mut source_files = Vec::new();
         for result in walker.flatten() {
@@ -582,11 +590,19 @@ impl CodeGraph {
 
     /// Incrementally updates the code graph: only re-parses dirty or added files and removes deleted files.
     pub fn incremental_update(&mut self, workspace_root: &Path) -> Result<IncrementalStats> {
-        let walker = WalkBuilder::new(workspace_root)
+        let mut builder = WalkBuilder::new(workspace_root);
+        builder
             .hidden(true)
             .parents(true)
             .git_ignore(true)
-            .build();
+            .filter_entry(|entry| {
+                if let Some(name) = entry.file_name().to_str() {
+                    !crate::context::walker::is_excluded_dir_name(name)
+                } else {
+                    true
+                }
+            });
+        let walker = builder.build();
 
         let mut current_files = HashSet::new();
         for result in walker.flatten() {
@@ -639,11 +655,19 @@ impl CodeGraph {
     /// Evaluates whether the workspace has significantly drifted from the cached graph.
     /// Uses lightweight metadata screening (file existence and mtime/hash) to avoid heavy re-parsing.
     pub fn check_drift(&self, workspace_root: &Path) -> Result<GraphDriftReport> {
-        let walker = WalkBuilder::new(workspace_root)
+        let mut builder = WalkBuilder::new(workspace_root);
+        builder
             .hidden(true)
             .parents(true)
             .git_ignore(true)
-            .build();
+            .filter_entry(|entry| {
+                if let Some(name) = entry.file_name().to_str() {
+                    !crate::context::walker::is_excluded_dir_name(name)
+                } else {
+                    true
+                }
+            });
+        let walker = builder.build();
 
         let mut current_files = HashSet::new();
         for result in walker.flatten() {

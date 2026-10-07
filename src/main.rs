@@ -2258,5 +2258,6 @@ async fn run_interactive_mode(
     let _ = dev::registry::get_global_dev_registry().kill_all().await;
     dev::registry::kill_all_sync();
 
-    Ok(())
+    // Cleanly terminate process and all thread pools
+    std::process::exit(0);
 }

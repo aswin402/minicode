@@ -178,9 +178,15 @@ impl MonorepoOrchestrator {
         let mut sub_cargos = Vec::new();
 
         // Search for all nested Cargo.toml files
-        let walker = ignore::WalkBuilder::new(workspace_root)
-            .max_depth(Some(4))
-            .build();
+        let mut builder = ignore::WalkBuilder::new(workspace_root);
+        builder.max_depth(Some(4)).filter_entry(|entry| {
+            if let Some(name) = entry.file_name().to_str() {
+                !crate::context::walker::is_excluded_dir_name(name)
+            } else {
+                true
+            }
+        });
+        let walker = builder.build();
 
         for entry in walker.flatten() {
             let path = entry.path();
@@ -221,9 +227,15 @@ impl MonorepoOrchestrator {
 
     fn discover_npm_workspace(workspace_root: &Path, _content: &str) -> Vec<PackageInfo> {
         let mut packages = Vec::new();
-        let walker = ignore::WalkBuilder::new(workspace_root)
-            .max_depth(Some(4))
-            .build();
+        let mut builder = ignore::WalkBuilder::new(workspace_root);
+        builder.max_depth(Some(4)).filter_entry(|entry| {
+            if let Some(name) = entry.file_name().to_str() {
+                !crate::context::walker::is_excluded_dir_name(name)
+            } else {
+                true
+            }
+        });
+        let walker = builder.build();
 
         for entry in walker.flatten() {
             let path = entry.path();

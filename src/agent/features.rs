@@ -61,8 +61,6 @@ impl AgentFeature {
                 "kit_stack_show",
                 "kit_stack_diff",
                 "kit_info",
-                "kit_add",
-                "kit_remove",
                 "kit_sync",
                 "kit_skill_show",
             ],
@@ -222,6 +220,12 @@ pub fn generate_context_helpers(
             with `kit_stack_add` (e.g. `kit_stack_add(stack_name=\"react-vite\")`) into the workspace root rather than manually authoring boilerplates.".to_string()
         );
     }
+
+    helpers.push(
+        "• 📦 Feature Helper (Package Management): To install packages or dependencies, ALWAYS use the project's native package manager via `exec_cmd` \
+        (e.g. `exec_cmd(\"bun add <pkg>\")`, `exec_cmd(\"npm install <pkg>\")`, `exec_cmd(\"cargo add <pkg>\")`, `exec_cmd(\"uv add <pkg>\")`). \
+        MiniKit (`kit_*`) is strictly reserved for initial project templates and architecture blocks.".to_string()
+    );
 
     // 2. MiniBlocks Helper: UI design or component creation
     let is_ui_task = crate::agent::orchestrator::has_any_word(

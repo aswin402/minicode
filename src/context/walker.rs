@@ -14,6 +14,17 @@ pub const STANDARD_EXCLUDED_DIRS: &[&str] = &[
     ".cache",
 ];
 
+/// Returns true if a directory name should be pruned immediately during tree traversal
+#[inline]
+pub fn is_excluded_dir_name(name: &str) -> bool {
+    STANDARD_EXCLUDED_DIRS.contains(&name)
+        || name == ".minicode"
+        || name == ".next"
+        || name == ".turbo"
+        || name == ".nuxt"
+        || name == ".svelte-kit"
+}
+
 /// Canonical workspace file walker engine for minicode
 #[derive(Debug, Clone)]
 pub struct WorkspaceWalker {

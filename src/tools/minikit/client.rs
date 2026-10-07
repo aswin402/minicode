@@ -63,13 +63,20 @@ impl MiniKitClient {
             )
         })?;
 
-        let output = Command::new(&binary)
-            .current_dir(workspace_root)
-            .args(args)
-            .output()
-            .map_err(|e| {
-                ToolError::CommandExec(format!("Failed to execute `onpkg {:?}`: {}", args, e))
-            })?;
+        let mut cmd = Command::new(&binary);
+        cmd.current_dir(workspace_root).args(args);
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+
+        let output = cmd.output().map_err(|e| {
+            ToolError::CommandExec(format!("Failed to execute `onpkg {:?}`: {}", args, e))
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

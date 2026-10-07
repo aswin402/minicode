@@ -1343,6 +1343,12 @@ impl<'a> App<'a> {
             token.cancel();
         }
         agent_task.abort();
+        #[cfg(unix)]
+        unsafe {
+            // Flush any accumulated keycodes (e.g. ^C, Escape, F-keys) from the OS tty buffer
+            // so they do not spill into the parent shell prompt.
+            libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+        }
         disable_raw_mode()?;
         execute!(
             terminal.backend_mut(),

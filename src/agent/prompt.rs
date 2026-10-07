@@ -140,8 +140,7 @@ Below is the definitive reference for minicode's native tools, their schemas, an
    - `kit_stack_show(stack_name: str)`: Inspects files and dependencies of a stack template without scaffolding.
    - `kit_stack_diff(stack_name: optional str, apply: optional bool)`: Inspects architectural drift between workspace and stack template; repairs missing files when `apply=true`.
    - `kit_info(name: str)`: Fetches package metadata, version, license, and repository across npm, PyPI, crates.io, or pub.dev.
-   - `kit_add(name: str, is_dev: optional bool)`: Adds package to project manifest (`package.json`, `Cargo.toml`, etc.) and installs dependencies cleanly.
-   - `kit_remove(name: str)`: Removes package from manifest and uninstalls.
+   - Package Installation Rule: MiniKit is strictly for templates. To install packages or add dependencies, ALWAYS run the project's native package manager via `exec_cmd` (e.g. `bun add <pkg>`, `npm install <pkg>`, `cargo add <pkg>`, `uv add <pkg>`). Native package managers resolve peer dependencies and lockfiles cleanly without wrapper overhead.
    - `kit_sync(manifest_path: optional str, fix_drift: optional bool)`: Reconciles package manifest with lockfiles.
    - `kit_skill_list`: Lists available technology skills.
    - `kit_skill_show(skill_name: str)`: Reads complete guidelines for React, Next.js, Tailwind, Rust, Frontend Design, etc.

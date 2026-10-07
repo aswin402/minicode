@@ -62,12 +62,20 @@ pub fn grep_search(
         None => None,
     };
 
-    let walker = WalkBuilder::new(workspace_root)
+    let mut builder = WalkBuilder::new(workspace_root);
+    builder
         .hidden(true)
         .parents(true)
         .git_ignore(true)
         .git_global(true)
-        .build();
+        .filter_entry(|entry| {
+            if let Some(name) = entry.file_name().to_str() {
+                !crate::context::walker::is_excluded_dir_name(name)
+            } else {
+                true
+            }
+        });
+    let walker = builder.build();
 
     let mut matches = Vec::new();
 
@@ -236,12 +244,20 @@ pub fn file_search(
         None
     };
 
-    let walker = WalkBuilder::new(&search_dir)
+    let mut builder = WalkBuilder::new(&search_dir);
+    builder
         .hidden(true)
         .parents(true)
         .git_ignore(true)
         .git_global(true)
-        .build();
+        .filter_entry(|entry| {
+            if let Some(name) = entry.file_name().to_str() {
+                !crate::context::walker::is_excluded_dir_name(name)
+            } else {
+                true
+            }
+        });
+    let walker = builder.build();
 
     let mut matches = Vec::new();
 

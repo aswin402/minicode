@@ -899,7 +899,18 @@ impl MiniKitScaffolder {
             _ => return "\nℹ Skipped auto-install (unknown runtime)".to_string(),
         };
 
-        match Command::new(cmd).args(&args).current_dir(dest_dir).output() {
+        let mut command = Command::new(cmd);
+        command.args(&args).current_dir(dest_dir);
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            command.pre_exec(|| {
+                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+
+        match command.output() {
             Ok(output) if output.status.success() => {
                 format!("• Package install: ✔ `{}` completed successfully.", cmd)
             }

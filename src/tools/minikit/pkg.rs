@@ -139,28 +139,101 @@ impl PkgRegistry {
             }
         };
 
-        // 1. Inject into project native manifest
-        match runtime.as_str() {
-            "npm" | "bun" | "node" | "pnpm" | "yarn" => {
-                Self::add_to_npm_manifest(workspace_root, clean_name, &version, is_dev)?;
+        // 1. Try running the project's native runtime package manager to install the dependency natively
+        let mut installer_succeeded = false;
+        let (cmd, args) = match runtime.as_str() {
+            "bun" => {
+                let mut a = vec!["add"];
+                if is_dev {
+                    a.push("-d");
+                }
+                a.push(clean_name);
+                ("bun", a)
+            }
+            "npm" | "node" => {
+                let mut a = vec!["install"];
+                if is_dev {
+                    a.push("-D");
+                }
+                a.push(clean_name);
+                ("npm", a)
+            }
+            "pnpm" => {
+                let mut a = vec!["add"];
+                if is_dev {
+                    a.push("-D");
+                }
+                a.push(clean_name);
+                ("pnpm", a)
+            }
+            "yarn" => {
+                let mut a = vec!["add"];
+                if is_dev {
+                    a.push("-D");
+                }
+                a.push(clean_name);
+                ("yarn", a)
             }
             "cargo" | "rust" => {
-                Self::add_to_cargo_manifest(workspace_root, clean_name, &version, is_dev)?;
+                let mut a = vec!["add"];
+                if is_dev {
+                    a.push("--dev");
+                }
+                a.push(clean_name);
+                ("cargo", a)
             }
-            "pypi" | "python" | "uv" | "pip" => {
-                Self::add_to_python_manifest(workspace_root, clean_name, &version, is_dev)?;
+            "uv" => {
+                let mut a = vec!["add"];
+                if is_dev {
+                    a.push("--dev");
+                }
+                a.push(clean_name);
+                ("uv", a)
             }
-            "pub" | "flutter" | "dart" => {
-                Self::add_to_flutter_manifest(workspace_root, clean_name, &version, is_dev)?;
+            "pypi" | "python" | "pip" => ("pip", vec!["install", clean_name]),
+            "pub" | "flutter" | "dart" => ("flutter", vec!["pub", "add", clean_name]),
+            _ => ("", vec![]),
+        };
+
+        if !cmd.is_empty() {
+            let mut std_cmd = std::process::Command::new(cmd);
+            std_cmd.args(&args).current_dir(workspace_root);
+            #[cfg(unix)]
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                std_cmd.pre_exec(|| {
+                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    Ok(())
+                });
             }
-            _ => {}
+            if let Ok(out) = std_cmd.output() {
+                if out.status.success() {
+                    installer_succeeded = true;
+                }
+            }
         }
 
-        // 2. Update minikit/minicode/onpkg manifest
-        Self::add_to_kit_manifest(workspace_root, clean_name, is_dev)?;
+        // 2. Fallback to manual manifest injection if runtime CLI was not found or failed
+        if !installer_succeeded {
+            match runtime.as_str() {
+                "npm" | "bun" | "node" | "pnpm" | "yarn" => {
+                    Self::add_to_npm_manifest(workspace_root, clean_name, &version, is_dev)?;
+                }
+                "cargo" | "rust" => {
+                    Self::add_to_cargo_manifest(workspace_root, clean_name, &version, is_dev)?;
+                }
+                "pypi" | "python" | "uv" | "pip" => {
+                    Self::add_to_python_manifest(workspace_root, clean_name, &version, is_dev)?;
+                }
+                "pub" | "flutter" | "dart" => {
+                    Self::add_to_flutter_manifest(workspace_root, clean_name, &version, is_dev)?;
+                }
+                _ => {}
+            }
+        }
 
-        // 3. Trigger MiniKit sync engine
-        crate::tools::minikit::sync::MiniKitSyncEngine::sync(workspace_root).ok();
+        // 3. Update minikit/minicode/onpkg manifest
+        Self::add_to_kit_manifest(workspace_root, clean_name, is_dev)?;
 
         let desc = pkg_info
             .map(|i| format!("\nDescription: {}", i.description))
