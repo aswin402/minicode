@@ -850,10 +850,26 @@ impl MiniKitScaffolder {
         let has_starter_layout = stack.files.iter().any(|f| {
             f.path.contains("RootLayout") || f.path.contains("Navbar") || f.path.contains("Footer")
         });
-        let layout_notice = if has_starter_layout {
-            "\n• ⚡ Layout Architecture: This starter template already includes a global layout wrapper (e.g. `src/layouts/RootLayout.tsx` with `<Navbar />` and `<Footer />`).\n  DO NOT duplicate `<Navbar />` or `<Footer />` inside page components (`HomePage.tsx`). Modify `RootLayout.tsx` or the existing components directly to customize navigation."
+        let mut guidance_lines = Vec::new();
+        if has_starter_layout {
+            guidance_lines.push("• ⚡ Layout Architecture: This starter template already includes a global layout wrapper (e.g. `src/layouts/RootLayout.tsx` with `<Navbar />` and `<Footer />`).\n  DO NOT duplicate `<Navbar />` or `<Footer />` inside page components (`HomePage.tsx`). Modify `RootLayout.tsx` or the existing components directly to customize navigation.".to_string());
+        }
+        guidance_lines.push("• 📝 Starter Files & Overwrite: Starter files (e.g. `HomePage.tsx`, `index.css`, `index.html`) already exist on disk. When replacing whole files with new implementations, pass `overwrite: true` in `write_file` or use `patch_file`.".to_string());
+
+        let has_lucide = stack
+            .files
+            .iter()
+            .any(|f| f.content.contains("lucide-react"))
+            || stack.packages.iter().any(|d| d == "lucide-react")
+            || stack.dev_packages.iter().any(|d| d == "lucide-react");
+        if has_lucide {
+            guidance_lines.push("• 🎨 Brand Icons: `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard UI icons (`Code`, `Globe`, `Share2`, `Terminal`).".to_string());
+        }
+
+        let layout_notice = if guidance_lines.is_empty() {
+            String::new()
         } else {
-            ""
+            format!("\n{}", guidance_lines.join("\n"))
         };
 
         Ok(format!(

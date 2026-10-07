@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.57] — 2026-10-07
+
+### Scaffolder Proactive Guidance, Modern ESM Vite Path Aliases & Zero-Friction Template Modernization
+
+#### 💡 Ideas & Inspirations
+- **Proactive Scaffolder Guidance (`scaffolder.rs`)**: Analysis of real-world end-to-end site generations (`minitest22`) demonstrated that while minicode successfully completes all tasks autonomously, minor initial friction points occurred when agents tried to overwrite starter files without `overwrite: true` or attempted to import brand icons from `lucide-react` before being intercepted by `SyntaxGuard`. The scaffolder output now proactively advises the model on starter files (`HomePage.tsx`, `index.html`, `index.css`) requiring `overwrite: true` or `patch_file`, and reminds models that `lucide-react` does not export brand icons (`Github`, `Twitter`, `Discord`), prompting immediate use of inline SVG or standard UI icons.
+- **Modern ESM Vite Path Aliases (`vite.config.ts` & `node:url`)**: Modern Vite (versions 6, 7, and 8) running on Node or Bun emits deprecation warnings when `path.resolve(__dirname, './src')` is used in ESM modules (`The CJS syntax "__dirname" is deprecated in ESM and will be removed in a future version. Use "import.meta.dirname" or "fileURLToPath(new URL(..., import.meta.url))"`). Built-in React + Vite stack templates and the Vite documentation skill have been modernized to use `import { fileURLToPath, URL } from 'node:url'` with `resolve.alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) }`, eliminating all deprecation warnings in builds and previews.
+
+#### 🚀 Features & Changes
+- **Scaffolder Guidance Enhancement (`src/tools/minikit/scaffolder.rs`)**:
+  - Expanded post-scaffolding guidance messages with starter file overwrite reminders and Lucide brand icon recommendations.
+  - Corrected field access on `Stack` to check both `packages` and `dev_packages` for `lucide-react`.
+- **Vite ESM Modernization (`src/tools/minikit/templates/builtin/react_vite.rs`, `src/tools/minikit/builtin_skills/vite.md`)**:
+  - Replaced legacy CJS `path.resolve(__dirname, ...)` with modern pure-ESM `fileURLToPath(new URL('./src', import.meta.url))` across all `vite.config.ts` starter templates and documentation references.
+
 ## [0.3.56] — 2026-10-07
 
 ### Long-Horizon Streaming Idle Timeouts, Trailing Stream Drop Recovery & Provider Tool Call Draining
