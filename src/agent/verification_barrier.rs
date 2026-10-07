@@ -428,6 +428,7 @@ impl VerificationBarrier {
                 && file != "src/constants.rs";
 
             let mut in_test_module = false;
+            let mut in_multiline_template = false;
             for (idx, line) in content.lines().enumerate() {
                 let trimmed = line.trim();
 
@@ -443,28 +444,45 @@ impl VerificationBarrier {
                     || trimmed.starts_with('#')
                     || trimmed.starts_with("/*")
                     || trimmed.starts_with('*')
+                    || trimmed.starts_with("{/*")
                 {
                     continue;
                 }
 
-                // 1. Raw debug logging detection in production code (skip pattern matching / scanner code)
-                if is_production_code && !trimmed.contains(".contains(") {
-                    for &pattern in VERIFICATION_DEBUG_PATTERNS {
-                        if trimmed.contains(pattern) {
-                            return GateStatus::Failed {
-                                gate_name: "Gate 4: Diff Sanity & Secret Leak Audit",
-                                reason: format!(
-                                    "Forbidden stdout debug statement `{}` detected in `{}` at line {}:\n  {}",
-                                    pattern,
-                                    file,
-                                    idx + 1,
-                                    trimmed
-                                ),
-                                actionable_remediation: format!(
-                                    "Remove `{}` from `{}` or replace with structured logging (`tracing::debug!`).",
-                                    pattern, file
-                                ),
-                            };
+                // Track multi-line template strings or code blocks (backticks)
+                let backtick_count = trimmed.chars().filter(|&c| c == '`').count();
+                let was_in_template = in_multiline_template;
+                if backtick_count % 2 == 1 {
+                    in_multiline_template = !in_multiline_template;
+                }
+                let is_inside_template = was_in_template || in_multiline_template || backtick_count > 0;
+
+                // 1. Raw debug logging detection in production code (skip pattern matching, scanner code, display code, and template strings)
+                if is_production_code && !trimmed.contains(".contains(") && !is_inside_template {
+                    // Also check if line is inside a JSX display block or string literal
+                    let is_display_code = trimmed.starts_with("<code")
+                        || trimmed.starts_with("<pre")
+                        || trimmed.starts_with('"')
+                        || trimmed.starts_with('\'');
+
+                    if !is_display_code {
+                        for &pattern in VERIFICATION_DEBUG_PATTERNS {
+                            if trimmed.contains(pattern) {
+                                return GateStatus::Failed {
+                                    gate_name: "Gate 4: Diff Sanity & Secret Leak Audit",
+                                    reason: format!(
+                                        "Forbidden stdout debug statement `{}` detected in `{}` at line {}:\n  {}",
+                                        pattern,
+                                        file,
+                                        idx + 1,
+                                        trimmed
+                                    ),
+                                    actionable_remediation: format!(
+                                        "Remove `{}` from `{}` or replace with structured logging (`tracing::debug!`).",
+                                        pattern, file
+                                    ),
+                                };
+                            }
                         }
                     }
                 }

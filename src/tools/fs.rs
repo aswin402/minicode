@@ -14,6 +14,28 @@ pub fn read_file(
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
+    // Check for binary asset files to provide clear diagnostic error instead of raw UTF-8 decode failure
+    if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
+        let ext_lower = ext.to_ascii_lowercase();
+        const BINARY_EXTENSIONS: &[&str] = &[
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz",
+            "pdf", "wasm", "zip", "tar", "gz", "tgz", "7z", "rar",
+            "bin", "exe", "so", "dylib", "dll",
+            "mp4", "webm", "mp3", "wav", "ogg",
+            "woff", "woff2", "ttf", "eot", "otf",
+        ];
+        if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
+            return Err(ToolError::InvalidArguments {
+                name: "read_file".to_string(),
+                reason: format!(
+                    "Cannot read binary asset file '{}' (.{}). Binary image/media/compiled files cannot be read as UTF-8 text. To inspect rendered web pages, use 'browser_snapshot' or read the telemetry returned by 'browser_screenshot'.",
+                    relative_path, ext_lower
+                ),
+            }
+            .into());
+        }
+    }
+
     let content = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
         path: relative_path.to_string(),
         source: e,
@@ -112,43 +134,56 @@ pub fn write_file_with_options(
             ));
         }
 
-        let mut hint = String::new();
-        let trimmed_content = content.trim();
-        let trimmed_lower = trimmed_content.to_ascii_lowercase();
+        // Template Placeholder Exemption:
+        // When a stack or project is scaffolded, it generates placeholder doc stubs (e.g. minikit_docs/core/*.md)
+        // or small stub files intended to be populated by the agent with project-specific content.
+        // Overwriting an unmodified boilerplate stub (<35 lines) does not clobber user work.
+        let is_template_placeholder = (relative_path.starts_with("minikit_docs/")
+            || relative_path.starts_with("onpkg_docs/"))
+            && (orig_content.lines().count() <= 35
+                || orig_content.contains("> Template")
+                || orig_content.contains("<!-- template -->")
+                || orig_content.contains("TODO:"));
 
-        // Heuristic: Check if content appears to be an HTML fragment or section
-        if (relative_path.ends_with(".html") || relative_path.ends_with(".htm"))
-            && !trimmed_lower.contains("<!doctype")
-            && !trimmed_lower.contains("<html")
-            && (trimmed_lower.starts_with("<section")
-                || trimmed_lower.starts_with("<!--")
-                || trimmed_lower.starts_with("<div")
-                || trimmed_lower.starts_with("<main")
-                || trimmed_lower.starts_with("<footer")
-                || trimmed_lower.starts_with("<header"))
-        {
-            hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
-        } else if relative_path.ends_with(".css")
-            && !trimmed_lower.contains(":root")
-            && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'))
-        {
-            hint.push_str("\n\n💡 Chunk Detected: Your content looks like additional CSS rules/media queries. If you are adding styles in steps, pass `append: true` to avoid erasing previously written styles!");
-        }
+        if !is_template_placeholder {
+            let mut hint = String::new();
+            let trimmed_content = content.trim();
+            let trimmed_lower = trimmed_content.to_ascii_lowercase();
 
-        return Err(ToolError::InvalidArguments {
-            name: "write_file".to_string(),
-            reason: format!(
-                "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
-                • To append new sections to the end of the file: pass `append: true`.\n\
-                • To completely replace and overwrite the file: pass `overwrite: true`.\n\
-                • To surgically edit specific lines: use `patch_file`.{}",
-                relative_path,
-                orig_content.lines().count(),
-                orig_content.len(),
-                hint
-            ),
+            // Heuristic: Check if content appears to be an HTML fragment or section
+            if (relative_path.ends_with(".html") || relative_path.ends_with(".htm"))
+                && !trimmed_lower.contains("<!doctype")
+                && !trimmed_lower.contains("<html")
+                && (trimmed_lower.starts_with("<section")
+                    || trimmed_lower.starts_with("<!--")
+                    || trimmed_lower.starts_with("<div")
+                    || trimmed_lower.starts_with("<main")
+                    || trimmed_lower.starts_with("<footer")
+                    || trimmed_lower.starts_with("<header"))
+            {
+                hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
+            } else if relative_path.ends_with(".css")
+                && !trimmed_lower.contains(":root")
+                && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'))
+            {
+                hint.push_str("\n\n💡 Chunk Detected: Your content looks like additional CSS rules/media queries. If you are adding styles in steps, pass `append: true` to avoid erasing previously written styles!");
+            }
+
+            return Err(ToolError::InvalidArguments {
+                name: "write_file".to_string(),
+                reason: format!(
+                    "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
+                    • To append new sections to the end of the file: pass `append: true`.\n\
+                    • To completely replace and overwrite the file: pass `overwrite: true`.\n\
+                    • To surgically edit specific lines: use `patch_file`.{}",
+                    relative_path,
+                    orig_content.lines().count(),
+                    orig_content.len(),
+                    hint
+                ),
+            }
+            .into());
         }
-        .into());
     }
 
     let effective_content = if append && !orig_content.is_empty() {

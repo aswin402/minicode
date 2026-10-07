@@ -57,17 +57,15 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: Obscura -> Chrome -> Firefox.
+/// Priority chain for headless automation: Chrome -> Obscura -> Firefox.
 ///
-/// Firefox is LAST RESORT only: Mozilla removed CDP in Firefox 141
-/// (fxdx.dev/cdp-retirement-in-firefox), so it only works with Firefox 140 ESR
-/// or older plus the `remote.active-protocols` preference (written into the
-/// profile's user.js automatically). Modern Firefox installs will fail CDP
-/// startup and fall through to the HTTP reader. Full Firefox support requires
-/// a WebDriver BiDi client (future work).
+/// Chrome is preferred when available: modern Chromium Blink engine (`--headless=new`)
+/// delivers 100% rendering fidelity identical to GUI mode, properly rasterizing
+/// subpixel CSS radial gradients, backdrop filters, and modern web styling.
+/// When Chrome is not installed, seamlessly falls back to Obscura and Firefox.
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
-    BrowserEngine::Obscura,
     BrowserEngine::Chrome,
+    BrowserEngine::Obscura,
     BrowserEngine::Firefox,
 ];
 

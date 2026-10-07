@@ -596,7 +596,7 @@ impl BrowserController {
         }
 
         let mut msg = format!(
-            "Screenshot saved to '{}' ({} bytes)",
+            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshots are binary image files saved for human/browser visual review. Do NOT attempt to read them with `read_file`. Use `browser_snapshot` or the DOM telemetry below to inspect page content.",
             target_path.display(),
             png_bytes.len()
         );
