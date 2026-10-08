@@ -617,6 +617,9 @@ fn install_panic_hook() {
             crossterm::cursor::Show,
         );
         original_hook(panic_info);
+        crate::dev::registry::kill_all_sync();
+        #[cfg(not(test))]
+        std::process::exit(101);
     }));
 }
 

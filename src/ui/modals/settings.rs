@@ -16,13 +16,16 @@ use std::path::Path;
 
 /// Truncates a string in the middle with an ellipsis if it exceeds `max_len`.
 pub fn truncate_middle(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len || max_len < 8 {
+    let char_count = s.chars().count();
+    if char_count <= max_len || max_len < 8 {
         return s.to_string();
     }
     let keep = max_len.saturating_sub(3);
-    let prefix_len = keep / 2;
-    let suffix_len = keep - prefix_len;
-    format!("{}...{}", &s[..prefix_len], &s[s.len() - suffix_len..])
+    let prefix_count = keep / 2;
+    let suffix_count = keep - prefix_count;
+    let prefix: String = s.chars().take(prefix_count).collect();
+    let suffix: String = s.chars().skip(char_count.saturating_sub(suffix_count)).collect();
+    format!("{}...{}", prefix, suffix)
 }
 
 /// Formats token counts into a compact human-readable string (e.g. 128k, 2M).

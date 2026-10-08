@@ -429,11 +429,7 @@ fn render_components_tab(
                     Style::default().fg(theme.text_primary)
                 };
 
-                let name_truncated = if comp.name.len() > 18 {
-                    format!("{}…", &comp.name[..17])
-                } else {
-                    comp.name.clone()
-                };
+                let name_truncated = crate::utils::strings::truncate_display(&comp.name, 18);
 
                 let spans = vec![
                     Span::styled(marker, line_style),

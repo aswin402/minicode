@@ -65,7 +65,7 @@ impl ToolSchemaCompactor {
         }
 
         // 2. Otherwise truncate at word boundary before max_chars
-        let slice = &trimmed[..max_chars];
+        let slice = crate::utils::strings::truncate_chars(trimmed, max_chars);
         if let Some(last_space) = slice.rfind(' ') {
             if last_space > max_chars / 2 {
                 return format!("{}...", &slice[..last_space]);

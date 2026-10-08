@@ -161,8 +161,12 @@ impl ToolRegistry {
                 .get("__raw")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let raw_preview = if raw.len() > 200 {
-                format!("{}... [clamped {} bytes]", &raw[..200], raw.len())
+            let raw_preview = if raw.chars().count() > 200 {
+                format!(
+                    "{}... [clamped {} bytes]",
+                    crate::utils::strings::truncate_chars(raw, 200),
+                    raw.len()
+                )
             } else {
                 raw.to_string()
             };

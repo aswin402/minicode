@@ -1876,7 +1876,7 @@ impl WorkflowRouter {
                     if title.to_ascii_lowercase().contains(token) {
                         score += 5;
                     }
-                    if content[..content.len().min(2000)]
+                    if crate::utils::strings::truncate_chars(&content, 2000)
                         .to_ascii_lowercase()
                         .contains(token)
                     {

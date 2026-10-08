@@ -58,11 +58,7 @@ impl SubagentStepRecord {
 
         // Check if there is a first non-empty line
         let first_line = trimmed.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-        if first_line.len() <= max_chars {
-            first_line.to_string()
-        } else {
-            format!("{}...", &first_line[..max_chars.saturating_sub(3)])
-        }
+        crate::utils::strings::truncate_ellipsis(first_line, max_chars)
     }
 }
 
@@ -154,11 +150,7 @@ impl SubagentTranscript {
         for step in self.steps.iter().take(limit) {
             let status_badge = if step.success { "✅ OK" } else { "❌ ERR" };
             let preview = step.output_snippet.replace('|', "\\|").replace('\n', " ");
-            let preview_trunc = if preview.len() > 60 {
-                format!("{}...", &preview[..57])
-            } else {
-                preview
-            };
+            let preview_trunc = crate::utils::strings::truncate_ellipsis(&preview, 60);
             out.push_str(&format!(
                 "| {} | {} | `{}` | {} | {}ms | {} |\n",
                 step.step_index,

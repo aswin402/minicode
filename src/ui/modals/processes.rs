@@ -1000,11 +1000,7 @@ fn render_process_details_card(
             .into_iter()
             .rev()
             .map(|l| {
-                let trimmed = if l.len() > 60 {
-                    format!("{}…", &l[..59])
-                } else {
-                    l.clone()
-                };
+                let trimmed = crate::utils::strings::truncate_display(l, 60);
                 Line::from(vec![
                     Span::styled(" › ", Style::default().fg(theme.brand_accent)),
                     Span::styled(trimmed, Style::default().fg(theme.text_primary)),
