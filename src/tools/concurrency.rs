@@ -101,7 +101,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         }
 
         // Git & GitHub Mutations
-        "git_commit"
+        "git_init"
+        | "git_commit"
         | "git_checkout"
         | "git_branch"
         | "git_reset"

@@ -619,7 +619,7 @@ impl BrowserController {
         let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
         acc_mgr.update_from_html(&current_html);
 
-        BrowserInteractor::execute_batch(&engine.cdp, steps, &mut acc_mgr).await
+        BrowserInteractor::execute_batch(&engine.cdp, steps, &mut acc_mgr, workspace_root).await
     }
 
     /// Registers or clears mock HTTP responses for route interception

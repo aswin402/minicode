@@ -1269,23 +1269,17 @@ impl AgentLoop {
                             if tool_call.name
                                 == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
                             {
-                                let mut request: crate::agent::inquiry::InquiryRequest =
-                                    serde_json::from_value(tool_call.arguments.clone())
-                                        .unwrap_or_else(|_| {
-                                            crate::agent::inquiry::InquiryRequest {
-                                                inquiry_id: tool_call.id.clone(),
-                                                title: "User Inquiry".to_string(),
-                                                description: None,
-                                                questions: vec![],
-                                            }
-                                        });
-                                request.inquiry_id = tool_call.id.clone();
-
-                                if request.questions.is_empty() {
-                                    let err_output = serde_json::json!({
-                                        "error": "ask_user requires at least one question in the 'questions' array."
-                                    })
-                                    .to_string();
+                                let parsed_res = crate::agent::inquiry::InquiryRequest::parse_from_value(&tool_call.arguments);
+                                let request = match parsed_res {
+                                    Ok(mut req) => {
+                                        req.inquiry_id = tool_call.id.clone();
+                                        req
+                                    }
+                                    Err(err_msg) => {
+                                        let err_output = serde_json::json!({
+                                            "error": err_msg
+                                        })
+                                        .to_string();
                                     let res_event = AgentEvent::ToolResult {
                                         turn_id,
                                         tool_id: tool_call.id.clone(),
@@ -1316,6 +1310,7 @@ impl AgentLoop {
                                     });
                                     continue;
                                 }
+                            };
 
                                 if !self.interactive_approvals {
                                     // Non-interactive / headless auto-resolve

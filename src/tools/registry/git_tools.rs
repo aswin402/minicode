@@ -7,6 +7,19 @@ use std::path::Path;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
+            name: "git_init".to_string(),
+            description: "Initialize a new Git repository in the current workspace with an initial branch ('main' by default).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "initial_branch": {
+                        "type": "string",
+                        "description": "Optional initial branch name (default: 'main')"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "git_status".to_string(),
             description: "Get the current git working tree status (branch, clean/dirty state, staged, unstaged, untracked, and conflicted files).".to_string(),
             parameters: json!({
@@ -333,11 +346,55 @@ pub async fn dispatch(
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
+        "git_init" => Some(
+            async {
+                let initial_branch = param::opt_str(args, "initial_branch").unwrap_or("main");
+                let mut cmd = tokio::process::Command::new("git");
+                cmd.arg("init")
+                    .arg(format!("--initial-branch={}", initial_branch))
+                    .current_dir(workspace_root);
+                let output = cmd.output().await.map_err(|e| {
+                    ToolError::CommandExec(format!("Failed to execute 'git init': {}", e))
+                })?;
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    Ok(format!(
+                        "✔ Successfully initialized empty Git repository in '{}' (branch '{}')\n{}",
+                        workspace_root.display(),
+                        initial_branch,
+                        stdout.trim()
+                    ))
+                } else {
+                    // Fallback without --initial-branch for older git versions
+                    let mut fallback = tokio::process::Command::new("git");
+                    fallback.arg("init").current_dir(workspace_root);
+                    let fb_out = fallback.output().await.map_err(|e| {
+                        ToolError::CommandExec(format!("Failed to execute 'git init': {}", e))
+                    })?;
+                    if fb_out.status.success() {
+                        let _ = tokio::process::Command::new("git")
+                            .args(["checkout", "-b", initial_branch])
+                            .current_dir(workspace_root)
+                            .output()
+                            .await;
+                        Ok(format!(
+                            "✔ Successfully initialized Git repository in '{}' (branch '{}')",
+                            workspace_root.display(),
+                            initial_branch
+                        ))
+                    } else {
+                        let stderr = String::from_utf8_lossy(&fb_out.stderr);
+                        Err(ToolError::CommandExec(format!("git init failed: {}", stderr)).into())
+                    }
+                }
+            }
+            .await,
+        ),
         "git_status" => Some(
             async {
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
-                    return Ok("ℹ Workspace is not a git repository".to_string());
+                    return Ok("ℹ Workspace is not a git repository. Use `git_init` to initialize a Git repository here.".to_string());
                 }
                 let status = git.get_status().await?;
                 let mut out = format!(

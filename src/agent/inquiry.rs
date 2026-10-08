@@ -106,6 +106,143 @@ pub struct InquiryRequest {
 }
 
 impl InquiryRequest {
+    /// Resiliently parses an InquiryRequest from any LLM tool call payload, accommodating:
+    /// - Serialized JSON string in `questions` (`"questions": "[{...}]"`)
+    /// - Singular `question: "..."` shorthand
+    /// - Options as simple strings `["Opt A", "Opt B"]` or objects `[{"label": "Opt A"}]`
+    /// - Missing or empty title (defaulted to "User Inquiry")
+    pub fn parse_from_value(val: &serde_json::Value) -> std::result::Result<Self, String> {
+        let inquiry_id = val
+            .get("inquiry_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let title = val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("User Inquiry")
+            .to_string();
+
+        let description = val
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Parse questions flexibly: accommodate stringified JSON array
+        let raw_questions_val: Option<serde_json::Value> =
+            if let Some(q_str) = val.get("questions").and_then(|v| v.as_str()) {
+                serde_json::from_str(q_str).ok()
+            } else {
+                val.get("questions").cloned()
+            };
+
+        let mut questions = Vec::new();
+
+        if let Some(serde_json::Value::Array(arr)) = raw_questions_val {
+            for item in arr {
+                if let Ok(q) = Self::parse_question_item(&item) {
+                    questions.push(q);
+                }
+            }
+        } else if let Some(single_q) = val.get("question").and_then(|v| v.as_str()) {
+            // Singular question shorthand
+            questions.push(InquiryQuestion {
+                id: "q1".to_string(),
+                question: single_q.to_string(),
+                header: None,
+                input_type: InquiryInputType::Text,
+                is_multi_select: false,
+                allow_custom: true,
+                placeholder: None,
+                default_value: None,
+                options: Vec::new(),
+            });
+        }
+
+        if questions.is_empty() {
+            return Err("ask_user requires at least one question in the 'questions' array or a 'question' prompt.".to_string());
+        }
+
+        Ok(Self {
+            inquiry_id,
+            title,
+            description,
+            questions,
+        })
+    }
+
+    fn parse_question_item(item: &serde_json::Value) -> std::result::Result<InquiryQuestion, String> {
+        if let Ok(mut q) = serde_json::from_value::<InquiryQuestion>(item.clone()) {
+            // If options array in item was strings rather than objects, recover them
+            if q.options.is_empty() {
+                if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
+                    for opt in opts_arr {
+                        if let Some(s) = opt.as_str() {
+                            q.options.push(InquiryOption {
+                                id: s.to_string(),
+                                label: s.to_string(),
+                                description: None,
+                                recommended: false,
+                            });
+                        }
+                    }
+                }
+            }
+            return Ok(q);
+        }
+
+        // Fallback for minimal object {"question": "...", "options": [...]}
+        let question_text = item
+            .get("question")
+            .or_else(|| item.get("title"))
+            .or_else(|| item.get("prompt"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Question missing 'question' text".to_string())?;
+
+        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("q").to_string();
+        let header = item.get("header").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let input_type_str = item.get("input_type").and_then(|v| v.as_str()).unwrap_or("choice");
+        let input_type = match input_type_str {
+            "text" => InquiryInputType::Text,
+            "secret" => InquiryInputType::Secret,
+            _ => InquiryInputType::Choice,
+        };
+        let is_multi_select = item.get("is_multi_select").and_then(|v| v.as_bool()).unwrap_or(false);
+        let allow_custom = item.get("allow_custom").and_then(|v| v.as_bool()).unwrap_or(true);
+        let placeholder = item.get("placeholder").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let default_value = item.get("default_value").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+        let mut options = Vec::new();
+        if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
+            for opt in opts_arr {
+                if let Some(s) = opt.as_str() {
+                    options.push(InquiryOption {
+                        id: s.to_string(),
+                        label: s.to_string(),
+                        description: None,
+                        recommended: false,
+                    });
+                } else if let Ok(parsed_opt) = serde_json::from_value::<InquiryOption>(opt.clone()) {
+                    options.push(parsed_opt);
+                }
+            }
+        }
+
+        Ok(InquiryQuestion {
+            id,
+            question: question_text.to_string(),
+            header,
+            input_type,
+            is_multi_select,
+            allow_custom,
+            placeholder,
+            default_value,
+            options,
+        })
+    }
+
     /// Automatically resolves defaults when running in non-interactive mode (`-y`).
     pub fn auto_resolve_defaults(&self) -> InquiryResponse {
         let mut answers = Vec::with_capacity(self.questions.len());
@@ -420,5 +557,35 @@ mod tests {
         };
         assert_eq!(answer.display_value(), "••••••••");
         assert_eq!(answer.raw_value(), "sk-proj-supersecret123456789");
+    }
+
+    #[test]
+    fn test_parse_from_value_stringified_questions() {
+        // Reproduce minitest31 exact failure payload where questions was passed as a string
+        let payload = serde_json::json!({
+            "title": "Landing Page Stack & Design Direction",
+            "description": "minicode is a technical product",
+            "questions": "[{\"header\": \"Tech Stack\", \"id\": \"stack\", \"input_type\": \"choice\", \"options\": [{\"description\": \"Static HTML\", \"id\": \"static\", \"label\": \"Modern Static HTML\", \"recommended\": true}, {\"description\": \"React Vite\", \"id\": \"react-vite\", \"label\": \"React Vite\"}], \"question\": \"Which tech stack?\"}]"
+        });
+
+        let req = InquiryRequest::parse_from_value(&payload).expect("Must parse stringified questions successfully");
+        assert_eq!(req.title, "Landing Page Stack & Design Direction");
+        assert_eq!(req.questions.len(), 1);
+        assert_eq!(req.questions[0].id, "stack");
+        assert_eq!(req.questions[0].options.len(), 2);
+        assert_eq!(req.questions[0].options[0].id, "static");
+    }
+
+    #[test]
+    fn test_parse_from_value_single_question_and_string_options() {
+        let payload = serde_json::json!({
+            "question": "What database do you want?",
+            "options": ["PostgreSQL", "SQLite", "MongoDB"]
+        });
+
+        let req = InquiryRequest::parse_from_value(&payload).expect("Must parse single question shorthand");
+        assert_eq!(req.title, "User Inquiry");
+        assert_eq!(req.questions.len(), 1);
+        assert_eq!(req.questions[0].question, "What database do you want?");
     }
 }

@@ -77,6 +77,10 @@ pub enum BatchStep {
         #[serde(default)]
         selector: Option<String>,
     },
+    Screenshot {
+        #[serde(default)]
+        path: Option<String>,
+    },
 }
 
 /// Recorded outcome of an individual batch step
@@ -399,6 +403,7 @@ impl BrowserInteractor {
         cdp: &CdpClient,
         steps: &[BatchStep],
         acc_mgr: &mut AccessibilityManager,
+        workspace_root: &std::path::Path,
     ) -> Result<String> {
         let mut outcomes = Vec::with_capacity(steps.len());
         let mut failure: Option<String> = None;
@@ -794,6 +799,48 @@ impl BrowserInteractor {
                             )
                         }
                         Err(e) => (action, "Assertion evaluation failed".to_string(), Err(e)),
+                    }
+                }
+                BatchStep::Screenshot { path } => {
+                    let action = "screenshot";
+                    match cdp.take_screenshot().await {
+                        Ok(png_bytes) => {
+                            let target_path = if let Some(p) = path {
+                                workspace_root.join(p)
+                            } else {
+                                let dir =
+                                    workspace_root.join(crate::constants::BROWSER_SCREENSHOTS_DIR);
+                                let _ = std::fs::create_dir_all(&dir);
+                                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                                dir.join(format!("screenshot_{}.png", timestamp))
+                            };
+                            if let Some(parent) = target_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            match std::fs::write(&target_path, &png_bytes) {
+                                Ok(_) => (
+                                    action,
+                                    format!(
+                                        "Captured screenshot saved to '{}'",
+                                        target_path.display()
+                                    ),
+                                    Ok(()),
+                                ),
+                                Err(e) => (
+                                    action,
+                                    format!(
+                                        "Failed writing screenshot to '{}'",
+                                        target_path.display()
+                                    ),
+                                    Err(ToolError::FileOp {
+                                        path: target_path.display().to_string(),
+                                        source: e,
+                                    }
+                                    .into()),
+                                ),
+                            }
+                        }
+                        Err(e) => (action, "Failed taking screenshot".to_string(), Err(e)),
                     }
                 }
             };

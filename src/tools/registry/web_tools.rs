@@ -361,13 +361,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_batch".to_string(),
-            description: "Execute an atomic pipeline of multiple browser actions sequentially in a single turn without round-tripping to LLM between each step. Supports navigate, click, fill, scroll, wait_for_selector, wait_for_network_idle, delay, eval_js, and assert_text.".to_string(),
+            description: "Execute an atomic pipeline of multiple browser actions sequentially in a single turn without round-tripping to LLM between each step. Supports navigate, click, fill, scroll, screenshot, wait_for_selector, wait_for_network_idle, delay, eval_js, and assert_text.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "actions": {
                         "type": "array",
-                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"fill\", \"ref\": \"@v1:e2\", \"text\": \"alice\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
+                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"scroll\", \"direction\": \"down\"}, {\"action\": \"screenshot\", \"path\": \"screenshots/hero.png\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
                         "items": {
                             "type": "object"
                         }

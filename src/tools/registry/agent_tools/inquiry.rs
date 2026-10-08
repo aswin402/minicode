@@ -109,24 +109,15 @@ pub async fn dispatch(
         return None;
     }
 
-    let parsed_req: std::result::Result<InquiryRequest, _> = serde_json::from_value(args.clone());
+    let parsed_req = InquiryRequest::parse_from_value(args);
     match parsed_req {
         Ok(req) => {
-            if req.questions.is_empty() {
-                Some(Err(crate::error::ToolError::InvalidArguments {
-                    name: ASK_USER_TOOL_NAME.to_string(),
-                    reason: "ask_user requires at least one question in the 'questions' array."
-                        .to_string(),
-                }
-                .into()))
-            } else {
-                let auto_resp = req.auto_resolve_defaults();
-                Some(Ok(auto_resp.into_tool_output()))
-            }
+            let auto_resp = req.auto_resolve_defaults();
+            Some(Ok(auto_resp.into_tool_output()))
         }
-        Err(e) => Some(Err(crate::error::ToolError::InvalidArguments {
+        Err(err_msg) => Some(Err(crate::error::ToolError::InvalidArguments {
             name: ASK_USER_TOOL_NAME.to_string(),
-            reason: format!("Invalid ask_user arguments: {}", e),
+            reason: err_msg,
         }
         .into())),
     }
