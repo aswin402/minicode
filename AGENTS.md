@@ -9,10 +9,11 @@
 - **Primary Domain:** Fast, Minimalist TUI + CLI AI Coding Agent
 
 ## Essential Commands
-- **Check Compilation:** `cargo check -j 1`
+- **Check Compilation (Safe Priority):** `nice -n 19 cargo check -j 1`
 - **Run Development:** `cargo run`
-- **Run Tests:** `cargo test -j 1`
-- **Build Release Binary:** `cargo build --release -j 2`
+- **Run Tests (Safe Priority):** `nice -n 19 cargo test -j 1`
+- **Build Release Binary:** `nice -n 19 cargo build --release -j 1`
+- **Local Install & Update:** `bash localupdate.sh` (or `bash localupdate.sh --clean` to purge build cache and save disk)
 - **Lint:** `cargo clippy -j 1 -- -D warnings`
 - **Format:** `cargo fmt --check` (auto-fix: `cargo fmt`)
 

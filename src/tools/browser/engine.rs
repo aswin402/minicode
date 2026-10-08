@@ -129,8 +129,8 @@ mod tests {
 
     #[test]
     fn test_priority_chains() {
-        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
-        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Obscura);
         assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
 
         assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);

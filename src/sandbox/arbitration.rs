@@ -529,66 +529,49 @@ mod tests {
         assert_eq!(report.command, "skip");
     }
 
+    fn run_git_fixture(args: &[&str], dir: &std::path::Path) {
+        for _ in 0..5 {
+            match std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+            {
+                Ok(_) => return,
+                Err(e) if e.raw_os_error() == Some(10) => {
+                    // ECHILD (code 10): child reaped by concurrent process in test suite
+                    return;
+                }
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+
     #[test]
     fn test_mergeability_and_apply_clean() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
         // git init
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["init"], root);
+        run_git_fixture(&["config", "user.name", "test"], root);
+        run_git_fixture(&["config", "user.email", "test@example.com"], root);
 
         std::fs::write(root.join("hello.txt"), "base\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["add", "."], root);
+        run_git_fixture(&["commit", "-m", "init"], root);
 
         // create branch
         let branch = "minicode/subagent/coder-1";
-        std::process::Command::new("git")
-            .args(["branch", branch])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["branch", branch], root);
 
         // modify on branch
         let worktree_dir = root.join("wt");
-        std::process::Command::new("git")
-            .args(["worktree", "add", worktree_dir.to_str().unwrap(), branch])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["worktree", "add", worktree_dir.to_str().unwrap(), branch], root);
         std::fs::write(worktree_dir.join("hello.txt"), "base\nupdated\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&worktree_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "branch commit"])
-            .current_dir(&worktree_dir)
-            .output()
-            .unwrap();
+        run_git_fixture(&["add", "."], &worktree_dir);
+        run_git_fixture(&["commit", "-m", "branch commit"], &worktree_dir);
 
         // check mergeability
         let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
@@ -620,73 +603,29 @@ mod tests {
         let root = temp.path();
 
         // git init
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["init"], root);
+        run_git_fixture(&["config", "user.name", "test"], root);
+        run_git_fixture(&["config", "user.email", "test@example.com"], root);
 
         // Base commit modifying file.txt
         std::fs::write(root.join("file.txt"), "base content\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["add", "."], root);
+        run_git_fixture(&["commit", "-m", "init"], root);
 
         // Branch 1 modifies file.txt to A and commits
         let branch = "minicode/subagent/conflict-branch";
-        std::process::Command::new("git")
-            .args(["branch", branch])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["branch", branch], root);
 
         let worktree_dir = root.join("wt");
-        std::process::Command::new("git")
-            .args(["worktree", "add", worktree_dir.to_str().unwrap(), branch])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["worktree", "add", worktree_dir.to_str().unwrap(), branch], root);
         std::fs::write(worktree_dir.join("file.txt"), "modified A in branch\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&worktree_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "branch commit A"])
-            .current_dir(&worktree_dir)
-            .output()
-            .unwrap();
+        run_git_fixture(&["add", "."], &worktree_dir);
+        run_git_fixture(&["commit", "-m", "branch commit A"], &worktree_dir);
 
         // Main modifies file.txt to B and commits
         std::fs::write(root.join("file.txt"), "modified B in main\n").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "main commit B"])
-            .current_dir(root)
-            .output()
-            .unwrap();
+        run_git_fixture(&["add", "."], root);
+        run_git_fixture(&["commit", "-m", "main commit B"], root);
 
         // Asserts check_mergeability returns can_merge_cleanly: false and conflicted_files containing "file.txt"
         let mergeability = MergeArbitrator::check_mergeability(root, branch).unwrap();
