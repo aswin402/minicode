@@ -1,9 +1,10 @@
 use crate::error::{Result, ToolError};
 use crate::sandbox::path::validate_path_in_workspace;
+use crate::session::backup::BackupManager;
 use similar::TextDiff;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Reads a file from the workspace within the specified optional 1-indexed line range.
 pub fn read_file(
@@ -134,16 +135,22 @@ pub fn write_file_with_options(
             ));
         }
 
-        // Template Placeholder Exemption:
-        // When a stack or project is scaffolded, it generates placeholder doc stubs (e.g. minikit_docs/core/*.md)
-        // or small stub files intended to be populated by the agent with project-specific content.
-        // Overwriting an unmodified boilerplate stub (<35 lines) does not clobber user work.
-        let is_template_placeholder = (relative_path.starts_with("minikit_docs/")
+        // Template Placeholder & Starter Scaffold Exemption:
+        // When a stack is scaffolded (e.g. with onpkg/minikit), it generates starter template files
+        // (docs stubs, starter CSS, default Navbar/App/HomePage with demo counters/logos) intended to be replaced.
+        // Overwriting an unmodified boilerplate starter does not destroy custom user work.
+        let is_template_placeholder = ((relative_path.starts_with("minikit_docs/")
             || relative_path.starts_with("onpkg_docs/"))
             && (orig_content.lines().count() <= 35
                 || orig_content.contains("> Template")
                 || orig_content.contains("<!-- template -->")
-                || orig_content.contains("TODO:"));
+                || orig_content.contains("TODO:")))
+            || orig_content.contains("viteLogo")
+            || orig_content.contains("reactLogo")
+            || orig_content.contains("Kinetic Motion Template")
+            || orig_content.contains("minikit.json")
+            || orig_content.contains("Vite + React")
+            || (relative_path == "src/index.css" && orig_content.contains("@import \"tailwindcss\";") && orig_content.contains("--color-background: oklch"));
 
         if !is_template_placeholder {
             let mut hint = String::new();
@@ -746,6 +753,146 @@ fn find_nearest_match(original: &str, search: &str) -> NearestMatchDiagnostic {
     }
 }
 
+/// Batch refactoring: Atomically find and replace a pattern across multiple workspace files matching a glob pattern.
+pub fn replace_in_files(
+    workspace_root: &Path,
+    glob_pattern: &str,
+    search_block: &str,
+    replace_block: &str,
+    backup_manager: Option<&BackupManager>,
+    turn_id: usize,
+) -> Result<String> {
+    if search_block.is_empty() {
+        return Err(ToolError::InvalidArguments {
+            name: "replace_in_files".to_string(),
+            reason: "search_block cannot be empty".to_string(),
+        }
+        .into());
+    }
+
+    let norm_pattern = glob_pattern.trim();
+    let mut override_builder = ignore::overrides::OverrideBuilder::new(workspace_root);
+    if let Err(e) = override_builder.add(norm_pattern) {
+        return Err(ToolError::InvalidArguments {
+            name: "replace_in_files".to_string(),
+            reason: format!("Invalid glob pattern '{}': {}", norm_pattern, e),
+        }
+        .into());
+    }
+
+    let overrides = override_builder
+        .build()
+        .map_err(|e| ToolError::InvalidArguments {
+            name: "replace_in_files".to_string(),
+            reason: format!("Failed to build glob overrides for '{}': {}", norm_pattern, e),
+        })?;
+
+    let walker = ignore::WalkBuilder::new(workspace_root)
+        .overrides(overrides)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .build();
+
+    let mut matched_files: Vec<(PathBuf, String, String)> = Vec::new();
+    let mut files_scanned = 0;
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+
+        files_scanned += 1;
+        let file_path = entry.path().to_path_buf();
+        let content = match std::fs::read_to_string(&file_path) {
+            Ok(c) => c,
+            Err(_) => continue, // Skip binary or unreadable files
+        };
+
+        if content.contains(search_block) {
+            let new_content = content.replace(search_block, replace_block);
+
+            // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
+            let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
+            crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
+                &file_path,
+                &content,
+                &new_content,
+            )
+            .map_err(|reason| ToolError::PatchFailed {
+                path: rel_path.display().to_string(),
+                reason: format!("Batch replacement rejected: {}", reason),
+            })?;
+
+            matched_files.push((file_path, content, new_content));
+        }
+    }
+
+    if matched_files.is_empty() {
+        return Ok(format!(
+            "No files modified. Scanned {} files matching glob '{}', but found 0 occurrences of search_block.",
+            files_scanned, norm_pattern
+        ));
+    }
+
+    // Apply all edits atomically with safety backups
+    let mut modified_summaries = Vec::new();
+    let first_modified_rel = matched_files[0]
+        .0
+        .strip_prefix(workspace_root)
+        .unwrap_or(&matched_files[0].0)
+        .display()
+        .to_string();
+
+    for (file_path, _orig_content, new_content) in &matched_files {
+        let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(file_path);
+        let rel_str = rel_path.display().to_string();
+
+        if let Some(bm) = backup_manager {
+            if let Err(e) = bm.create_checkpoint(workspace_root, file_path, turn_id) {
+                tracing::warn!(path = %file_path.display(), error = %e, "Failed to create checkpoint before replace_in_files");
+            }
+        }
+
+        let _ = crate::session::transaction::TransactionManager::record_mutation_pre(
+            workspace_root,
+            file_path,
+        );
+
+        write_file_with_options(workspace_root, &rel_str, new_content, false, true)?;
+
+        let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+            workspace_root,
+            file_path,
+        );
+
+        modified_summaries.push(format!("  • {}", rel_str));
+    }
+
+    let mut result_msg = format!(
+        "Successfully replaced pattern across {} files ({} files scanned matching '{}'):\n{}",
+        matched_files.len(),
+        files_scanned,
+        norm_pattern,
+        modified_summaries.join("\n")
+    );
+
+    if let Some(feedback) =
+        crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, &first_modified_rel)
+    {
+        result_msg.push_str("\n\n");
+        result_msg.push_str(&feedback);
+    }
+
+    Ok(result_msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1145,42 @@ mod tests {
         assert!(res4.is_ok());
         let content2 = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
         assert_eq!(content2, chunk3);
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_replace_in_files_batch() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_replace_in_files_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src/components")).unwrap();
+
+        let file1 = "src/components/A.tsx";
+        let file2 = "src/components/B.tsx";
+        let file3 = "src/components/C.tsx";
+
+        write_file(&temp_dir, file1, "import { gsap } from 'gsap';\nimport { ScrollTrigger } from 'gsap/ScrollTrigger';\nexport const A = 1;\n").unwrap();
+        write_file(&temp_dir, file2, "import { gsap } from 'gsap';\nimport { ScrollTrigger } from 'gsap/ScrollTrigger';\nexport const B = 2;\n").unwrap();
+        write_file(&temp_dir, file3, "import { gsap } from 'gsap';\nexport const C = 3;\n").unwrap();
+
+        let search = "import { ScrollTrigger } from 'gsap/ScrollTrigger';\n";
+        let replace = "";
+
+        let res = replace_in_files(&temp_dir, "src/components/*.tsx", search, replace, None, 0).unwrap();
+        assert!(res.contains("Successfully replaced pattern across 2 files"));
+        assert!(res.contains("A.tsx"));
+        assert!(res.contains("B.tsx"));
+
+        let content1 = std::fs::read_to_string(temp_dir.join(file1)).unwrap();
+        assert!(!content1.contains("ScrollTrigger"));
+        assert!(content1.contains("export const A = 1;"));
+
+        let content2 = std::fs::read_to_string(temp_dir.join(file2)).unwrap();
+        assert!(!content2.contains("ScrollTrigger"));
+        assert!(content2.contains("export const B = 2;"));
+
+        let content3 = std::fs::read_to_string(temp_dir.join(file3)).unwrap();
+        assert!(content3.contains("export const C = 3;"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

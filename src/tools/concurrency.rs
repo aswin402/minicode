@@ -58,6 +58,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // Filesystem Mutations & Transactions
         "write_file"
         | "patch_file"
+        | "replace_in_files"
         | "repair_patch"
         | "ast_replace_node"
         | "delete_file"

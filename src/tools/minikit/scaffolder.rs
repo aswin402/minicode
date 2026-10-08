@@ -816,7 +816,10 @@ impl MiniKitScaffolder {
             ## Architecture & Conventions\n\
             1. All project specifications and task tracking live under `minikit_docs/`.\n\
             2. Use `{}` as the package manager.\n\
-            3. Follow standard {} best practices.\n",
+            3. Follow standard {} best practices.\n\
+            4. Lighting & Glows: Use CSS radial gradients instead of massive blur filters (`blur-[128px]`) to ensure clean rendering in headless browsers.\n\
+            5. UI & Layout: Fixed navbars require adequate hero top-padding (`pt-28`+) to avoid title overlap. Animations must initialize with visible content.\n\
+            6. Batch Refactoring: Use `replace_in_files` for multi-file pattern updates across components.\n",
             project_name,
             project_name,
             stack.name,
@@ -864,6 +867,15 @@ impl MiniKitScaffolder {
             || stack.dev_packages.iter().any(|d| d == "lucide-react");
         if has_lucide {
             guidance_lines.push("• 🎨 Brand Icons: `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard UI icons (`Code`, `Globe`, `Share2`, `Terminal`).".to_string());
+        }
+
+        let has_frontend = stack.files.iter().any(|f| {
+            f.path.ends_with(".tsx") || f.path.ends_with(".jsx") || f.path.ends_with(".vue") || f.path.ends_with(".html")
+        });
+        if has_frontend {
+            guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader), producing harsh rectangular blocks. Always build ambient background glows with CSS radial gradients (e.g. `bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))]` or inline `radial-gradient(circle, rgba(...) 0%, transparent 70%)`) which render crisply and identically in both hardware GPU and software headless capture.".to_string());
+            guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When utilizing fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) to prevent titles from being occluded behind the navbar.".to_string());
+            guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`. In child components, only import what is actively invoked (never import unused `ScrollTrigger` or plugins to prevent TS6133 unused import errors). Always provide animated elements with visible initial state so headless screenshots capture content immediately.".to_string());
         }
 
         let layout_notice = if guidance_lines.is_empty() {

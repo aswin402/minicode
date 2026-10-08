@@ -866,6 +866,12 @@ impl CdpClient {
 
     /// Captures a viewport screenshot as PNG bytes
     pub async fn take_screenshot(&self) -> Result<Vec<u8>> {
+        // Wait for web fonts and layout paints to settle before rasterization
+        let _ = self
+            .evaluate_js("document.fonts ? document.fonts.ready.then(() => true) : true")
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
         let res = self
             .send_command("Page.captureScreenshot", json!({ "format": "png" }))
             .await?;

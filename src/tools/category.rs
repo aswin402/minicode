@@ -70,7 +70,7 @@ impl ToolCategory {
 
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Files => "Filesystem manipulation (read_file, patch_file, write_file)",
+            Self::Files => "Filesystem manipulation (read_file, patch_file, write_file, replace_in_files)",
             Self::Exec => "Terminal command execution (exec_cmd)",
             Self::Search => "Codebase search & symbols (grep_search, locate_symbol, hybrid_search, ast_query)",
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
@@ -202,10 +202,10 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
 
 /// Returns the minimal, highly-optimized Core tool schemas (~9 tools) always exposed in Dynamic mode.
 pub fn get_core_schemas() -> Vec<ToolSchema> {
-    let mut core = Vec::with_capacity(10);
-    // 1. Files (read_file, patch_file, write_file)
+    let mut core = Vec::with_capacity(11);
+    // 1. Files (read_file, patch_file, write_file, replace_in_files)
     for s in registry::fs_tools::get_schemas() {
-        if s.name == "read_file" || s.name == "patch_file" || s.name == "write_file" {
+        if s.name == "read_file" || s.name == "patch_file" || s.name == "write_file" || s.name == "replace_in_files" {
             core.push(s);
         }
     }
@@ -410,11 +410,12 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 11);
+        assert!(core.len() >= 8 && core.len() <= 12);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"replace_in_files"));
         assert!(names.contains(&"exec_cmd"));
         assert!(names.contains(&"grep_search"));
         assert!(names.contains(&"locate_symbol"));

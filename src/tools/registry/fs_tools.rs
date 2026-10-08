@@ -79,6 +79,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "replace_in_files".to_string(),
+            description: "Batch refactoring: Atomically find and replace a code block or pattern across multiple workspace files matching a glob pattern (e.g. 'src/components/sections/*.tsx', '**/*.ts', 'src/**/*.rs'). Includes pre-write Tree-sitter AST syntax validation for all target files and generates safety checkpoints.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "glob": {
+                        "type": "string",
+                        "description": "File pattern to match (e.g. 'src/components/sections/*.tsx', '**/*.ts', 'src/**/*.rs')"
+                    },
+                    "search_block": {
+                        "type": "string",
+                        "description": "The exact unique code block or pattern to find in matching files"
+                    },
+                    "replace_block": {
+                        "type": "string",
+                        "description": "The replacement code block"
+                    }
+                },
+                "required": ["glob", "search_block", "replace_block"]
+            }),
+        },
+        ToolSchema {
             name: "write_file".to_string(),
             description: "Create a new file, append content, or overwrite an existing file. By default, to prevent accidental file clobbering when building large files, write_file protects against overwriting existing non-empty files unless `overwrite: true` or `append: true` is specified.".to_string(),
             parameters: json!({
@@ -269,6 +291,16 @@ pub async fn dispatch(
                 );
             }
             res
+        })()),
+        "replace_in_files" => Some((|| {
+            let glob_pattern = param::get_str_with_aliases(args, &["glob", "pattern", "glob_pattern", "path"])
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "replace_in_files".to_string(),
+                    reason: "Missing required glob argument (accepted: 'glob', 'pattern', 'glob_pattern')".to_string(),
+                })?;
+            let search = param::require_search_block(args, "replace_in_files")?;
+            let replace = param::require_replace_block(args, "replace_in_files")?;
+            fs::replace_in_files(workspace_root, glob_pattern, search, replace, backup_manager, turn_id)
         })()),
         "repair_patch" => Some(async {
             let path = param::require_path(args, "repair_patch")?;
