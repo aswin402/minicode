@@ -90,7 +90,9 @@ impl BackupManager {
                 ))
             })?;
 
-        let backup_dest = turn_dir.join(relative_path);
+        // Append .minicode_bak extension so linters (eslint, tsc, clippy) and test runners
+        // ignore safety backup files and never flag phantom errors in .minicode/backups/
+        let backup_dest = turn_dir.join(format!("{}.minicode_bak", relative_path.display()));
 
         let backed_up_file = if full_file.exists() {
             if let Some(parent) = backup_dest.parent() {

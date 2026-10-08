@@ -606,8 +606,8 @@ pub struct BrowserSettingsConfig {
 
 fn default_headless_priority() -> Vec<String> {
     vec![
-        "obscura".to_string(),
         "chrome".to_string(),
+        "obscura".to_string(),
         "firefox".to_string(),
     ]
 }

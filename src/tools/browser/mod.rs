@@ -127,7 +127,15 @@ impl BrowserController {
             .build()
             .map_err(|e| ToolError::CommandExec(format!("Failed to build HTTP client: {}", e)))?;
 
-        let response = client.get(url).send().await.map_err(|e| {
+        let mut response = client.get(url).send().await;
+        // On Linux, localhost may resolve to ::1 (IPv6) first while dev servers (Vite, Express) only listen on 127.0.0.1 (IPv4).
+        if response.is_err() && url.contains("localhost") {
+            let alt_url = url.replace("localhost", "127.0.0.1");
+            if let Ok(alt_resp) = client.get(&alt_url).send().await {
+                response = Ok(alt_resp);
+            }
+        }
+        let response = response.map_err(|e| {
             ToolError::CommandExec(format!("Failed to connect to '{}': {}", url, e))
         })?;
 

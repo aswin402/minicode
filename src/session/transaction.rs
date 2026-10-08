@@ -480,6 +480,9 @@ impl TransactionManager {
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, manifest_json)?;
 
+        // Ensure .minicode/ directory remains protected in .gitignore after any file scaffolding or commits
+        crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
+
         // Remove active pointer if pointing to this transaction
         let pointer_path = Self::active_pointer_file(workspace_root);
         if pointer_path.exists() {

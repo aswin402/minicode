@@ -15,7 +15,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "The shell command string to execute in workspace root"
+                        "description": "The shell command string to execute. Already executes in the workspace root by default — do NOT prepend 'cd <workspace>' or hardcode absolute paths."
                     },
                     "timeout_secs": {
                         "type": "integer",

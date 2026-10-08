@@ -2055,14 +2055,14 @@ impl<'a> App<'a> {
                                 3 => {
                                     state.browser_default_engine = None;
                                     state.browser_headless_priority = vec![
-                                        "obscura".to_string(),
                                         "chrome".to_string(),
+                                        "obscura".to_string(),
                                         "firefox".to_string(),
                                     ];
                                     state.browser_gui_priority = vec![
-                                        "firefox".to_string(),
                                         "chrome".to_string(),
                                         "obscura".to_string(),
+                                        "firefox".to_string(),
                                     ];
                                 }
                                 _ => {}
@@ -2172,14 +2172,14 @@ impl<'a> App<'a> {
                                 3 => {
                                     state.browser_default_engine = None;
                                     state.browser_headless_priority = vec![
-                                        "obscura".to_string(),
                                         "chrome".to_string(),
+                                        "obscura".to_string(),
                                         "firefox".to_string(),
                                     ];
                                     state.browser_gui_priority = vec![
-                                        "firefox".to_string(),
                                         "chrome".to_string(),
                                         "obscura".to_string(),
+                                        "firefox".to_string(),
                                     ];
                                 }
                                 _ => {}
