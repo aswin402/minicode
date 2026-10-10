@@ -870,13 +870,45 @@ impl MiniKitScaffolder {
         }
 
         let has_frontend = stack.files.iter().any(|f| {
-            f.path.ends_with(".tsx") || f.path.ends_with(".jsx") || f.path.ends_with(".vue") || f.path.ends_with(".html")
+            f.path.ends_with(".tsx")
+                || f.path.ends_with(".jsx")
+                || f.path.ends_with(".vue")
+                || f.path.ends_with(".html")
         });
         if has_frontend {
             guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader), producing harsh rectangular blocks. Always build ambient background glows with CSS radial gradients (e.g. `bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))]` or inline `radial-gradient(circle, rgba(...) 0%, transparent 70%)`) which render crisply and identically in both hardware GPU and software headless capture.".to_string());
             guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When utilizing fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) to prevent titles from being occluded behind the navbar.".to_string());
             guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`. In child components, only import what is actively invoked (never import unused `ScrollTrigger` or plugins to prevent TS6133 unused import errors). Always provide animated elements with visible initial state so headless screenshots capture content immediately.".to_string());
         }
+
+        // Handoff: point at the natural next subsystems so one tool leads to the next.
+        let framework_hint = if stack
+            .files
+            .iter()
+            .any(|f| f.path.ends_with(".tsx") || f.path.ends_with(".jsx"))
+        {
+            Some("react")
+        } else if stack.files.iter().any(|f| f.path.ends_with(".html")) {
+            Some("css")
+        } else {
+            None
+        };
+        guidance_lines.push("Next steps:".to_string());
+        guidance_lines.push(
+            "1. Read AGENTS.md and the generated entry files before editing; extend the template instead of rewriting it.".to_string(),
+        );
+        guidance_lines.push(
+            "2. Multi-step work: create_plan with 4-8 verifiable steps, then update_progress as each finishes.".to_string(),
+        );
+        if let Some(fw) = framework_hint {
+            guidance_lines.push(format!(
+                "3. UI: block_palettes for colour tokens and block_search(query=\"hero\", framework=\"{}\", include_code=true) for section components.",
+                fw
+            ));
+        }
+        guidance_lines.push(
+            "4. Run it with minitask(action=\"start\", ...) using the template's dev script and verify with browser_navigate or tests.".to_string(),
+        );
 
         let layout_notice = if guidance_lines.is_empty() {
             String::new()

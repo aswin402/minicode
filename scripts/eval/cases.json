@@ -1,0 +1,126 @@
+[
+  {
+    "id": "greenfield_rich_no_stack",
+    "description": "Long, detailed feature prompt with no explicit stack (the minitest33/34 prompt).",
+    "prompt_file": "prompts/minicode_landing.md",
+    "fixture": null,
+    "expect": {
+      "ask_before_write": true,
+      "scaffold": true
+    }
+  },
+  {
+    "id": "greenfield_vague",
+    "description": "Short, vague request; stack and design unspecified.",
+    "prompt": "Make me a website for my bakery.",
+    "fixture": null,
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "greenfield_backend_no_stack",
+    "description": "Backend request with no language/framework given.",
+    "prompt": "Build a REST API for a notes app with create, list, update and delete endpoints.",
+    "fixture": null,
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "greenfield_explicit_stack",
+    "description": "Stack and theme explicitly given; asking again about the stack is unnecessary.",
+    "prompt": "Build a todo app using React + Vite + Tailwind with a dark minimal theme. Use bun.",
+    "fixture": null,
+    "expect": {
+      "ask": false,
+      "scaffold": true
+    }
+  },
+  {
+    "id": "greenfield_single_html",
+    "description": "User explicitly wants one self-contained file; no build tooling.",
+    "prompt": "Create a single self-contained index.html that shows a countdown timer to New Year. No frameworks, no build step, everything inline in that one file.",
+    "fixture": null,
+    "expect": {
+      "ask": false
+    }
+  },
+  {
+    "id": "greenfield_python_script",
+    "description": "Explicit language and constraints; should just do it.",
+    "prompt": "Write a Python CLI script wordcount.py that counts words, lines and characters in a file passed as an argument. Standard library only.",
+    "fixture": null,
+    "expect": {
+      "ask": false,
+      "scaffold": false
+    }
+  },
+  {
+    "id": "existing_bugfix",
+    "description": "Existing repo with a failing test; should investigate and fix, never scaffold or ask about stack.",
+    "prompt": "The add test is failing. Find and fix the bug.",
+    "fixture": "fixtures/js_math",
+    "expect": {
+      "ask": false,
+      "scaffold": false,
+      "edits_file": "src/math.js"
+    }
+  },
+  {
+    "id": "existing_feature",
+    "description": "Existing repo; small feature in established conventions.",
+    "prompt": "Add a subtract(a, b) function to src/math.js and a test for it in the existing test file.",
+    "fixture": "fixtures/js_math",
+    "expect": {
+      "ask": false,
+      "scaffold": false
+    }
+  },
+  {
+    "id": "existing_add_auth",
+    "description": "Existing app; auth method and user storage are user-owned architecture decisions.",
+    "prompt": "Add user login to this app.",
+    "fixture": "fixtures/notes_app",
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "existing_persistence",
+    "description": "Existing app; choosing the persistence layer is an architecture/data decision.",
+    "prompt": "Make the notes persist so they survive a server restart.",
+    "fixture": "fixtures/notes_app",
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "existing_redesign",
+    "description": "Existing app; 'more modern' does not settle the design direction.",
+    "prompt": "Redesign the notes page so it looks more modern.",
+    "fixture": "fixtures/notes_app",
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "existing_missing_data",
+    "description": "Existing app; the company's address/phone are data only the user has (placeholders would be wrong).",
+    "prompt": "Add a footer to the notes page with our company's address and phone number.",
+    "fixture": "fixtures/notes_app",
+    "expect": {
+      "ask_before_write": true
+    }
+  },
+  {
+    "id": "existing_explicit_change",
+    "description": "Existing app; fully specified change. Asking would be over-asking.",
+    "prompt": "Change the server port from 3000 to 8080.",
+    "fixture": "fixtures/notes_app",
+    "expect": {
+      "ask": false,
+      "edits_file": "server.js"
+    }
+  }
+]

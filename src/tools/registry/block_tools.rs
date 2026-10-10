@@ -22,7 +22,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "block_search".to_string(),
-            description: "Search UI components in the MiniBlocks warehouse by keywords, category, framework, and tags with relevance scoring.".to_string(),
+            description: "Search ~1,080 pre-built UI components (heroes, navbars, pricing, footers, cards, forms) by keyword, category, framework and tags. Use before writing UI sections or styles from scratch; adapt the matches to the project. Short section-name queries work best (\"hero\", \"pricing\"). Set include_code=true to get the source of the top matches in the same call (otherwise use block_get). framework=css suits plain HTML/CSS projects.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -46,6 +46,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of results to return (default: 10, max: 50)"
+                    },
+                    "include_code": {
+                        "type": "boolean",
+                        "description": "Include source code of the top 3 matches (each capped at ~4KB) so no follow-up block_get is needed."
                     }
                 }
             }),
@@ -366,6 +370,8 @@ pub async fn dispatch(
                     return Ok("No components found matching the search criteria.".to_string());
                 }
 
+                let include_code = opt_bool(args, "include_code", false);
+                let top_ids: Vec<Uuid> = results.iter().take(3).map(|r| r.id).collect();
                 let mut out = format!("Found {} matching component(s):\n\n", results.len());
                 out.push_str("| Name | Category | Framework | Version | Tags | Score | ID | Description |\n");
                 out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
@@ -388,6 +394,32 @@ pub async fn dispatch(
                         r.id,
                         desc_escaped
                     ));
+                }
+                if include_code {
+                    const MAX_CODE_BYTES: usize = 4_000;
+                    for id in &top_ids {
+                        let Some(comp) = store.get_component(id) else {
+                            continue;
+                        };
+                        let mut code = comp.code.as_str();
+                        let truncated = code.len() > MAX_CODE_BYTES;
+                        if truncated {
+                            code = &code[..code.floor_char_boundary(MAX_CODE_BYTES)];
+                        }
+                        out.push_str(&format!(
+                            "\n### {} ({})\n```\n{}\n```\n{}",
+                            comp.name,
+                            comp.framework,
+                            code,
+                            if truncated {
+                                format!("(truncated; full source: block_get(id=\"{}\"))\n", comp.id)
+                            } else {
+                                String::new()
+                            }
+                        ));
+                    }
+                } else {
+                    out.push_str("\nNext: block_get(id=...) for source, or re-run with include_code=true. Place components with block_insert / block_scaffold.\n");
                 }
                 Ok(out)
             }

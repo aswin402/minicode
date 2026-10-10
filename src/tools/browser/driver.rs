@@ -764,17 +764,20 @@ impl CdpClient {
 
     /// Navigates to the specified URL and waits for network idle or settled DOM
     pub async fn navigate(&self, url: &str) -> Result<()> {
+        let normalized_url = super::normalize_loopback_url(url);
+        let target_url = normalized_url.as_str();
+
         let current_url = self
             .evaluate_js("window.location.href")
             .await
             .unwrap_or_default();
         let clean_current = current_url.trim_matches('"').trim_end_matches('/');
-        let clean_target = url.trim().trim_end_matches('/');
+        let clean_target = target_url.trim().trim_end_matches('/');
 
         if !clean_current.is_empty() && clean_current == clean_target {
             let _ = self.send_command("Page.reload", json!({})).await;
         } else {
-            self.send_command("Page.navigate", json!({ "url": url }))
+            self.send_command("Page.navigate", json!({ "url": target_url }))
                 .await?;
         }
         // Dynamically wait for network idle with fallback deadline

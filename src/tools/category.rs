@@ -79,7 +79,7 @@ impl ToolCategory {
             Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning & skills (create_plan, update_progress, wiki_write)",
-            Self::MiniPower => "MiniPower methodology, verification barrier & worktree tasks (power_status, power_brainstorm, power_plan, power_review, power_verify, power_worktree_task)",
+            Self::MiniPower => "MiniPower methodology, verification barrier & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Unified task manager, process vault, development servers & daemons (minitask)",
             Self::Vault => "MiniVault multi-tier agent skills warehouse, bundles & lifecycle (vault_search, vault_show, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url, vault_bundle_list, vault_bundle_load, vault_bundle_create)",
@@ -202,10 +202,14 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
 
 /// Returns the minimal, highly-optimized Core tool schemas (~9 tools) always exposed in Dynamic mode.
 pub fn get_core_schemas() -> Vec<ToolSchema> {
-    let mut core = Vec::with_capacity(11);
+    let mut core = Vec::with_capacity(12);
     // 1. Files (read_file, patch_file, write_file, replace_in_files)
     for s in registry::fs_tools::get_schemas() {
-        if s.name == "read_file" || s.name == "patch_file" || s.name == "write_file" || s.name == "replace_in_files" {
+        if s.name == "read_file"
+            || s.name == "patch_file"
+            || s.name == "write_file"
+            || s.name == "replace_in_files"
+        {
             core.push(s);
         }
     }
@@ -230,7 +234,14 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
     // 5. Human-in-the-loop interactive inquiry (ask_user)
     core.extend(registry::agent_tools::inquiry::get_schemas());
 
-    // 6. Meta-Tool
+    // 6. Design phase entry (drives ask_user rounds for open-ended work)
+    core.extend(
+        registry::minipower_tools::get_schemas()
+            .into_iter()
+            .filter(|s| s.name == "power_brainstorm"),
+    );
+
+    // 7. Meta-Tool
     core.push(activate_tools_schema());
 
     core
@@ -410,9 +421,10 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 12);
+        assert!(core.len() >= 8 && core.len() <= 13);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"power_brainstorm"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"replace_in_files"));

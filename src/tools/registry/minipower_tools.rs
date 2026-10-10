@@ -14,23 +14,17 @@ use std::path::Path;
 /// Returns the complete list of MiniPower tool schemas for autonomous agent operations.
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
-        ToolSchema {
-            name: "power_status".to_string(),
-            description: "Inspect the active MiniPower autonomous engineering methodology status, 6 core pillars, anti-rationalization guardrails ('Red Flags'), and verification barrier rules.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
+        // `power_status` is intentionally not advertised (static text already in
+        // the system prompt); its dispatch handler remains for compatibility.
         ToolSchema {
             name: "power_brainstorm".to_string(),
-            description: "Execute Socratic brainstorming & spec refinement for complex, ambiguous, or multi-step requests. Analyzes trade-offs, poses high-leverage clarifying questions, and proposes 2-3 architectural approaches before writing code.".to_string(),
+            description: "Start the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Returns the procedure, which drives `ask_user`: clarify goals and constraints in batched rounds, offer 2-3 approaches with a recommendation, write the agreed spec to the project docs, get approval, then `create_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "Feature, architecture decision, bug, or topic to brainstorm and clarify"
+                        "description": "The feature, product or change to design"
                     }
                 },
                 "required": ["topic"]
@@ -236,9 +230,9 @@ mod tests {
     #[test]
     fn test_minipower_tools_schema_count() {
         let schemas = get_schemas();
-        assert_eq!(schemas.len(), 6);
+        assert_eq!(schemas.len(), 5);
         let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
-        assert!(names.contains(&"power_status".to_string()));
+        assert!(!names.contains(&"power_status".to_string()));
         assert!(names.contains(&"power_brainstorm".to_string()));
         assert!(names.contains(&"power_plan".to_string()));
         assert!(names.contains(&"power_review".to_string()));

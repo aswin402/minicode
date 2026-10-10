@@ -24,7 +24,10 @@ pub fn truncate_middle(s: &str, max_len: usize) -> String {
     let prefix_count = keep / 2;
     let suffix_count = keep - prefix_count;
     let prefix: String = s.chars().take(prefix_count).collect();
-    let suffix: String = s.chars().skip(char_count.saturating_sub(suffix_count)).collect();
+    let suffix: String = s
+        .chars()
+        .skip(char_count.saturating_sub(suffix_count))
+        .collect();
     format!("{}...{}", prefix, suffix)
 }
 

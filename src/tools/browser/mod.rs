@@ -63,14 +63,20 @@ impl BrowserController {
     ) -> Result<PageSnapshot> {
         validate_browser_url(url)?;
 
+        // On Linux/macOS, localhost often resolves to IPv6 ::1 first while local dev servers
+        // (Vite, Next.js, Express, Bun) bind only to IPv4 127.0.0.1. Normalizing localhost to
+        // 127.0.0.1 prevents TCP SYN stalls and connection aborts inside the browser engine.
+        let normalized_url = normalize_loopback_url(url);
+        let target_url = normalized_url.as_str();
+
         // Try launching preferred browser engine according to priority chain
         match BrowserManager::get_or_launch(mode, workspace_root).await {
             Ok(engine) => {
                 let engine_name = format!("{} ({})", engine.process.config.engine, mode);
-                tracing::info!(engine = %engine_name, url = %url, "Navigating via browser engine");
+                tracing::info!(engine = %engine_name, url = %target_url, "Navigating via browser engine");
 
                 let cdp_res = async {
-                    engine.cdp.navigate(url).await?;
+                    engine.cdp.navigate(target_url).await?;
                     let _ = PageAgent::inject_probe(&engine.cdp).await;
                     let _ = PageAgent::scan_visual_tree(&engine.cdp).await;
                     if mode == BrowserMode::Gui {
@@ -85,7 +91,7 @@ impl BrowserController {
                 if let Ok(html) = cdp_res {
                     let mut acc_mgr = engine.accessibility.lock().await;
                     let elements = acc_mgr.update_from_html(&html);
-                    let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                    let mut snapshot = Self::parse_html_to_aria_snapshot(target_url, &html);
                     snapshot.interactive_elements = elements;
                     snapshot.engine_used = engine_name;
                     return Ok(snapshot);
@@ -120,14 +126,14 @@ impl BrowserController {
         }
 
         // Fallback: zero-browser HTTP fetcher
-        tracing::info!(url = %url, "No browser binary found or launched; using HTTP reader");
+        tracing::info!(url = %target_url, "No browser binary found or launched; using HTTP reader");
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .user_agent(crate::constants::WEB_USER_AGENT)
             .build()
             .map_err(|e| ToolError::CommandExec(format!("Failed to build HTTP client: {}", e)))?;
 
-        let mut response = client.get(url).send().await;
+        let mut response = client.get(target_url).send().await;
         // On Linux, localhost may resolve to ::1 (IPv6) first while dev servers (Vite, Express) only listen on 127.0.0.1 (IPv4).
         if response.is_err() && url.contains("localhost") {
             let alt_url = url.replace("localhost", "127.0.0.1");
@@ -144,7 +150,7 @@ impl BrowserController {
             .await
             .map_err(|e| ToolError::CommandExec(format!("Failed to read response body: {}", e)))?;
 
-        let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+        let mut snapshot = Self::parse_html_to_aria_snapshot(target_url, &html);
         snapshot.engine_used = "HTTP Reader (No browser binary on PATH)".to_string();
         Ok(snapshot)
     }
@@ -1448,6 +1454,17 @@ fn strip_html_tags(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Normalizes loopback URLs from `localhost` to `127.0.0.1` to prevent IPv6 ::1 connection aborts
+pub fn normalize_loopback_url(url: &str) -> String {
+    if let Ok(mut parsed) = url::Url::parse(url) {
+        if parsed.host_str() == Some("localhost") {
+            let _ = parsed.set_host(Some("127.0.0.1"));
+            return parsed.to_string();
+        }
+    }
+    url.to_string()
+}
+
 fn extract_readable_text(html: &str) -> String {
     let raw_text = strip_html_tags(html);
     raw_text
@@ -1503,5 +1520,25 @@ mod tests {
     #[test]
     fn test_validate_browser_url_blocks_metadata() {
         assert!(validate_browser_url("http://169.254.169.254/latest/meta-data/").is_err());
+    }
+
+    #[test]
+    fn test_normalize_loopback_url() {
+        assert_eq!(
+            normalize_loopback_url("http://localhost:5174"),
+            "http://127.0.0.1:5174/"
+        );
+        assert_eq!(
+            normalize_loopback_url("http://localhost:3000/api/users?v=1"),
+            "http://127.0.0.1:3000/api/users?v=1"
+        );
+        assert_eq!(
+            normalize_loopback_url("https://example.com/page"),
+            "https://example.com/page"
+        );
+        assert_eq!(
+            normalize_loopback_url("file:///tmp/index.html"),
+            "file:///tmp/index.html"
+        );
     }
 }

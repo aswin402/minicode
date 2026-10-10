@@ -28,3 +28,6 @@ memory.db*
 .fastembed_cache/
 test_playground/
 
+
+# Eval harness outputs
+scripts/eval/results/

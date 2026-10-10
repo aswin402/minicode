@@ -173,7 +173,9 @@ impl InquiryRequest {
         })
     }
 
-    fn parse_question_item(item: &serde_json::Value) -> std::result::Result<InquiryQuestion, String> {
+    fn parse_question_item(
+        item: &serde_json::Value,
+    ) -> std::result::Result<InquiryQuestion, String> {
         if let Ok(mut q) = serde_json::from_value::<InquiryQuestion>(item.clone()) {
             // If options array in item was strings rather than objects, recover them
             if q.options.is_empty() {
@@ -201,18 +203,40 @@ impl InquiryRequest {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Question missing 'question' text".to_string())?;
 
-        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("q").to_string();
-        let header = item.get("header").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let input_type_str = item.get("input_type").and_then(|v| v.as_str()).unwrap_or("choice");
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("q")
+            .to_string();
+        let header = item
+            .get("header")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let input_type_str = item
+            .get("input_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("choice");
         let input_type = match input_type_str {
             "text" => InquiryInputType::Text,
             "secret" => InquiryInputType::Secret,
             _ => InquiryInputType::Choice,
         };
-        let is_multi_select = item.get("is_multi_select").and_then(|v| v.as_bool()).unwrap_or(false);
-        let allow_custom = item.get("allow_custom").and_then(|v| v.as_bool()).unwrap_or(true);
-        let placeholder = item.get("placeholder").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let default_value = item.get("default_value").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let is_multi_select = item
+            .get("is_multi_select")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let allow_custom = item
+            .get("allow_custom")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let placeholder = item
+            .get("placeholder")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let default_value = item
+            .get("default_value")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let mut options = Vec::new();
         if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
@@ -224,7 +248,8 @@ impl InquiryRequest {
                         description: None,
                         recommended: false,
                     });
-                } else if let Ok(parsed_opt) = serde_json::from_value::<InquiryOption>(opt.clone()) {
+                } else if let Ok(parsed_opt) = serde_json::from_value::<InquiryOption>(opt.clone())
+                {
                     options.push(parsed_opt);
                 }
             }
@@ -568,7 +593,8 @@ mod tests {
             "questions": "[{\"header\": \"Tech Stack\", \"id\": \"stack\", \"input_type\": \"choice\", \"options\": [{\"description\": \"Static HTML\", \"id\": \"static\", \"label\": \"Modern Static HTML\", \"recommended\": true}, {\"description\": \"React Vite\", \"id\": \"react-vite\", \"label\": \"React Vite\"}], \"question\": \"Which tech stack?\"}]"
         });
 
-        let req = InquiryRequest::parse_from_value(&payload).expect("Must parse stringified questions successfully");
+        let req = InquiryRequest::parse_from_value(&payload)
+            .expect("Must parse stringified questions successfully");
         assert_eq!(req.title, "Landing Page Stack & Design Direction");
         assert_eq!(req.questions.len(), 1);
         assert_eq!(req.questions[0].id, "stack");
@@ -583,7 +609,8 @@ mod tests {
             "options": ["PostgreSQL", "SQLite", "MongoDB"]
         });
 
-        let req = InquiryRequest::parse_from_value(&payload).expect("Must parse single question shorthand");
+        let req = InquiryRequest::parse_from_value(&payload)
+            .expect("Must parse single question shorthand");
         assert_eq!(req.title, "User Inquiry");
         assert_eq!(req.questions.len(), 1);
         assert_eq!(req.questions[0].question, "What database do you want?");

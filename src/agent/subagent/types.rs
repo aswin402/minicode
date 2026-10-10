@@ -171,7 +171,6 @@ impl SubagentRole {
                     "browser_eval",
                     "power_review",
                     "power_verify",
-                    "power_status",
                 ] {
                     set.insert(t.to_string());
                 }
@@ -186,7 +185,6 @@ impl SubagentRole {
                     "write_file",
                     "patch_file",
                     "power_verify",
-                    "power_status",
                 ] {
                     set.insert(t.to_string());
                 }
@@ -203,7 +201,6 @@ impl SubagentRole {
                     "fetch_or_browse",
                     "search_web",
                     "exec_cmd",
-                    "power_status",
                     "power_verify",
                     "power_review",
                 ] {

@@ -172,7 +172,13 @@ impl ToolRegistry {
             };
             let mut reason = format!("{}. Raw arguments preview: '{}'", err_msg, raw_preview);
             if err_msg.contains("EOF while parsing") || raw.len() > 8000 {
-                reason.push_str("\n[Actionable Recovery Guidance]: The tool call payload was truncated or malformed because the generated output was too large for a single tool call. Do NOT attempt to write a massive monolithic file. Decompose your project into modular files (e.g. separate index.html, styles.css, app.js) or write the scaffold structure first and use patch_file.");
+                reason.push_str(&format!(
+                    "\n[Recovery]: Nothing was written. The tool-call payload (~{} bytes) was cut off because it was too large for one call. Do not retry the same content. Options: \
+                     (a) new project without a foundation: kit_stack_add(stack_name=\"static-website\") for plain HTML/CSS/JS or \"react-vite\" for React, then fill in the generated files; \
+                     (b) split into modular files under ~200 lines / 8KB each (index.html + styles.css + js modules, or one component per section); \
+                     (c) one large file: write a short skeleton, then add sections with write_file(append=true) or patch_file.",
+                    raw.len()
+                ));
             }
             return Err(ToolError::InvalidArguments {
                 name: tool_name.to_string(),

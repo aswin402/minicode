@@ -12,13 +12,13 @@ pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: ASK_USER_TOOL_NAME.to_string(),
-        description: "CRITICAL INTERACTIVE GATE: Ask the user one or more questions to clarify requirements, select architecture/stack/theme choices, collect configuration or credentials, or solicit design opinions. ALWAYS call this tool on Turn 1 whenever a prompt is open-ended or underspecified before creating files. Pauses turn execution until the user responds via the interactive inquiry menu or provides answers. In non-interactive mode (-y), returns recommended or default values immediately without hanging.".to_string(),
+        description: "Your channel to whoever directs you (a human in the TUI, or the calling AI agent over --json-stream). Use it so you never silently decide what is theirs. Ask when something is not settled by the request, the workspace or recorded decisions AND guessing wrong is costly to undo: (1) clarify ambiguous/contradictory requirements or success criteria; (2) request data only they have (real content, business rules, accounts, credentials via input_type=secret); (3) user-owned decisions: stack, architecture, data model, API/spec contracts, design/style and UX behaviour, scope trade-offs, heavy dependencies, destructive or irreversible changes; (4) approve an approach or plan before large work (2-3 options, recommended first); (5) report a blocker with options after real attempts. Do NOT ask for facts you can find with tools or for cheap details you can change later; state an assumption instead. Batch the decisions you know now into ONE call (1-4 questions, 2-4 options each, recommended option first with recommended=true and a one-line reason); ask a new round only when answers open new costly decisions. The dialog always offers a free-text answer, so never add an 'Other' option. Answers are recorded in .minicode/decisions.md and shown in later turns; never re-ask them. Pauses until answered; in non-interactive mode (-y) the recommended option is selected and marked not user-confirmed.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Dialog header title describing the inquiry topic (e.g. 'Project Stack & Theme Selection', 'Firebase Configuration')."
+                    "description": "Dialog header title describing the inquiry topic (e.g. 'Login feature', 'Dashboard redesign direction', 'Confirm removing /v1 API')."
                 },
                 "description": {
                     "type": "string",
@@ -53,7 +53,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             },
                             "allow_custom": {
                                 "type": "boolean",
-                                "description": "Whether to include an 'Other / Custom write-in' option."
+                                "description": "Free-text answer is enabled by default; set false only to force a choice from the listed options."
                             },
                             "placeholder": {
                                 "type": "string",

@@ -5,7 +5,6 @@
 //! affordances, triggers, and runtime helpers rather than rigid turn-based scripts.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
 /// Core architectural feature pillars in minicode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -46,7 +45,7 @@ impl AgentFeature {
             Self::MiniTask => "MiniTask Planning & Progress Tracking",
             Self::MiniBlocks => "MiniBlocks UI & Design Token Warehouse",
             Self::MiniPowers => "MiniPowers Autonomous Engineering Workflows",
-            Self::Browser => "Obscura Browser Automation & Visual Observability",
+            Self::Browser => "Dev Servers & Browser Verification",
             Self::CodeGraph => "CodeGraph AST Intelligence & Centrality",
         }
     }
@@ -64,7 +63,7 @@ impl AgentFeature {
                 "kit_sync",
                 "kit_skill_show",
             ],
-            Self::MiniTask => &["create_plan", "update_progress", "minitask"],
+            Self::MiniTask => &["create_plan", "update_progress", "archive_plan"],
             Self::MiniBlocks => &[
                 "block_palettes",
                 "block_search",
@@ -74,13 +73,13 @@ impl AgentFeature {
                 "block_import",
             ],
             Self::MiniPowers => &[
-                "power_brainstorm",
                 "power_worktree_task",
                 "power_plan",
                 "power_review",
                 "power_verify",
             ],
             Self::Browser => &[
+                "minitask",
                 "browser_navigate",
                 "browser_screenshot",
                 "browser_click",
@@ -112,10 +111,10 @@ impl AgentFeature {
                 "Provides 105+ verified color palette tokens and 1,080+ pre-built, tested UI components to prevent writing unstyled or monolithic CSS/JSX from scratch."
             }
             Self::MiniPowers => {
-                "Provides structured methodologies (Socratic brainstorming, Git worktree isolation, Red/Green TDD, verification barriers) for complex tasks."
+                "Provides structured methodologies (planning, Git worktree isolation, two-stage review, verification barriers) for complex tasks."
             }
             Self::Browser => {
-                "Automates headless or visual browsers to test web apps live, capture screenshots, and observe DOM visual health telemetry (fonts, stylesheets, layouts)."
+                "Runs dev servers and daemons under supervision (`minitask`) and drives a browser to test web apps live, capture screenshots, and observe DOM visual health telemetry (fonts, stylesheets, layouts)."
             }
             Self::CodeGraph => {
                 "Indexes AST symbols, call hierarchies, and PageRank architectural centrality across the codebase for grounded navigation."
@@ -127,10 +126,10 @@ impl AgentFeature {
     pub fn triggers(&self) -> &'static str {
         match self {
             Self::Inquiry => {
-                "When requirements, framework choice, or aesthetic direction are open-ended; when choosing between multiple valid architectures; when an unexpected trade-off or breaking change arises; or when needing user-specific data/credentials. Use at ANY turn rather than guessing or assuming."
+                "When a decision is the user's to make (stack for a new project, visual direction, scope trade-off, credentials), is not settled by the request or the repo, and would be costly to reverse once work starts. Batch all such decisions into one call. Not for facts you can discover with tools, and not for cheap, easily changed details — state an assumption instead."
             }
             Self::MiniKit => {
-                "When starting a new project, website, service, or feature. Call `kit_stack_add` to establish the codebase foundation instead of hand-authoring package manifests and configuration files from scratch."
+                "When a new project needs a foundation and a matching starter stack exists (including `static-website` for plain HTML/CSS/JS). Scaffold with `kit_stack_add`, then customize. Not for adding packages to an existing project — use its package manager."
             }
             Self::MiniTask => {
                 "When a task spans more than 1-2 trivial steps. Call `create_plan` to outline milestones and call `update_progress` as each milestone completes so the user has full execution visibility."
@@ -139,10 +138,10 @@ impl AgentFeature {
                 "When designing or building user interfaces. Query `block_palettes` for color tokens and `block_search`/`block_scaffold` for pre-built components (heroes, navbars, cards, modals) instead of inventing styles from memory."
             }
             Self::MiniPowers => {
-                "When facing architectural doubt, risky refactors, or multi-step engineering initiatives. Use `power_brainstorm` to explore trade-offs and `power_verify` for 4-gate verification."
+                "When facing architectural doubt, risky refactors, or multi-step engineering initiatives. Use `power_plan` for structured plans, `power_review` for two-stage review, `power_worktree_task` for isolated risky work, and `power_verify` for 4-gate verification."
             }
             Self::Browser => {
-                "When building or modifying web pages and web applications. Navigate to the local dev server, capture screenshots, and verify visual health before concluding work."
+                "When a project needs a running server (start it with `minitask(action=\"start\")` and keep it running across turns) and when building web UIs: navigate to the local dev server, capture screenshots, and verify visual health before concluding."
             }
             Self::CodeGraph => {
                 "When exploring an existing codebase, planning a refactor, or assessing the impact of changes across modules."
@@ -186,142 +185,6 @@ fn feature_index(feature: &AgentFeature) -> usize {
     }
 }
 
-/// Generates dynamic runtime feature helpers tailored to the current context.
-///
-/// Unlike rigid imperative scripts ("YOU MUST CALL X ON TURN 1"), these helpers
-/// inform the model of high-leverage opportunities while preserving full agent freedom.
-pub fn generate_context_helpers(
-    workspace_root: &Path,
-    prompt: &str,
-    is_fresh_workspace: bool,
-) -> Vec<String> {
-    let lower = prompt.to_lowercase();
-    let mut helpers = Vec::new();
-
-    // 1. Inquiry Helper: Greenfield or open-ended stack
-    let has_explicit_stack = crate::agent::orchestrator::has_any_word(
-        &lower,
-        &[
-            "react", "vite", "nextjs", "vue", "svelte", "fastapi", "flask", "django", "express",
-            "hono", "actix", "axum", "astro", "vanilla", "html", "tailwind",
-        ],
-    ) || lower.contains("next.js")
-        || lower.contains("nextjs");
-
-    if is_fresh_workspace && !has_explicit_stack {
-        helpers.push(
-            "• 💡 Feature Helper (Interactive Inquiry & MiniKit): Fresh workspace with no explicit tech stack or framework specified. \
-            Invoke `ask_user` now to present 2-3 concrete stack options (e.g. React+Vite+Tailwind, Next.js, or Modern Static HTML) \
-            and visual theme choices. Do not guess or unilaterally assume a framework without user confirmation.".to_string()
-        );
-    } else if is_fresh_workspace {
-        helpers.push(
-            "• 🚀 Feature Helper (MiniKit Scaffolding): Fresh workspace detected. Prefer scaffolding a verified stack template \
-            with `kit_stack_add` (e.g. `kit_stack_add(stack_name=\"react-vite\")`) into the workspace root rather than manually authoring boilerplates.".to_string()
-        );
-    }
-
-    helpers.push(
-        "• 📦 Feature Helper (Package Management): To install packages or dependencies, ALWAYS use the project's native package manager via `exec_cmd` \
-        (e.g. `exec_cmd(\"bun add <pkg>\")`, `exec_cmd(\"npm install <pkg>\")`, `exec_cmd(\"cargo add <pkg>\")`, `exec_cmd(\"uv add <pkg>\")`). \
-        MiniKit (`kit_*`) is strictly reserved for initial project templates and architecture blocks.".to_string()
-    );
-
-    // 2. MiniBlocks Helper: UI design or component creation
-    let is_ui_task = crate::agent::orchestrator::has_any_word(
-        &lower,
-        &[
-            "landing",
-            "website",
-            "dashboard",
-            "component",
-            "ui",
-            "css",
-            "frontend",
-            "button",
-            "modal",
-            "navbar",
-            "hero",
-            "card",
-            "theme",
-            "palette",
-        ],
-    ) || lower.contains("landing page");
-    if is_ui_task {
-        let store_lock = crate::blocks::get_global_block_store();
-        let store = match store_lock.read() {
-            Ok(s) => Some(s),
-            Err(e) => Some(e.into_inner()),
-        };
-
-        let mut palette_hint = String::new();
-        if let Some(store) = store {
-            let theme_words: Vec<&str> = [
-                "cyberpunk",
-                "futuristic",
-                "dark",
-                "neon",
-                "minimal",
-                "modern",
-                "retro",
-                "light",
-                "monochrome",
-            ]
-            .iter()
-            .filter(|&&w| lower.contains(w))
-            .copied()
-            .collect();
-            let query = if !theme_words.is_empty() {
-                theme_words.join(" ")
-            } else {
-                "dark".to_string()
-            };
-            let mut matches = store.search_palettes(&query);
-            if matches.is_empty() {
-                matches = store.search_palettes("dark");
-            }
-            if let Some(p) = matches.first() {
-                palette_hint = format!(
-                    " Verified theme palette '{}' [Tokens: --bg: {}, --surface: {}, --accent: {}, --text: {}]. \
-                    Use these verified tokens in your styles or call `block_scaffold(palette=\"{}\")` for pre-themed components.",
-                    p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3], p.name
-                );
-            }
-        }
-
-        helpers.push(format!(
-            "• 🎨 Feature Helper (MiniBlocks): UI creation detected.{} \
-            Query `block_search` / `block_scaffold` for pre-built components instead of inventing CSS/JSX from scratch.",
-            palette_hint
-        ));
-    }
-
-    // 3. MiniTask Helper: Multi-step task or complex feature
-    let has_multi_steps = prompt.lines().count() > 3
-        || prompt.contains("1.")
-        || prompt.contains("*")
-        || prompt.len() > 300;
-    let core_todo = crate::tools::minikit::resolve_core_docs_dir(workspace_root).join("todo.md");
-    let has_todo = core_todo.exists() || workspace_root.join("todo.md").exists();
-
-    if has_multi_steps && !has_todo {
-        helpers.push(
-            "• 📋 Feature Helper (MiniTask Planning): Multi-step work detected. Call `create_plan` to structure tasks into \
-            verifiable steps. Calling `update_progress` as you finish steps keeps the user informed in real-time in the live TUI.".to_string()
-        );
-    }
-
-    // 4. Browser Automation Helper: Web/frontend verification
-    if is_ui_task {
-        helpers.push(
-            "• 🌐 Feature Helper (Obscura Browser): When testing web pages, navigate via `browser_navigate` and inspect \
-            the returned `[DOM & Visual Health Observation]` telemetry to confirm stylesheets and typography render cleanly.".to_string()
-        );
-    }
-
-    helpers
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,27 +196,5 @@ mod tests {
             assert!(catalog.contains(feature.name()));
             assert!(catalog.contains(feature.purpose()));
         }
-    }
-
-    #[test]
-    fn test_context_helpers_for_fresh_workspace_no_stack() {
-        let helpers = generate_context_helpers(
-            Path::new("."),
-            "Create a modern landing page for minicode",
-            true,
-        );
-        assert!(helpers.iter().any(|h| h.contains("Interactive Inquiry")));
-        assert!(helpers.iter().any(|h| h.contains("MiniBlocks")));
-    }
-
-    #[test]
-    fn test_context_helpers_for_fresh_workspace_with_stack() {
-        let helpers = generate_context_helpers(
-            Path::new("."),
-            "Create a React Vite landing page with Tailwind",
-            true,
-        );
-        assert!(helpers.iter().any(|h| h.contains("MiniKit Scaffolding")));
-        assert!(helpers.iter().any(|h| h.contains("MiniBlocks")));
     }
 }

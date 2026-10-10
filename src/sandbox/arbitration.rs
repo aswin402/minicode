@@ -568,7 +568,10 @@ mod tests {
 
         // modify on branch
         let worktree_dir = root.join("wt");
-        run_git_fixture(&["worktree", "add", worktree_dir.to_str().unwrap(), branch], root);
+        run_git_fixture(
+            &["worktree", "add", worktree_dir.to_str().unwrap(), branch],
+            root,
+        );
         std::fs::write(worktree_dir.join("hello.txt"), "base\nupdated\n").unwrap();
         run_git_fixture(&["add", "."], &worktree_dir);
         run_git_fixture(&["commit", "-m", "branch commit"], &worktree_dir);
@@ -617,7 +620,10 @@ mod tests {
         run_git_fixture(&["branch", branch], root);
 
         let worktree_dir = root.join("wt");
-        run_git_fixture(&["worktree", "add", worktree_dir.to_str().unwrap(), branch], root);
+        run_git_fixture(
+            &["worktree", "add", worktree_dir.to_str().unwrap(), branch],
+            root,
+        );
         std::fs::write(worktree_dir.join("file.txt"), "modified A in branch\n").unwrap();
         run_git_fixture(&["add", "."], &worktree_dir);
         run_git_fixture(&["commit", "-m", "branch commit A"], &worktree_dir);

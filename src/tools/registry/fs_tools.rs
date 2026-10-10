@@ -102,7 +102,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "write_file".to_string(),
-            description: "Create a new file, append content, or overwrite an existing file. By default, write_file protects against overwriting existing non-empty files unless `overwrite: true` or `append: true` is specified. Token Budget Invariant: To avoid LLM generation token exhaustion (EOF errors), never write massive monolithic files (>200 lines / >8KB) in a single turn. Decompose projects into modular files, write the scaffold first, or use `append: true` in section chunks.".to_string(),
+            description: "Create a file, append to it, or overwrite it. Use for project-specific code and content. Not for project boilerplate: when starting a new project, scaffold with kit_stack_add first. Existing non-empty files are protected: pass overwrite=true to replace or append=true to add; prefer patch_file for targeted edits. Keep each call under ~200 lines / 8KB; larger payloads get truncated. Split work into modular files, or write a skeleton and then append sections.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

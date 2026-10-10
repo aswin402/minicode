@@ -54,6 +54,13 @@ pub struct AgentLoop {
     pub last_seen_swarm_msg_id: Option<String>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
+    /// One-time foundation checkpoint before the first file mutation in a
+    /// workspace without an established project foundation.
+    foundation_gate: crate::agent::foundation_gate::FoundationGate,
+    plan_gate: crate::agent::plan_gate::PlanGate,
+    /// Decisions settled this turn without user confirmation (headless
+    /// defaults, plan assumptions), reported at turn end.
+    turn_unconfirmed: Vec<String>,
 }
 
 impl AgentLoop {
@@ -142,6 +149,9 @@ impl AgentLoop {
             mailbox,
             last_seen_swarm_msg_id: None,
             _active_guard: active_guard,
+            foundation_gate: crate::agent::foundation_gate::FoundationGate::default(),
+            plan_gate: crate::agent::plan_gate::PlanGate::default(),
+            turn_unconfirmed: Vec::new(),
         }
     }
 
@@ -597,6 +607,8 @@ impl AgentLoop {
                 format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
         }
 
+        self.foundation_gate.record_user_request(user_prompt);
+        self.turn_unconfirmed.clear();
         self.messages.push(Message::user(prompt_with_context));
 
         if let Some(metrics) = compaction_metrics {
@@ -663,6 +675,7 @@ impl AgentLoop {
             tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
         }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
+        crate::agent::foundation_gate::augment_schemas(&mut tools, &self.workspace_root);
 
         let now_ts = chrono::Utc::now().to_rfc3339();
 
@@ -1231,7 +1244,7 @@ impl AgentLoop {
                                 break;
                             }
                         }
-                        crate::agent::speculative::ExecutionStage::Sequential(tool_call) => {
+                        crate::agent::speculative::ExecutionStage::Sequential(mut tool_call) => {
                             // Check cancellation before tool execution
                             if let Some(cancel) = &cancel_token {
                                 if cancel.is_cancelled() {
@@ -1255,6 +1268,76 @@ impl AgentLoop {
 
                             turn_tool_calls.push(tool_call.clone());
 
+                            // === Foundation gate (state-based; settled by ask_user or a verified quote) ===
+                            let gate_decision = self.foundation_gate.evaluate(
+                                &self.workspace_root,
+                                &tool_call.name,
+                                &tool_call.arguments,
+                            );
+                            // `foundation_basis` is a harness-only argument; never forward it.
+                            if let Some(obj) = tool_call.arguments.as_object_mut() {
+                                obj.remove(crate::agent::foundation_gate::FOUNDATION_BASIS_ARG);
+                            }
+                            if let crate::agent::foundation_gate::GateDecision::AllowVerified(
+                                ref basis,
+                            ) = gate_decision
+                            {
+                                if let Err(e) = crate::agent::decisions::record_basis(
+                                    &self.workspace_root,
+                                    &tool_call.name,
+                                    basis,
+                                ) {
+                                    tracing::warn!("Failed to record foundation basis: {}", e);
+                                }
+                            }
+                            // === Plan approval (state-based; large plans need one ask_user round) ===
+                            if tool_call.name
+                                == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
+                            {
+                                self.plan_gate
+                                    .observe_success(&tool_call.name, &tool_call.arguments);
+                            }
+                            let checkpoint = match gate_decision {
+                                crate::agent::foundation_gate::GateDecision::Checkpoint(g) => {
+                                    Some(g)
+                                }
+                                _ if self.config.agent.plan_approval => {
+                                    self.plan_gate.check(&tool_call.name)
+                                }
+                                _ => None,
+                            };
+                            if let Some(guidance) = checkpoint {
+                                let res_event = AgentEvent::ToolResult {
+                                    turn_id,
+                                    tool_id: tool_call.id.clone(),
+                                    tool: tool_call.name.clone(),
+                                    success: false,
+                                    output: guidance.clone(),
+                                    duration_ms: 0,
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &res_event)
+                                {
+                                    tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                }
+                                let _ = event_sender.send(res_event);
+                                self.messages.push(Message::tool_result(
+                                    tool_call.id.clone(),
+                                    tool_call.name.clone(),
+                                    guidance.clone(),
+                                ));
+                                turn_tool_results.push(crate::agent::types::ToolResult {
+                                    tool_id: tool_call.id.clone(),
+                                    tool_name: tool_call.name.clone(),
+                                    success: false,
+                                    output: guidance,
+                                    display_output: String::new(),
+                                    duration_ms: 0,
+                                });
+                                continue;
+                            }
+
                             // Record file access into active working set (Zone 3 Recency)
                             if let Some(path) =
                                 tool_call.arguments.get("path").and_then(|p| p.as_str())
@@ -1269,7 +1352,10 @@ impl AgentLoop {
                             if tool_call.name
                                 == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
                             {
-                                let parsed_res = crate::agent::inquiry::InquiryRequest::parse_from_value(&tool_call.arguments);
+                                let parsed_res =
+                                    crate::agent::inquiry::InquiryRequest::parse_from_value(
+                                        &tool_call.arguments,
+                                    );
                                 let request = match parsed_res {
                                     Ok(mut req) => {
                                         req.inquiry_id = tool_call.id.clone();
@@ -1280,41 +1366,65 @@ impl AgentLoop {
                                             "error": err_msg
                                         })
                                         .to_string();
-                                    let res_event = AgentEvent::ToolResult {
-                                        turn_id,
-                                        tool_id: tool_call.id.clone(),
-                                        tool: tool_call.name.clone(),
-                                        success: false,
-                                        output: err_output.clone(),
-                                        duration_ms: 0,
-                                    };
-                                    if let Err(e) = self
-                                        .session_store
-                                        .append_event(&self.session_id, &res_event)
-                                    {
-                                        tracing::warn!("Failed to persist ToolResult event: {}", e);
+                                        let res_event = AgentEvent::ToolResult {
+                                            turn_id,
+                                            tool_id: tool_call.id.clone(),
+                                            tool: tool_call.name.clone(),
+                                            success: false,
+                                            output: err_output.clone(),
+                                            duration_ms: 0,
+                                        };
+                                        if let Err(e) = self
+                                            .session_store
+                                            .append_event(&self.session_id, &res_event)
+                                        {
+                                            tracing::warn!(
+                                                "Failed to persist ToolResult event: {}",
+                                                e
+                                            );
+                                        }
+                                        let _ = event_sender.send(res_event);
+                                        self.messages.push(Message::tool_result(
+                                            tool_call.id.clone(),
+                                            tool_call.name.clone(),
+                                            err_output.clone(),
+                                        ));
+                                        turn_tool_results.push(crate::agent::types::ToolResult {
+                                            tool_id: tool_call.id.clone(),
+                                            tool_name: tool_call.name.clone(),
+                                            success: false,
+                                            output: err_output,
+                                            display_output: String::new(),
+                                            duration_ms: 0,
+                                        });
+                                        continue;
                                     }
-                                    let _ = event_sender.send(res_event);
-                                    self.messages.push(Message::tool_result(
-                                        tool_call.id.clone(),
-                                        tool_call.name.clone(),
-                                        err_output.clone(),
-                                    ));
-                                    turn_tool_results.push(crate::agent::types::ToolResult {
-                                        tool_id: tool_call.id.clone(),
-                                        tool_name: tool_call.name.clone(),
-                                        success: false,
-                                        output: err_output,
-                                        display_output: String::new(),
-                                        duration_ms: 0,
-                                    });
-                                    continue;
-                                }
-                            };
+                                };
 
                                 if !self.interactive_approvals {
                                     // Non-interactive / headless auto-resolve
                                     let auto_resp = request.auto_resolve_defaults();
+                                    if let Some(entry) = crate::agent::decisions::render_entry(
+                                        &request,
+                                        &auto_resp,
+                                        crate::agent::decisions::DecisionSource::AutoDefault,
+                                        "",
+                                    ) {
+                                        self.turn_unconfirmed.extend(
+                                            entry
+                                                .lines()
+                                                .filter(|l| l.starts_with("- "))
+                                                .map(|l| format!("{} (headless default)", &l[2..])),
+                                        );
+                                    }
+                                    if let Err(e) = crate::agent::decisions::record(
+                                        &self.workspace_root,
+                                        &request,
+                                        &auto_resp,
+                                        crate::agent::decisions::DecisionSource::AutoDefault,
+                                    ) {
+                                        tracing::warn!("Failed to record decisions: {}", e);
+                                    }
                                     let output = auto_resp.into_tool_output();
                                     let res_event = AgentEvent::ToolResult {
                                         turn_id,
@@ -1384,7 +1494,17 @@ impl AgentLoop {
                                     .remove(&tool_call.id);
 
                                 let output = match response {
-                                    Some(resp) => resp.into_tool_output(),
+                                    Some(resp) => {
+                                        if let Err(e) = crate::agent::decisions::record(
+                                            &self.workspace_root,
+                                            &request,
+                                            &resp,
+                                            crate::agent::decisions::DecisionSource::User,
+                                        ) {
+                                            tracing::warn!("Failed to record decisions: {}", e);
+                                        }
+                                        resp.into_tool_output()
+                                    }
                                     None => serde_json::json!({
                                         "status": "cancelled",
                                         "message": "Inquiry cancelled or timed out."
@@ -1587,6 +1707,23 @@ impl AgentLoop {
                                 &tool_call.arguments,
                                 file_before.as_deref(),
                             );
+                            if tool_result.success {
+                                self.plan_gate
+                                    .observe_success(&tool_call.name, &tool_call.arguments);
+                                if tool_call.name == "create_plan" {
+                                    if let Some(items) = crate::tools::param::opt_string_array(
+                                        &tool_call.arguments,
+                                        "assumptions",
+                                    ) {
+                                        self.turn_unconfirmed.extend(
+                                            items
+                                                .into_iter()
+                                                .filter(|a| !a.trim().is_empty())
+                                                .map(|a| format!("{} (assumed)", a.trim())),
+                                        );
+                                    }
+                                }
+                            }
 
                             // === Smart Donut Truncator (Phase 88, 115) ===
                             let ctx_limit = self.compactor.model_token_limit();
@@ -1674,6 +1811,10 @@ impl AgentLoop {
                                         tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
                                     }
                                     tools.sort_by(|a, b| a.name.cmp(&b.name));
+                                    crate::agent::foundation_gate::augment_schemas(
+                                        &mut tools,
+                                        &self.workspace_root,
+                                    );
                                     tracing::info!(
                                         "Dynamically activated '{}'; active schemas count now {}",
                                         cat_str,
@@ -2311,6 +2452,22 @@ impl AgentLoop {
             );
         }
 
+        if !self.turn_unconfirmed.is_empty() {
+            let report = format!(
+                "\n\n**Unconfirmed decisions** (made without your confirmation; recorded in `.minicode/decisions.md`, tell me to change any):\n{}\n",
+                self.turn_unconfirmed
+                    .iter()
+                    .map(|d| format!("- {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            let _ = event_sender.send(AgentEvent::StreamDelta {
+                turn_id,
+                delta: report,
+            });
+            self.turn_unconfirmed.clear();
+        }
+
         let end_event = AgentEvent::TurnEnd {
             turn_id,
             status: if was_cancelled {
@@ -2431,6 +2588,7 @@ impl AgentLoop {
                         first_turn_prompt = Some(prompt.clone());
                     }
 
+                    self.foundation_gate.record_user_request(prompt);
                     self.messages.push(Message::user(prompt.clone()));
                 }
                 AgentEvent::StreamDelta { delta, .. } => {
@@ -2766,6 +2924,8 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_dir);
+        // Established project so the one-time foundation checkpoint does not apply.
+        let _ = std::fs::write(temp_dir.join("package.json"), "{}");
         let config = Config::default(); // agent.auto_approve == false
         let provider = Box::new(ToolCallProvider {
             call: ToolCall {
@@ -2821,6 +2981,8 @@ mod tests {
         let temp_dir =
             std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_dir);
+        // Established project so the foundation gate does not hold exec_cmd.
+        let _ = std::fs::write(temp_dir.join("package.json"), "{}");
         let config = Config::default();
         let provider = Box::new(ToolCallProvider {
             call: ToolCall {

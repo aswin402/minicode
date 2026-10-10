@@ -323,7 +323,7 @@ impl MiniDevRegistry {
                     status: DevProcessStatus::Running,
                     pid: Some(pid),
                     ports: vec![port],
-                    url: Some(format!("http://localhost:{}", port)),
+                    url: Some(format!("http://127.0.0.1:{}", port)),
                     cpu_percent: usage.cpu_percent,
                     memory_rss_mb: usage.memory_rss_mb,
                     uptime_secs,
@@ -370,7 +370,7 @@ impl MiniDevRegistry {
                     status: DevProcessStatus::Running,
                     pid: Some(pid),
                     ports: vec![port],
-                    url: Some(format!("http://localhost:{}", port)),
+                    url: Some(format!("http://127.0.0.1:{}", port)),
                     cpu_percent: usage.cpu_percent,
                     memory_rss_mb: usage.memory_rss_mb,
                     uptime_secs,
@@ -953,7 +953,7 @@ impl MiniDevRegistry {
                 ports.last().copied()
             }
         };
-        let url = primary_port.map(|p| format!("http://localhost:{}", p));
+        let url = primary_port.map(|p| format!("http://127.0.0.1:{}", p));
         let restart_count = handle.restart_stats.read().await.restart_count;
         let port_resolution = handle.port_resolution.read().await.clone();
 
@@ -1149,7 +1149,7 @@ mod tests {
         let list = registry.list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].ports, vec![8999]);
-        assert_eq!(list[0].url, Some("http://localhost:8999".to_string()));
+        assert_eq!(list[0].url, Some("http://127.0.0.1:8999".to_string()));
 
         // 3. Query logs
         let logs = registry.logs(&summary.id, 10, None).await.unwrap();

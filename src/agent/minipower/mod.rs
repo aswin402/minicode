@@ -128,15 +128,41 @@ impl MiniPowerEngine {
             .and_then(|n| n.to_str())
             .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
 
+        // State: what is already settled, so no question is asked twice.
+        let existing_specs: Vec<&str> = ["prd.md", "spec.md", "design.md", "architecture.md"]
+            .into_iter()
+            .filter(|f| docs_dir.join("core").join(f).is_file())
+            .collect();
+        let mut settled = String::new();
+        if crate::agent::decisions::read_for_prompt(workspace).is_some() {
+            settled.push_str(&format!(
+                "- Recorded decisions exist in `{}`: read them; never re-ask them.\n",
+                crate::agent::decisions::DECISIONS_FILE
+            ));
+        }
+        if !existing_specs.is_empty() {
+            settled.push_str(&format!(
+                "- Existing specs in `{}/core/`: {}. Read them first and build on them.\n",
+                docs_name,
+                existing_specs.join(", ")
+            ));
+        }
+        if settled.is_empty() {
+            settled
+                .push_str("- Nothing recorded yet: every costly decision below is still open.\n");
+        }
+
         format!(
             "### 🧠 MiniPower: Socratic Brainstorming & Spec Refinement\n\n\
-            **Goal/Topic:** {}\n\n\
-            **Methodology Instructions:**\n\
-            1. **Do not write code yet.** Step back and analyze requirements, constraints, and architecture.\n\
-            2. Ask 1-2 focused, high-leverage clarifying questions to resolve trade-offs.\n\
-            3. Propose 2-3 architectural approaches with pros and cons.\n\
-            4. Once aligned, produce a structured spec to be saved in `{}/core/spec.md` or `{}/core/design.md`.\n",
-            topic, docs_name, docs_name
+            **Goal/Topic:** {topic}\n\n\
+            **Already settled:**\n{settled}\n\
+            **Procedure (no project code until step 5 is approved):**\n\
+            1. **Ground**: read the relevant code, docs and decisions. Never ask what the workspace answers.\n\
+            2. **Scope check**: if the topic is several independent subsystems, propose splitting it and design the first part only.\n\
+            3. **Clarify with `ask_user` in rounds**: purpose and users, success criteria, constraints, data/content only the user has, and every costly-to-undo decision (stack, architecture, data model, API/spec, design direction, scope). Batch 1-4 questions per round, recommended option first; start another round only when answers open new decisions.\n\
+            4. **Approaches**: offer 2-3 approaches with trade-offs as one `ask_user` choice, your recommendation first with a one-line reason.\n\
+            5. **Spec and approval**: write the agreed design concisely to `{docs_name}/core/` (prd.md for goals/features, design.md for UI/UX, architecture.md for components, data flow, error handling, testing). Then ask for approval with `ask_user` (approve / revise).\n\
+            6. **Plan**: `create_plan` from the approved spec, listing any remaining assumptions in `assumptions`.\n"
         )
     }
 
@@ -155,7 +181,7 @@ impl MiniPowerEngine {
             1. **Two-Tier Planning Architecture:**\n\
                - Tier 1 (Core Milestones): High-level strategic roadmap recorded in `{}/core/todo.md` and `{}/core/implementation.md` (viewed in `/todo` modal).\n\
                - Tier 2 (Active Step Plan): Tactical 2-5 min execution steps recorded in `.minicode/plan/task_plan.md` via `create_plan` (viewed live in TUI dock).\n\
-            2. **Socratic Inception Gate:** For new features, applications, or UI redesigns, Step 1 of your active plan MUST be clarifying or confirming user preferences via `ask_user` before scaffolding or code authoring.\n\
+            2. **Decisions Before Steps (Reversibility Rule):** Any decision this plan depends on that the request, the repo or recorded decisions do not settle and that is costly to undo (stack, architecture, data model, API/spec, design direction, scope) is resolved with ONE batched `ask_user` round before the plan is executed; cheap details are stated as assumptions. Present the finished plan for approval before large multi-step work.\n\
             3. **Bite-Sized Task Breakdown:** Break work into 4-8 atomic tasks (2-5 minutes each). Every task must specify:\n\
                - **Target Files:** Exact relative file paths.\n\
                - **Acceptance Criteria:** Verifiable conditions for completion.\n\

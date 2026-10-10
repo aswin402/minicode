@@ -313,12 +313,12 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
             output.push_str(&format!("• Primary URL: {}\n", url));
         } else if !updated.ports.is_empty() {
             output.push_str(&format!(
-                "• Active Ports: {:?}\n• URL: http://localhost:{}\n",
+                "• Active Ports: {:?}\n• URL: http://127.0.0.1:{}\n",
                 updated.ports, updated.ports[0]
             ));
         } else if let Some(hint) = port_hint {
             output.push_str(&format!(
-                "• Expected Port: {}\n• URL: http://localhost:{}\n",
+                "• Expected Port: {}\n• URL: http://127.0.0.1:{}\n",
                 hint, hint
             ));
         }

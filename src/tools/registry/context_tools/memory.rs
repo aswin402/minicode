@@ -67,7 +67,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize an active multi-step task plan in Working Memory (.minicode/plan/task_plan.md).".to_string(),
+            description: "Initialize an active multi-step task plan in Working Memory (.minicode/plan/task_plan.md), shown live in the TUI. Use 4-8 verifiable steps. List in `assumptions` every choice you made without asking (cheap, reversible ones); they are recorded in .minicode/decisions.md for review. Plans with 3+ steps must be approved through one ask_user round before the first edit.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -90,6 +90,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             ]
                         },
                         "description": "Ordered list of action steps to complete the task (accepts strings or objects with title/description)"
+                    },
+                    "assumptions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Choices made without asking because they are cheap to change (e.g. 'Store notes in a JSON file'). Recorded as unconfirmed for the user to review."
                     }
                 },
                 "required": ["steps"]
@@ -253,6 +258,12 @@ pub async fn dispatch(
             }
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.init_plan(title, &steps)?;
+            let assumptions = param::opt_string_array(args, "assumptions").unwrap_or_default();
+            if let Err(e) =
+                crate::agent::decisions::record_assumptions(workspace_root, title, &assumptions)
+            {
+                tracing::warn!("Failed to record plan assumptions: {}", e);
+            }
             let first_step = steps
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))

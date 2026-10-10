@@ -79,7 +79,10 @@ impl BrowserManager {
         if let Some(existing) = guard.as_ref() {
             let alive = existing
                 .cdp
-                .send_command("Target.getTargets", serde_json::json!({}))
+                .send_command(
+                    "Runtime.evaluate",
+                    serde_json::json!({ "expression": "1 + 1", "returnByValue": true }),
+                )
                 .await
                 .is_ok();
             if alive {

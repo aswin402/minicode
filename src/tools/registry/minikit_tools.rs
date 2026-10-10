@@ -35,7 +35,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "kit_stack_add".to_string(),
-            description: "Scaffold a complete, production-grade application stack into the target folder from built-in templates or remote GitHub repositories (e.g. 'gh:owner/repo[/path][#ref]') with automatic dependency installation and AGENTS.md / minikit_docs generation.".to_string(),
+            description: "Scaffold a complete starter project in one call (files, config, dependency install, AGENTS.md and minikit_docs). Use when a new project needs a foundation: once the stack is known (named by the user or chosen via ask_user), call this before writing any project files instead of hand-writing boilerplate. Built-in stacks: react-vite, react-vite-full, react-vite-gsap (React SPA); next-template (Next.js); static-website (plain HTML/CSS/JS, no build step); hono-api, hono-full, express-api (Bun/Node APIs); mern, pern (fullstack); fastapi (Python API); rust-cli (Rust); flutter-riverpod (Flutter). Also accepts remote templates as 'gh:owner/repo[/path][#ref]'. Do NOT use to add packages to an existing project; run its package manager via exec_cmd.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -532,5 +532,34 @@ pub async fn dispatch(
             .await,
         ),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod stack_description_tests {
+    #[test]
+    fn kit_stack_add_description_lists_every_builtin_stack() {
+        let schemas = super::get_schemas();
+        let desc = &schemas
+            .iter()
+            .find(|s| s.name == "kit_stack_add")
+            .expect("kit_stack_add schema")
+            .description;
+        for stack in crate::tools::minikit::stacks::builtin::builtin_stacks() {
+            // Some stacks append an app name (e.g. `flutter-riverpod-my_app`); the
+            // description documents the base stack name.
+            let documented = desc
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .filter(|w| w.len() > 2)
+                .any(|w| {
+                    stack.name.as_str() == w
+                        || (w.contains('-') && stack.name.starts_with(&format!("{w}-")))
+                });
+            assert!(
+                documented,
+                "kit_stack_add description is missing stack `{}`",
+                stack.name
+            );
+        }
     }
 }

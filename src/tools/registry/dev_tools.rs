@@ -417,7 +417,7 @@ pub async fn dispatch(
                 }
 
                 let derived_url = live_summary.url.clone().or_else(|| {
-                    target_port.map(|p| format!("http://localhost:{}", p))
+                    target_port.map(|p| format!("http://127.0.0.1:{}", p))
                 });
                 let url_str = derived_url
                     .as_deref()
@@ -437,7 +437,7 @@ pub async fn dispatch(
                 if tcp_ready {
                     if let Some(p) = target_port {
                         msg.push_str(&format!(
-                            "\n• ⚡ TCP Socket Ready: http://localhost:{} is actively listening and verified responsive! (Safe for browser_navigate)",
+                            "\n• ⚡ TCP Socket Ready: http://127.0.0.1:{} is actively listening and verified responsive! (Safe for browser_navigate)",
                             p
                         ));
                     }

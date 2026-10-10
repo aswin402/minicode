@@ -19,11 +19,9 @@ pub fn read_file(
     if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
         const BINARY_EXTENSIONS: &[&str] = &[
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz",
-            "pdf", "wasm", "zip", "tar", "gz", "tgz", "7z", "rar",
-            "bin", "exe", "so", "dylib", "dll",
-            "mp4", "webm", "mp3", "wav", "ogg",
-            "woff", "woff2", "ttf", "eot", "otf",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz", "pdf", "wasm",
+            "zip", "tar", "gz", "tgz", "7z", "rar", "bin", "exe", "so", "dylib", "dll", "mp4",
+            "webm", "mp3", "wav", "ogg", "woff", "woff2", "ttf", "eot", "otf",
         ];
         if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
             return Err(ToolError::InvalidArguments {
@@ -150,7 +148,9 @@ pub fn write_file_with_options(
             || orig_content.contains("Kinetic Motion Template")
             || orig_content.contains("minikit.json")
             || orig_content.contains("Vite + React")
-            || (relative_path == "src/index.css" && orig_content.contains("@import \"tailwindcss\";") && orig_content.contains("--color-background: oklch"));
+            || (relative_path == "src/index.css"
+                && orig_content.contains("@import \"tailwindcss\";")
+                && orig_content.contains("--color-background: oklch"));
 
         if !is_template_placeholder {
             let mut hint = String::new();
@@ -784,7 +784,10 @@ pub fn replace_in_files(
         .build()
         .map_err(|e| ToolError::InvalidArguments {
             name: "replace_in_files".to_string(),
-            reason: format!("Failed to build glob overrides for '{}': {}", norm_pattern, e),
+            reason: format!(
+                "Failed to build glob overrides for '{}': {}",
+                norm_pattern, e
+            ),
         })?;
 
     let walker = ignore::WalkBuilder::new(workspace_root)
@@ -883,9 +886,10 @@ pub fn replace_in_files(
         modified_summaries.join("\n")
     );
 
-    if let Some(feedback) =
-        crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, &first_modified_rel)
-    {
+    if let Some(feedback) = crate::tools::compiler::ScopedCompiler::run_scoped_check(
+        workspace_root,
+        &first_modified_rel,
+    ) {
         result_msg.push_str("\n\n");
         result_msg.push_str(&feedback);
     }
@@ -1151,8 +1155,10 @@ mod tests {
 
     #[test]
     fn test_replace_in_files_batch() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("minicode_replace_in_files_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_replace_in_files_{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(temp_dir.join("src/components")).unwrap();
 
         let file1 = "src/components/A.tsx";
@@ -1161,12 +1167,18 @@ mod tests {
 
         write_file(&temp_dir, file1, "import { gsap } from 'gsap';\nimport { ScrollTrigger } from 'gsap/ScrollTrigger';\nexport const A = 1;\n").unwrap();
         write_file(&temp_dir, file2, "import { gsap } from 'gsap';\nimport { ScrollTrigger } from 'gsap/ScrollTrigger';\nexport const B = 2;\n").unwrap();
-        write_file(&temp_dir, file3, "import { gsap } from 'gsap';\nexport const C = 3;\n").unwrap();
+        write_file(
+            &temp_dir,
+            file3,
+            "import { gsap } from 'gsap';\nexport const C = 3;\n",
+        )
+        .unwrap();
 
         let search = "import { ScrollTrigger } from 'gsap/ScrollTrigger';\n";
         let replace = "";
 
-        let res = replace_in_files(&temp_dir, "src/components/*.tsx", search, replace, None, 0).unwrap();
+        let res =
+            replace_in_files(&temp_dir, "src/components/*.tsx", search, replace, None, 0).unwrap();
         assert!(res.contains("Successfully replaced pattern across 2 files"));
         assert!(res.contains("A.tsx"));
         assert!(res.contains("B.tsx"));

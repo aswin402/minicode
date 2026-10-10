@@ -754,7 +754,11 @@ impl WorkflowRouter {
 
         let mut sections: Vec<String> = Vec::new();
 
-        // 0. Dynamic Repository State & File Discovery
+        // 0. Dynamic Repository State & File Discovery (purely filesystem-derived).
+        // Guidance below depends only on observable workspace state, never on
+        // keyword matching against the user's prompt. Static methodology rules live
+        // once in STATIC_SYSTEM_PROMPT; the active plan is injected once by
+        // PromptBuilder::build_recency_context (<minipower_active_plan>).
         let (repo_state, code_files, doc_files) = Self::scan_repository_state(workspace_root);
         sections.push(Self::enrich_repository_state(
             workspace_root,
@@ -764,18 +768,8 @@ impl WorkflowRouter {
         ));
         sections.push(Self::enrich_orchestrator_guidance(
             workspace_root,
-            prompt,
             repo_state,
         ));
-        sections.push(Self::enrich_minipower_rules_and_freedom(
-            workspace_root,
-            prompt,
-        ));
-
-        // 1. Dynamic Plan Status Grounding (Oh My Pi / SWE-Agent Task Reconciler)
-        if let Some(plan_block) = Self::enrich_plan_status(workspace_root) {
-            sections.push(plan_block);
-        }
 
         // 2. Base archetype enrichment
         let base_enrichment = match archetype {
@@ -845,59 +839,6 @@ impl WorkflowRouter {
         } else {
             Some(sections.join("\n\n"))
         }
-    }
-
-    /// Extracts live plan progress from working memory to ensure the agent is aware of
-    /// pending, in-progress, and completed tasks at each step.
-    fn enrich_plan_status(workspace_root: &Path) -> Option<String> {
-        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
-        if !wm.has_active_plan() {
-            return None;
-        }
-
-        let tasks = wm.read_parsed_tasks();
-        if tasks.is_empty() {
-            return None;
-        }
-
-        let total = tasks.len();
-        let completed = tasks
-            .iter()
-            .filter(|t| {
-                t.status == crate::context::memory::working_memory::TaskItemStatus::Completed
-            })
-            .count();
-        let in_progress = tasks.iter().find(|t| {
-            t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress
-        });
-
-        let mut out = String::from("<active_task_plan_status>\n");
-        out.push_str(&format!(
-            "  Execution Plan State: {}/{} tasks completed\n",
-            completed, total
-        ));
-        if let Some(active) = in_progress {
-            out.push_str(&format!(
-                "  ► Currently In Progress: \"{}\"\n",
-                active.title
-            ));
-        }
-        out.push_str("  Task Checklist:\n");
-        for t in &tasks {
-            let mark = match t.status {
-                crate::context::memory::working_memory::TaskItemStatus::Completed => "[x]",
-                crate::context::memory::working_memory::TaskItemStatus::InProgress => "[>]",
-                crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
-            };
-            out.push_str(&format!("    • {} {}\n", mark, t.title));
-        }
-        out.push_str("  Plan Reconciliation Invariant (Oh My Pi / SWE-Agent Standard):\n");
-        out.push_str("  • Keep focus strictly on the in-progress step.\n");
-        out.push_str("  • Upon completing a task's code or verification, call `update_progress` immediately so no completed steps linger as `[>]`.\n");
-        out.push_str("  • When the final task is verified, call `update_progress(step=\"active\", status=\"completed\")` to achieve 100% plan completion.\n");
-        out.push_str("  • Never batch all `update_progress` calls together at the end of a multi-step turn; advance tasks atomically as you execute.\n");
-        out.push_str("</active_task_plan_status>");
-        Some(out)
     }
 
     /// Dynamically scans workspace files and directories to detect if this is a fresh workspace,
@@ -970,7 +911,7 @@ impl WorkflowRouter {
             }
         }
 
-        let state = if !code_files.is_empty() {
+        let state = if !code_files.is_empty() || Self::project_manifest(workspace_root).is_some() {
             RepoState::ExistingCodebase
         } else if !doc_files.is_empty() || has_other_files {
             RepoState::DocsOnly
@@ -1030,275 +971,86 @@ impl WorkflowRouter {
         out
     }
 
-    /// Injects dynamic orchestrator workflow guidance for fresh project inception,
-    /// specification synthesis, information completeness evaluation, ask_user gating,
-    /// and web research.
-    pub fn enrich_orchestrator_guidance(
-        workspace_root: &Path,
-        prompt: &str,
-        state: RepoState,
-    ) -> String {
+    /// Injects workflow guidance derived purely from observable workspace state.
+    ///
+    /// No keyword matching against the user's prompt happens here: whether the
+    /// request already settles the foundation (stack, visual direction) is a
+    /// judgement the model makes by reading the request, guided by the
+    /// Reversibility Rule in `STATIC_SYSTEM_PROMPT`.
+    pub fn enrich_orchestrator_guidance(workspace_root: &Path, state: RepoState) -> String {
         let mut out = String::from("<orchestrator_dynamic_guidance>\n");
-        let lower = prompt.to_ascii_lowercase();
-
-        let is_creation_intent = has_any_word(
-            &lower,
-            &[
-                "create",
-                "build",
-                "make",
-                "scaffold",
-                "develop",
-                "setup",
-                "bootstrap",
-                "start",
-            ],
-        ) && has_any_word(
-            &lower,
-            &[
-                "project", "app", "website", "landing", "page", "service", "api", "tool", "stack",
-                "system",
-            ],
-        );
-
-        let has_explicit_stack = {
-            let direct_stack_declarations = [
-                "use react",
-                "using react",
-                "with react",
-                "in react",
-                "react app",
-                "react project",
-                "react + vite",
-                "react/vite",
-                "use vite",
-                "using vite",
-                "with vite",
-                "use vue",
-                "using vue",
-                "with vue",
-                "in vue",
-                "vue app",
-                "vue project",
-                "use svelte",
-                "using svelte",
-                "with svelte",
-                "in svelte",
-                "svelte app",
-                "use nextjs",
-                "using nextjs",
-                "with nextjs",
-                "in nextjs",
-                "use next.js",
-                "using next.js",
-                "with next.js",
-                "in next.js",
-                "nextjs app",
-                "next.js app",
-                "use vanilla",
-                "using vanilla",
-                "vanilla html",
-                "pure html",
-                "static html",
-                "plain html",
-                "vanilla js",
-                "use tailwind",
-                "using tailwind",
-                "with tailwind",
-                "use fastapi",
-                "using fastapi",
-                "with fastapi",
-                "in fastapi",
-                "use flask",
-                "using flask",
-                "use django",
-                "using django",
-                "use express",
-                "using express",
-                "use hono",
-                "using hono",
-                "use actix",
-                "using actix",
-                "use axum",
-                "using axum",
-                "use astro",
-                "using astro",
-                "in rust",
-                "using rust",
-                "stack:",
-                "tech stack:",
-                "framework:",
-            ];
-            contains_any(&lower, &direct_stack_declarations)
-        };
-        let has_explicit_theme_or_style = has_any_word(
-            &lower,
-            &[
-                "dark",
-                "light",
-                "minimal",
-                "futuristic",
-                "cyberpunk",
-                "modern",
-                "neon",
-                "retro",
-                "monochrome",
-                "gradient",
-                "glassmorphism",
-                "aesthetic",
-                "palette",
-                "theme",
-            ],
-        );
-        let is_rich_prompt = has_explicit_stack && has_explicit_theme_or_style;
-
         match state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
-                if is_creation_intent || state == RepoState::FreshWorkspace {
-                    out.push_str("  Autonomous Inception & Specification Architecture:\n");
-                    if !is_rich_prompt {
-                        out.push_str(
-                            "  1. Technical Foundation Alignment (Action Required: `ask_user`):\n",
-                        );
-                        out.push_str("     Target tech stack, framework, or design theme is not explicitly settled by the user in the prompt.\n");
-                        out.push_str("     • Your FIRST action MUST be to invoke `ask_user` to present 2-3 structured choices for:\n");
-                        out.push_str("       • Tech Stack & Framework (e.g. React+Vite+Tailwind, Next.js, or Modern Vanilla HTML5/CSS3/ES6)\n");
-                        out.push_str("       • Visual Theme & Aesthetic (e.g. Dark Modern Futuristic Neon, Clean Minimalist Monochrome, High-Contrast Light)\n");
-                        out.push_str("       • Scope & Key Features\n");
-                        out.push_str("     • Do NOT write files or scaffold before calling `ask_user` to align with the user on their preferred architecture.\n");
-                        out.push_str(
-                            "  2. Information Completeness: UNDERSPECIFIED (Interactive Clarification Required):\n",
-                        );
-                        out.push_str("     Interactive Inquiry (`ask_user`) is available and required to clarify technical foundation.\n");
-                        out.push_str("  3. Specification Synthesis (After User Alignment):\n");
-                        out.push_str("     Once the user confirms choices via `ask_user`, establish core project specifications in `minikit_docs/core/`:\n");
-                    } else {
-                        out.push_str(
-                            "  1. Information Completeness: HIGH (Rich Specification Provided):\n",
-                        );
-                        out.push_str("     The user provided initial stack/theme directives, but critical design nuances, layout priorities, and component details remain open.\n");
-                        out.push_str("     • You have full autonomy to proceed directly, or call `ask_user` at any time to present targeted options (e.g. layout structure, specific cyber aesthetic accents, interactive component priorities) before or during implementation.\n");
-                        out.push_str("     • Synthesize detailed `.md` core files directly in `minikit_docs/core/`, then scaffold using `kit_stack_add` and implement modular components (<250 lines per file).\n");
-                        out.push_str("  2. Specification Synthesis First:\n");
-                        out.push_str("     Establish core project specifications in `minikit_docs/core/`:\n");
-                    }
-                    out.push_str("     • `prd.md`: Product Requirements Document (Core purpose, user stories, success metrics, constraints, non-goals)\n");
-                    out.push_str("     • `design.md`: Visual Design Specification (Theme tokens, typography, layout hierarchy, components, breakpoints)\n");
-                    out.push_str("     • `architecture.md`: Clean Architecture & Dependency Contract (Module boundaries, data flow, state management)\n");
-                    out.push_str("     • `spec.md`: Technical Invariants & Protocol Specification (APIs, contracts, error boundaries)\n");
-                    out.push_str("     • `todo.md`: Initialized via `create_plan` with verifiable bite-sized milestones.\n");
-
-                    out.push_str(
-                        "  3. Two-Tier Planning & Progressive Step-by-Step Task Advancement:\n",
-                    );
-                    out.push_str("     • Tier 1 (Core Roadmap): `minikit_docs/core/todo.md` tracks high-level strategic milestones (viewed in /todo modal).\n");
-                    out.push_str("     • Tier 2 (Active MiniPower Step Plan): `.minicode/plan/task_plan.md` tracks atomic 2-5 min tactical execution steps (viewed live in TUI dock).\n");
-                    out.push_str("     • Call `create_plan` with 4-8 focused, bite-sized steps to structure your execution roadmap.\n");
-                    out.push_str("     • Execute sequentially: work on Step 1, call `update_progress(step=\"1\", status=\"completed\")` immediately to advance to Step 2, and repeat.\n");
-                    out.push_str("     • NEVER batch all `update_progress` calls together at the very end of your turn! The live TUI dock displays your progress in real-time.\n");
-                    out.push_str("     • Conclude the turn by verifying the final task and marking it completed.\n");
-                    out.push_str("  4. Starter Stacks & Anti-Monolith Invariant:\n");
-                    out.push_str("     • Scaffolding: Call `kit_stack_add` to scaffold starter project templates in 1 tool call rather than hand-authoring files from scratch.\n");
-                    out.push_str("     • NEVER write massive monolithic single files (>250-300 lines or >10KB). Decompose HTML, CSS, and JS into modular files to avoid JSON token truncation cutoffs.\n");
-                    out.push_str("     • UI Design: Call `block_palettes` for color tokens and `block_search` / `block_scaffold` for pre-built components.\n");
-                    out.push_str("  5. Research on Doubt / Uncertainty:\n");
-                    out.push_str("     If you have any doubt regarding modern library APIs, framework compatibility, or best practices, call `search_web` or `fetch_or_browse` to ground yourself before writing specifications or code.\n");
+                out.push_str("  Foundation: NOT ESTABLISHED (no project manifest such as package.json, Cargo.toml, pyproject.toml, go.mod or index.html exists yet).\n");
+                if state == RepoState::DocsOnly {
+                    out.push_str("  The documentation files listed above may already state the stack or design; read them before deciding.\n");
                 }
+                if crate::agent::decisions::read_for_prompt(workspace_root).is_some() {
+                    out.push_str("  Recorded user decisions exist (see <user_decisions>): build on them and do not re-ask settled questions. Ask only about decisions still open.\n");
+                }
+                out.push_str(
+                    "  Resolve the foundation before writing project files (Reversibility Rule):\n",
+                );
+                out.push_str("  1. Identify which foundation decisions the request (and any docs) actually state: framework/stack, architecture, visual direction for UI work, scope, and any content/data only the user has. A long or detailed request is not a decision; a named stack is.\n");
+                out.push_str("  2. Unstated decisions that are expensive to reverse once files exist belong to the user: ask them all in ONE `ask_user` call, recommended option first.\n");
+                out.push_str("  3. If every foundation decision is stated, or the deliverable is trivially a single file (one script, one standalone page), do not ask: state your assumption in one sentence and continue.\n");
+                out.push_str("  Then build on it:\n");
+                out.push_str("  4. Scaffold with `kit_stack_add` into the workspace root (`kit_stack_list` shows stacks; `static-website` covers plain HTML/CSS/JS) instead of hand-writing boilerplate.\n");
+                out.push_str("  5. Multi-step work: `create_plan` with 4-8 verifiable steps, then `update_progress` as each step finishes.\n");
+                out.push_str("  6. UI work: choose tokens with `block_palettes` and components with `block_search` before writing CSS or markup from scratch.\n");
+                out.push_str("  7. Larger projects: after the foundation is decided, record specs in `minikit_docs/core/` (prd.md, design.md, architecture.md) if they help.\n");
+                out.push_str("  8. Verify by running it (`minitask` start or `exec_cmd`) and inspecting the result (`browser_navigate`, tests).\n");
             }
             RepoState::ExistingCodebase => {
-                out.push_str("  Existing Codebase Engineering Architecture:\n");
-                out.push_str("  1. Grounding & CodeGraph: Inspect existing architecture, imports, and types (`locate_symbol`, `grep_search`, `read_file`) before writing code.\n");
-                out.push_str("  2. Invariants: Respect existing project patterns, styling, and coding conventions.\n");
-                out.push_str("  3. Living Specs: Inspect available `.md` documentation and update `minikit_docs/core/todo.md` via `create_plan` or `update_progress` as tasks complete.\n");
-                out.push_str("  4. Research: If troubleshooting unfamiliar libraries or legacy patterns, use `search_web` to look up official documentation.\n");
-                out.push_str("  5. MiniBlocks & Packages: For dependencies, run the native package manager via `exec_cmd` (`bun add`, `npm install`, `cargo add`). MiniKit is strictly for templates. Leverage MiniBlocks (`block_search`) for UI components.\n");
+                if let Some(manifest) = Self::project_manifest(workspace_root) {
+                    out.push_str(&format!(
+                        "  Foundation: ESTABLISHED (`{}`). Do not re-scaffold; extend the existing project.\n",
+                        manifest
+                    ));
+                }
+                out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code.\n");
+                out.push_str("  Before your first edit, check: which decisions does this change make that the request does not state (storage or data model, architecture, API shape, visual direction, content)? Any that is costly to undo or a matter of the user's taste is theirs: ask in one `ask_user` round. Only cheap, reversible details may be assumed, and say so.\n");
+                out.push_str("  2. Respect existing patterns, styling and conventions; make surgical changes.\n");
+                out.push_str("  3. Multi-step work: `create_plan`, then `update_progress` as steps finish.\n");
+                out.push_str("  4. Dependencies: use the project's package manager via `exec_cmd`. UI components: `block_search`.\n");
+                out.push_str("  5. Decisions the code does not settle and that are costly to undo still belong to the user (`ask_user`, one batched round): new architecture or data model, API/spec changes, design direction, new heavy dependencies, destructive changes, missing data only they have. For large multi-step work, get the approach or plan approved before the first edit.\n");
             }
         }
-
-        let helpers = crate::agent::features::generate_context_helpers(
-            workspace_root,
-            prompt,
-            is_creation_intent || state == RepoState::FreshWorkspace,
-        );
-        if !helpers.is_empty() {
-            out.push_str("\n  Subsystem Affordances & Active Feature Helpers:\n");
-            for helper in helpers {
-                out.push_str("  ");
-                out.push_str(&helper);
-                out.push('\n');
-            }
-        }
-
         out.push_str("</orchestrator_dynamic_guidance>");
         out
     }
 
-    /// MiniPower Methodology & Orchestrator Freedom Directive
-    /// Grounding the orchestrator with MiniPower's 6 core engineering pillars,
-    /// anti-rationalization guardrails ("Red Flags"), and complete tool autonomy.
-    fn enrich_minipower_rules_and_freedom(_workspace_root: &Path, _prompt: &str) -> String {
-        let mut out = String::from("<minipower_autonomous_engineering_rules>\n");
-        out.push_str("  MINIPOWER CORE METHODOLOGY & AGENT FREEDOM CONTRACT:\n");
-        out.push_str("  1. The 6 Engineering Pillars:\n");
-        out.push_str("     • Socratic Brainstorming: Clarify intent, surface trade-offs, and chunk specs before touching code (`power_brainstorm` or `ask_user`).\n");
-        out.push_str("     • Git Worktree Isolation: Protect the main branch by running complex tasks in isolated branches (`power_worktree_task`).\n");
-        out.push_str("     • Bite-Sized Planning: Atomic 2-5 min tasks with concrete acceptance tests (`power_plan` or `create_plan` + `todo.md`).\n");
-        out.push_str("     • Two-Stage Subagent Review: Automated Stage 1 (Spec Compliance) and Stage 2 (Code Quality) (`power_review`).\n");
-        out.push_str("     • Strict Red/Green TDD: Write failing tests first, make them green, refactor cleanly (`exec_cmd`).\n");
-        out.push_str("     • Evidence Before Assertions: Zero unverified claims; verified by exit code 0 (`power_verify`).\n\n");
-
-        out.push_str("  2. Anti-Rationalization Guardrails (\"Red Flags\" Reality Table):\n");
-        for (excuse, reality) in
-            crate::agent::minipower::MiniPowerEngine::anti_rationalization_table()
-        {
-            out.push_str(&format!("     • \"{}\" ➔ {}\n", excuse, reality));
-        }
-
-        out.push_str("\n  3. 4-Gate Pre-Completion Verification Barrier:\n");
-        out.push_str(
-            "     Never declare a feature or phase complete without satisfying all 4 gates:\n",
-        );
-        out.push_str("     • Gate 1 (Compiler & Syntax): Clean build with exit code 0 (e.g. `cargo check`, `tsc --noEmit`).\n");
-        out.push_str("     • Gate 2 (Test Suite & Regression): Running tests pass (e.g. `cargo test`, `npm test`, `pytest`).\n");
-        out.push_str("     • Gate 3 (Structural Integrity): Zero merge conflict markers (`<<<<<<<`), no dead imports or broken links.\n");
-        out.push_str("     • Gate 4 (Diff & Secret Protection): Zero leaked API keys, tokens, or credentials in git diff.\n");
-        out.push_str(
-            "     Invoke `power_verify` or run checks via `exec_cmd` before claiming success!\n\n",
-        );
-
-        out.push_str("  4. Tool Freedom & Ecosystem Synergy (202 Native Tools Available):\n");
-        out.push_str("     You have full freedom to choose and combine the highest-leverage tools for any task:\n");
-        out.push_str("     • MiniKit Scaffolding: `kit_stack_add` (scaffold templates directly into workspace root '.', do not create nested folders). For dependencies, use native package managers via `exec_cmd` (`bun add`, `npm install`, `cargo add`).\n");
-        out.push_str("     • File System Safety: `write_file(path, content, overwrite=true, append=true)` — Safe-overwrite guard active. Set `overwrite=true` to replace or `append=true` for chunked writes. For large multi-section files (>250 lines), use modular files, `append=true`, or scripted builder assembly (`python3 scripts/build.py` or `cat << 'EOF' >> file` via `exec_cmd`). When replacing starter boilerplate files (e.g. HomePage.tsx), pass `overwrite=true`.\n");
-        out.push_str("     • MiniBlocks & Frontend: `block_search`, `block_palettes`, `block_scaffold` — NEVER write 1,000+ line monolithic CSS/JS/TSX files! Decompose into modular components in `src/components/sections/` (<250 lines per file) to prevent JSON token truncation (`EOF while parsing a string`). Note: `lucide-react` does NOT have brand icons (GitHub, Twitter, Discord, etc.) — always use clean inline SVG for brand logos.\n");
-        out.push_str("     • MiniTask Vault: `minitask(action=\"start\")` to run dev servers/daemons, `minitask(action=\"status\")` / `minitask(action=\"resources\")` for telemetry. Keep background dev servers running across turns for user testing; only call `minitask(action=\"stop\")` when user explicitly requests teardown.\n");
-        out.push_str("     • Browser Automation: `browser_navigate`, `browser_screenshot`, `browser_snapshot`, `browser_close`. Inspect the returned `[DOM & Visual Health Observation]` telemetry (stylesheets count, computed font, serif detection) to verify visual rendering.\n");
-        out.push_str("     • CodeGraph AST: `code_explore`, `blast_radius`, `locate_symbol`, `diff_impact` for architectural navigation.\n");
-        out.push_str("     • Working Memory: `create_plan`, `update_progress` — call `update_progress` after each step so the user and live TUI stay in sync.\n");
-        out.push_str("     • MiniPower Execution: `power_status`, `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `power_worktree_task`.\n");
-        out.push_str("     • Interactive Inquiry (`ask_user`): Ambient human-in-the-loop consultation. Use whenever you need clarification, user preferences, or decisions on trade-offs at any point during execution.\n");
-
-        out.push_str("</minipower_autonomous_engineering_rules>");
-        out
+    /// Returns the first project manifest found at the workspace root, if any.
+    ///
+    /// A manifest marks an established project foundation (scaffolded or
+    /// hand-initialized), independent of how many source files exist yet.
+    pub(crate) fn project_manifest(workspace_root: &Path) -> Option<&'static str> {
+        const MANIFESTS: &[&str] = &[
+            "package.json",
+            "Cargo.toml",
+            "pyproject.toml",
+            "requirements.txt",
+            "go.mod",
+            "deno.json",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "Gemfile",
+            "composer.json",
+            "pubspec.yaml",
+            "mix.exs",
+            "CMakeLists.txt",
+            "Makefile",
+            "minikit.json",
+            "index.html",
+        ];
+        MANIFESTS
+            .iter()
+            .copied()
+            .find(|m| workspace_root.join(m).is_file())
     }
 
-    #[allow(dead_code)]
-    fn is_empty_workspace(workspace: &Path) -> bool {
-        let Ok(entries) = std::fs::read_dir(workspace) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') {
-                continue;
-            }
-            return false;
-        }
-        true
-    }
-
-    fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
+    fn enrich_ui_design(_workspace_root: &Path, prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,
@@ -1373,42 +1125,31 @@ impl WorkflowRouter {
             }
         }
 
-        let theme_words: Vec<&str> = [
-            "cyberpunk",
-            "futuristic",
-            "dark",
-            "neon",
-            "minimal",
-            "modern",
-            "retro",
-            "light",
-            "monochrome",
-            "purple",
-            "terminal",
-        ]
-        .iter()
-        .filter(|&&w| lower.contains(w))
-        .copied()
-        .collect();
-        let query = if !theme_words.is_empty() {
-            theme_words.join(" ")
-        } else {
-            "dark".to_string()
-        };
-        let mut palettes = store.search_palettes(&query);
-        if palettes.is_empty() {
-            palettes = store.search_palettes("dark");
-        }
-        if palettes.is_empty() {
-            palettes = store.list_palettes();
+        // Palette retrieval: query the palette store with the prompt's own salient
+        // tokens (same retrieval used for components above) rather than a fixed
+        // list of theme words. Palettes are suggestions; the model decides.
+        let mut palettes = Vec::new();
+        for token in &prompt_tokens {
+            for p in store.search_palettes(token) {
+                if !palettes
+                    .iter()
+                    .any(|existing: &&crate::blocks::BlockPalette| existing.name == p.name)
+                {
+                    palettes.push(p);
+                }
+            }
+            if palettes.len() >= 2 {
+                break;
+            }
         }
 
         let mut out = String::from("<recommended_miniblocks>\n");
-        out.push_str("  Autonomous UI Warehouse Guidance:\n");
-        out.push_str("  1. Do not code UI elements, styles, or color palettes from scratch when warehouse blocks match.\n");
+        out.push_str(
+            "  MiniBlocks warehouse matches for this request (retrieved, not mandatory):\n",
+        );
 
         if !components.is_empty() {
-            out.push_str("  2. Matching verified components in MiniBlocks warehouse:\n");
+            out.push_str("  Components:\n");
             for c in components.iter().take(3) {
                 out.push_str(&format!(
                     "     • `{}` ({}, {:?}): {}\n",
@@ -1417,52 +1158,26 @@ impl WorkflowRouter {
             }
             if matched_queries.len() > 1 {
                 out.push_str(&format!(
-                    "     Tip: User prompt also requested other UI blocks ({}). Query them with `block_search`.\n",
+                    "     Other matched terms: {}. Query them with `block_search`.\n",
                     matched_queries[1..].join(", ")
                 ));
             }
-            out.push_str("     Action: Use `block_insert` or `block_scaffold` to insert them directly into project source.\n");
+            out.push_str("     Use `block_get` for source, or `block_insert` / `block_scaffold` to place them.\n");
         } else {
-            out.push_str("  2. Search warehouse with `block_search` to find pre-built components for your stack.\n");
+            out.push_str("  Components: none matched directly; try `block_search` with a section name (hero, navbar, pricing, footer).\n");
         }
 
         if !palettes.is_empty() {
-            out.push_str("  3. Verified Theme Palettes & CSS Design Tokens:\n");
+            out.push_str("  Palettes:\n");
             for p in palettes.iter().take(2) {
                 out.push_str(&format!(
-                    "     • `{}`:\n       [CSS Tokens: --bg: {}; --surface: {}; --accent: {}; --text: {};]\n",
+                    "     • `{}`: --bg: {}; --surface: {}; --accent: {}; --text: {};\n",
                     p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
                 ));
             }
-            out.push_str("     Action: Use these verified CSS variables directly or pass palette name to `block_scaffold(palette=\"...\")` instead of inventing unverified hex colors.\n");
+        } else {
+            out.push_str("  Palettes: none matched directly; browse with `block_palettes`.\n");
         }
-
-        // Modular anti-monolith & dev server rules
-        out.push_str("  • Interactive Inquiry & Human-in-the-Loop (`ask_user`):\n");
-        out.push_str("    If user requirements, architecture choices, or tech stacks are open-ended, call `ask_user` to present structured options to the user rather than guessing!\n");
-        out.push_str("  • Instant Starter Stack Scaffolding (`kit_stack_add`):\n");
-        out.push_str("    To build a modern frontend, use `kit_stack_add` (e.g. `kit_stack_add(stack_name=\"react-vite-gsap\")` or `kit_stack_add(stack_name=\"static-website\")`) to scaffold the full project in 1 call rather than hand-authoring files.\n");
-        out.push_str("  • Strict Modular Code Architecture Contract (Anti-Monolith Invariant):\n");
-        out.push_str("    NEVER write massive monolithic files (>250-300 lines or >10KB) in a single tool call to avoid token truncation and JSON EOF errors.\n");
-        out.push_str(
-            "    Decompose frontend applications into separate modular files from turn 1:\n",
-        );
-        out.push_str("    • `index.html`: Semantic HTML skeleton only (<150 lines), linking to `styles.css` and `app.js`. NO massive inline <style> or <script> tags!\n");
-        out.push_str("    • `styles.css`: CSS variables, design tokens, typography, responsive layout (<250 lines).\n");
-        out.push_str("    • Modular JS: Split into focused modules (`app.js`, `components.js`, `api.js`, `theme.js`, <150 lines each).\n");
-
-        let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
-        if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
-            out.push_str("  • Task Planning Invariant:\n");
-            out.push_str("    When embarking on a new feature or multi-step work, use `create_plan` to structure tasks into `todo.md` with verification checks before modifying code.\n");
-        }
-
-        out.push_str("  • UI Component Warehouse Invariant:\n");
-        out.push_str("    ALWAYS query MiniBlocks (`block_search`, `block_palettes`) BEFORE creating UI components or themes from scratch.\n");
-        out.push_str("    Use `block_insert` or `block_scaffold` to insert verified, production-grade components into the project rather than hand-coding JSX/TSX from scratch.\n");
-
-        out.push_str("  • Development Server Invariant:\n");
-        out.push_str("    To run and test the web application, use `minitask(action=\"start\")` or `exec_cmd`. Do NOT launch multiple competing servers. Cleanly close test servers and browser sessions when finished.\n");
 
         out.push_str("</recommended_miniblocks>");
         Some(out)
@@ -1470,11 +1185,7 @@ impl WorkflowRouter {
 
     fn enrich_minikit_scaffolding(_workspace_root: &Path, _prompt: &str) -> Option<String> {
         let mut out = String::from("<minikit_scaffolding_guidance>\n");
-        out.push_str("  MiniKit Architecture, Starter Stacks & Dependency Engine Activated:\n");
-        out.push_str("  1. Interactive Clarification First (`ask_user`):\n");
-        out.push_str("     If user requirements or framework preferences are open-ended (e.g. choice of React vs Next.js vs static HTML vs FastAPI), call `ask_user` on Turn 1 to confirm before creating files.\n");
-        out.push_str("  2. Instant Starter Stacks (`kit_stack_add`):\n");
-        out.push_str("     Never manually author 15 boilerplate files from scratch! Inspect available stacks with `kit_stack_list`:\n");
+        out.push_str("  Available starter stacks (`kit_stack_add(stack_name=...)` scaffolds one into the workspace root in a single call):\n");
         let stacks = crate::tools::minikit::stacks::builtin::builtin_stacks();
         for s in &stacks {
             out.push_str(&format!(
@@ -1482,12 +1193,8 @@ impl WorkflowRouter {
                 s.name, s.runtime, s.description
             ));
         }
-        out.push_str("     • Remote GitHub stacks: `gh:owner/repo` (e.g. `gh:shadcn-ui/ui`)\n");
-        out.push_str("     Run `kit_stack_add(stack_name=\"...\")` to scaffold with automated dependency installation in 1 tool call.\n");
-        out.push_str("  3. Native Runtime Dependency Management:\n");
-        out.push_str("     When adding libraries (e.g. `zod`, `gsap`, `lucide-react`, `axum`), run the project's native package manager via `exec_cmd` (e.g. `bun add <pkg>`, `npm install <pkg>`, `cargo add <pkg>`). MiniKit is strictly for templates. Native package managers resolve peer dependencies and lockfiles cleanly.\n");
-        out.push_str("  4. Strict Modular Code Architecture Contract:\n");
-        out.push_str("     Write modular, cleanly scoped files under 250-300 lines rather than giant single files to prevent JSON EOF parsing cutoffs. Strictly separate HTML, CSS, and JS.\n");
+        out.push_str("     • Remote GitHub stacks: `gh:owner/repo`\n");
+        out.push_str("  After scaffolding, add libraries with the project's package manager via `exec_cmd`; MiniKit is for templates only.\n");
         out.push_str("</minikit_scaffolding_guidance>");
         Some(out)
     }
@@ -1645,7 +1352,6 @@ impl WorkflowRouter {
 
         let mut out = String::from("<autonomous_engineering_guidance>\n");
         out.push_str("  Autonomous 4-Gate Methodology Activated:\n");
-        out.push_str("  • Interactive Clarification First (`ask_user`): If user requirements, architecture, or tech stack choices are underspecified, call `ask_user` on Turn 1 before writing code.\n");
         out.push_str(&format!(
             "  1. Gate 1 (Intent Anchor): Define the goal and bite-sized milestones. Record progress in `{}/core/todo.md` using `create_plan` or direct file edits.\n",
             docs_name
@@ -1656,20 +1362,11 @@ impl WorkflowRouter {
         ));
         out.push_str("  3. Gate 3 (TDD Implementation): Write or update tests FIRST. Verify failure (Red), then implement minimal code, then verify green.\n");
         out.push_str("  4. Gate 4 (Verification Barrier): Execute compiler/test checks (`cargo test -j 1 ...`, `npm test`, etc.) to confirm 0 errors before concluding.\n");
-        out.push_str("  5. Anti-Monolith Invariant: Write modular, cleanly scoped files under 250-300 lines rather than giant single files to prevent JSON EOF parsing cutoffs. Strictly separate HTML, CSS, and JS.\n");
         out.push_str(
-            "  6. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd` or `minitask`.\n",
+            "  5. Command Invariant: Run all builds, tests, and dev servers with `exec_cmd` or `minitask`.\n",
         );
 
-        let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_root);
-        if !core_dir.join("todo.md").exists() && !workspace_root.join("todo.md").exists() {
-            out.push_str("  • Task Planning: For multi-step tasks or new features, use `create_plan` to anchor bite-sized milestones before creating source files.\n");
-        }
-        out.push_str("  • UI Invariant: For frontend/UI tasks, query MiniBlocks (`block_search`, `block_palettes`) before writing components from scratch.\n");
-        out.push_str("  • Plan Progress Invariant: Update tasks via `update_progress` as you complete each milestone to keep the Live Execution Plan in sync.\n");
-        out.push_str("  • Layout Anti-Collision Invariant: Starter stacks (e.g. `react-vite-gsap`, `next-template`) wrap pages inside a root layout (e.g. `src/layouts/RootLayout.tsx`) that already renders `<Navbar />` and `<Footer />`. Inspect `RootLayout.tsx` first! NEVER duplicate `<Navigation />` or `<Footer />` inside page components (`HomePage.tsx`).\n");
-        out.push_str("  • Brand Icons Invariant: Modern `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard generic icons (`Code`, `Globe`, `Share2`).\n");
-        out.push_str("  • Smooth Scroll Flow: When combining GSAP ScrollTrigger with smooth scroll (Lenis), avoid hardcoded rigid heights (`h-screen`, `min-h-screen`) across multiple sequential sections without flow spacing. Let natural content flow govern section heights.\n");
+        out.push_str("  Stack-specific pitfalls (layout wrappers, lucide brand icons, GSAP scroll flow) are covered in the Self-Healing protocol.\n");
 
         out.push_str("</autonomous_engineering_guidance>");
         Some(out)
@@ -2241,45 +1938,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_workflow_router_enrich_plan_status() {
-        let temp = tempfile::tempdir().unwrap();
-        let wm = crate::context::memory::working_memory::WorkingMemory::new(temp.path());
-        wm.init_plan(
-            "Test Feature",
-            &[
-                "Step 1: Create auth.rs".to_string(),
-                "Step 2: Create routes.rs".to_string(),
-                "Step 3: Run cargo test".to_string(),
-            ],
-        )
-        .unwrap();
-
-        // Initially 0/3 completed, step 1 in progress
-        let enrichment = WorkflowRouter::enrich_context(
-            temp.path(),
-            "What is next?",
-            WorkflowArchetype::Standard,
-        )
-        .await;
-        assert!(enrichment.is_some());
-        let text = enrichment.unwrap();
-        assert!(text.contains("<active_task_plan_status>"));
-        assert!(text.contains("0/3 tasks completed"));
-        assert!(text.contains("[>] Step 1: Create auth.rs"));
-
-        // Mark step 1 completed
-        wm.update_progress("1", "completed").unwrap();
-        let enrichment2 =
-            WorkflowRouter::enrich_context(temp.path(), "Continue", WorkflowArchetype::Standard)
-                .await;
-        assert!(enrichment2.is_some());
-        let text2 = enrichment2.unwrap();
-        assert!(text2.contains("1/3 tasks completed"));
-        assert!(text2.contains("[x] Step 1: Create auth.rs"));
-        assert!(text2.contains("[>] Step 2: Create routes.rs"));
-    }
-
-    #[tokio::test]
     async fn test_workflow_router_enrich_core_docs() {
         let temp = tempfile::tempdir().unwrap();
         let core_dir = temp.path().join("minikit_docs").join("core");
@@ -2339,68 +1997,66 @@ mod tests {
         assert_eq!(code_files.len(), 1);
     }
 
-    #[tokio::test]
-    async fn test_enrich_orchestrator_guidance_fresh_vs_existing() {
+    #[test]
+    fn test_enrich_orchestrator_guidance_is_state_based() {
         let temp = tempfile::tempdir().unwrap();
 
-        // 1. Fresh repo with underspecified prompt -> suggests ask_user & MiniKit
-        let guidance_underspec = WorkflowRouter::enrich_orchestrator_guidance(
-            temp.path(),
-            "build a website",
-            RepoState::FreshWorkspace,
-        );
-        assert!(guidance_underspec.contains("Autonomous Inception & Specification Architecture"));
-        assert!(guidance_underspec.contains("Information Completeness: UNDERSPECIFIED"));
-        assert!(guidance_underspec.contains("Interactive Inquiry (`ask_user`) is available"));
-        assert!(guidance_underspec.contains("Subsystem Affordances & Active Feature Helpers"));
-        assert!(guidance_underspec.contains("Feature Helper (Interactive Inquiry & MiniKit)"));
+        // Fresh workspace: foundation not established, reversibility guidance, no keyword verdicts.
+        let fresh =
+            WorkflowRouter::enrich_orchestrator_guidance(temp.path(), RepoState::FreshWorkspace);
+        assert!(fresh.contains("Foundation: NOT ESTABLISHED"));
+        assert!(fresh.contains("`ask_user`"));
+        assert!(fresh.contains("`kit_stack_add`"));
+        assert!(fresh.contains("A long or detailed request is not a decision"));
+        assert!(!fresh.contains("full autonomy"));
+        assert!(!fresh.contains("MUST"));
 
-        // 2. Fresh repo with rich prompt -> proceeds with spec synthesis directly
-        let guidance_rich = WorkflowRouter::enrich_orchestrator_guidance(
-            temp.path(),
-            "Create a modern dark futuristic landing page with react and vite including hero section, swarm dag, council review, and 150+ developer tools",
-            RepoState::FreshWorkspace,
-        );
-        assert!(
-            guidance_rich.contains("Information Completeness: HIGH (Rich Specification Provided)")
-        );
-        assert!(guidance_rich.contains("Synthesize detailed `.md` core files directly"));
+        // Docs-only workspace additionally points at the existing docs.
+        let docs = WorkflowRouter::enrich_orchestrator_guidance(temp.path(), RepoState::DocsOnly);
+        assert!(docs.contains("documentation files listed above"));
 
-        // 3. Fresh repo with long descriptive product prompt but no explicit target build stack -> suggests ask_user
-        let guidance_long_no_stack = WorkflowRouter::enrich_orchestrator_guidance(
-            temp.path(),
-            "Create a premium, modern landing page for minicode, an autonomous AI coding agent built for developers who want fast, reliable, secure software development. The overall design should feel cutting-edge, technical, minimal, and futuristic.",
-            RepoState::FreshWorkspace,
-        );
-        assert!(guidance_long_no_stack.contains("Information Completeness: UNDERSPECIFIED"));
-        assert!(guidance_long_no_stack.contains("Interactive Inquiry (`ask_user`) is available"));
+        // Existing project with a manifest: foundation established, no re-scaffold.
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        let existing =
+            WorkflowRouter::enrich_orchestrator_guidance(temp.path(), RepoState::ExistingCodebase);
+        assert!(existing.contains("Foundation: ESTABLISHED (`package.json`)"));
+        assert!(existing.contains("Ground first"));
+        assert!(!existing.contains("NOT ESTABLISHED"));
+    }
 
-        // 4. Existing codebase -> maintenance & grounding
-        let guidance_existing = WorkflowRouter::enrich_orchestrator_guidance(
-            temp.path(),
-            "refactor auth module",
-            RepoState::ExistingCodebase,
+    #[test]
+    fn test_scan_repository_state_manifest_only_is_existing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("README.md"), "# Hello").unwrap();
+        std::fs::write(temp.path().join("package.json"), "{\"name\":\"x\"}").unwrap();
+        let (state, _, _) = WorkflowRouter::scan_repository_state(temp.path());
+        assert_eq!(state, RepoState::ExistingCodebase);
+        assert_eq!(
+            WorkflowRouter::project_manifest(temp.path()),
+            Some("package.json")
         );
-        assert!(guidance_existing.contains("Existing Codebase Engineering Architecture"));
-        assert!(guidance_existing.contains("Inspect existing architecture"));
     }
 
     #[tokio::test]
-    async fn test_enrich_minipower_rules_and_freedom() {
+    async fn test_enrich_context_has_no_duplicate_plan_or_methodology_dump() {
         let temp = tempfile::tempdir().unwrap();
-        let enrichment = WorkflowRouter::enrich_context(
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(temp.path());
+        wm.init_plan(
+            "Feature",
+            &["Step 1: a".to_string(), "Step 2: b".to_string()],
+        )
+        .unwrap();
+        let text = WorkflowRouter::enrich_context(
             temp.path(),
             "Build fullstack web application",
             WorkflowArchetype::Standard,
         )
-        .await;
-        assert!(enrichment.is_some());
-        let text = enrichment.unwrap();
-        assert!(text.contains("<minipower_autonomous_engineering_rules>"));
-        assert!(text.contains("MINIPOWER CORE METHODOLOGY & AGENT FREEDOM CONTRACT"));
-        assert!(text.contains("The 6 Engineering Pillars"));
-        assert!(text.contains("Anti-Rationalization Guardrails"));
-        assert!(text.contains("4-Gate Pre-Completion Verification Barrier"));
-        assert!(text.contains("Tool Freedom & Ecosystem Synergy (202 Native Tools Available)"));
+        .await
+        .unwrap();
+        // Plan is rendered once by PromptBuilder (<minipower_active_plan>), not here.
+        assert!(!text.contains("<active_task_plan_status>"));
+        // Static methodology lives in the system prompt, not in per-turn context.
+        assert!(!text.contains("<minipower_autonomous_engineering_rules>"));
+        assert!(text.contains("<orchestrator_dynamic_guidance>"));
     }
 }

@@ -189,6 +189,11 @@ pub struct AgentConfig {
 
     #[serde(default)]
     pub intent: IntentConfig,
+
+    /// Require an `ask_user` approval round before the first edit of a large
+    /// plan (see `agent::plan_gate`).
+    #[serde(default = "default_true")]
+    pub plan_approval: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -260,6 +265,7 @@ impl Default for AgentConfig {
             auto_continue: true,
             max_auto_continues: default_max_auto_continues(),
             intent: IntentConfig::default(),
+            plan_approval: true,
         }
     }
 }

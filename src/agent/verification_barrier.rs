@@ -455,7 +455,8 @@ impl VerificationBarrier {
                 if backtick_count % 2 == 1 {
                     in_multiline_template = !in_multiline_template;
                 }
-                let is_inside_template = was_in_template || in_multiline_template || backtick_count > 0;
+                let is_inside_template =
+                    was_in_template || in_multiline_template || backtick_count > 0;
 
                 // 1. Raw debug logging detection in production code (skip pattern matching, scanner code, display code, and template strings)
                 if is_production_code && !trimmed.contains(".contains(") && !is_inside_template {
