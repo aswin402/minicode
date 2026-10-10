@@ -1,7 +1,7 @@
 use super::accessibility::AccessibilityManager;
 use super::driver::CdpClient;
 use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
-use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_PROFILES_DIR, BROWSER_STARTUP_TIMEOUT_MS};
+use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_STARTUP_TIMEOUT_MS};
 use crate::error::{Result, ToolError};
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -291,11 +291,22 @@ impl BrowserManager {
         for &engine in &priority {
             if let Some(binary_path) = find_binary_for_engine(engine) {
                 let port = find_available_port(BROWSER_CDP_BASE_PORT);
-                let profile_dir = workspace_root.join(BROWSER_PROFILES_DIR).join(format!(
-                    "{}_{}",
-                    engine.to_string().to_lowercase(),
-                    mode
-                ));
+                let ws_hash = {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut s = DefaultHasher::new();
+                    workspace_root.hash(&mut s);
+                    format!("{:08x}", s.finish() as u32)
+                };
+                let profile_dir = std::env::temp_dir()
+                    .join("minicode")
+                    .join("browser_profiles")
+                    .join(format!(
+                        "{}_{}_{}",
+                        ws_hash,
+                        engine.to_string().to_lowercase(),
+                        mode
+                    ));
 
                 return Some(EngineConfig::new(
                     engine,

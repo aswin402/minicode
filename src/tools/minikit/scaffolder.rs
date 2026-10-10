@@ -819,7 +819,9 @@ impl MiniKitScaffolder {
             3. Follow standard {} best practices.\n\
             4. Lighting & Glows: Use CSS radial gradients instead of massive blur filters (`blur-[128px]`) to ensure clean rendering in headless browsers.\n\
             5. UI & Layout: Fixed navbars require adequate hero top-padding (`pt-28`+) to avoid title overlap. Animations must initialize with visible content.\n\
-            6. Batch Refactoring: Use `replace_in_files` for multi-file pattern updates across components.\n",
+            6. Batch Refactoring: Use `replace_in_files` for multi-file pattern updates across components.\n\
+            7. Brand Icons: Modern `lucide-react` does NOT export brand icons (Github, Twitter, Discord, Google, LinkedIn). Render brand icons as inline `<svg>` elements with `viewBox=\"0 0 24 24\"` or standard UI icons (`Globe`, `Terminal`, `Share2`).\n\
+            8. Modular Architecture: Avoid monolithic single-file pages. Split landing pages into modular section components (<200 lines each) under `src/components/`.\n",
             project_name,
             project_name,
             stack.name,
@@ -905,6 +907,14 @@ impl MiniKitScaffolder {
                 "3. UI: block_palettes for colour tokens and block_search(query=\"hero\", framework=\"{}\", include_code=true) for section components.",
                 fw
             ));
+            if fw == "react" {
+                guidance_lines.push(
+                    "• Brand Icons: lucide-react does NOT export brand icons (Github, Twitter, Discord). Use inline <svg> or UI icons (Globe, Terminal).".to_string()
+                );
+                guidance_lines.push(
+                    "• Modular Sections: Split page sections into separate components under src/components/ (<200 lines each).".to_string()
+                );
+            }
         }
         guidance_lines.push(
             "4. Run it with minitask(action=\"start\", ...) using the template's dev script and verify with browser_navigate or tests.".to_string(),

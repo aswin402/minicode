@@ -311,8 +311,8 @@ pub async fn dispatch(
 
                 if is_listening {
                     Ok(format!(
-                        "⚠️ Port {} is OCCUPIED:\n• Conflicting PID: {}\n• Process: {}\n• Command: {}\n• Next Available Port: {}\n\nJSON:\n{}",
-                        port, pid_str, proc_str, cmd_str, sugg_str, result_json
+                        "ℹ️ Port {} is ACTIVE / OCCUPIED:\n• Process: {} (PID {})\n• Command: {}\n• Readiness: If this process is your intended dev server or web app, it is actively listening on port {}. You can navigate or curl this port directly.\n• Next Available Port: {} (if you wish to launch a new, separate service)\n\nJSON:\n{}",
+                        port, proc_str, pid_str, cmd_str, port, sugg_str, result_json
                     ))
                 } else {
                     Ok(format!(
@@ -378,10 +378,10 @@ pub async fn dispatch(
                 let summary = registry.spawn(workspace_root, req).await?;
 
                 // TCP Readiness Probe Loop:
-                // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-1500ms to bind to their port.
-                // Rather than returning immediately after 300ms (which causes browser_navigate to hit ECONNREFUSED),
-                // probe localhost:port for up to 2.5s until TCP socket accepts connections.
-                let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+                // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-2500ms to bind to their port.
+                // Rather than returning prematurely while still compiling/starting (which causes browser_navigate to hit ECONNREFUSED),
+                // probe localhost:port for up to 5.0s until TCP socket accepts connections.
+                let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(5000);
                 let mut live_summary = summary.clone();
                 let mut tcp_ready = false;
                 let mut target_port = None;
@@ -407,10 +407,12 @@ pub async fn dispatch(
 
                     if let Some(port) = target_port {
                         if let Ok(Ok(_)) = tokio::time::timeout(
-                            Duration::from_millis(150),
+                            Duration::from_millis(200),
                             tokio::net::TcpStream::connect(("127.0.0.1", port)),
                         ).await {
                             tcp_ready = true;
+                            // Brief settle delay to allow dev server (Vite/Next) to finalize HTTP routing
+                            tokio::time::sleep(Duration::from_millis(250)).await;
                             break;
                         }
                     }

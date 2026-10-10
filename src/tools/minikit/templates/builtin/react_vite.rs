@@ -523,6 +523,9 @@ export default defineConfig({
     hmr: {
       overlay: true,
     },
+    watch: {
+      ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
+    },
   },
   resolve: {
     alias: {
@@ -1998,6 +2001,9 @@ export default defineConfig({
   server: {
     hmr: {
       overlay: true,
+    },
+    watch: {
+      ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
     },
   },
   resolve: {
@@ -11163,6 +11169,9 @@ export default defineConfig({
   server: {
     hmr: {
       overlay: true,
+    },
+    watch: {
+      ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
     },
   },
   resolve: {

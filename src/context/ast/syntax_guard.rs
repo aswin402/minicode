@@ -183,12 +183,13 @@ impl SyntaxGuard {
                     return Err(format!(
                         "[AST Import Barrier Rejected]:\n\
                          The proposed edit to '{file_display}' attempts to import brand icon(s) [{icons_str}] from 'lucide-react'.\n\
-                         `lucide-react` does NOT export brand/social icons (Github, Twitter, Discord, Linkedin, etc.).\n\
+                         `lucide-react` does NOT export brand/social icons (Github, Twitter, Discord, Linkedin, Google, etc.).\n\
                          Importing them will break TypeScript and bundler builds (TS2305: Module '\"lucide-react\"' has no exported member '{icons_str}').\n\
+                         CRITICAL: The proposed edit was REJECTED and file contents on disk were preserved untouched.\n\
+                         DO NOT call 'patch_file' assuming your changes were applied! Re-issue 'write_file' with the corrected code.\n\
                          Guidance:\n\
                          - Replace brand icons with inline SVG components (e.g. `<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" className=...><path d=\"...\"/></svg>`).\n\
-                         - Or use standard UI icons from 'lucide-react' such as `Globe`, `Share2`, `ExternalLink`, `Code2`, or `Terminal`.\n\
-                         - Disk contents were preserved untouched."
+                         - Or use standard UI icons from 'lucide-react' such as `Globe`, `Share2`, `ExternalLink`, `Code2`, or `Terminal`."
                     ));
                 }
             }
