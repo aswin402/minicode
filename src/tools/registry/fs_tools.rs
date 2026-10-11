@@ -80,7 +80,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "replace_in_files".to_string(),
-            description: "Batch refactoring: Atomically find and replace a code block or pattern across multiple workspace files matching a glob pattern (e.g. 'src/components/sections/*.tsx', '**/*.ts', 'src/**/*.rs'). Includes pre-write Tree-sitter AST syntax validation for all target files and generates safety checkpoints.".to_string(),
+            description: "Batch refactoring: Atomically find and replace text across multiple workspace files matching a glob pattern (e.g. 'src/components/*.tsx'). Use ONLY when the EXACT same search_block exists across 2 or more files (e.g. renaming a shared import or token). For single-file edits, always use patch_file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

@@ -231,6 +231,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "kit_stack_export".to_string(),
+            description: "Export the current project as a reusable MiniKit starter template. Saves to `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`) so it can be reused in future projects via `kit_stack_add`.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique name for the exported template (e.g. 'saas-landing', 'fastapi-auth-starter')"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Human-readable description of the template architecture and features"
+                    },
+                    "global": {
+                        "type": "boolean",
+                        "description": "If true (recommended for reusable templates), saves globally to ~/.config/minicode/stacks/"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
             name: "kit_skill_remove".to_string(),
             description: "Remove and uninstall a domain skill from the project workspace (.minicode/skills/<name> and manifest active_skills).".to_string(),
             parameters: json!({
@@ -372,7 +394,12 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "kit_stack_snapshot" | "minikit_stack_snapshot" | "onpkg_stack_snapshot" => Some(
+        "kit_stack_snapshot"
+        | "minikit_stack_snapshot"
+        | "onpkg_stack_snapshot"
+        | "kit_stack_export"
+        | "minikit_stack_export"
+        | "onpkg_stack_export" => Some(
             async {
                 let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {

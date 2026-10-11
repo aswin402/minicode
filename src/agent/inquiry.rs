@@ -47,6 +47,10 @@ impl InquiryOption {
 }
 
 /// A single question to ask the user.
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InquiryQuestion {
     /// Unique identifier for this question (e.g., "framework", "api_key").
@@ -64,7 +68,7 @@ pub struct InquiryQuestion {
     #[serde(default)]
     pub is_multi_select: bool,
     /// Whether the user can provide a custom write-in answer.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub allow_custom: bool,
     /// Optional placeholder hint for text/secret input.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -192,7 +196,7 @@ impl InquiryRequest {
                     }
                 }
             }
-            return Ok(q);
+            return Ok(Self::ensure_viable_choice_options(q));
         }
 
         // Fallback for minimal object {"question": "...", "options": [...]}
@@ -255,7 +259,7 @@ impl InquiryRequest {
             }
         }
 
-        Ok(InquiryQuestion {
+        Ok(Self::ensure_viable_choice_options(InquiryQuestion {
             id,
             question: question_text.to_string(),
             header,
@@ -265,7 +269,46 @@ impl InquiryRequest {
             placeholder,
             default_value,
             options,
-        })
+        }))
+    }
+
+    /// Ensures choice questions provide real agency by guaranteeing at least 2 distinct choices and write-in option.
+    fn ensure_viable_choice_options(mut q: InquiryQuestion) -> InquiryQuestion {
+        if q.input_type == InquiryInputType::Choice {
+            q.allow_custom = true;
+            if q.options.is_empty() {
+                q.input_type = InquiryInputType::Text;
+            } else if q.options.len() == 1 {
+                let first_lower = q.options[0].label.to_lowercase();
+                if first_lower.contains("approve")
+                    || first_lower.contains("proceed")
+                    || first_lower.contains("yes")
+                    || first_lower.contains("accept")
+                    || first_lower.contains("start")
+                    || first_lower.contains("build")
+                    || first_lower.contains("implement")
+                {
+                    q.options.push(InquiryOption {
+                        id: "revise_plan".to_string(),
+                        label: "Revise / Adjust Plan".to_string(),
+                        description: Some(
+                            "Request adjustments to scope, architecture, or milestones".to_string(),
+                        ),
+                        recommended: false,
+                    });
+                } else {
+                    q.options.push(InquiryOption {
+                        id: "alternative_direction".to_string(),
+                        label: "Alternative Direction".to_string(),
+                        description: Some(
+                            "Explore an alternative technical or design approach".to_string(),
+                        ),
+                        recommended: false,
+                    });
+                }
+            }
+        }
+        q
     }
 
     /// Automatically resolves defaults when running in non-interactive mode (`-y`).
@@ -614,5 +657,29 @@ mod tests {
         assert_eq!(req.title, "User Inquiry");
         assert_eq!(req.questions.len(), 1);
         assert_eq!(req.questions[0].question, "What database do you want?");
+    }
+
+    #[test]
+    fn test_parse_from_value_single_choice_option_auto_synthesizes_alternative() {
+        let payload = serde_json::json!({
+            "title": "Approval",
+            "questions": [{
+                "id": "q1",
+                "question": "Do you approve proceeding with the plan?",
+                "input_type": "choice",
+                "options": [{
+                    "id": "opt1",
+                    "label": "Approve - Build the full landing page now",
+                    "recommended": true
+                }]
+            }]
+        });
+
+        let req =
+            InquiryRequest::parse_from_value(&payload).expect("Must parse question successfully");
+        assert_eq!(req.questions[0].options.len(), 2);
+        assert_eq!(req.questions[0].options[0].id, "opt1");
+        assert_eq!(req.questions[0].options[1].id, "revise_plan");
+        assert!(req.questions[0].options[1].label.contains("Revise"));
     }
 }

@@ -67,13 +67,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize an active multi-step task plan in Working Memory (.minicode/plan/task_plan.md), shown live in the TUI. Use 4-8 verifiable steps. List in `assumptions` every choice you made without asking (cheap, reversible ones); they are recorded in .minicode/decisions.md for review. Plans with 3+ steps must be approved through one ask_user round before the first edit.".to_string(),
+            description: "Initialize an active Two-Tier Task Plan in Working Memory. Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps (2-5 min each) to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Short, descriptive title of the task"
+                        "description": "Short, descriptive title of the task or milestone"
                     },
                     "steps": {
                         "type": "array",
@@ -89,7 +89,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 }
                             ]
                         },
-                        "description": "Ordered list of action steps to complete the task (accepts strings or objects with title/description)"
+                        "description": "Ordered list of tactical action steps (2-5 min each) for the active milestone"
+                    },
+                    "architecture": {
+                        "type": "string",
+                        "description": "Comprehensive top-to-bottom technical architecture and engineering blueprint. Saved into `minikit_docs/core/implementation.md`."
+                    },
+                    "milestones": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "High-level roadmap milestones. Saved into `minikit_docs/core/todo.md` (viewable via /todo modal)."
                     },
                     "assumptions": {
                         "type": "array",
@@ -256,8 +265,13 @@ pub async fn dispatch(
                     reason: "Argument 'steps' must contain at least one task step (e.g. ['Step 1', 'Step 2'] or [{'title': 'Step 1', 'description': '...'}]). Empty plans are not allowed.".to_string(),
                 }.into());
             }
+            let architecture = param::opt_str(args, "architecture")
+                .or_else(|| param::opt_str(args, "blueprint"))
+                .or_else(|| param::opt_str(args, "implementation"));
+            let milestones = param::opt_string_array(args, "milestones")
+                .or_else(|| param::opt_string_array(args, "roadmap"));
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-            wm.init_plan(title, &steps)?;
+            wm.init_two_tier_plan(title, &steps, architecture, milestones.as_deref())?;
             let assumptions = param::opt_string_array(args, "assumptions").unwrap_or_default();
             if let Err(e) =
                 crate::agent::decisions::record_assumptions(workspace_root, title, &assumptions)
@@ -269,7 +283,8 @@ pub async fn dispatch(
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
             Ok(format!(
-                "✔ Created active task plan with {} steps in .minicode/plan/task_plan.md.\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
+                title,
                 steps.len(),
                 first_step
             ))

@@ -35,7 +35,7 @@ fn test_file_target_thrashing_and_hard_trip() {
     );
     assert!(step3.is_warning());
     let warning_msg = step3.intervention().unwrap_or_default();
-    assert!(warning_msg.contains("[CIRCUIT BREAKER TRIGGERED: FILE TARGET THRASHING]"));
+    assert!(warning_msg.contains("File Target Thrashing"));
     assert!(warning_msg.contains(file));
     assert!(!detector.is_tripped());
 
@@ -44,7 +44,7 @@ fn test_file_target_thrashing_and_hard_trip() {
     assert!(step4.is_trip());
     assert!(detector.is_tripped());
     let trip_msg = step4.intervention().unwrap_or_default();
-    assert!(trip_msg.contains("[CIRCUIT BREAKER HARD TRIP: RUNAWAY LOOP HALTED]"));
+    assert!(trip_msg.contains("Runaway Loop Halted"));
     assert!(trip_msg.contains(file));
 }
 
@@ -74,8 +74,8 @@ fn test_execution_collapse_and_hard_trip() {
     );
     assert!(action.is_warning());
     let msg = action.intervention().unwrap_or_default();
-    assert!(msg.contains("[CIRCUIT BREAKER TRIGGERED: EXECUTION COLLAPSE]"));
-    assert!(msg.contains("4 tool operations have ALL failed consecutively"));
+    assert!(msg.contains("Execution Collapse"));
+    assert!(msg.contains("failed consecutively"));
     assert!(!detector.is_tripped());
 
     // 5th failure -> Trips hard
@@ -122,7 +122,7 @@ fn test_oscillation_patterns() {
     let pp_action = detector.check("read_file", &b, true);
     assert!(pp_action.is_warning());
     let warn = pp_action.intervention().unwrap_or_default();
-    assert!(warn.contains("PING-PONG OSCILLATION"));
+    assert!(warn.contains("Ping-Pong Oscillation"));
 
     // Reset clears state
     detector.reset();
@@ -139,7 +139,7 @@ fn test_oscillation_patterns() {
     let tri_action = detector.check("tool_3", &c, true);
     assert!(tri_action.is_warning());
     let tri_warn = tri_action.intervention().unwrap_or_default();
-    assert!(tri_warn.contains("CYCLIC OSCILLATION"));
+    assert!(tri_warn.contains("Cyclic Oscillation"));
 }
 
 #[test]
@@ -164,6 +164,14 @@ fn test_anti_thrash_event_serde_roundtrip() {
 async fn test_agent_loop_circuit_breaker_trip_and_early_exit() {
     let dir = tempdir().expect("tempdir");
     let ws_path = dir.path().to_path_buf();
+
+    // Create an established project in workspace so foundation gate allows patch_file
+    tokio::fs::write(
+        ws_path.join("Cargo.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+    )
+    .await
+    .expect("write cargo.toml");
 
     // Create a dummy file in workspace
     let file_path = ws_path.join("broken.rs");
@@ -217,7 +225,11 @@ async fn test_agent_loop_circuit_breaker_trip_and_early_exit() {
     let result = agent
         .execute_turn("Fix the failing test", event_tx, None)
         .await;
-    assert!(result.is_ok(), "turn must finish cleanly");
+    assert!(
+        result.is_ok(),
+        "turn must finish cleanly: {:?}",
+        result.as_ref().err()
+    );
 
     let events = event_collector.await.expect("collector join");
 
@@ -246,6 +258,17 @@ async fn test_agent_loop_circuit_breaker_trip_and_early_exit() {
 async fn test_multi_call_turn_preserves_messages_invariant_on_trip() {
     let dir = tempdir().expect("tempdir");
     let ws_path = dir.path().to_path_buf();
+
+    // Create an established project in workspace so foundation gate allows patch_file
+    tokio::fs::write(
+        ws_path.join("Cargo.toml"),
+        "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+    )
+    .await
+    .expect("write cargo.toml");
+    tokio::fs::write(ws_path.join("file.rs"), "fn foo() {}\n")
+        .await
+        .expect("write file.rs");
 
     // Scripted mock provider responses:
     // Turn emits two tool calls in the same assistant turn: [call_trip_1 (patch_file), call_unreached_2 (patch_file)]

@@ -57,15 +57,14 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: Chrome -> Obscura -> Firefox.
+/// Priority chain for headless automation: Obscura -> Chrome -> Firefox.
 ///
-/// Chrome is preferred when available: modern Chromium Blink engine (`--headless=new`)
-/// delivers 100% rendering fidelity identical to GUI mode, properly rasterizing
-/// subpixel CSS radial gradients, backdrop filters, and modern web styling.
-/// When Chrome is not installed, seamlessly falls back to Obscura and Firefox.
+/// Obscura is the primary engine for headless automation, offering fast, lightweight
+/// operation without requiring external browser installations. Seamlessly falls back to
+/// Chrome and Firefox when needed.
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
-    BrowserEngine::Chrome,
     BrowserEngine::Obscura,
+    BrowserEngine::Chrome,
     BrowserEngine::Firefox,
 ];
 
@@ -129,8 +128,8 @@ mod tests {
 
     #[test]
     fn test_priority_chains() {
-        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Chrome);
-        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Obscura);
+        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
+        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
         assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
 
         assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);

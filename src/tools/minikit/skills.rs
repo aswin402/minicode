@@ -622,6 +622,69 @@ impl MiniKitSkillsManager {
             .collect()
     }
 
+    /// Dynamically resolves all skills matching a stack template based on its files and package dependencies.
+    /// Purely data-driven: matches skill globs and package dependencies without hardcoded branching.
+    pub fn resolve_skills_for_stack(
+        workspace_root: &Path,
+        stack_files: &[String],
+        stack_packages: &[String],
+    ) -> Vec<String> {
+        let mut matched = Vec::new();
+        let builtins = crate::tools::minikit::builtin_skills::get_all_builtin_skills();
+
+        for b in builtins {
+            let mut matches = false;
+            let b_name_lower = b.name.to_ascii_lowercase();
+
+            // 1. Generic package namespace, stem, and skill metadata matching
+            if stack_packages.iter().any(|pkg| {
+                let pkg_lower = pkg.to_ascii_lowercase();
+                let clean = pkg_lower.trim_start_matches('@');
+                let pkg_stem = clean.split('/').next_back().unwrap_or(clean);
+
+                pkg_lower == b_name_lower
+                    || pkg_stem == b_name_lower
+                    || pkg_stem.starts_with(&format!("{}-", b_name_lower))
+                    || pkg_lower.starts_with(&format!("@{}/", b_name_lower))
+                    || pkg_stem
+                        .split('-')
+                        .any(|part| part == b_name_lower || part.starts_with(&b_name_lower))
+                    || b.globs
+                        .iter()
+                        .any(|g| g.to_ascii_lowercase().contains(pkg_stem))
+                    || b.description
+                        .to_ascii_lowercase()
+                        .split_whitespace()
+                        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == pkg_stem)
+            }) {
+                matches = true;
+            }
+
+            // 2. Check if any stack file matches the skill's globs
+            if !matches && !b.globs.is_empty() {
+                let mut builder = ignore::overrides::OverrideBuilder::new(workspace_root);
+                for g in b.globs {
+                    let _ = builder.add(g);
+                }
+                if let Ok(overrides) = builder.build() {
+                    for f in stack_files {
+                        let p = Path::new(f);
+                        if overrides.matched(p, false).is_whitelist() {
+                            matches = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if matches && !matched.contains(&b.name.to_string()) {
+                matched.push(b.name.to_string());
+            }
+        }
+
+        matched
+    }
+
     /// Formats a list of matching skills for a path.
     pub fn format_skill_matches(workspace_root: &Path, path_str: &str) -> String {
         let p = Path::new(path_str);

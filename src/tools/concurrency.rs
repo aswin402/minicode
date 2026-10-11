@@ -169,6 +169,9 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "kit_stack_snapshot"
         | "minikit_stack_snapshot"
         | "onpkg_stack_snapshot"
+        | "kit_stack_export"
+        | "minikit_stack_export"
+        | "onpkg_stack_export"
         | "onpkg_sync" => ToolSafetyLevel::Mutating,
 
         // Multi-Agent & Reasoning Inspection

@@ -68,9 +68,7 @@ impl PlanGate {
                     "`{tool_name}` was NOT executed. You created a {steps}-step plan that has not been \
                      approved. Large work starts only after whoever directs you approves the approach: \
                      call `ask_user` once, summarising the plan (goal, key steps, any decisions or \
-                     assumptions it relies on) with options such as 'Approve plan' (recommended) and \
-                     'Revise plan'. Include any still-open decisions in the same round. If the answer \
-                     asks for changes, update the plan with `create_plan` before editing."
+                     assumptions it relies on). You MUST provide at least 2 distinct options: Option 1: 'Approve plan — proceed with implementation' (recommended=true), Option 2: 'Revise plan — adjust scope or milestones' (plus any specific alternative choices). Include any open architectural, visual, or structural decisions in the same round. If the user asks for changes, update the plan with `create_plan` before editing."
                 ),
             })
             .to_string(),

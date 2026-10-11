@@ -782,6 +782,34 @@ impl MiniKitScaffolder {
             .unwrap_or("app")
             .to_string();
 
+        // 2. Dynamically resolve matching skills from the catalog using stack files & package dependencies
+        let stack_file_paths: Vec<String> = stack.files.iter().map(|f| f.path.clone()).collect();
+        let mut stack_packages = stack.packages.clone();
+        stack_packages.extend(stack.dev_packages.clone());
+        let mut active_skills = super::skills::MiniKitSkillsManager::resolve_skills_for_stack(
+            workspace_root,
+            &stack_file_paths,
+            &stack_packages,
+        );
+        if active_skills.is_empty() {
+            active_skills.push(stack.runtime.clone());
+        }
+
+        // Install resolved active skills into workspace .minicode/skills/
+        let skills_dir = workspace_root
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join("skills");
+        for skill_name in &active_skills {
+            if let Some(builtin) = super::builtin_skills::find_builtin_skill(skill_name) {
+                let target_skill_dir = skills_dir.join(builtin.name);
+                let _ = fs::create_dir_all(&target_skill_dir);
+                let target_file = target_skill_dir.join(crate::constants::SKILL_MD_FILE);
+                if !target_file.exists() {
+                    let _ = fs::write(&target_file, builtin.content);
+                }
+            }
+        }
+
         let manifest = serde_json::json!({
             "name": project_name,
             "version": "0.1.0",
@@ -791,16 +819,25 @@ impl MiniKitScaffolder {
             "description": stack.description,
             "packages": stack.packages,
             "dev_packages": stack.dev_packages,
-            "active_skills": [stack.runtime, stack.name]
+            "active_skills": active_skills
         });
 
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
+        fs::write(
+            dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE),
+            &manifest_json,
+        )
+        .ok();
         if dest_dir != workspace_root {
             let root_manifest = workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE);
             if !root_manifest.exists() {
                 fs::write(&root_manifest, &manifest_json).ok();
+            }
+            let root_onpkg = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
+            if !root_onpkg.exists() {
+                fs::write(&root_onpkg, &manifest_json).ok();
             }
         }
 
@@ -819,7 +856,7 @@ impl MiniKitScaffolder {
             3. Follow standard {} best practices.\n\
             4. Lighting & Glows: Use CSS radial gradients instead of massive blur filters (`blur-[128px]`) to ensure clean rendering in headless browsers.\n\
             5. UI & Layout: Fixed navbars require adequate hero top-padding (`pt-28`+) to avoid title overlap. Animations must initialize with visible content.\n\
-            6. Batch Refactoring: Use `replace_in_files` for multi-file pattern updates across components.\n\
+            6. Code Modification: Use `patch_file` for targeted edits to single files. Use `replace_in_files` ONLY when applying the exact same pattern replacement across 2 or more files simultaneously.\n\
             7. Brand Icons: Modern `lucide-react` does NOT export brand icons (Github, Twitter, Discord, Google, LinkedIn). Render brand icons as inline `<svg>` elements with `viewBox=\"0 0 24 24\"` or standard UI icons (`Globe`, `Terminal`, `Share2`).\n\
             8. Modular Architecture: Avoid monolithic single-file pages. Split landing pages into modular section components (<200 lines each) under `src/components/`.\n",
             project_name,
@@ -838,13 +875,37 @@ impl MiniKitScaffolder {
             }
         }
 
-        // 4. Generate initial workflow docs under workspace root minikit_docs
-        let docs_dir = workspace_root.join(crate::constants::MINIKIT_DOCS_DIR);
+        // 4. Generate initial workflow docs under dest_dir and onpkg_docs
+        let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &docs_dir,
             &project_name,
             &stack.runtime,
         );
+        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
+        super::sync::MiniKitSyncEngine::ensure_workflow_docs(
+            &onpkg_docs,
+            &project_name,
+            &stack.runtime,
+        );
+        if dest_dir != workspace_root {
+            let root_docs = workspace_root.join(crate::constants::MINIKIT_DOCS_DIR);
+            if !root_docs.exists() {
+                super::sync::MiniKitSyncEngine::ensure_workflow_docs(
+                    &root_docs,
+                    &project_name,
+                    &stack.runtime,
+                );
+            }
+            let root_onpkg = workspace_root.join(crate::constants::ONPKG_DOCS_DIR);
+            if !root_onpkg.exists() {
+                super::sync::MiniKitSyncEngine::ensure_workflow_docs(
+                    &root_onpkg,
+                    &project_name,
+                    &stack.runtime,
+                );
+            }
+        }
 
         // 5. Post-scaffold install hooks
         let mut install_msg = String::new();

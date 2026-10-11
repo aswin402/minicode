@@ -17,7 +17,9 @@
 //! Until settled, every gated call is returned with guidance instead of being
 //! executed. `ask_user` is always available, so this can never deadlock.
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use crate::agent::orchestrator::{RepoState, WorkflowRouter};
 
@@ -92,6 +94,126 @@ fn normalize(text: &str) -> String {
         .to_string()
 }
 
+static FOUNDATION_STOP_WORDS: &[&str] = &[
+    "website",
+    "web",
+    "page",
+    "pages",
+    "app",
+    "apps",
+    "application",
+    "project",
+    "starter",
+    "template",
+    "full",
+    "basic",
+    "simple",
+    "modern",
+    "new",
+    "responsive",
+    "design",
+    "ui",
+    "ux",
+    "code",
+    "landing",
+];
+
+static DYNAMIC_FOUNDATION_TOKENS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let mut tokens = HashSet::new();
+
+    // 1. MiniKit Stacks: names, runtimes, and stack packages
+    let stacks = crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None);
+    for stack in stacks {
+        let name_lower = stack.name.to_ascii_lowercase();
+        tokens.insert(name_lower.clone());
+        for part in name_lower.split(|c: char| !c.is_alphanumeric()) {
+            if part.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&part) {
+                tokens.insert(part.to_string());
+            }
+        }
+        let runtime_lower = stack.runtime.to_ascii_lowercase();
+        if runtime_lower.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&runtime_lower.as_str()) {
+            tokens.insert(runtime_lower);
+        }
+        for pkg in stack.packages.iter().chain(stack.dev_packages.iter()) {
+            let pkg_lower = pkg.to_ascii_lowercase();
+            let clean = pkg_lower.trim_start_matches('@');
+            let clean_name = clean.split('/').next_back().unwrap_or(clean);
+            for part in clean_name.split(|c: char| !c.is_alphanumeric()) {
+                if part.len() >= 3 && !FOUNDATION_STOP_WORDS.contains(&part) {
+                    tokens.insert(part.to_string());
+                }
+            }
+        }
+    }
+
+    // 2. MiniKit Builtin Skills
+    for skill in crate::tools::minikit::builtin_skills::get_all_builtin_skills() {
+        let s_name = skill.name.to_ascii_lowercase();
+        if !FOUNDATION_STOP_WORDS.contains(&s_name.as_str()) {
+            tokens.insert(s_name.clone());
+        }
+        for part in s_name.split(|c: char| !c.is_alphanumeric()) {
+            if part.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&part) {
+                tokens.insert(part.to_string());
+            }
+        }
+    }
+
+    // 3. MiniVault Builtin Skills
+    for vault_skill in crate::vault::builtin::get_all_builtin_skills() {
+        let v_name = vault_skill.name.to_ascii_lowercase();
+        if !FOUNDATION_STOP_WORDS.contains(&v_name.as_str()) {
+            tokens.insert(v_name.clone());
+        }
+        for trigger in &vault_skill.frontmatter.triggers {
+            let trig_lower = trigger.to_ascii_lowercase();
+            if trig_lower.len() >= 2
+                && trig_lower.split_whitespace().count() <= 2
+                && !FOUNDATION_STOP_WORDS.contains(&trig_lower.as_str())
+            {
+                tokens.insert(trig_lower);
+            }
+        }
+    }
+
+    // 4. Common standard languages, runtimes, and databases
+    for common in &[
+        "html",
+        "html5",
+        "css",
+        "css3",
+        "vanilla",
+        "cli",
+        "tui",
+        "spa",
+        "api",
+        "node",
+        "deno",
+        "go",
+        "golang",
+        "sqlite",
+        "mysql",
+        "redis",
+        "postgres",
+        "postgresql",
+        "mongodb",
+        "vue",
+        "svelte",
+        "angular",
+        "astro",
+        "solid",
+        "django",
+        "flask",
+        "mern",
+        "pern",
+    ] {
+        tokens.insert(common.to_string());
+    }
+
+    tokens
+});
+
 impl FoundationGate {
     /// Records the raw text of a user request (call once per user turn, before
     /// any context is prepended).
@@ -114,11 +236,45 @@ impl FoundationGate {
                 "it is too long: evidence is the short phrase that names the stack or the single-file deliverable, not a copied description",
             );
         }
-        if self.user_requests.iter().any(|req| req.contains(&needle)) {
-            Ok(needle)
-        } else {
-            Err("it is not a verbatim, contiguous quote from the user's request")
+        if !self.user_requests.iter().any(|req| req.contains(&needle)) {
+            return Err("it is not a verbatim, contiguous quote from the user's request");
         }
+
+        // Must name a concrete stack, framework, language, or single-file deliverable.
+        // Descriptive words (e.g. "premium, modern landing page", "responsive website") do NOT settle a stack.
+        let has_deliverable_indicator = needle.split_whitespace().any(|word| {
+            if let Some(pos) = word.rfind('.') {
+                let ext = &word[pos + 1..];
+                !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+            } else {
+                false
+            }
+        }) || [
+            "single file",
+            "one file",
+            "standalone",
+            "single page",
+            "one page",
+            "script",
+        ]
+        .iter()
+        .any(|phrase| needle.contains(phrase));
+
+        let has_concrete_token = DYNAMIC_FOUNDATION_TOKENS.iter().any(|token| {
+            if token.contains(' ') {
+                needle.contains(token)
+            } else {
+                crate::utils::has_word(&needle, token)
+            }
+        });
+
+        if !has_deliverable_indicator && !has_concrete_token {
+            return Err(
+                "it is descriptive feature/styling copy, not an explicit stack name or single-file deliverable. Call `ask_user` once to let the user select their stack/framework with user's permission.",
+            );
+        }
+
+        Ok(needle)
     }
 
     /// Evaluates a tool call. Must be called for every dispatched tool call so

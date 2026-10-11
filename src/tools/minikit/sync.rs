@@ -243,7 +243,10 @@ impl MiniKitSyncEngine {
                 - Reliability: Strict error handling with zero unhandled crashes.\n",
                 project_name, runtime
             );
-            fs::write(prd_path, prd).ok();
+            fs::write(&prd_path, &prd).ok();
+            fs::write(docs_dir.join("prd.md"), &prd).ok();
+        } else if !docs_dir.join("prd.md").exists() {
+            let _ = fs::copy(&prd_path, docs_dir.join("prd.md"));
         }
 
         // 3. architecture.md (Architecture & AST CodeGraph)
@@ -349,7 +352,10 @@ impl MiniKitSyncEngine {
                 - [ ] Verification and documentation\n"
                     .to_string()
             };
-            fs::write(todo_path, todo).ok();
+            fs::write(&todo_path, &todo).ok();
+            fs::write(docs_dir.join("todo.md"), &todo).ok();
+        } else if !docs_dir.join("todo.md").exists() {
+            let _ = fs::copy(&todo_path, docs_dir.join("todo.md"));
         }
 
         // 9. skills/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
@@ -431,11 +437,9 @@ impl MiniKitSyncEngine {
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
 
-        // Update onpkg.json ONLY if it already exists in legacy projects; never create it anew
+        // Also sync onpkg.json for seamless backward-compatibility and onpkg rule compliance
         let onpkg_json_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        if onpkg_json_path.exists() {
-            fs::write(&onpkg_json_path, &manifest_json).ok();
-        }
+        fs::write(&onpkg_json_path, &manifest_json).ok();
 
         // 2. Ensure .gitignore protects .minicode/ local runtime & transient memory
         Self::ensure_gitignore(workspace_root);

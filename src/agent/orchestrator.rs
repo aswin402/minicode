@@ -992,7 +992,7 @@ impl WorkflowRouter {
                     "  Resolve the foundation before writing project files (Reversibility Rule):\n",
                 );
                 out.push_str("  1. Identify which foundation decisions the request (and any docs) actually state: framework/stack, architecture, visual direction for UI work, scope, and any content/data only the user has. A long or detailed request is not a decision; a named stack is.\n");
-                out.push_str("  2. Unstated decisions that are expensive to reverse once files exist belong to the user: ask them all in ONE `ask_user` call, recommended option first.\n");
+                out.push_str("  2. Unstated decisions that are expensive to reverse once files exist belong to the user: ask them all in ONE `ask_user` call, presenting 2-4 concrete choices (e.g. stack options such as 'react-vite', 'static-website', 'next-template', and visual theme options) with recommended option first. The user can also write their own custom choice.\n");
                 out.push_str("  3. If every foundation decision is stated, or the deliverable is trivially a single file (one script, one standalone page), do not ask: state your assumption in one sentence and continue.\n");
                 out.push_str("  Then build on it:\n");
                 out.push_str("  4. Scaffold with `kit_stack_add` into the workspace root (`kit_stack_list` shows stacks; `static-website` covers plain HTML/CSS/JS) instead of hand-writing boilerplate.\n");
@@ -1125,6 +1125,30 @@ impl WorkflowRouter {
             }
         }
 
+        // Fallback: If no direct token matched, provide standard layout archetypes (hero, features, navbar, footer)
+        if components.is_empty() {
+            for archetype in &["hero", "features", "navbar", "footer", "stats"] {
+                let filter = crate::blocks::BlockSearchFilter {
+                    query: Some((*archetype).to_string()),
+                    limit: 1,
+                    ..Default::default()
+                };
+                for r in store.search_components(&filter) {
+                    if !components.iter().any(
+                        |existing: &crate::blocks::store::BlockSearchResult| existing.id == r.id,
+                    ) {
+                        components.push(r);
+                    }
+                    if components.len() >= 3 {
+                        break;
+                    }
+                }
+                if components.len() >= 3 {
+                    break;
+                }
+            }
+        }
+
         // Palette retrieval: query the palette store with the prompt's own salient
         // tokens (same retrieval used for components above) rather than a fixed
         // list of theme words. Palettes are suggestions; the model decides.
@@ -1141,6 +1165,11 @@ impl WorkflowRouter {
             if palettes.len() >= 2 {
                 break;
             }
+        }
+
+        // Fallback: If no specific palette matched tokens, provide popular defaults
+        if palettes.is_empty() {
+            palettes.extend(store.list_palettes().into_iter().take(2));
         }
 
         let mut out = String::from("<recommended_miniblocks>\n");
@@ -1625,56 +1654,137 @@ impl WorkflowRouter {
         let store = crate::vault::store::VaultStore::new(workspace_root);
         let vault_skills = store.list_all_skills();
         let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_root);
+        let manifest_active =
+            crate::tools::minikit::skills::MiniKitSkillsManager::get_manifest_active_skills(
+                workspace_root,
+            );
 
         let mut matched_skills: Vec<(String, String, String, usize)> = Vec::new();
 
         for b in builtins {
             let mut score = 0;
             let b_name_lower = b.name.to_ascii_lowercase();
-            let b_desc_lower = b.description.to_ascii_lowercase();
 
-            if crate::utils::has_word(&lower_prompt, &b_name_lower) {
+            // 1. Explicit manifest activation gets highest priority
+            if manifest_active
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(b.name))
+            {
+                score += 30;
+            }
+
+            // 2. Installed workspace skill directory (.minicode/skills/<name> or minikit_docs/skills/<name>)
+            if workspace_root
+                .join(".minicode")
+                .join("skills")
+                .join(b.name)
+                .exists()
+                || workspace_root
+                    .join(crate::constants::MINIKIT_DOCS_DIR)
+                    .join("skills")
+                    .join(b.name)
+                    .exists()
+            {
+                score += 25;
+            }
+
+            // 3. Stack / framework / dependency / glob alignment
+            let has_workspace_match = {
+                // Check if any glob pattern corresponds to an existing root config/manifest
+                let has_config_file = b.globs.iter().any(|g| {
+                    let clean = g.trim_start_matches("**/").trim_start_matches('*');
+                    if clean.ends_with('*') {
+                        let prefix = clean.trim_end_matches('*');
+                        if let Ok(entries) = std::fs::read_dir(workspace_root) {
+                            entries
+                                .flatten()
+                                .any(|e| e.file_name().to_string_lossy().starts_with(prefix))
+                        } else {
+                            false
+                        }
+                    } else if !clean.is_empty() && !clean.contains('*') {
+                        workspace_root.join(clean).exists()
+                    } else {
+                        false
+                    }
+                });
+
+                let has_pkg_dep = if let Ok(pkg_json) =
+                    std::fs::read_to_string(workspace_root.join("package.json"))
+                {
+                    let pkg_lower = pkg_json.to_ascii_lowercase();
+                    pkg_lower.contains(&format!("\"{}\"", b_name_lower))
+                        || pkg_lower.contains(&format!("\"@{}/", b_name_lower))
+                        || pkg_lower.contains(&format!("\"{}-", b_name_lower))
+                } else {
+                    false
+                };
+
+                let has_cargo_dep = if workspace_root.join("Cargo.toml").exists() {
+                    b_name_lower == "rust"
+                        || std::fs::read_to_string(workspace_root.join("Cargo.toml"))
+                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
+                            .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                let has_python_dep = if workspace_root.join("pyproject.toml").exists()
+                    || workspace_root.join("requirements.txt").exists()
+                {
+                    b_name_lower == "python"
+                        || b_name_lower == "fastapi"
+                        || std::fs::read_to_string(workspace_root.join("requirements.txt"))
+                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
+                            .unwrap_or(false)
+                        || std::fs::read_to_string(workspace_root.join("pyproject.toml"))
+                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
+                            .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                let has_seed_match = (stack_info.framework
+                    == Some(crate::blocks::BlockFramework::React)
+                    && b_name_lower.contains("react"))
+                    || (stack_info.has_tailwind && b_name_lower.contains("tailwind"));
+
+                has_config_file || has_pkg_dep || has_cargo_dep || has_python_dep || has_seed_match
+            };
+
+            if has_workspace_match {
+                score += 20;
+            }
+
+            // 4. Prompt / trigger matching (parsed from frontmatter triggers or skill name)
+            let (fm, _) = crate::vault::models::parse_skill_markdown(b.content, b.name);
+
+            let mut trigger_matched = false;
+            for trigger in &fm.triggers {
+                let trig_lower = trigger.to_ascii_lowercase();
+                if trig_lower.contains(' ') {
+                    if lower_prompt.contains(&trig_lower) {
+                        trigger_matched = true;
+                        break;
+                    }
+                } else if crate::utils::has_word(&lower_prompt, &trig_lower) {
+                    trigger_matched = true;
+                    break;
+                }
+            }
+
+            let name_matched = if b_name_lower == "next" {
+                crate::utils::has_word(&lower_prompt, "nextjs")
+                    || crate::utils::has_word(&lower_prompt, "next.js")
+            } else {
+                crate::utils::has_word(&lower_prompt, &b_name_lower)
+            };
+
+            if trigger_matched || name_matched {
                 score += 15;
             }
 
-            for glob in b.globs {
-                let clean_glob = glob.trim_start_matches("*.").to_ascii_lowercase();
-                if lower_prompt.contains(&clean_glob) {
-                    score += 5;
-                }
-            }
-
-            for word in &[
-                "design",
-                "ui",
-                "ux",
-                "frontend",
-                "animation",
-                "react",
-                "next",
-                "api",
-                "fastapi",
-                "rust",
-                "style",
-                "theme",
-                "layout",
-                "component",
-            ] {
-                if crate::utils::has_word(&lower_prompt, word)
-                    && (b_name_lower.contains(word) || b_desc_lower.contains(word))
-                {
-                    score += 5;
-                }
-            }
-
-            let has_react = stack_info.framework == Some(crate::blocks::BlockFramework::React);
-            if (b_name_lower.contains("react") && has_react)
-                || (b_name_lower.contains("tailwind") && stack_info.has_tailwind)
-            {
-                score += 2;
-            }
-
-            if score >= 5 {
+            if score >= 15 {
                 let excerpt_lines: Vec<&str> = b.content.lines().take(25).collect();
                 matched_skills.push((
                     b.name.to_string(),
@@ -1691,22 +1801,26 @@ impl WorkflowRouter {
             }
             let mut score = 0;
             let s_name_lower = s.name.to_ascii_lowercase();
-            let s_desc_lower = s.description.to_ascii_lowercase();
 
-            if crate::utils::has_word(&lower_prompt, &s_name_lower)
-                || crate::utils::has_word(&lower_prompt, &s_desc_lower)
+            if manifest_active
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(&s.name))
             {
+                score += 30;
+            }
+
+            if crate::utils::has_word(&lower_prompt, &s_name_lower) {
                 score += 15;
             }
 
             for trigger in &s.frontmatter.triggers {
                 let trig_lower = trigger.to_ascii_lowercase();
                 if lower_prompt.contains(&trig_lower) {
-                    score += 8;
+                    score += 10;
                 }
             }
 
-            if score >= 5 {
+            if score >= 15 {
                 let excerpt_lines: Vec<&str> = s.instructions.lines().take(25).collect();
                 matched_skills.push((s.name, s.description, excerpt_lines.join("\n"), score));
             }

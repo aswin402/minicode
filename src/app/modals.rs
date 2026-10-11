@@ -1590,15 +1590,11 @@ impl<'a> App<'a> {
                         inq_state.next_option();
                     } else if c == 'k' || c == 'K' {
                         inq_state.prev_option();
-                    } else if c == 'o' || c == 'O' {
+                    } else if c == 'o' || c == 'O' || c == 'w' || c == 'W' {
                         if let Some(q) = inq_state.current_question() {
                             if q.allow_custom {
                                 inq_state.selected_option_idx = q.options.len();
-                                if let Some(resp) = inq_state.confirm_selection() {
-                                    let tid = inq_state.tool_id.clone();
-                                    self.resolve_inquiry(&tid, resp);
-                                    self.modal = ModalState::None;
-                                }
+                                inq_state.is_typing_custom = true;
                             }
                         }
                     }
@@ -2055,8 +2051,8 @@ impl<'a> App<'a> {
                                 3 => {
                                     state.browser_default_engine = None;
                                     state.browser_headless_priority = vec![
-                                        "chrome".to_string(),
                                         "obscura".to_string(),
+                                        "chrome".to_string(),
                                         "firefox".to_string(),
                                     ];
                                     state.browser_gui_priority = vec![
@@ -2172,8 +2168,8 @@ impl<'a> App<'a> {
                                 3 => {
                                     state.browser_default_engine = None;
                                     state.browser_headless_priority = vec![
-                                        "chrome".to_string(),
                                         "obscura".to_string(),
+                                        "chrome".to_string(),
                                         "firefox".to_string(),
                                     ];
                                     state.browser_gui_priority = vec![

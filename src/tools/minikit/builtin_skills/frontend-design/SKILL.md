@@ -1,6 +1,7 @@
 ---
 name: frontend-design
 description: "Design distinctive, production-grade frontend interfaces — mockups as HTML pages or working application pages. Use when the user asks to design a web page, landing page, UI mockup, dashboard, application page, or any visual HTML interface. Supports single designs, multiple variant generation, and integration with existing project frameworks."
+triggers: ["landing page", "frontend", "ui", "ux", "design", "css", "layout", "responsive", "website", "dashboard", "page"]
 metadata:
   version: 1.0.0
 ---

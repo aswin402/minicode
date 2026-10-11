@@ -65,7 +65,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             },
                             "options": {
                                 "type": "array",
-                                "description": "List of choices for 'choice' questions.",
+                                "description": "List of choices for 'choice' questions. Every choice question MUST provide at least 2 distinct options (e.g. 2-4 options, recommended option first). Never submit a question with only 1 option.",
+                                "minItems": 2,
                                 "items": {
                                     "type": "object",
                                     "properties": {

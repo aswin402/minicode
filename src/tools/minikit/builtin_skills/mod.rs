@@ -18,7 +18,7 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
         BuiltinSkill {
             name: "next",
             description: "AI Agent Skill for Next.js 16 — App Router, Server Components, Server Actions, route handlers, and SSR",
-            globs: &["**/app/**/*.ts", "**/app/**/*.tsx", "**/pages/**/*.tsx", "**/next.config.*"],
+            globs: &["**/app/**/page.tsx", "**/app/**/layout.tsx", "**/app/**/route.ts", "**/pages/**/*.tsx", "**/next.config.*"],
             content: include_str!("next.md"),
         },
         BuiltinSkill {

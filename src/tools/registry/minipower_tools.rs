@@ -141,6 +141,23 @@ pub async fn dispatch(
                         .and_then(|mut f| {
                             std::io::Write::write_all(&mut f, append_content.as_bytes())
                         });
+
+                    let impl_file = crate::tools::minikit::resolve_doc_path(
+                        workspace_root,
+                        "implementation.md",
+                    );
+                    if let Some(parent) = impl_file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let append_impl =
+                        format!("\n\n## 🛠️ MiniPower Architecture: {}\n{}\n", topic, plan);
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&impl_file)
+                        .and_then(|mut f| {
+                            std::io::Write::write_all(&mut f, append_impl.as_bytes())
+                        });
                 }
 
                 Ok(plan)

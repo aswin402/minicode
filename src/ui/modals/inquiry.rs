@@ -459,9 +459,9 @@ pub fn render_inquiry_modal(
                             Style::default()
                         },
                     ),
-                    Span::styled("[o] ", Style::default().fg(theme.muted)),
+                    Span::styled("[w] ", Style::default().fg(theme.muted)),
                     Span::styled(
-                        "Other / Custom write-in...",
+                        "Write-in custom option / answer...",
                         if is_selected {
                             Style::default()
                                 .fg(theme.brand_accent)
@@ -577,7 +577,7 @@ pub fn render_inquiry_modal(
     let footer_text = if state.is_typing_custom {
         "[Enter] Submit  [Esc] Back  [Home/End] Jump  [Ctrl+U] Clear"
     } else {
-        "[↑/↓/j/k] Navigate  [1-9] Fast pick  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
+        "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
     };
 
     let visible_height = inner.height.saturating_sub(1) as usize;

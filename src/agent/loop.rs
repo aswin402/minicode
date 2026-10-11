@@ -752,10 +752,10 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut was_cancelled = false;
-        let circuit_tripped = false;
+        let mut circuit_tripped = false;
         let mut hit_iteration_limit = false;
 
-        let options = CompletionOptions {
+        let mut options = CompletionOptions {
             model: self.config.provider.model.clone(),
             temperature: self.config.provider.temperature,
             max_tokens: self.config.provider.max_tokens,
@@ -1206,6 +1206,7 @@ impl AgentLoop {
                                             );
                                         }
                                         let _ = event_sender.send(trip_event);
+                                        circuit_tripped = true;
                                     }
                                 }
 
@@ -1775,6 +1776,7 @@ impl AgentLoop {
                                         );
                                     }
                                     let _ = event_sender.send(trip_event);
+                                    circuit_tripped = true;
                                 }
                             }
 
@@ -1894,6 +1896,12 @@ impl AgentLoop {
                                 if auto_reconciled_extra > 0 {
                                     total_reconciled += auto_reconciled_extra;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
+                                }
+
+                                if tool_call.name == "kit_stack_add" {
+                                    let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+                                    options.system_instruction = Some(refreshed);
+                                    tracing::info!("Dynamic system instruction refreshed following stack scaffolding");
                                 }
                             }
 
@@ -2183,20 +2191,7 @@ impl AgentLoop {
                         let wm = crate::context::working_memory::WorkingMemory::new(
                             &self.workspace_root,
                         );
-                        let reconciled = wm.reconcile_workspace_tasks(&turn_files_modified);
-                        if reconciled == 0 {
-                            // If no explicit file deliverable matched, advance active/pending task
-                            let tasks = wm.read_parsed_tasks();
-                            let target_task = tasks
-                                .iter()
-                                .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
-                                .or_else(|| {
-                                    tasks.iter().find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::Pending)
-                                });
-                            if let Some(task) = target_task {
-                                let _ = wm.update_progress(&task.title, "completed");
-                            }
-                        }
+                        let _reconciled = wm.reconcile_workspace_tasks(&turn_files_modified);
                         self.emit_current_plan(Some(turn_id), &event_sender);
 
                         // Autonomous Self-Improvement / Reflexion Hook:
@@ -2294,32 +2289,6 @@ impl AgentLoop {
                     &self.workspace_root,
                 );
                 let _ = wm.reconcile_workspace_tasks(&turn_files_modified);
-
-                // Auto-advance and complete tasks when assistant concludes turn cleanly
-                if !hit_iteration_limit && !was_cancelled && !circuit_tripped {
-                    let tasks = wm.read_parsed_tasks();
-                    if let Some(active_task) = tasks
-                        .iter()
-                        .find(|t| t.status == crate::context::memory::working_memory::TaskItemStatus::InProgress)
-                    {
-                        let _ = wm.update_progress(&active_task.title, "completed");
-                    }
-
-                    // If all tasks were completed except the final verification milestone, complete it
-                    let refreshed = wm.read_parsed_tasks();
-                    let pending: Vec<_> = refreshed
-                        .iter()
-                        .filter(|t| {
-                            t.status
-                                != crate::context::memory::working_memory::TaskItemStatus::Completed
-                        })
-                        .collect();
-                    if pending.len() == 1
-                        && (!turn_files_modified.is_empty() || !turn_tool_calls.is_empty())
-                    {
-                        let _ = wm.update_progress(&pending[0].title, "completed");
-                    }
-                }
                 self.emit_current_plan(Some(turn_id), &event_sender);
 
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
