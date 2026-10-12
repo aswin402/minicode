@@ -57,12 +57,18 @@ impl SkillScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillKind {
-    /// Technical Reference Guide (framework/library documentation, API cheatsheet, syntax invariants)
-    /// Example: `react`, `vite`, `tailwind-v4`, `postgres`, `docker`, `rust-tokio`
+    /// Technical Reference Guide (framework/library documentation, API cheatsheet, package gotchas)
+    /// Example: `react`, `vite`, `tailwind-v4`, `postgres`, `docker`, `express`, `prisma`, `mongodb`
     Reference,
     /// Behavioral / Operational Skill (methodology, protocols, decision-making, quality gates)
-    /// Example: `tdd-workflow`, `systematic-debugging`, `security-audit`, `frontend-design`
+    /// Example: `tdd-workflow`, `systematic-debugging`, `security-audit`, `frontend-design`, `ui-ux-pro-max`
     Workflow,
+    /// Runtime & Stack Workflow Guide (ecosystem conventions, build safety, script rules)
+    /// Example: `rust-tokio`, `bun-workflow`, `flutter-workflow`
+    Runtime,
+    /// Core Project Invariant / System Contract
+    /// Example: `coreidea`, `prd`, `architecture`, `spec`, `todo`
+    Core,
 }
 
 impl SkillKind {
@@ -70,6 +76,8 @@ impl SkillKind {
         match self {
             SkillKind::Reference => "reference",
             SkillKind::Workflow => "workflow",
+            SkillKind::Runtime => "runtime",
+            SkillKind::Core => "core",
         }
     }
 
@@ -77,6 +85,8 @@ impl SkillKind {
         match self {
             SkillKind::Reference => "Doc",
             SkillKind::Workflow => "Skill",
+            SkillKind::Runtime => "Runtime",
+            SkillKind::Core => "Core",
         }
     }
 
@@ -84,6 +94,8 @@ impl SkillKind {
         match self {
             SkillKind::Reference => "Technical Reference Guide (Cheatsheet / Invariants)",
             SkillKind::Workflow => "Behavioral Skill (Operational Methodology)",
+            SkillKind::Runtime => "Runtime & Stack Workflow (Architecture Conventions)",
+            SkillKind::Core => "Core Project Invariant (Authoritative Specification)",
         }
     }
 }
@@ -99,10 +111,13 @@ impl std::str::FromStr for SkillKind {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_ascii_lowercase().trim() {
-            "reference" | "ref" | "doc" | "docs" | "guide" | "cheatsheet" => Ok(Self::Reference),
+            "reference" | "ref" | "doc" | "docs" | "guide" | "package" | "packages"
+            | "cheatsheet" | "packagedoc" => Ok(Self::Reference),
             "workflow" | "skill" | "behavior" | "methodology" | "protocol" => Ok(Self::Workflow),
+            "runtime" | "stack" | "toolchain" | "architecture" => Ok(Self::Runtime),
+            "core" | "spec" | "contract" | "invariants" => Ok(Self::Core),
             other => Err(format!(
-                "Invalid skill kind '{}'. Valid kinds: 'reference', 'workflow'",
+                "Invalid skill kind '{}'. Valid kinds: 'reference', 'workflow', 'runtime', 'core'",
                 other
             )),
         }
@@ -282,8 +297,8 @@ impl SkillFrontmatter {
         }
     }
 
-    /// Returns the functional kind (`SkillKind::Reference` or `SkillKind::Workflow`).
-    /// Defaults to `Workflow` for testing/quality, and `Reference` for tech stack documentation.
+    /// Returns the functional kind (`SkillKind::Reference`, `SkillKind::Workflow`, `SkillKind::Runtime`, `SkillKind::Core`).
+    /// Defaults to `Workflow` for testing/quality/security, `Runtime` for runtime/stack, `Core` for core/spec, and `Reference` for package documentation.
     pub fn skill_kind(&self) -> SkillKind {
         if let Some(k) = &self.kind {
             if let Ok(kind) = k.parse::<SkillKind>() {
@@ -291,7 +306,9 @@ impl SkillFrontmatter {
             }
         }
         match self.category_name() {
-            "testing" | "quality" => SkillKind::Workflow,
+            "testing" | "quality" | "security" | "workflow" => SkillKind::Workflow,
+            "runtime" | "stack" | "toolchain" => SkillKind::Runtime,
+            "core" | "spec" | "architecture" => SkillKind::Core,
             _ => SkillKind::Reference,
         }
     }
@@ -414,14 +431,29 @@ impl VaultSkill {
     /// Checks if this skill matches user prompt keywords via triggers or name.
     pub fn matches_prompt(&self, prompt_lower: &str) -> bool {
         let name_lower = self.name.to_lowercase();
-        if prompt_lower.contains(&name_lower) {
+        if crate::utils::has_word(prompt_lower, &name_lower) || prompt_lower.contains(&name_lower) {
             return true;
         }
 
         for trigger in &self.frontmatter.triggers {
             let trig_lower = trigger.to_lowercase();
-            if !trig_lower.is_empty() && prompt_lower.contains(&trig_lower) {
-                return true;
+            if trig_lower.is_empty() {
+                continue;
+            }
+            if trig_lower.contains(' ') || trig_lower.contains('-') || trig_lower.contains('.') {
+                if prompt_lower.contains(&trig_lower) {
+                    return true;
+                }
+            } else {
+                let matched = prompt_lower
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| {
+                        w.eq_ignore_ascii_case(&trig_lower)
+                            || (trig_lower.len() >= 4 && w.to_lowercase().starts_with(&trig_lower))
+                    });
+                if matched {
+                    return true;
+                }
             }
         }
 

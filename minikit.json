@@ -116,8 +116,7 @@
   "sources": {
     "directories": [
       "src",
-      "minikit_docs",
-      "onpkg_docs"
+      "minikit_docs"
     ],
     "file_patterns": [
       "*.md",
@@ -130,7 +129,6 @@
       "README.md",
       "AGENTS.md",
       "minikit.json",
-      "onpkg.json",
       "src/main.rs"
     ]
   }

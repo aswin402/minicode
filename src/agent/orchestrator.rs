@@ -1361,6 +1361,9 @@ impl WorkflowRouter {
                     }
                 }
             }
+            out.push_str("  Dev Server Persistence Invariant:\n");
+            out.push_str("  • Dev servers (frontend, backend, docker) MUST remain running across turns so the user can interact with and view their application. NEVER call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
+            out.push_str("  • Ephemeral inspection engines (headless Obscura, Chrome, Firefox) opened for automated verification MUST be closed via `browser_close` once automated inspection finishes.\n");
             out.push_str("  Status & Inspection Invariant:\n");
             out.push_str("  • When the user asks what is happening, checks tasks, or requests telemetry, directly explain the current state of active services, scheduled tasks, and recent outputs above. Use `minitask(action=\"resources\")` or `minitask(action=\"status\")` if further live details are needed.\n");
             out.push_str("  Resource / Telemetry Invariant:\n");
@@ -1646,213 +1649,21 @@ impl WorkflowRouter {
 
     /// Hermes Agent progressive procedural knowledge activation:
     /// Dynamically scans available built-in and MiniVault skills, matches them against the prompt
-    /// and project stack, and injects procedural rules and traps into context.
+    /// and project stack, and injects procedural rules and traps into context without arbitrary truncations.
     fn enrich_hermes_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
-        let lower_prompt = prompt.to_ascii_lowercase();
-
-        let builtins = crate::tools::minikit::builtin_skills::get_all_builtin_skills();
         let store = crate::vault::store::VaultStore::new(workspace_root);
-        let vault_skills = store.list_all_skills();
-        let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_root);
-        let manifest_active =
-            crate::tools::minikit::skills::MiniKitSkillsManager::get_manifest_active_skills(
-                workspace_root,
-            );
+        let manifest_active = store.get_manifest_active_skills();
+        let project_active: Vec<String> = store
+            .list_all_skills()
+            .into_iter()
+            .filter(|s| s.is_active_in_project)
+            .map(|s| s.name)
+            .collect();
 
-        let mut matched_skills: Vec<(String, String, String, usize)> = Vec::new();
+        let mut exclude = manifest_active;
+        exclude.extend(project_active);
 
-        for b in builtins {
-            let mut score = 0;
-            let b_name_lower = b.name.to_ascii_lowercase();
-
-            // 1. Explicit manifest activation gets highest priority
-            if manifest_active
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(b.name))
-            {
-                score += 30;
-            }
-
-            // 2. Installed workspace skill directory (.minicode/skills/<name> or minikit_docs/skills/<name>)
-            if workspace_root
-                .join(".minicode")
-                .join("skills")
-                .join(b.name)
-                .exists()
-                || workspace_root
-                    .join(crate::constants::MINIKIT_DOCS_DIR)
-                    .join("skills")
-                    .join(b.name)
-                    .exists()
-            {
-                score += 25;
-            }
-
-            // 3. Stack / framework / dependency / glob alignment
-            let has_workspace_match = {
-                // Check if any glob pattern corresponds to an existing root config/manifest
-                let has_config_file = b.globs.iter().any(|g| {
-                    let clean = g.trim_start_matches("**/").trim_start_matches('*');
-                    if clean.ends_with('*') {
-                        let prefix = clean.trim_end_matches('*');
-                        if let Ok(entries) = std::fs::read_dir(workspace_root) {
-                            entries
-                                .flatten()
-                                .any(|e| e.file_name().to_string_lossy().starts_with(prefix))
-                        } else {
-                            false
-                        }
-                    } else if !clean.is_empty() && !clean.contains('*') {
-                        workspace_root.join(clean).exists()
-                    } else {
-                        false
-                    }
-                });
-
-                let has_pkg_dep = if let Ok(pkg_json) =
-                    std::fs::read_to_string(workspace_root.join("package.json"))
-                {
-                    let pkg_lower = pkg_json.to_ascii_lowercase();
-                    pkg_lower.contains(&format!("\"{}\"", b_name_lower))
-                        || pkg_lower.contains(&format!("\"@{}/", b_name_lower))
-                        || pkg_lower.contains(&format!("\"{}-", b_name_lower))
-                } else {
-                    false
-                };
-
-                let has_cargo_dep = if workspace_root.join("Cargo.toml").exists() {
-                    b_name_lower == "rust"
-                        || std::fs::read_to_string(workspace_root.join("Cargo.toml"))
-                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
-                            .unwrap_or(false)
-                } else {
-                    false
-                };
-
-                let has_python_dep = if workspace_root.join("pyproject.toml").exists()
-                    || workspace_root.join("requirements.txt").exists()
-                {
-                    b_name_lower == "python"
-                        || b_name_lower == "fastapi"
-                        || std::fs::read_to_string(workspace_root.join("requirements.txt"))
-                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
-                            .unwrap_or(false)
-                        || std::fs::read_to_string(workspace_root.join("pyproject.toml"))
-                            .map(|c| c.to_ascii_lowercase().contains(&b_name_lower))
-                            .unwrap_or(false)
-                } else {
-                    false
-                };
-
-                let has_seed_match = (stack_info.framework
-                    == Some(crate::blocks::BlockFramework::React)
-                    && b_name_lower.contains("react"))
-                    || (stack_info.has_tailwind && b_name_lower.contains("tailwind"));
-
-                has_config_file || has_pkg_dep || has_cargo_dep || has_python_dep || has_seed_match
-            };
-
-            if has_workspace_match {
-                score += 20;
-            }
-
-            // 4. Prompt / trigger matching (parsed from frontmatter triggers or skill name)
-            let (fm, _) = crate::vault::models::parse_skill_markdown(b.content, b.name);
-
-            let mut trigger_matched = false;
-            for trigger in &fm.triggers {
-                let trig_lower = trigger.to_ascii_lowercase();
-                if trig_lower.contains(' ') {
-                    if lower_prompt.contains(&trig_lower) {
-                        trigger_matched = true;
-                        break;
-                    }
-                } else if crate::utils::has_word(&lower_prompt, &trig_lower) {
-                    trigger_matched = true;
-                    break;
-                }
-            }
-
-            let name_matched = if b_name_lower == "next" {
-                crate::utils::has_word(&lower_prompt, "nextjs")
-                    || crate::utils::has_word(&lower_prompt, "next.js")
-            } else {
-                crate::utils::has_word(&lower_prompt, &b_name_lower)
-            };
-
-            if trigger_matched || name_matched {
-                score += 15;
-            }
-
-            if score >= 15 {
-                let excerpt_lines: Vec<&str> = b.content.lines().take(25).collect();
-                matched_skills.push((
-                    b.name.to_string(),
-                    b.description.to_string(),
-                    excerpt_lines.join("\n"),
-                    score,
-                ));
-            }
-        }
-
-        for s in vault_skills {
-            if s.is_active_in_project {
-                continue;
-            }
-            let mut score = 0;
-            let s_name_lower = s.name.to_ascii_lowercase();
-
-            if manifest_active
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(&s.name))
-            {
-                score += 30;
-            }
-
-            if crate::utils::has_word(&lower_prompt, &s_name_lower) {
-                score += 15;
-            }
-
-            for trigger in &s.frontmatter.triggers {
-                let trig_lower = trigger.to_ascii_lowercase();
-                if lower_prompt.contains(&trig_lower) {
-                    score += 10;
-                }
-            }
-
-            if score >= 15 {
-                let excerpt_lines: Vec<&str> = s.instructions.lines().take(25).collect();
-                matched_skills.push((s.name, s.description, excerpt_lines.join("\n"), score));
-            }
-        }
-
-        if matched_skills.is_empty() {
-            return None;
-        }
-
-        matched_skills.sort_by(|a, b| b.3.cmp(&a.3));
-
-        let mut out = String::from("<auto_activated_skills>\n");
-        out.push_str("  Hermes Progressive Skill Intelligence Activated:\n");
-        out.push_str(
-            "  The following domain skills automatically matched your prompt and project stack:\n",
-        );
-
-        for (name, desc, excerpt, _) in matched_skills.iter().take(2) {
-            out.push_str(&format!("  • Skill `{}`: {}\n", name, desc));
-            out.push_str("    Key Guidelines & Traps:\n");
-            for line in excerpt.lines().take(20) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with("---") {
-                    out.push_str(&format!("      {}\n", trimmed));
-                }
-            }
-        }
-        out.push_str(
-            "  Directive: Adhere strictly to these procedural skill guidelines for this task.\n",
-        );
-        out.push_str("</auto_activated_skills>");
-        Some(out)
+        store.format_dynamic_turn_skills(Some(prompt), None, &[] as &[&str], &exclude)
     }
 }
 

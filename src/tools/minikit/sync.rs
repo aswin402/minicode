@@ -184,10 +184,14 @@ impl MiniKitSyncEngine {
                         .to_string_lossy()
                         .to_string();
 
+                    // Remove redundant legacy uppercase INDEX.md to avoid case collision with index.md
+                    if file_name == "INDEX.md" {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+
                     // Leave top-level catalog files at the root
-                    if file_name.eq_ignore_ascii_case("index.md")
-                        || file_name.eq_ignore_ascii_case("log.md")
-                    {
+                    if file_name == "index.md" || file_name == "log.md" {
                         continue;
                     }
 
@@ -396,6 +400,34 @@ impl MiniKitSyncEngine {
                 - **Keyboard Shortcut**: Press `F6` in the TUI to open the interactive MiniBlocks browser modal.\n\
                 - **Slash Command**: Type `/blocks` in chat to browse components and palettes.\n";
             fs::write(miniblocks_path, miniblocks_content).ok();
+        }
+
+        // 10. index.md (Canonical 4-domain knowledge catalog index)
+        let index_path = docs_dir.join("index.md");
+        if !index_path.exists() {
+            let index_content = format!(
+                "---\ntype: Directory Index\ntitle: Knowledge & Engineering Catalog Index\n---\n\n\
+                # Project Knowledge & Engineering Catalog 📚\n\n\
+                > Organized into 4 distinct knowledge domains: **Core Specifications**, **Runtime Workflows**, **Domain Skills**, and **Package References**.\n\n\
+                ## 1. Core Engineering Specifications (`core/`) 🏛️\n\
+                *Inviolable project contract and single source of truth for minicode.*\n\
+                - [Core Philosophy & Vision](./core/coreidea.md)\n\
+                - [Product Requirements Document (PRD)](./core/prd.md)\n\
+                - [Clean Architecture & CodeGraph](./core/architecture.md)\n\
+                - [Technical Invariants & Spec](./core/spec.md)\n\
+                - [Design Specification](./core/design.md)\n\
+                - [Technical Implementation Plan](./core/implementation.md)\n\
+                - [Task Tracker (todo.md)](./core/todo.md)\n\
+                - [Content Reference](./core/content.md)\n\n\
+                ## 2. Runtime & Stack Workflows (`runtimes/` or `{}/`) ⚙️\n\
+                *Language conventions, compilation safety rules, and architecture patterns.*\n\n\
+                ## 3. Domain & Procedural Skills (`skills/`) 🧠\n\
+                *Autonomous behavioral capabilities, design methodologies, and testing protocols.*\n\n\
+                ## 4. Package References & Continuous Learning (`packages/`) 📦\n\
+                *Local documentation cheat sheets, API gotchas, and self-improved solutions.*\n",
+                runtime
+            );
+            fs::write(index_path, index_content).ok();
         }
     }
 

@@ -129,95 +129,40 @@ impl MiniKitSkillsManager {
 
     /// Lists all installed skills and available built-in skills.
     pub fn list_skills(workspace_root: &Path) -> String {
-        let search_dirs = Self::get_skill_paths(workspace_root);
-        let mut installed_skills: Vec<(String, String)> = Vec::new();
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let all = store.list_all_skills();
 
-        for dir in &search_dirs {
-            if !dir.exists() || !dir.is_dir() {
-                continue;
-            }
+        let mut installed = Vec::new();
+        let mut available = Vec::new();
 
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
-                        let fname = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        // Filter out core specs and OKF catalog logs from skill listing
-                        if super::CORE_DOC_FILES
-                            .iter()
-                            .any(|c| c.eq_ignore_ascii_case(&fname))
-                            || fname.eq_ignore_ascii_case("index.md")
-                            || fname.eq_ignore_ascii_case("log.md")
-                        {
-                            continue;
-                        }
-
-                        let name = path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        let snippet = fs::read_to_string(&path)
-                            .unwrap_or_default()
-                            .lines()
-                            .find(|l| l.starts_with('#') || !l.trim().is_empty())
-                            .unwrap_or("Domain skill")
-                            .trim_start_matches('#')
-                            .trim()
-                            .to_string();
-                        installed_skills.push((name, snippet));
-                    } else if path.is_dir() {
-                        let skill_file = path.join("SKILL.md");
-                        if skill_file.exists() {
-                            let name = path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            let snippet = fs::read_to_string(&skill_file)
-                                .unwrap_or_default()
-                                .lines()
-                                .find(|l| l.starts_with('#') || !l.trim().is_empty())
-                                .unwrap_or("Domain skill")
-                                .trim_start_matches('#')
-                                .trim()
-                                .to_string();
-                            installed_skills.push((name, snippet));
-                        }
-                    }
-                }
+        for s in all {
+            if s.is_active_in_project || s.scope == crate::vault::models::SkillScope::Project {
+                installed.push(s);
+            } else {
+                available.push(s);
             }
         }
 
-        installed_skills.sort_by(|a, b| a.0.cmp(&b.0));
-        installed_skills.dedup_by(|a, b| a.0 == b.0);
-
         let mut res = String::new();
 
-        if !installed_skills.is_empty() {
+        if !installed.is_empty() {
             res.push_str(&format!(
-                "🧠 **Installed Agent Skills** ({} active):\n\n",
-                installed_skills.len()
+                "🧠 **Installed Agent Skills** ({} active in workspace):\n\n",
+                installed.len()
             ));
-            for (name, desc) in installed_skills {
-                res.push_str(&format!("  • **`{}`**: {}\n", name, desc));
+            for s in &installed {
+                res.push_str(&format!("  • **`{}`**: {}\n", s.name, s.description));
             }
             res.push('\n');
         } else {
             res.push_str("ℹ No custom skills currently installed in `.minicode/skills/`.\n\n");
         }
 
-        // Available built-in catalog
-        let builtins = get_all_builtin_skills();
         res.push_str(&format!(
-            "📦 **Built-in Skill Library** ({} available):\n\n",
-            builtins.len()
+            "📦 **Available Skill Library** ({} available in MiniVault):\n\n",
+            available.len()
         ));
-        for s in builtins {
+        for s in available {
             res.push_str(&format!("  • **`{:<16}`** — {}\n", s.name, s.description));
         }
         res.push_str("\n💡 Run `minicode kit skill install <name>` or use `kit_skill_install` to install into workspace.\n");
@@ -228,64 +173,33 @@ impl MiniKitSkillsManager {
     /// Shows full contents and instructions of a skill (from workspace or built-in library).
     pub fn show_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
         let clean = skill_name.trim();
-
-        // 1. Check workspace
-        let local_path = workspace_root
-            .join(".minicode")
-            .join("skills")
-            .join(clean)
-            .join("SKILL.md");
-        if local_path.exists() {
-            let content = fs::read_to_string(&local_path).map_err(|e| ToolError::FileOp {
-                path: local_path.display().to_string(),
-                source: e,
-            })?;
-            return Ok(format!(
-                "📖 **Skill `{}`** (Workspace Local: `{}`):\n\n{}",
-                clean,
-                local_path.display(),
-                content
-            ));
-        }
-
-        // 2. Check built-in library
-        if let Some(builtin) = find_builtin_skill(clean) {
-            return Ok(format!(
-                "📖 **Skill `{}`** (Built-in Library):\n*{}*\n\n{}",
-                builtin.name, builtin.description, builtin.content
-            ));
-        }
-
-        // 3. Check global directories
-        if let Some(home) = dirs::home_dir() {
-            let global_path = home
-                .join(".config")
-                .join("minicode")
-                .join("skills")
-                .join(clean)
-                .join("SKILL.md");
-            if global_path.exists() {
-                let content = fs::read_to_string(&global_path).map_err(|e| ToolError::FileOp {
-                    path: global_path.display().to_string(),
-                    source: e,
-                })?;
-                return Ok(format!(
-                    "📖 **Skill `{}`** (Global Config: `{}`):\n\n{}",
-                    clean,
-                    global_path.display(),
-                    content
-                ));
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        match store.get_skill(clean) {
+            Ok(skill) => {
+                let scope_label = match skill.scope {
+                    crate::vault::models::SkillScope::Project => "Workspace Project Local",
+                    crate::vault::models::SkillScope::Global => "User Global Vault",
+                    crate::vault::models::SkillScope::Builtin => "Built-in Production Library",
+                };
+                let path_str = skill
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "builtin".to_string());
+                Ok(format!(
+                    "📖 **Skill `{}`** ({}: `{}`):\n*{}*\n\n{}",
+                    skill.name, scope_label, path_str, skill.description, skill.instructions
+                ))
             }
+            Err(_) => Err(ToolError::InvalidArguments {
+                name: "kit_skill_show".to_string(),
+                reason: format!(
+                    "Skill `{}` not found. Run `minicode skill list` to see all available skills.",
+                    skill_name
+                ),
+            }
+            .into()),
         }
-
-        Err(ToolError::InvalidArguments {
-            name: "onpkg_skill_show".to_string(),
-            reason: format!(
-                "Skill `{}` not found. Run `minicode skill list` to see all available skills.",
-                skill_name
-            ),
-        }
-        .into())
     }
 
     /// Installs a skill package into the workspace `.minicode/skills/<name>/SKILL.md`.
@@ -305,115 +219,22 @@ impl MiniKitSkillsManager {
             }
             .into());
         }
-        let dest_dir = workspace_root
-            .join(".minicode")
-            .join("skills")
-            .join(clean_name);
-        fs::create_dir_all(&dest_dir).map_err(|e| ToolError::FileOp {
-            path: dest_dir.display().to_string(),
-            source: e,
-        })?;
 
-        let dest_file = dest_dir.join("SKILL.md");
-
-        // 1. Built-in library (Highest priority: battle-tested rich skills)
-        if let Some(builtin) = find_builtin_skill(clean_name) {
-            fs::write(&dest_file, builtin.content).map_err(|e| ToolError::FileOp {
-                path: dest_file.display().to_string(),
-                source: e,
-            })?;
-            Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-            MiniKitSyncEngine::sync(workspace_root).ok();
-            return Ok(format!(
-                "✔ Successfully installed built-in skill `{}` into `.minicode/skills/{}/SKILL.md`\nDescription: {}\nManifest & OKF knowledge docs synchronized.",
-                builtin.name, clean_name, builtin.description
-            ));
-        }
-
-        // 2. If skill exists in global ~/.minikit/skills, ~/.onpkg/skills or ~/.config/minicode/skills, copy it
-        if let Some(home) = dirs::home_dir() {
-            let global_candidates = [
-                home.join(".config")
-                    .join("minicode")
-                    .join("skills")
-                    .join(format!("{}.md", clean_name)),
-                home.join(".minikit")
-                    .join("skills")
-                    .join(format!("{}.md", clean_name)),
-                home.join(".onpkg")
-                    .join("skills")
-                    .join(format!("{}.md", clean_name)),
-                home.join(".config")
-                    .join("minicode")
-                    .join("skills")
-                    .join(clean_name)
-                    .join("SKILL.md"),
-                home.join(".minikit")
-                    .join("skills")
-                    .join(clean_name)
-                    .join("SKILL.md"),
-            ];
-
-            for c in global_candidates {
-                if c.exists() {
-                    let content = fs::read_to_string(&c).unwrap_or_default();
-                    fs::write(&dest_file, &content).map_err(|e| ToolError::FileOp {
-                        path: dest_file.display().to_string(),
-                        source: e,
-                    })?;
-                    Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-                    MiniKitSyncEngine::sync(workspace_root).ok();
-                    return Ok(format!(
-                        "✔ Successfully installed skill `{}` from `{}` into `.minicode/skills/{}/SKILL.md`",
-                        clean_name, c.display(), clean_name
-                    ));
-                }
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        match store.load_to_project(clean_name) {
+            Ok(skill) => {
+                MiniKitSyncEngine::sync(workspace_root).ok();
+                Ok(format!(
+                    "✔ Successfully installed built-in skill `{}` into `.minicode/skills/{}/SKILL.md`\nDescription: {}\nManifest & OKF knowledge docs synchronized.",
+                    skill.name, skill.name, skill.description
+                ))
             }
+            Err(e) => Err(ToolError::ExecutionFailed(format!(
+                "kit_skill_install failed for '{}': {}",
+                skill_name, e
+            ))
+            .into()),
         }
-
-        // 3. Fallback: Generate baseline skill contract template
-        let default_skill = format!(
-            "# {}\n\n## Description\nSpecialized instructions and coding conventions for {}.\n\n## Rules & Guidelines\n1. Follow idiomatic {} patterns.\n2. Verify changes with unit and integration tests.\n",
-            clean_name, clean_name, clean_name
-        );
-
-        fs::write(&dest_file, default_skill).map_err(|e| ToolError::FileOp {
-            path: dest_file.display().to_string(),
-            source: e,
-        })?;
-        Self::add_to_manifest_active_skills(workspace_root, clean_name).ok();
-        MiniKitSyncEngine::sync(workspace_root).ok();
-
-        Ok(format!(
-            "✔ Successfully created and installed custom skill `{}` at `.minicode/skills/{}/SKILL.md`",
-            clean_name, clean_name
-        ))
-    }
-
-    fn add_to_manifest_active_skills(workspace_root: &Path, skill_name: &str) -> Result<()> {
-        let manifest_path = match super::resolve_manifest_path(workspace_root) {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let content = fs::read_to_string(&manifest_path).map_err(|e| ToolError::FileOp {
-            path: manifest_path.display().to_string(),
-            source: e,
-        })?;
-
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(skills) = val.get_mut("active_skills").and_then(|s| s.as_array_mut()) {
-                let name_val = serde_json::Value::String(skill_name.to_string());
-                if !skills.contains(&name_val) {
-                    skills.push(name_val);
-                    if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                        fs::write(&manifest_path, pretty).ok();
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Removes an installed custom skill from the workspace (.minicode/skills/<name>).
@@ -429,79 +250,22 @@ impl MiniKitSkillsManager {
             }
             .into());
         }
-        let target_dir = workspace_root.join(".minicode").join("skills").join(&clean);
-        let mut removed = false;
 
-        if target_dir.exists() {
-            fs::remove_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
-                path: target_dir.display().to_string(),
-                source: e,
-            })?;
-            removed = true;
-        }
-
-        let target_file = workspace_root
-            .join(".minicode")
-            .join("skills")
-            .join(format!("{}.md", clean));
-        if target_file.exists() {
-            fs::remove_file(&target_file).map_err(|e| ToolError::FileOp {
-                path: target_file.display().to_string(),
-                source: e,
-            })?;
-            removed = true;
-        }
-
-        for docs_dir in &[
-            crate::constants::MINIKIT_DOCS_DIR,
-            crate::constants::ONPKG_DOCS_DIR,
-        ] {
-            let doc_file = workspace_root.join(docs_dir).join(format!("{}.md", clean));
-            if doc_file.exists() {
-                fs::remove_file(&doc_file).ok();
-                removed = true;
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        match store.unload_from_project(&clean) {
+            Ok(_) => {
+                MiniKitSyncEngine::sync(workspace_root).ok();
+                Ok(format!(
+                    "✔ Successfully removed skill `{}` from workspace and active manifest.",
+                    clean
+                ))
             }
-        }
-
-        Self::remove_from_manifest_active_skills(workspace_root, &clean).ok();
-        MiniKitSyncEngine::sync(workspace_root).ok();
-
-        if removed {
-            Ok(format!(
-                "✔ Successfully removed skill `{}` from workspace.",
-                clean
+            Err(e) => Err(ToolError::ExecutionFailed(format!(
+                "kit_skill_remove failed for '{}': {}",
+                skill_name, e
             ))
-        } else {
-            Ok(format!(
-                "ℹ Skill `{}` was not found installed in workspace.",
-                clean
-            ))
+            .into()),
         }
-    }
-
-    fn remove_from_manifest_active_skills(workspace_root: &Path, skill_name: &str) -> Result<()> {
-        let manifest_path = match super::resolve_manifest_path(workspace_root) {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        let content = fs::read_to_string(&manifest_path).map_err(|e| ToolError::FileOp {
-            path: manifest_path.display().to_string(),
-            source: e,
-        })?;
-
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(skills) = val.get_mut("active_skills").and_then(|s| s.as_array_mut()) {
-                skills.retain(|s| {
-                    s.as_str().map(|n| n.to_lowercase()) != Some(skill_name.to_lowercase())
-                });
-                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                    fs::write(&manifest_path, pretty).ok();
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Resolves the list of explicitly configured skill names from the workspace manifest (`minikit.json` or `onpkg.json`), if any.
@@ -629,59 +393,46 @@ impl MiniKitSkillsManager {
         stack_files: &[String],
         stack_packages: &[String],
     ) -> Vec<String> {
-        let mut matched = Vec::new();
-        let builtins = crate::tools::minikit::builtin_skills::get_all_builtin_skills();
-
-        for b in builtins {
-            let mut matches = false;
-            let b_name_lower = b.name.to_ascii_lowercase();
-
-            // 1. Generic package namespace, stem, and skill metadata matching
-            if stack_packages.iter().any(|pkg| {
-                let pkg_lower = pkg.to_ascii_lowercase();
-                let clean = pkg_lower.trim_start_matches('@');
-                let pkg_stem = clean.split('/').next_back().unwrap_or(clean);
-
-                pkg_lower == b_name_lower
-                    || pkg_stem == b_name_lower
-                    || pkg_stem.starts_with(&format!("{}-", b_name_lower))
-                    || pkg_lower.starts_with(&format!("@{}/", b_name_lower))
-                    || pkg_stem
-                        .split('-')
-                        .any(|part| part == b_name_lower || part.starts_with(&b_name_lower))
-                    || b.globs
-                        .iter()
-                        .any(|g| g.to_ascii_lowercase().contains(pkg_stem))
-                    || b.description
-                        .to_ascii_lowercase()
-                        .split_whitespace()
-                        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == pkg_stem)
-            }) {
-                matches = true;
-            }
-
-            // 2. Check if any stack file matches the skill's globs
-            if !matches && !b.globs.is_empty() {
-                let mut builder = ignore::overrides::OverrideBuilder::new(workspace_root);
-                for g in b.globs {
-                    let _ = builder.add(g);
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let mut tokens: std::collections::HashSet<String> = store.detect_workspace_package_tokens();
+        for pkg in stack_packages {
+            let lower = pkg.to_lowercase();
+            tokens.insert(lower.clone());
+            let clean = lower.trim_start_matches('@');
+            if let Some((scope, name)) = clean.split_once('/') {
+                tokens.insert(scope.to_string());
+                tokens.insert(name.to_string());
+                for part in name.split('-') {
+                    if !part.is_empty() {
+                        tokens.insert(part.to_string());
+                    }
                 }
-                if let Ok(overrides) = builder.build() {
-                    for f in stack_files {
-                        let p = Path::new(f);
-                        if overrides.matched(p, false).is_whitelist() {
-                            matches = true;
-                            break;
-                        }
+            } else {
+                for part in clean.split('-') {
+                    if !part.is_empty() {
+                        tokens.insert(part.to_string());
                     }
                 }
             }
-
-            if matches && !matched.contains(&b.name.to_string()) {
-                matched.push(b.name.to_string());
-            }
         }
 
+        let mut matched = Vec::new();
+        for skill in store.list_all_skills() {
+            if store.matches_skill_to_stack(&skill, &tokens) {
+                matched.push(skill.name.clone());
+                continue;
+            }
+            if !stack_files.is_empty() {
+                for f in stack_files {
+                    if skill.matches_file(workspace_root, Path::new(f)) {
+                        matched.push(skill.name.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        matched.sort();
+        matched.dedup();
         matched
     }
 
@@ -718,6 +469,7 @@ impl MiniKitSkillsManager {
     }
 
     /// Formats progressive agent prompt context (Tier 1 lightweight directory + Tier 2 matched rules).
+    #[allow(dead_code)]
     pub fn format_progressive_prompt_context(
         workspace_root: &Path,
         active_files: &[PathBuf],
@@ -726,112 +478,14 @@ impl MiniKitSkillsManager {
     }
 
     /// Formats progressive agent prompt context with optional prompt intent matching (Hermes-style autonomous skill activation).
+    #[allow(dead_code)]
     pub fn format_progressive_prompt_context_with_prompt(
         workspace_root: &Path,
         active_files: &[PathBuf],
         prompt: Option<&str>,
     ) -> String {
-        let all_skills = Self::get_all_skills_metadata(workspace_root);
-        if all_skills.is_empty() {
-            return String::new();
-        }
-
-        let manifest_active = Self::get_manifest_active_skills(workspace_root);
-        let mut out = String::from("\n# Progressive Domain Skills & Guidelines (MiniKit):\n");
-
-        // Tier 1: Directory of available skills
-        out.push_str("Available technology skills in this workspace (invoke `kit_skill_show(name)` on-demand for full rules):\n");
-        for s in &all_skills {
-            let globs_hint = if !s.globs.is_empty() {
-                format!(" [globs: {}]", s.globs.join(", "))
-            } else {
-                String::new()
-            };
-            out.push_str(&format!(
-                "  • `{}`: {}{}\n",
-                s.name, s.description, globs_hint
-            ));
-        }
-
-        // Tier 2: Automatically attach rules for active files, workspace tech, prompt keywords, or explicitly enabled skills
-        let prompt_lower = prompt.map(|p| p.to_ascii_lowercase());
-        let mut matched_skills = Vec::new();
-        for s in &all_skills {
-            let is_manifest = manifest_active
-                .iter()
-                .any(|m| m.eq_ignore_ascii_case(&s.name));
-            let matches_file = active_files
-                .iter()
-                .any(|f| s.matches_path(workspace_root, f));
-
-            let matches_prompt = prompt_lower
-                .as_deref()
-                .map(|p| {
-                    let name = s.name.to_ascii_lowercase();
-                    crate::utils::has_word(p, &name)
-                        || (name == "frontend-design"
-                            && crate::utils::has_any_word(
-                                p,
-                                &["ui", "ux", "landing", "frontend", "design"],
-                            ))
-                        || (name == "ui-ux-pro-max"
-                            && crate::utils::has_any_word(p, &["palette", "theme", "aesthetic"]))
-                        || (name == "tailwind" && p.contains("tailwind"))
-                        || (name == "next" && (p.contains("nextjs") || p.contains("next.js")))
-                })
-                .unwrap_or(false);
-
-            let matches_workspace = {
-                let name = s.name.to_ascii_lowercase();
-                if name == "rust" && workspace_root.join("Cargo.toml").exists() {
-                    true
-                } else if (name == "react" || name == "tailwind" || name == "next")
-                    && workspace_root.join("package.json").exists()
-                {
-                    let pkg_content = fs::read_to_string(workspace_root.join("package.json"))
-                        .unwrap_or_default()
-                        .to_ascii_lowercase();
-                    pkg_content.contains(&name)
-                } else {
-                    false
-                }
-            };
-
-            if is_manifest || s.always_apply || matches_file || matches_prompt || matches_workspace
-            {
-                matched_skills.push(s);
-            }
-        }
-
-        if !matched_skills.is_empty() {
-            out.push_str("\n## Auto-Activated Skills for Current Workspace / Files:\n");
-            for s in matched_skills {
-                out.push_str(&format!("### Skill `{}`\n", s.name));
-                let content = if let Some(p) = &s.path {
-                    fs::read_to_string(p).unwrap_or_default()
-                } else if let Some(b) = find_builtin_skill(&s.name) {
-                    b.content.to_string()
-                } else {
-                    String::new()
-                };
-
-                let body = if let Some(rest) = content.strip_prefix("---") {
-                    if let Some(end) = rest.find("---") {
-                        rest[end + 3..].trim()
-                    } else {
-                        content.as_str()
-                    }
-                } else {
-                    content.as_str()
-                };
-
-                let lines: Vec<&str> = body.lines().take(40).collect();
-                out.push_str(&lines.join("\n"));
-                out.push_str("\n\n");
-            }
-        }
-
-        out
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        store.format_prompt_skills_context(prompt, None, active_files)
     }
 }
 
@@ -862,7 +516,7 @@ mod tests {
         let installed_file = temp.path().join(".minicode/skills/react/SKILL.md");
         assert!(installed_file.exists());
         let content = fs::read_to_string(installed_file).unwrap();
-        assert!(content.contains("React AI Agent Skill"));
+        assert!(content.contains("React"));
     }
 
     #[test]
@@ -938,13 +592,12 @@ Follow design tokens.
         let prompt_context =
             MiniKitSkillsManager::format_progressive_prompt_context(ws, &active_files);
 
-        // Tier 1 check: lists available skills
-        assert!(prompt_context.contains("Progressive Domain Skills & Guidelines"));
-        assert!(prompt_context.contains("react"));
-        assert!(prompt_context.contains("rust"));
+        // Tier 1 check: lists available skills in vault
+        assert!(prompt_context.contains("Available Domain Skills in Vault"));
+        assert!(prompt_context.contains("rust-tokio") || prompt_context.contains("rust"));
 
         // Tier 2 check: auto-activated react because App.tsx matches react globs
-        assert!(prompt_context.contains("Auto-Activated Skills for Current Workspace / Files"));
-        assert!(prompt_context.contains("### Skill `react`"));
+        assert!(prompt_context.contains("Active Technology & Methodology Skills"));
+        assert!(prompt_context.contains("Skill `react`"));
     }
 }

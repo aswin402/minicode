@@ -266,7 +266,7 @@ Keys are NEVER stored in config.toml or any committed file.
 ### 5.1. Automatic Discovery
 `minicode` scans for project-level instructions in this order:
 1. `AGENTS.md` in the workspace root.
-2. `onpkg.json` → `agent_instructions.active_skills` under `onpkg_docs/`.
+2. `minikit.json` (or `onpkg.json`) → `agent_instructions.active_skills` under `minikit_docs/`.
 3. `.skills/*.md` files in the workspace root.
 4. `SKILL.md` in the workspace root.
 

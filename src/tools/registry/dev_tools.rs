@@ -17,14 +17,14 @@ use std::time::Duration;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: "minitask".to_string(),
-        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, scheduled tasks, and browser sessions. Provides full lifecycle CRUD (start, schedule, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Automatically terminates all managed tasks when minicode exits.".to_string(),
+        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, scheduled tasks, and browser sessions. Provides full lifecycle CRUD (start, scripts, schedule, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Process Lifecycle Invariant: Dev servers (frontend, backend, docker, APIs) MUST remain running across turns so the user can interact with and view their application. Never call action='stop' or action='kill' on dev servers at the end of a turn unless the user explicitly asks to stop them. Ephemeral verification engines (headless browsers, audit scanners) should be closed when automated verification is finished. Universal script support: pass script='<name>' (e.g. script='dev') to run targets from justfile, package.json, Makefile, Cargo.toml without hardcoding command strings.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "start", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart",
+                        "start", "scripts", "targets", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart",
                         "resources", "kill_all", "stop_all", "screenshot", "workers", "swarms",
                         "probe_port", "check_port", "audit", "qa_audit", "inspect", "inspect_dom",
                         "batch", "browser_batch", "mock_route", "browser_status", "browser_debug",
@@ -36,11 +36,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "badges", "browser_badges", "tabs", "browser_tabs",
                         "metrics", "browser_metrics", "aura", "browser_aura", "glow"
                     ],
-                    "description": "Lifecycle action to perform: 'start' (launch process), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics), 'aura'/'browser_aura'/'glow' (toggle Alibaba-style luminous corner glow aura, cursor, and status pill)"
+                    "description": "Lifecycle action to perform: 'start' (launch process or script target), 'scripts'/'targets' (discover all runnable script targets from justfile, package.json, Makefile, Cargo.toml), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics), 'aura'/'browser_aura'/'glow' (toggle Alibaba-style luminous corner glow aura, cursor, and status pill)"
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Target script name to run from the workspace (e.g. 'dev', 'start', 'build', 'serve', 'test'). Automatically resolved from justfile, package.json, Makefile, Cargo.toml without needing to hardcode package manager or command strings."
                 },
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run (required for 'start', e.g. 'npm run dev', 'cargo run', 'python app.py', or command for 'schedule')"
+                    "description": "Shell command to run (e.g. 'bun run dev', 'cargo run', 'python app.py', or command for 'schedule'). Optional for 'start' if 'script' is provided or if workspace has a standard dev server script."
                 },
                 "prompt": {
                     "type": "string",
@@ -321,15 +325,59 @@ pub async fn dispatch(
                     ))
                 }
             }
-            "start" => {
-                let command = require_str(args, "command", "minitask")?.to_string();
-                let name = opt_str(args, "name").map(|s| s.to_string());
-                let p_type_str = opt_str(args, "process_type").unwrap_or("frontend");
-                let process_type: DevProcessType = p_type_str.parse().unwrap_or(DevProcessType::Frontend);
+            "scripts" | "targets" => {
                 let working_dir = opt_str(args, "working_dir")
                     .or_else(|| opt_str(args, "dir"))
                     .or_else(|| opt_str(args, "path"))
                     .map(std::path::PathBuf::from);
+                let target_dir = if let Some(ref wd) = working_dir {
+                    workspace_root.join(wd)
+                } else {
+                    workspace_root.to_path_buf()
+                };
+                let catalog = crate::dev::WorkspaceScriptDiscovery::discover(&target_dir);
+                Ok(crate::dev::WorkspaceScriptDiscovery::format_catalog(&catalog))
+            }
+            "start" => {
+                let working_dir = opt_str(args, "working_dir")
+                    .or_else(|| opt_str(args, "dir"))
+                    .or_else(|| opt_str(args, "path"))
+                    .map(std::path::PathBuf::from);
+                let target_dir = if let Some(ref wd) = working_dir {
+                    workspace_root.join(wd)
+                } else {
+                    workspace_root.to_path_buf()
+                };
+
+                let script_opt = opt_str(args, "script");
+                let command = if let Some(cmd) = opt_str(args, "command") {
+                    cmd.to_string()
+                } else if let Some(sname) = script_opt {
+                    crate::dev::WorkspaceScriptDiscovery::find_script(&target_dir, sname)
+                        .map(|s| s.command)
+                        .ok_or_else(|| {
+                            ToolError::invalid_args(
+                                "minitask",
+                                format!(
+                                    "Script target '{}' not found in workspace (checked justfile, package.json, Makefile, Cargo.toml). Run minitask(action=\"scripts\") to discover all targets.",
+                                    sname
+                                ),
+                            )
+                        })?
+                } else if let Some(dev_script) = crate::dev::WorkspaceScriptDiscovery::find_dev_server(&target_dir) {
+                    dev_script.command
+                } else {
+                    return Err(ToolError::invalid_args(
+                        "minitask",
+                        "Action 'start' requires either 'command' or 'script' (or a discoverable dev server in justfile, package.json, Makefile, Cargo.toml). Run minitask(action=\"scripts\") to view all targets.",
+                    ).into());
+                };
+
+                let name = opt_str(args, "name")
+                    .map(|s| s.to_string())
+                    .or_else(|| script_opt.map(|s| s.to_string()));
+                let p_type_str = opt_str(args, "process_type").unwrap_or("frontend");
+                let process_type: DevProcessType = p_type_str.parse().unwrap_or(DevProcessType::Frontend);
                 let port_hint = opt_u64(args, "port_hint").map(|p| p as u16);
 
                 let port_policy_str = opt_str(args, "port_policy").unwrap_or("fallback");
@@ -378,10 +426,11 @@ pub async fn dispatch(
                 let summary = registry.spawn(workspace_root, req).await?;
 
                 // TCP Readiness Probe Loop:
-                // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-2500ms to bind to their port.
+                // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-6500ms to bind to their port,
+                // especially with modern bundlers like @tailwindcss/vite on cold start.
                 // Rather than returning prematurely while still compiling/starting (which causes browser_navigate to hit ECONNREFUSED),
-                // probe localhost:port for up to 5.0s until TCP socket accepts connections.
-                let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(5000);
+                // probe localhost:port for up to 10.0s until TCP socket accepts connections.
+                let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(10000);
                 let mut live_summary = summary.clone();
                 let mut tcp_ready = false;
                 let mut target_port = None;
@@ -1267,7 +1316,7 @@ pub async fn dispatch(
             }
             unknown => Err(ToolError::InvalidArguments {
                 name: "minitask".to_string(),
-                reason: format!("Unknown action '{}'. Expected: start, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, swarms, probe_port, audit, inspect, batch, mock_route, browser_status, browser_close, emulate, save_state, restore_state, pdf, check_injection, hover, select_option, scroll_horizontal, badges, tabs, metrics", unknown),
+                reason: format!("Unknown action '{}'. Expected: start, scripts, targets, schedule, list, status, logs, stop, restart, resources, kill_all, screenshot, workers, swarms, probe_port, audit, inspect, batch, mock_route, browser_status, browser_close, emulate, save_state, restore_state, pdf, check_injection, hover, select_option, scroll_horizontal, badges, tabs, metrics", unknown),
             }.into()),
         }
     }.await)
@@ -1616,5 +1665,34 @@ mod tests {
             .await
             .unwrap();
         assert!(select_err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_minitask_scripts_discovery_and_dispatch() {
+        let temp = tempdir().unwrap();
+        let pkg_json = r#"{
+            "scripts": {
+                "dev": "vite",
+                "build": "vite build"
+            }
+        }"#;
+        std::fs::write(temp.path().join("package.json"), pkg_json).unwrap();
+
+        // 1. minitask(action="scripts")
+        let scripts_args = json!({ "action": "scripts" });
+        let scripts_res = dispatch("minitask", &scripts_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(scripts_res.contains("dev"));
+        assert!(scripts_res.contains("build"));
+
+        // 2. minitask(action="targets")
+        let targets_args = json!({ "action": "targets" });
+        let targets_res = dispatch("minitask", &targets_args, temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(targets_res.contains("dev"));
     }
 }

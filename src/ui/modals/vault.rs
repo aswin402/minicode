@@ -312,6 +312,18 @@ impl VaultModalState {
             .or_else(|| query_raw.strip_prefix("workflow:"))
         {
             (Some(SkillKind::Workflow), rest.trim())
+        } else if let Some(rest) = query_raw
+            .strip_prefix("kind:runtime")
+            .or_else(|| query_raw.strip_prefix("type:runtime"))
+            .or_else(|| query_raw.strip_prefix("runtime:"))
+        {
+            (Some(SkillKind::Runtime), rest.trim())
+        } else if let Some(rest) = query_raw
+            .strip_prefix("kind:core")
+            .or_else(|| query_raw.strip_prefix("type:core"))
+            .or_else(|| query_raw.strip_prefix("core:"))
+        {
+            (Some(SkillKind::Core), rest.trim())
         } else {
             (None, query_raw)
         };
@@ -560,6 +572,18 @@ fn render_skills_list(frame: &mut Frame, area: Rect, state: &VaultModalState, th
                         .fg(Color::Magenta)
                         .add_modifier(Modifier::BOLD),
                 ),
+                SkillKind::Runtime => Span::styled(
+                    "[Runtime] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                SkillKind::Core => Span::styled(
+                    "[Core] ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
             };
 
             let name_style = if is_selected {
@@ -629,6 +653,8 @@ fn render_skill_preview(frame: &mut Frame, area: Rect, state: &VaultModalState, 
                     .fg(match skill.kind() {
                         SkillKind::Reference => Color::Cyan,
                         SkillKind::Workflow => Color::Magenta,
+                        SkillKind::Runtime => Color::Yellow,
+                        SkillKind::Core => Color::Green,
                     })
                     .add_modifier(Modifier::BOLD),
             ),

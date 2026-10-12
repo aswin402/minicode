@@ -106,9 +106,11 @@ Below is the definitive reference for minicode's native tools, their schemas, an
    - `update_progress(step: str, status: "completed"|"in_progress"|"failed"|"pending")`: Update step status (`step="1"`, step title, or `step="active"`). Synchronizes the live TUI execution plan!
 
 5. **MiniTask Process Vault & Dev Servers**:
-   - `minitask(action="start", command="...", port=...)`: Launch background dev server or daemon with process group supervision and watchdog.
+   - `minitask(action="start", command="...", script="...")`: Launch background dev server or script target (from justfile, package.json, Makefile, Cargo.toml) with process group supervision and watchdog.
+   - `minitask(action="scripts")`: Discover all runnable targets and scripts across the workspace dynamically.
    - `minitask(action="status"|"resources"|"logs"|"list")`: Inspect running processes, CPU/RAM telemetry, or service logs. NEVER use raw `ps`, `top`, or `grep`!
    - `minitask(action="stop", id="...")` or `minitask(action="kill_all")`: Terminate running servers cleanly.
+   - **Process Lifecycle Invariant**: Dev servers (bun run dev, vite, cargo run, python app.py, etc.) MUST remain running across turns so the user can view and interact with their application. NEVER call `action="stop"` or `action="kill"` on dev servers at the end of a turn as "cleanup". Only stop dev servers if the user explicitly asks to stop/kill them!
 
 6. **Web Search & Browser Automation**:
    - `search_web(query: str)`: Search the web with live grounding.
@@ -116,7 +118,8 @@ Below is the definitive reference for minicode's native tools, their schemas, an
    - `browser_navigate(url: str, headless: optional bool)`: Launch browser session to inspect rendered UI.
    - `browser_snapshot(annotated: optional bool)`: Capture DOM tree, accessibility nodes, and screenshot.
    - `browser_click(selector: str)` / `browser_type(selector: str, text: str)` / `browser_scroll(direction: str)`: Interact with browser page.
-   - `browser_close`: Close active browser window. Always close browser when inspection finishes!
+   - `browser_close`: Close active browser window.
+   - **Ephemeral Browser Invariant**: Browser engines (headless Obscura, Chrome, Firefox) opened for visual verification or testing MUST be closed via `browser_close` once automated inspection finishes! Do not leave headless browser engines running indefinitely.
 
 7. **MiniPower Methodology & Verification Barrier**:
    - `power_plan(topic: str, save_to_docs: optional bool)`: Author structured architecture plan in docs/core/todo.md.
@@ -300,33 +303,12 @@ impl PromptBuilder {
             }
         }
 
-        // Progressive Agent Skills (Tier 1 index + Tier 2 auto-activation based on active workspace/files)
-        let progressive_skills =
-            crate::tools::minikit::skills::MiniKitSkillsManager::format_progressive_prompt_context(
-                workspace_dir,
-                &[],
-            );
-        if !progressive_skills.is_empty() {
-            prompt.push_str(&progressive_skills);
-        }
-
-        // MiniVault Active Project Skills
+        // MiniVault Active Stack & Methodology Skills Context
+        // (Automatically matches workspace stack from manifests/config files + project skills + index of on-demand skills)
         let vault_store = crate::vault::store::VaultStore::new(workspace_dir);
-        let all_vault_skills = vault_store.list_all_skills();
-        let active_project_skills: Vec<_> = all_vault_skills
-            .iter()
-            .filter(|s| s.is_active_in_project)
-            .collect();
-
-        if !active_project_skills.is_empty() {
-            prompt.push_str("\n# Active MiniVault Project Skills:\n");
-            prompt.push_str("The following domain skills are actively loaded in this project. Adhere strictly to their guidelines:\n\n");
-            for skill in active_project_skills {
-                prompt.push_str(&format!(
-                    "## Skill `{}`\n_{}_\n\n{}\n\n",
-                    skill.name, skill.description, skill.instructions
-                ));
-            }
+        let skills_context = vault_store.format_prompt_skills_context::<&str>(None, None, &[]);
+        if !skills_context.is_empty() {
+            prompt.push_str(&skills_context);
         }
 
         // Append custom user/turn instructions if provided
@@ -540,8 +522,10 @@ impl PromptBuilder {
                 recency.push_str("    Browser: Live browser session is running.\n");
             }
             recency.push_str("    Task Management Rules:\n");
+            recency.push_str("    • Process Lifecycle: Dev servers (frontend, backend, docker) MUST stay running across turns so the user can interact with their app. Never call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
+            recency.push_str("    • Ephemeral Engines: If a browser or debug session was opened for automated verification, close it with `browser_close` when inspection finishes.\n");
             recency.push_str("    • To inspect telemetry or resource usage: ALWAYS call `minitask(action=\"resources\")` or `minitask(action=\"status\")`. NEVER run raw shell commands like `ps`, `top`, or `grep`.\n");
-            recency.push_str("    • To stop tasks or servers: ALWAYS call `minitask(action=\"stop\", id=\"...\")` or `minitask(action=\"kill_all\")`. If stopping a web server or web page, ALWAYS also call `browser_close` to terminate the browser window. NEVER run raw `pkill` or `kill` commands.\n");
+            recency.push_str("    • To stop tasks or servers when requested: ALWAYS call `minitask(action=\"stop\", id=\"...\")` or `minitask(action=\"kill_all\")`. NEVER run raw `pkill` or `kill` commands.\n");
             recency.push_str("  </active_background_tasks>\n");
         }
 

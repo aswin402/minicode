@@ -3,7 +3,8 @@
 use crate::vault::builtin::{get_all_builtin_bundles, get_all_builtin_skills};
 use crate::vault::models::{
     format_skill_markdown, parse_skill_markdown, sanitize_skill_name, GlobalGotcha, LearnedSource,
-    Result, SkillFrontmatter, SkillScope, SourceKind, VaultBundle, VaultError, VaultSkill,
+    Result, SkillFrontmatter, SkillKind, SkillScope, SourceKind, VaultBundle, VaultError,
+    VaultSkill,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -436,18 +437,93 @@ impl VaultStore {
 
         // 2. Global User Skills (Tier 2)
         if let Some(global_dir) = self.global_skills_dir() {
-            self.scan_directory_into_map(&global_dir, SkillScope::Global, &mut skill_map);
+            self.scan_directory_into_map(
+                &global_dir,
+                SkillScope::Global,
+                Some(SkillKind::Workflow),
+                &mut skill_map,
+            );
         }
         if let Some(legacy_dir) = self.legacy_global_skills_dir() {
-            self.scan_directory_into_map(&legacy_dir, SkillScope::Global, &mut skill_map);
+            self.scan_directory_into_map(
+                &legacy_dir,
+                SkillScope::Global,
+                Some(SkillKind::Workflow),
+                &mut skill_map,
+            );
         }
 
-        // 3. Project Skills (Tier 3 - highest precedence)
+        // 3. Project Skills & Knowledge Domains (Tier 3 - highest precedence)
+        // 3a. Primary project skills (.minicode/skills/)
         let project_dir = self.project_skills_dir();
-        self.scan_directory_into_map(&project_dir, SkillScope::Project, &mut skill_map);
+        self.scan_directory_into_map(
+            &project_dir,
+            SkillScope::Project,
+            Some(SkillKind::Workflow),
+            &mut skill_map,
+        );
 
-        let docs_dir = self.project_docs_skills_dir();
-        self.scan_directory_into_map(&docs_dir, SkillScope::Project, &mut skill_map);
+        // 3b. Structured project documentation directory (minikit_docs/ or onpkg_docs/)
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
+        if docs_dir.exists() {
+            // Tier 3a: skills/ -> Procedural & Domain Skills
+            let skills_dir = docs_dir.join("skills");
+            self.scan_directory_into_map(
+                &skills_dir,
+                SkillScope::Project,
+                Some(SkillKind::Workflow),
+                &mut skill_map,
+            );
+
+            // Tier 3b: packages/ -> Package Reference Docs & Continuous Learning Base
+            let packages_dir = docs_dir.join("packages");
+            self.scan_directory_into_map(
+                &packages_dir,
+                SkillScope::Project,
+                Some(SkillKind::Reference),
+                &mut skill_map,
+            );
+
+            // Tier 3c: runtimes/ or stack subdirectories (e.g. rust/, python/, flutter/) -> Runtime Workflows
+            let runtimes_dir = docs_dir.join("runtimes");
+            self.scan_directory_into_map(
+                &runtimes_dir,
+                SkillScope::Project,
+                Some(SkillKind::Runtime),
+                &mut skill_map,
+            );
+
+            if let Ok(entries) = fs::read_dir(&docs_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        let dname = p.file_name().unwrap_or_default().to_string_lossy();
+                        if dname != "skills"
+                            && dname != "packages"
+                            && dname != "core"
+                            && dname != "runtimes"
+                            && !dname.starts_with('.')
+                        {
+                            self.scan_directory_into_map(
+                                &p,
+                                SkillScope::Project,
+                                Some(SkillKind::Runtime),
+                                &mut skill_map,
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Tier 3d: core/ -> Core Invariants & Specs
+            let core_dir = docs_dir.join("core");
+            self.scan_directory_into_map(
+                &core_dir,
+                SkillScope::Project,
+                Some(SkillKind::Core),
+                &mut skill_map,
+            );
+        }
 
         // Mark active status based on manifest (minikit.json / onpkg.json) or presence in project
         let manifest_active = self.get_manifest_active_skills();
@@ -475,6 +551,7 @@ impl VaultStore {
         &self,
         dir: &Path,
         scope: SkillScope,
+        default_kind: Option<SkillKind>,
         map: &mut std::collections::BTreeMap<String, VaultSkill>,
     ) {
         if !dir.exists() || !dir.is_dir() {
@@ -494,8 +571,16 @@ impl VaultStore {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
+                if name.eq_ignore_ascii_case("index") || name.eq_ignore_ascii_case("log") {
+                    continue;
+                }
                 if let Ok(content) = fs::read_to_string(&path) {
-                    let (fm, instructions) = parse_skill_markdown(&content, &name);
+                    let (mut fm, instructions) = parse_skill_markdown(&content, &name);
+                    if fm.kind.is_none() {
+                        if let Some(dk) = default_kind {
+                            fm.kind = Some(dk.as_str().to_string());
+                        }
+                    }
                     let skill = VaultSkill {
                         name: fm.name.clone(),
                         description: fm.description.clone(),
@@ -526,7 +611,12 @@ impl VaultStore {
                         .to_string_lossy()
                         .to_string();
                     if let Ok(content) = fs::read_to_string(&target) {
-                        let (fm, instructions) = parse_skill_markdown(&content, &folder_name);
+                        let (mut fm, instructions) = parse_skill_markdown(&content, &folder_name);
+                        if fm.kind.is_none() {
+                            if let Some(dk) = default_kind {
+                                fm.kind = Some(dk.as_str().to_string());
+                            }
+                        }
                         let skill = VaultSkill {
                             name: fm.name.clone(),
                             description: fm.description.clone(),
@@ -544,14 +634,28 @@ impl VaultStore {
         }
     }
 
-    /// Finds a skill by name across the hierarchy (Project -> Global -> Built-in).
+    /// Finds a skill by name or trigger/alias across the hierarchy (Project -> Global -> Built-in).
     pub fn get_skill(&self, name: &str) -> Result<VaultSkill> {
         let clean = sanitize_skill_name(name);
         let all = self.list_all_skills();
 
-        all.into_iter()
-            .find(|s| s.name.eq_ignore_ascii_case(&clean))
-            .ok_or_else(|| VaultError::NotFound(name.to_string()))
+        // 1. Exact name match
+        if let Some(s) = all.iter().find(|s| s.name.eq_ignore_ascii_case(&clean)) {
+            return Ok(s.clone());
+        }
+
+        // 2. Trigger or prefix alias match (e.g. "tailwind" -> "tailwind-v4", "next" -> "nextjs", "rust" -> "rust-tokio")
+        if let Some(s) = all.iter().find(|s| {
+            s.frontmatter
+                .triggers
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&clean))
+                || s.name.starts_with(&format!("{}-", clean))
+        }) {
+            return Ok(s.clone());
+        }
+
+        Err(VaultError::NotFound(name.to_string()))
     }
 
     /// Lists skills filtered by optional scope.
@@ -979,6 +1083,445 @@ impl VaultStore {
     }
 
     // =========================================================================
+    // Dynamic Context Matching & Prompt Assembly Engine (Zero-Hardcoding)
+    // =========================================================================
+
+    /// Scans workspace manifests and configuration files to extract a normalized set of technology package tokens.
+    /// Supports `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `pubspec.yaml`, and root infrastructure markers.
+    pub fn detect_workspace_package_tokens(&self) -> std::collections::HashSet<String> {
+        let mut tokens = std::collections::HashSet::new();
+
+        // 1. Node.js / Web (package.json)
+        let pkg_path = self.workspace_root.join("package.json");
+        if let Ok(content) = fs::read_to_string(&pkg_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                for dep_field in &["dependencies", "devDependencies", "peerDependencies"] {
+                    if let Some(deps) = json.get(*dep_field).and_then(|d| d.as_object()) {
+                        for key in deps.keys() {
+                            let lower = key.to_lowercase();
+                            tokens.insert(lower.clone());
+
+                            // Clean scopes (@scope/pkg -> scope, pkg)
+                            let clean = lower.trim_start_matches('@');
+                            if let Some((scope, name)) = clean.split_once('/') {
+                                tokens.insert(scope.to_string());
+                                tokens.insert(name.to_string());
+                                for part in name.split('-') {
+                                    if !part.is_empty() {
+                                        tokens.insert(part.to_string());
+                                    }
+                                }
+                            } else {
+                                for part in clean.split('-') {
+                                    if !part.is_empty() {
+                                        tokens.insert(part.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Rust (Cargo.toml)
+        let cargo_path = self.workspace_root.join("Cargo.toml");
+        if let Ok(content) = fs::read_to_string(&cargo_path) {
+            if let Ok(toml_val) = toml::from_str::<toml::Value>(&content) {
+                for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
+                    if let Some(deps) = toml_val.get(*section).and_then(|d| d.as_table()) {
+                        for key in deps.keys() {
+                            let lower = key.to_lowercase();
+                            tokens.insert(lower.clone());
+                            for part in lower.split('-').chain(lower.split('_')) {
+                                if !part.is_empty() {
+                                    tokens.insert(part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                tokens.insert("rust".to_string());
+                tokens.insert("cargo".to_string());
+            }
+        }
+
+        // 3. Python (pyproject.toml or requirements.txt)
+        let pyproject_path = self.workspace_root.join("pyproject.toml");
+        if let Ok(content) = fs::read_to_string(&pyproject_path) {
+            tokens.insert("python".to_string());
+            if let Ok(toml_val) = toml::from_str::<toml::Value>(&content) {
+                if let Some(deps) = toml_val
+                    .get("project")
+                    .and_then(|p| p.get("dependencies"))
+                    .and_then(|d| d.as_array())
+                {
+                    for dep in deps {
+                        if let Some(s) = dep.as_str() {
+                            let name = s
+                                .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                                .next()
+                                .unwrap_or_default();
+                            if !name.is_empty() {
+                                tokens.insert(name.to_lowercase());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let req_path = self.workspace_root.join("requirements.txt");
+        if let Ok(content) = fs::read_to_string(&req_path) {
+            tokens.insert("python".to_string());
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    let name = trimmed
+                        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+                        .next()
+                        .unwrap_or_default();
+                    if !name.is_empty() {
+                        tokens.insert(name.to_lowercase());
+                    }
+                }
+            }
+        }
+
+        // 4. Flutter / Dart (pubspec.yaml)
+        let pubspec_path = self.workspace_root.join("pubspec.yaml");
+        if let Ok(content) = fs::read_to_string(&pubspec_path) {
+            tokens.insert("flutter".to_string());
+            tokens.insert("dart".to_string());
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some((k, _)) = trimmed.split_once(':') {
+                    let clean_k = k.trim().to_lowercase();
+                    if !clean_k.is_empty() && !clean_k.starts_with('#') {
+                        tokens.insert(clean_k);
+                    }
+                }
+            }
+        }
+
+        // 5. Root infrastructure & framework config markers
+        let root_markers = [
+            ("Dockerfile", "docker"),
+            ("docker-compose.yml", "docker"),
+            ("compose.yaml", "docker"),
+            ("compose.yml", "docker"),
+            ("schema.prisma", "prisma"),
+            ("vite.config.ts", "vite"),
+            ("vite.config.js", "vite"),
+            ("vite.config.mjs", "vite"),
+            ("next.config.js", "nextjs"),
+            ("next.config.mjs", "nextjs"),
+            ("next.config.ts", "nextjs"),
+            ("tailwind.config.js", "tailwind"),
+            ("tailwind.config.ts", "tailwind"),
+            ("tailwind.config.mjs", "tailwind"),
+        ];
+
+        for (file_marker, token) in &root_markers {
+            if self.workspace_root.join(file_marker).exists() {
+                tokens.insert(token.to_string());
+            }
+        }
+
+        if self
+            .workspace_root
+            .join("prisma")
+            .join("schema.prisma")
+            .exists()
+        {
+            tokens.insert("prisma".to_string());
+        }
+
+        tokens
+    }
+
+    /// Evaluates if a skill matches the workspace stack based on its frontmatter triggers and name against workspace tokens.
+    pub fn matches_skill_to_stack(
+        &self,
+        skill: &VaultSkill,
+        stack_tokens: &std::collections::HashSet<String>,
+    ) -> bool {
+        let name_lower = skill.name.to_lowercase();
+        if stack_tokens.contains(&name_lower) {
+            return true;
+        }
+
+        // Check clean stem (e.g. "rust-tokio" stem "tokio" or "rust", "tailwind-v4" stem "tailwind")
+        for part in name_lower.split('-') {
+            if !part.is_empty() && stack_tokens.contains(part) {
+                return true;
+            }
+        }
+
+        // Check frontmatter triggers
+        for trigger in &skill.frontmatter.triggers {
+            let trig_lower = trigger.to_lowercase();
+            if trig_lower.is_empty() {
+                continue;
+            }
+            if stack_tokens.contains(&trig_lower) {
+                return true;
+            }
+            // Check if any stack token contains the trigger or vice-versa
+            if stack_tokens
+                .iter()
+                .any(|tok| tok.contains(&trig_lower) || trig_lower.contains(tok))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Matches skills for the current context (stack tokens, active files, user prompt, and session objective).
+    /// Purely metadata-driven: checks frontmatter `always_apply`, `globs`, `triggers`, and project scope.
+    pub fn match_skills_for_context<P: AsRef<Path>>(
+        &self,
+        prompt: Option<&str>,
+        session_objective: Option<&str>,
+        active_files: &[P],
+    ) -> Vec<VaultSkill> {
+        let all_skills = self.list_all_skills();
+        let stack_tokens = self.detect_workspace_package_tokens();
+
+        let prompt_lower = prompt.map(|p| p.to_lowercase());
+        let objective_lower = session_objective.map(|o| o.to_lowercase());
+
+        let mut matched = Vec::new();
+
+        for skill in all_skills {
+            // 1. Explicitly active in project (.minicode/skills/ or minikit.json / onpkg.json)
+            if skill.is_active_in_project {
+                matched.push(skill);
+                continue;
+            }
+
+            // 2. Frontmatter always_apply flag
+            if skill.frontmatter.always_apply {
+                matched.push(skill);
+                continue;
+            }
+
+            // 3. Workspace stack tokens match
+            if self.matches_skill_to_stack(&skill, &stack_tokens) {
+                matched.push(skill);
+                continue;
+            }
+
+            // 4. Active files match skill globs
+            if !active_files.is_empty()
+                && active_files
+                    .iter()
+                    .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
+            {
+                matched.push(skill);
+                continue;
+            }
+
+            // 5. Prompt intent match
+            if let Some(ref p) = prompt_lower {
+                if skill.matches_prompt(p) {
+                    matched.push(skill);
+                    continue;
+                }
+            }
+
+            // 6. Session objective match
+            if let Some(ref obj) = objective_lower {
+                if skill.matches_prompt(obj) {
+                    matched.push(skill);
+                    continue;
+                }
+            }
+        }
+
+        matched.sort_by(|a, b| a.name.cmp(&b.name));
+        matched.dedup_by(|a, b| a.name == b.name);
+        matched
+    }
+
+    /// Formats progressive agent prompt context for system prompt injection.
+    /// Injects full guidelines for matched stack & methodology skills, plus a lightweight directory of remaining skills.
+    pub fn format_prompt_skills_context<P: AsRef<Path>>(
+        &self,
+        prompt: Option<&str>,
+        session_objective: Option<&str>,
+        active_files: &[P],
+    ) -> String {
+        let all_skills = self.list_all_skills();
+        if all_skills.is_empty() {
+            return String::new();
+        }
+
+        let matched = self.match_skills_for_context(prompt, session_objective, active_files);
+        let matched_names: std::collections::HashSet<String> =
+            matched.iter().map(|s| s.name.to_lowercase()).collect();
+
+        let mut out = String::new();
+
+        // 1. Core Project Invariants & Specifications (Authoritative)
+        let core_specs: Vec<_> = matched
+            .iter()
+            .filter(|s| s.kind() == SkillKind::Core)
+            .collect();
+        if !core_specs.is_empty() {
+            out.push_str("\n# Core Project Invariants & Specifications (Authoritative):\n");
+            out.push_str("The following project specifications define the non-negotiable contract and architecture for this workspace:\n\n");
+            for s in core_specs {
+                out.push_str(&format!(
+                    "## Core Spec: `{}`\n{}\n\n",
+                    s.name,
+                    s.instructions.trim()
+                ));
+            }
+        }
+
+        // 2. Runtime & Architecture Workflow Conventions
+        let runtime_workflows: Vec<_> = matched
+            .iter()
+            .filter(|s| s.kind() == SkillKind::Runtime)
+            .collect();
+        if !runtime_workflows.is_empty() {
+            out.push_str("\n# Project Architecture & Runtime Workflow Conventions:\n");
+            out.push_str("The workspace runtime conventions are active. Adhere strictly to these patterns:\n\n");
+            for r in runtime_workflows {
+                out.push_str(&format!(
+                    "## Runtime `{}`\n_{}_\n\n{}\n\n",
+                    r.name,
+                    r.description,
+                    r.instructions.trim()
+                ));
+            }
+        }
+
+        // 3. Active Procedural & Behavioral Skills
+        let procedural_skills: Vec<_> = matched
+            .iter()
+            .filter(|s| s.kind() == SkillKind::Workflow)
+            .collect();
+        if !procedural_skills.is_empty() {
+            out.push_str("\n# Active Procedural & Behavioral Skills:\n");
+            out.push_str("The following engineering methodologies govern execution quality for this workspace:\n\n");
+            for skill in procedural_skills {
+                out.push_str(&format!(
+                    "## Skill `{}` ({})\n_{}_\n\n{}\n\n",
+                    skill.name,
+                    skill.category(),
+                    skill.description,
+                    skill.instructions.trim()
+                ));
+            }
+        }
+
+        // 4. Active Technology & Methodology Skills (Package Reference Guides)
+        let package_docs: Vec<_> = matched
+            .iter()
+            .filter(|s| s.kind() == SkillKind::Reference)
+            .collect();
+        if !package_docs.is_empty() {
+            out.push_str("\n# Active Technology & Methodology Skills:\n");
+            out.push_str("The following domain skills are actively applied to this workspace/task. Adhere strictly to their guidelines and invariants:\n\n");
+            for p in package_docs {
+                out.push_str(&format!(
+                    "## Skill `{}` ({})\n_{}_\n\n{}\n\n",
+                    p.name,
+                    p.category(),
+                    p.description,
+                    p.instructions.trim()
+                ));
+            }
+        }
+
+        // 5. Local Package References & Continuous Learning Protocol
+        out.push_str("\n# Local Package References & Self-Improving Knowledge Base:\n");
+        out.push_str("Reference manuals and troubleshooting guides for libraries and packages used in this workspace.\n");
+        out.push_str("Continuous Learning Protocol:\n\
+            1. Local Reference First: When using or troubleshooting a package/framework, check its local documentation in `minikit_docs/packages/<pkg>.md` (or inspect via `kit_skill_show(name)`).\n\
+            2. Web Research: If the package doc does not contain the answer or an error occurs, search the web or consult official documentation.\n\
+            3. Verification: Test and verify the fix in the workspace.\n\
+            4. Self-Improvement: Once the fix is verified, CREATE or UPDATE `minikit_docs/packages/<pkg>.md` with the solution so minicode and the human developer retain that knowledge permanently!\n\n");
+
+        // Section 6: Directory of available skills
+        let available: Vec<_> = all_skills
+            .into_iter()
+            .filter(|s| !matched_names.contains(&s.name.to_lowercase()))
+            .collect();
+
+        if !available.is_empty() {
+            out.push_str("# Available Domain Skills in Vault:\n");
+            out.push_str("The following specialized skills are available on-demand. Invoke `kit_skill_show(name)` or `vault_show(name)` to inspect their complete guidelines before implementing:\n");
+            for s in available {
+                let badge = s.kind().badge();
+                let triggers_hint = if !s.frontmatter.triggers.is_empty() {
+                    format!(" [triggers: {}]", s.frontmatter.triggers.join(", "))
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "  • [{}] `{}`: {}{}\n",
+                    badge, s.name, s.description, triggers_hint
+                ));
+            }
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// Formats dynamic turn-level skill activations for Hermes agent orchestration.
+    /// Emits `<auto_activated_skills>` if new skills match the turn prompt or modified files.
+    pub fn format_dynamic_turn_skills<P: AsRef<Path>>(
+        &self,
+        prompt: Option<&str>,
+        session_objective: Option<&str>,
+        active_files: &[P],
+        exclude_skills: &[String],
+    ) -> Option<String> {
+        let exclude_set: std::collections::HashSet<String> =
+            exclude_skills.iter().map(|s| s.to_lowercase()).collect();
+
+        let matched = self.match_skills_for_context(prompt, session_objective, active_files);
+        let new_skills: Vec<_> = matched
+            .into_iter()
+            .filter(|s| !exclude_set.contains(&s.name.to_lowercase()))
+            .collect();
+
+        if new_skills.is_empty() {
+            return None;
+        }
+
+        let mut out = String::from("<auto_activated_skills>\n");
+        out.push_str("  Hermes Progressive Skill Intelligence Activated:\n");
+        out.push_str("  The following domain skills automatically matched your prompt intent or active files:\n");
+
+        for skill in new_skills {
+            out.push_str(&format!(
+                "  • Skill `{}`: {}\n",
+                skill.name, skill.description
+            ));
+            out.push_str("    Guidelines & Invariants:\n");
+            for line in skill.instructions.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with("---") {
+                    out.push_str(&format!("      {}\n", trimmed));
+                }
+            }
+            out.push('\n');
+        }
+
+        out.push_str(
+            "  Directive: Adhere strictly to these procedural skill guidelines for this task.\n",
+        );
+        out.push_str("</auto_activated_skills>");
+        Some(out)
+    }
+
+    // =========================================================================
     // MiniVault Bundles Engine (Skill Packs / Stacks)
     // =========================================================================
 
@@ -1351,5 +1894,67 @@ mod tests {
         // Verify stored in sources.json
         let sources = store.load_sources();
         assert!(sources.iter().any(|s| s.title == "fake-arch"));
+    }
+
+    #[test]
+    fn test_vault_workspace_matching_and_prompt_assembly() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws);
+
+        // 1. Initially empty directory
+        let initial_tokens = store.detect_workspace_package_tokens();
+        assert!(initial_tokens.is_empty());
+
+        // 2. Add package.json with react and tailwindcss
+        let pkg_json = r#"{
+            "name": "my-app",
+            "dependencies": {
+                "react": "^19.0.0",
+                "react-dom": "^19.0.0",
+                "@tailwindcss/vite": "^4.0.0"
+            }
+        }"#;
+        fs::write(ws.join("package.json"), pkg_json).unwrap();
+
+        let tokens = store.detect_workspace_package_tokens();
+        assert!(tokens.contains("react"));
+        assert!(tokens.contains("tailwindcss") || tokens.contains("tailwind"));
+        assert!(tokens.contains("vite"));
+
+        // 3. Match skills for context based on stack
+        let matched = store.match_skills_for_context::<&str>(None, None, &[]);
+        let matched_names: Vec<_> = matched.iter().map(|s| s.name.as_str()).collect();
+        assert!(matched_names.contains(&"react"));
+        assert!(matched_names.contains(&"tailwind-v4") || matched_names.contains(&"tailwind"));
+
+        // 4. Prompt matching for methodology skill (e.g. systematic-debugging when user says "fix this bug")
+        let debug_matched = store.match_skills_for_context::<&str>(
+            Some("Please fix this bug in user authentication"),
+            None,
+            &[],
+        );
+        let debug_names: Vec<_> = debug_matched.iter().map(|s| s.name.as_str()).collect();
+        assert!(debug_names.contains(&"systematic-debugging"));
+        assert!(debug_names.contains(&"security-audit"));
+
+        // 5. Test format_prompt_skills_context contains full invariants
+        let prompt_context = store.format_prompt_skills_context::<&str>(None, None, &[]);
+        assert!(prompt_context.contains("# Active Technology & Methodology Skills:"));
+        assert!(prompt_context.contains("Skill `react`"));
+        assert!(prompt_context.contains("Functional Components"));
+        assert!(prompt_context.contains("# Available Domain Skills in Vault:"));
+
+        // 6. Test dynamic turn activation formatting
+        let dynamic_block = store.format_dynamic_turn_skills::<&str>(
+            Some("Help me write unit tests"),
+            None,
+            &[],
+            &["react".to_string()],
+        );
+        assert!(dynamic_block.is_some());
+        let dyn_str = dynamic_block.unwrap();
+        assert!(dyn_str.contains("<auto_activated_skills>"));
+        assert!(dyn_str.contains("Skill `tdd-workflow`"));
     }
 }

@@ -1,5 +1,5 @@
 # Review Fix Todo — `minicode` ⚡
-> Based on: `onpkg_docs/review_fix_plan.md` | Created: 2026-09-02
+> Based on: `minikit_docs/skills/review_fix_plan.md` | Created: 2026-09-02
 
 ---
 
@@ -427,7 +427,7 @@
 - [ ] `cargo clippy -- -D warnings` clean
 - [ ] `cargo fmt` applied
 - [ ] CHANGELOG.md updated
-- [ ] PR description links to `onpkg_docs/review_fix_plan.md`
+- [ ] PR description links to `minikit_docs/skills/review_fix_plan.md`
 
 ---
 

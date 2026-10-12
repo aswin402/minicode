@@ -127,8 +127,8 @@ always_apply: false
         content: r#"---
 name: "rust-tokio"
 description: "Async Rust, Tokio multi-threaded runtime, channels, bounded tasks, and zero-panic error handling."
-category: "backend"
-kind: "reference"
+category: "runtime"
+kind: "runtime"
 globs: ["*.rs", "Cargo.toml"]
 triggers: ["rust", "tokio", "async rust", "cargo", "channel"]
 always_apply: false
@@ -329,6 +329,94 @@ always_apply: false
 3. **Type Declarations**: For TypeScript projects, ensure `src/vite-env.d.ts` contains `/// <reference types="vite/client" />`.
 "#,
     },
+    BuiltinSkillDef {
+        name: "flutter",
+        content: r#"---
+name: "flutter"
+description: "Cross-platform mobile and web applications with Flutter, Riverpod, GoRouter, Material 3, and responsive layouts."
+category: "mobile"
+kind: "reference"
+globs: ["*.dart", "pubspec.yaml", "pubspec.lock"]
+triggers: ["flutter", "dart", "riverpod", "mobile", "cross-platform", "widget"]
+always_apply: false
+---
+
+# Flutter Engineering Standards
+
+## Invariants & Rules
+1. **Declarative UI**: Build UI as functions of state. Keep widgets small and single-purpose; decompose complex build methods into separate widget classes.
+2. **State Management**: Use Riverpod (NotifierProvider, AsyncNotifierProvider) for shared state. Confine setState strictly to ephemeral local widget animations.
+3. **Const Constructors**: Use const constructors wherever possible to maximize widget tree caching and prevent superfluous repaints.
+4. **Adaptive & Responsive Layouts**: Use LayoutBuilder, MediaQuery, and responsive breakpoints to adapt layout across mobile, tablet, and desktop screens.
+5. **Clean Navigation**: Use GoRouter with typed routes and declarative redirect guards for authentication and deep linking.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "mongodb",
+        content: r#"---
+name: "mongodb"
+description: "MongoDB & Mongoose schemas, compound indexes, aggregation pipelines, and ACID transactions for Node/Bun backends."
+category: "database"
+kind: "reference"
+globs: ["models/**/*.ts", "models/**/*.js", "mongoose*.ts", "schemas/**/*.ts"]
+triggers: ["mongodb", "mongoose", "nosql", "document database", "aggregation"]
+always_apply: false
+---
+
+# MongoDB & Mongoose Standards
+
+## Invariants & Rules
+1. **Schema Validation**: Define Mongoose schemas with strict types, required validations, and timestamps: true for automatic createdAt/updatedAt tracking.
+2. **Explicit Indexing**: Create explicit indexes for fields frequently queried (e.g. email, status, compound lookup keys) to eliminate full collection scans.
+3. **Document Modeling**: Embed subdocuments when child data is accessed together with the parent; reference collections (ObjectId) only when data grows unboundedly.
+4. **Connection Singleton**: Maintain a single persistent database connection across the entire application lifecycle; never open connections per-request.
+5. **ACID Transactions**: Wrap multi-document updates in sessions and transactions (session.withTransaction) when modifying dependent records.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "prisma",
+        content: r#"---
+name: "prisma"
+description: "Prisma ORM schema modeling, migrations, type-safe queries, relation mapping, and connection pool management."
+category: "database"
+kind: "reference"
+globs: ["schema.prisma", "prisma/**/*.ts", "prisma/**/*.js", "prisma/migrations/**/*"]
+triggers: ["prisma", "orm", "schema.prisma", "database migration", "prisma client"]
+always_apply: false
+---
+
+# Prisma ORM Standards
+
+## Invariants & Rules
+1. **Schema Mapping**: Define relations and indexes clearly in schema.prisma. Use @map and @@map for snake_case database tables/columns while maintaining camelCase in TypeScript.
+2. **Migrations**: Always generate migrations via npx prisma migrate dev (or bunx prisma migrate dev) when editing schemas. Never manipulate generated SQL migrations manually.
+3. **Singleton Client**: Instantiate PrismaClient as a global singleton (globalThis) to prevent connection pool exhaustion during development hot-reloading.
+4. **Referential Integrity**: Define explicit referential actions (e.g. onDelete: Cascade or onDelete: Restrict) on all foreign keys to prevent constraint violations.
+5. **Selective Queries**: Use select or omit to fetch only the required fields instead of querying whole entities with heavy relations.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "express",
+        content: r#"---
+name: "express"
+description: "Express.js REST APIs with TypeScript, modular router patterns, security middleware (helmet, cors), and global error handlers."
+category: "backend"
+kind: "reference"
+globs: ["server.ts", "server.js", "app.ts", "app.js", "routes/**/*.ts", "routes/**/*.js"]
+triggers: ["express", "expressjs", "express.js", "rest api", "node server", "middleware"]
+always_apply: false
+---
+
+# Express.js REST API Standards
+
+## Invariants & Rules
+1. **Security Headers**: Always mount helmet() at the top of the middleware chain to configure essential HTTP security headers.
+2. **CORS Hardening**: Explicitly configure allowed origins with cors({ origin: [...] }) rather than leaving open wildcards in production.
+3. **Global Error Handling**: Always mount a centralized 4-parameter error handler (err, req, res, next) at the very bottom of the middleware chain.
+4. **Modular Routers**: Organize API endpoints into discrete feature routers (express.Router()) inside routes/ or controllers/; keep app.ts as a clean assembler.
+5. **Async Safety**: In Express 4, wrap async route handlers in an async error wrapper (express-async-errors or try/catch) so rejected promises reach the error handler.
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -351,12 +439,25 @@ pub fn get_all_builtin_skills() -> Vec<VaultSkill> {
         .collect()
 }
 
-/// Finds a built-in skill by name.
+/// Finds a built-in skill by name or trigger/alias.
 pub fn find_builtin_skill(name: &str) -> Option<VaultSkill> {
     let clean = name.trim().to_lowercase();
-    get_all_builtin_skills()
-        .into_iter()
-        .find(|s| s.name.eq_ignore_ascii_case(&clean))
+    let all = get_all_builtin_skills();
+    // 1. Exact name match
+    if let Some(s) = all.iter().find(|s| s.name.eq_ignore_ascii_case(&clean)) {
+        return Some(s.clone());
+    }
+    // 2. Trigger or prefix alias match (e.g. "tailwind" -> "tailwind-v4", "next" -> "nextjs", "rust" -> "rust-tokio")
+    if let Some(s) = all.iter().find(|s| {
+        s.frontmatter
+            .triggers
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(&clean))
+            || s.name.starts_with(&format!("{}-", clean))
+    }) {
+        return Some(s.clone());
+    }
+    None
 }
 
 /// Definition of a built-in curated skill bundle.
@@ -460,7 +561,7 @@ mod tests {
         assert_eq!(tw.category(), "ui-styling");
         assert_eq!(tw.kind(), crate::vault::models::SkillKind::Reference);
 
-        // Verify kind distinctions: Reference Doc vs Behavioral Skill
+        // Verify kind distinctions: PackageDoc vs Behavioral Skill vs Runtime Workflow
         let react = find_builtin_skill("react").unwrap();
         assert_eq!(react.kind(), crate::vault::models::SkillKind::Reference);
         assert_eq!(react.kind().badge(), "Doc");
@@ -468,6 +569,10 @@ mod tests {
         let tdd = find_builtin_skill("tdd-workflow").unwrap();
         assert_eq!(tdd.kind(), crate::vault::models::SkillKind::Workflow);
         assert_eq!(tdd.kind().badge(), "Skill");
+
+        let rust = find_builtin_skill("rust-tokio").unwrap();
+        assert_eq!(rust.kind(), crate::vault::models::SkillKind::Runtime);
+        assert_eq!(rust.kind().badge(), "Runtime");
     }
 
     #[test]

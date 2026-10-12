@@ -161,7 +161,7 @@ fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
 }
 
 /// Determines if a shell command represents a persistent web server, dev daemon, or background process.
-pub fn is_daemon_or_server_command(cmd: &str) -> bool {
+pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
     let trimmed = cmd.trim();
     let lower = trimmed.to_lowercase();
 
@@ -200,36 +200,7 @@ pub fn is_daemon_or_server_command(cmd: &str) -> bool {
         return false;
     }
 
-    if trimmed.ends_with('&') {
-        return true;
-    }
-    lower.contains("python3 -m http.server")
-        || lower.contains("python -m http.server")
-        || lower.contains("python3 -m simplehttpserver")
-        || lower.contains("python -m simplehttpserver")
-        || lower.contains("npx serve")
-        || lower.contains("npx http-server")
-        || lower.contains("npm run dev")
-        || lower.contains("npm run start")
-        || lower.contains("npm start")
-        || lower.contains("pnpm dev")
-        || lower.contains("pnpm start")
-        || lower.contains("yarn dev")
-        || lower.contains("yarn start")
-        || lower.contains("bun dev")
-        || lower.contains("bun run dev")
-        || lower.contains("cargo watch")
-        || lower.contains("uvicorn ")
-        || lower.contains("flask run")
-        || lower.contains("fastapi dev")
-        || lower.contains("fastapi run")
-        || lower.contains("docker run")
-        || lower.contains("docker compose up")
-        || lower.contains("docker-compose up")
-        || lower.starts_with("vite ")
-        || lower == "vite"
-        || lower.starts_with("npx vite ")
-        || lower == "npx vite"
+    crate::dev::scripts::WorkspaceScriptDiscovery::is_server_command(workspace_root, cmd)
 }
 
 /// Spawns a persistent background dev server or daemon task under MiniDevRegistry / MiniTask Manager.
@@ -368,7 +339,7 @@ pub async fn exec_cmd_full(
     explicit_context: Option<usize>,
     is_daemon: bool,
 ) -> Result<String> {
-    if is_daemon || is_daemon_or_server_command(command_str) {
+    if is_daemon || is_daemon_or_server_command(workspace_root, command_str) {
         return exec_daemon_or_server(workspace_root, command_str).await;
     }
 

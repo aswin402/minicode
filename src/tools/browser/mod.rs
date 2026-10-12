@@ -141,6 +141,22 @@ impl BrowserController {
                 response = Ok(alt_resp);
             }
         }
+
+        // Local development servers (Vite, Next.js) on cold start may take 5-8 seconds to compile initial bundles.
+        // For loopback addresses (127.0.0.1 / localhost), retry up to 3 times with 1.5s delay before failing.
+        let is_loopback = target_url.contains("127.0.0.1") || target_url.contains("localhost");
+        let mut loopback_retries = 0;
+        while response.is_err() && is_loopback && loopback_retries < 3 {
+            loopback_retries += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            let check_url = if target_url.contains("localhost") {
+                target_url.replace("localhost", "127.0.0.1")
+            } else {
+                target_url.to_string()
+            };
+            response = client.get(&check_url).send().await;
+        }
+
         let response = response.map_err(|e| {
             ToolError::CommandExec(format!("Failed to connect to '{}': {}", url, e))
         })?;

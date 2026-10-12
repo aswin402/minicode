@@ -248,4 +248,4 @@ pub struct ContextCompressor {
 - [ ] Write integration tests with mock provider (deterministic tool call sequences)
 - [ ] Set up CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`
 - [ ] Benchmark startup time (< 15ms) and memory footprint (< 50MB)
-- [ ] Finalize README, AGENTS.md, and onpkg_docs
+- [ ] Finalize README, AGENTS.md, and minikit_docs

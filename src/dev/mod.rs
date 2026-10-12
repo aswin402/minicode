@@ -8,6 +8,7 @@ pub mod models;
 pub mod ports;
 pub mod process;
 pub mod registry;
+pub mod scripts;
 
 pub use lifecycle::*;
 pub use metrics::*;
@@ -15,3 +16,4 @@ pub use models::*;
 pub use ports::*;
 pub use process::*;
 pub use registry::*;
+pub use scripts::*;
