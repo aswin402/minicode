@@ -772,9 +772,8 @@ impl MiniKitRemoteManager {
         let (packages, dev_packages) =
             super::scaffolder::MiniKitScaffolder::extract_dependencies_from_workspace(&dest_dir);
 
-        // Generate minikit.json and onpkg.json if not present in the remote template
+        // Generate minikit.json if not present in the remote template
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
-        let onpkg_manifest_path = dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE);
         if !manifest_path.exists() {
             let manifest = serde_json::json!({
                 "name": project_name,
@@ -789,7 +788,6 @@ impl MiniKitRemoteManager {
             });
             let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
             let _ = fs::write(&manifest_path, &manifest_json);
-            let _ = fs::write(&onpkg_manifest_path, &manifest_json);
         }
 
         // Generate AGENTS.md instructions if not present
@@ -830,24 +828,14 @@ impl MiniKitRemoteManager {
             }
         }
 
-        // Generate standard workflow docs under dest_dir and onpkg_docs
+        // Generate standard workflow docs under dest_dir
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(&docs_dir, &project_name, runtime);
-        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
-        super::sync::MiniKitSyncEngine::ensure_workflow_docs(&onpkg_docs, &project_name, runtime);
         if dest_dir != workspace_root {
             let root_docs = workspace_root.join(crate::constants::MINIKIT_DOCS_DIR);
             if !root_docs.exists() {
                 super::sync::MiniKitSyncEngine::ensure_workflow_docs(
                     &root_docs,
-                    &project_name,
-                    runtime,
-                );
-            }
-            let root_onpkg = workspace_root.join(crate::constants::ONPKG_DOCS_DIR);
-            if !root_onpkg.exists() {
-                super::sync::MiniKitSyncEngine::ensure_workflow_docs(
-                    &root_onpkg,
                     &project_name,
                     runtime,
                 );

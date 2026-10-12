@@ -75,7 +75,7 @@ impl ToolCategory {
             Self::Search => "Codebase search & symbols (grep_search, locate_symbol, hybrid_search, ast_query)",
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
             Self::Web => "Web search & browser automation (search_web, fetch_or_browse, browser_navigate)",
-            Self::MiniKit => "MiniKit & onpkg stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
+            Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
             Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning & skills (create_plan, update_progress, wiki_write)",

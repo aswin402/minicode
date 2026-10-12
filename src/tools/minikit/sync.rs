@@ -469,9 +469,11 @@ impl MiniKitSyncEngine {
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
 
-        // Also sync onpkg.json for seamless backward-compatibility and onpkg rule compliance
+        // Also sync onpkg.json if it already exists for backward compatibility
         let onpkg_json_path = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-        fs::write(&onpkg_json_path, &manifest_json).ok();
+        if onpkg_json_path.exists() {
+            fs::write(&onpkg_json_path, &manifest_json).ok();
+        }
 
         // 2. Ensure .gitignore protects .minicode/ local runtime & transient memory
         Self::ensure_gitignore(workspace_root);

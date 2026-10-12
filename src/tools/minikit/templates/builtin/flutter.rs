@@ -13,7 +13,7 @@ pub fn flutter_riverpod(app_name: Option<&str>) -> Stack {
             }
             t
         })
-        .unwrap_or_else(|| "Onpkg_flutter-riverpod".to_string());
+        .unwrap_or_else(|| "MiniKit_flutter-riverpod".to_string());
 
     Stack {
         hooks: vec![],
@@ -32,10 +32,10 @@ pub fn flutter_riverpod(app_name: Option<&str>) -> Stack {
         transitive_packages: vec![],
         files: vec![
             StackFile {
-                path: "ONPKG_README.md".into(),
-                content: r##"# Onpkg Flutter App
+                path: "README.md".into(),
+                content: r##"# MiniKit Flutter App
 
-A modern, scalable Flutter application serving as the client for Onpkg.
+A modern, scalable Flutter application serving as the client.
 
 ## Key Technologies
 
@@ -1341,7 +1341,7 @@ class HomePage extends HookConsumerWidget {
     return Column(
       children: [
         Text(
-          "Get started Onpkg\nFlutter + Hooks",
+          "Get started MiniKit\nFlutter + Hooks",
           textAlign: TextAlign.center,
           style: context.textTheme.headlineLarge
         ),
@@ -1641,7 +1641,7 @@ class AppTopNavbar extends ConsumerWidget implements PreferredSizeWidget {
               ),
               const SizedBox(width: 12),
               Text(
-                'Onpkg',
+                'MiniKit',
                 style: context.textTheme.titleLarge
               ),
               const Spacer(),

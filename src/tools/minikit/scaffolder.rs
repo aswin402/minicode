@@ -825,19 +825,10 @@ impl MiniKitScaffolder {
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
-        fs::write(
-            dest_dir.join(crate::constants::ONPKG_MANIFEST_FILE),
-            &manifest_json,
-        )
-        .ok();
         if dest_dir != workspace_root {
             let root_manifest = workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE);
             if !root_manifest.exists() {
                 fs::write(&root_manifest, &manifest_json).ok();
-            }
-            let root_onpkg = workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE);
-            if !root_onpkg.exists() {
-                fs::write(&root_onpkg, &manifest_json).ok();
             }
         }
 
@@ -875,16 +866,10 @@ impl MiniKitScaffolder {
             }
         }
 
-        // 4. Generate initial workflow docs under dest_dir and onpkg_docs
+        // 4. Generate initial workflow docs under dest_dir
         let docs_dir = dest_dir.join(crate::constants::MINIKIT_DOCS_DIR);
         super::sync::MiniKitSyncEngine::ensure_workflow_docs(
             &docs_dir,
-            &project_name,
-            &stack.runtime,
-        );
-        let onpkg_docs = dest_dir.join(crate::constants::ONPKG_DOCS_DIR);
-        super::sync::MiniKitSyncEngine::ensure_workflow_docs(
-            &onpkg_docs,
             &project_name,
             &stack.runtime,
         );
@@ -893,14 +878,6 @@ impl MiniKitScaffolder {
             if !root_docs.exists() {
                 super::sync::MiniKitSyncEngine::ensure_workflow_docs(
                     &root_docs,
-                    &project_name,
-                    &stack.runtime,
-                );
-            }
-            let root_onpkg = workspace_root.join(crate::constants::ONPKG_DOCS_DIR);
-            if !root_onpkg.exists() {
-                super::sync::MiniKitSyncEngine::ensure_workflow_docs(
-                    &root_onpkg,
                     &project_name,
                     &stack.runtime,
                 );

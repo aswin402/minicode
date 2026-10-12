@@ -127,14 +127,14 @@ pub fn resolve_doc_path(workspace: &Path, doc_name: &str) -> PathBuf {
     }
 }
 
-/// Full-featured native operations for onpkg / MiniKit stack scaffolding, skill management, and project sync.
+/// Full-featured native operations for MiniKit stack scaffolding, skill management, and project sync.
 pub struct MiniKitService;
 
 #[allow(dead_code)]
 pub type OnpkgService = MiniKitService;
 
 impl MiniKitService {
-    /// Lists all available built-in and custom onpkg stacks natively.
+    /// Lists all available built-in and custom MiniKit stacks natively.
     pub async fn list_stacks(workspace_root: &Path, category: Option<&str>) -> Result<String> {
         let native_stacks = MiniKitScaffolder::get_all_stacks_for(Some(workspace_root));
 
@@ -154,7 +154,7 @@ impl MiniKitService {
         };
 
         let mut res = format!(
-            "📦 **Available onpkg Stacks** ({} native templates):\n\n",
+            "📦 **Available MiniKit Stacks** ({} native templates):\n\n",
             filtered.len()
         );
 
@@ -283,7 +283,7 @@ impl MiniKitService {
         .into())
     }
 
-    /// Scaffolds a minikit/onpkg stack template into the workspace or a target subdirectory.
+    /// Scaffolds a MiniKit stack template into the workspace or a target subdirectory.
     pub async fn add_stack(
         workspace_root: &Path,
         stack_name: &str,

@@ -85,7 +85,7 @@ import "./.next/types/routes.d.ts";
             },
             StackFile {
                 path: "README.md".into(),
-                content: r###"# Onpkg Next.js Full-Stack Starter Template 🚀
+                content: r###"# MiniKit Next.js Full-Stack Starter Template 🚀
 
 Welcome to your upgraded, high-performance project template built with the latest modern web technologies. This project is optimized for speed, security, and developer experience.
 
@@ -135,7 +135,7 @@ bun install
 ### 3. Database & Environment Setup
 Open `.env` in the root directory to confirm the default PostgreSQL database credentials match your docker setup:
 ```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/onpkg_db?schema=public"
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/minikit_db?schema=public"
 ```
 
 Spin up the local PostgreSQL database using Docker Compose:
@@ -544,7 +544,7 @@ export function Navbar() {
       <nav className="fixed top-0 left-0 right-0 h-16 border-b border-border/40 bg-background/80 backdrop-blur-md z-40 flex items-center justify-between px-6 transition-colors duration-300">
         <div className="flex items-center gap-8">
           <a href="#" className="text-xl font-bold tracking-tight text-primary hover:opacity-80 transition-opacity">
-            ONPKG <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full ml-1 font-normal">NEXT</span>
+            MINIKIT <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full ml-1 font-normal">NEXT</span>
           </a>
           <div className="hidden md:flex items-center gap-6">
             <a href="#hero" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5">
@@ -916,7 +916,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Onpkg Next.js Template",
+  title: "MiniKit Next.js Template",
   description: "Modern full-stack starter template with Next.js, Bun, Tailwind CSS v4, Shadcn UI, and Prisma",
 };
 
@@ -1286,7 +1286,7 @@ export default function Home() {
       </main>
 
       <footer className="py-8 border-t border-border/40 bg-muted/10 text-center text-xs text-muted-foreground">
-        <p>© 2026 Onpkg. Next.js 16 + Prisma 7 Template Starter.</p>
+        <p>© 2026 MiniKit. Next.js 16 + Prisma 7 Template Starter.</p>
       </footer>
     </div>
   );
@@ -1321,7 +1321,7 @@ async function seedHandler(request: NextRequest) {
 
     const admin = await prisma.user.create({
       data: {
-        email: 'admin@onpkg.com',
+        email: 'admin@example.com',
         name: 'Admin User',
         password: adminPassword,
         role: 'ADMIN',
@@ -1330,7 +1330,7 @@ async function seedHandler(request: NextRequest) {
 
     const user1 = await prisma.user.create({
       data: {
-        email: 'user1@onpkg.com',
+        email: 'user1@example.com',
         name: 'Aswin Dev',
         password: userPassword,
         role: 'USER',
@@ -1339,7 +1339,7 @@ async function seedHandler(request: NextRequest) {
 
     const user2 = await prisma.user.create({
       data: {
-        email: 'user2@onpkg.com',
+        email: 'user2@example.com',
         name: 'Jane Smith',
         password: userPassword,
         role: 'USER',
@@ -1782,7 +1782,7 @@ export const POST = withLogging(loginHandler);
             StackFile {
                 path: "package.json".into(),
                 content: r###"{
-  "name": "onpkg_next",
+  "name": "minikit_next",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -2107,7 +2107,7 @@ const SMTP_HOST = process.env.SMTP_HOST || 'smtp.mailtrap.io';
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || '2525', 10);
 const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
-const MAIL_FROM = process.env.MAIL_FROM || 'noreply@onpkg.com';
+const MAIL_FROM = process.env.MAIL_FROM || 'noreply@example.com';
 
 const transporter = nodemailer.createTransport({
   host: SMTP_HOST,
@@ -2860,7 +2860,7 @@ import { sendEmail } from '@/lib/mailer';
 try {
   await sendEmail({
     to: 'user@example.com',
-    subject: 'Welcome to Onpkg Next.js Template!',
+    subject: 'Welcome to MiniKit Next.js Template!',
     html: '<h1>Account Created</h1><p>Your fullstack template account has been successfully set up.</p>',
     text: 'Account Created. Your fullstack template account has been successfully set up.', // Optional text-only fallback
   });
@@ -2883,7 +2883,7 @@ SMTP_USER="your-smtp-username"
 SMTP_PASS="your-smtp-password"
 
 # Sender settings
-MAIL_FROM="noreply@onpkg.com"
+MAIL_FROM="noreply@example.com"
 ```
 In case `SMTP_USER` and `SMTP_PASS` variables are omitted, Nodemailer will attempt to send emails over a local direct SMTP connection.
 "###.into(),
@@ -2947,7 +2947,7 @@ Spin up a local PostgreSQL 16 server in the background:
 ```bash
 docker-compose up -d
 ```
-This starts a Postgres instance mapped to port `5432` with username `postgres`, password `postgres`, and database `onpkg_db`.
+This starts a Postgres instance mapped to port `5432` with username `postgres`, password `postgres`, and database `minikit_db`.
 
 ### 2. Run Database Migrations
 Create database tables and schemas:
@@ -3207,7 +3207,7 @@ async function main() {
 
   const admin = await prisma.user.create({
     data: {
-      email: 'admin@onpkg.com',
+      email: 'admin@example.com',
       name: 'Admin User',
       password: adminPassword,
       role: 'ADMIN',
@@ -3216,7 +3216,7 @@ async function main() {
 
   const user1 = await prisma.user.create({
     data: {
-      email: 'user1@onpkg.com',
+      email: 'user1@example.com',
       name: 'Aswin Dev',
       password: userPassword,
       role: 'USER',
@@ -3225,7 +3225,7 @@ async function main() {
 
   const user2 = await prisma.user.create({
     data: {
-      email: 'user2@onpkg.com',
+      email: 'user2@example.com',
       name: 'Jane Smith',
       password: userPassword,
       role: 'USER',
@@ -3342,11 +3342,11 @@ export type CreatePostValues = z.infer<typeof CreatePostSchema>;
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: onpkg-postgres
+    container_name: minikit-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: onpkg_db
+      POSTGRES_DB: minikit_db
     ports:
       - '5434:5432'
     volumes:

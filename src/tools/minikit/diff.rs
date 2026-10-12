@@ -130,7 +130,7 @@ impl MiniKitIgnore {
     }
 }
 
-/// Evaluates project drift against its onpkg stack template and optionally heals missing files.
+/// Evaluates project drift against its MiniKit stack template and optionally heals missing files.
 pub fn diff_stack(
     workspace_root: &Path,
     stack_name_opt: Option<&str>,

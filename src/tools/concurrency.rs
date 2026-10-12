@@ -127,7 +127,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
             ToolSafetyLevel::Mutating
         }
 
-        // onpkg & MiniKit Scaffolding, Package & Skill Tools
+        // MiniKit Scaffolding, Package & Skill Tools
         "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"
         | "kit_doctor" | "kit_block_list" | "minikit_block_list" | "onpkg_block_list"
         | "minikit_stack_list" | "minikit_stack_show" | "minikit_skill_list"
