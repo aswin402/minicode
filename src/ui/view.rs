@@ -63,6 +63,7 @@ pub enum LivePlanTaskStatus {
 pub struct LivePlanTaskItem {
     pub title: String,
     pub status: LivePlanTaskStatus,
+    pub sub_tasks: Vec<LivePlanTaskItem>,
 }
 
 /// An inline Oh-My-Pi / Pi style Live Plan & Execution Progress card
@@ -2517,14 +2518,17 @@ mod tests {
                 LivePlanTaskItem {
                     title: "T1: Design".to_string(),
                     status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
                 },
                 LivePlanTaskItem {
                     title: "T2: Implementation".to_string(),
                     status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: Vec::new(),
                 },
                 LivePlanTaskItem {
                     title: "T3: Verification".to_string(),
                     status: LivePlanTaskStatus::Pending,
+                    sub_tasks: Vec::new(),
                 },
             ],
         };
@@ -2542,14 +2546,17 @@ mod tests {
                 LivePlanTaskItem {
                     title: "T1: Design".to_string(),
                     status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
                 },
                 LivePlanTaskItem {
                     title: "T2: Implementation".to_string(),
                     status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
                 },
                 LivePlanTaskItem {
                     title: "T3: Verification".to_string(),
                     status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: Vec::new(),
                 },
             ],
         };

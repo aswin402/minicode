@@ -83,6 +83,29 @@ pub struct PendingSubmission {
     pub display: String,
 }
 
+fn map_working_memory_tasks(
+    tasks: &[crate::context::memory::working_memory::TaskItem],
+) -> Vec<crate::ui::view::LivePlanTaskItem> {
+    tasks
+        .iter()
+        .map(|t| crate::ui::view::LivePlanTaskItem {
+            title: t.title.clone(),
+            status: match t.status {
+                crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                    crate::ui::view::LivePlanTaskStatus::Completed
+                }
+                crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                    crate::ui::view::LivePlanTaskStatus::InProgress
+                }
+                crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                    crate::ui::view::LivePlanTaskStatus::Pending
+                }
+            },
+            sub_tasks: map_working_memory_tasks(&t.sub_tasks),
+        })
+        .collect()
+}
+
 impl<'a> App<'a> {
     pub fn new(workspace_root: &Path, config: Config) -> Self {
         let theme = Theme::detect(&config.ui.theme);
@@ -93,6 +116,25 @@ impl<'a> App<'a> {
 
         // Always start with zero upfront modals for a clean welcome screen
         let initial_modal = ModalState::None;
+
+        // Auto-hydrate active roadmap & milestone plan from WorkingMemory if present on disk
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+        let (initial_active_task, initial_active_plan) = match wm.read_active_plan_summary() {
+            Some(summary) if !summary.tasks.is_empty() => {
+                let live_tasks = map_working_memory_tasks(&summary.tasks);
+                (
+                    summary.active_task.clone(),
+                    Some(crate::ui::view::LivePlanBlock {
+                        title: summary.phase_label,
+                        total_tasks: summary.total_tasks,
+                        completed_tasks: summary.completed_tasks,
+                        active_task: summary.active_task,
+                        tasks: live_tasks,
+                    }),
+                )
+            }
+            _ => (None, None),
+        };
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -120,8 +162,8 @@ impl<'a> App<'a> {
             pending_submission: None,
             session_skipped_indexing: false,
             session_skipped_drift: false,
-            active_task: None,
-            active_plan: None,
+            active_task: initial_active_task,
+            active_plan: initial_active_plan,
         }
     }
 
@@ -225,23 +267,7 @@ impl<'a> App<'a> {
                     if tasks.is_empty() {
                         self.active_plan = None;
                     } else {
-                        let live_tasks = tasks
-                            .iter()
-                            .map(|t| crate::ui::view::LivePlanTaskItem {
-                                title: t.title.clone(),
-                                status: match t.status {
-                                    crate::context::memory::working_memory::TaskItemStatus::Completed => {
-                                        crate::ui::view::LivePlanTaskStatus::Completed
-                                    }
-                                    crate::context::memory::working_memory::TaskItemStatus::InProgress => {
-                                        crate::ui::view::LivePlanTaskStatus::InProgress
-                                    }
-                                    crate::context::memory::working_memory::TaskItemStatus::Pending => {
-                                        crate::ui::view::LivePlanTaskStatus::Pending
-                                    }
-                                },
-                            })
-                            .collect();
+                        let live_tasks = map_working_memory_tasks(tasks);
                         self.active_plan = Some(crate::ui::view::LivePlanBlock {
                             title: phase_label.clone().unwrap_or_else(|| "Plan".to_string()),
                             total_tasks: *total_tasks,
@@ -774,23 +800,7 @@ impl<'a> App<'a> {
                                 if tasks.is_empty() {
                                     self.active_plan = None;
                                 } else {
-                                    let live_tasks = tasks
-                                        .iter()
-                                        .map(|t| crate::ui::view::LivePlanTaskItem {
-                                            title: t.title.clone(),
-                                            status: match t.status {
-                                                crate::context::memory::working_memory::TaskItemStatus::Completed => {
-                                                    crate::ui::view::LivePlanTaskStatus::Completed
-                                                }
-                                                crate::context::memory::working_memory::TaskItemStatus::InProgress => {
-                                                    crate::ui::view::LivePlanTaskStatus::InProgress
-                                                }
-                                                crate::context::memory::working_memory::TaskItemStatus::Pending => {
-                                                    crate::ui::view::LivePlanTaskStatus::Pending
-                                                }
-                                            },
-                                        })
-                                        .collect();
+                                    let live_tasks = map_working_memory_tasks(&tasks);
                                     self.active_plan = Some(crate::ui::view::LivePlanBlock {
                                         title: phase_label
                                             .clone()

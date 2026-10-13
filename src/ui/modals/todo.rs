@@ -466,6 +466,48 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                     .add_modifier(t_mod),
                             ),
                         ]));
+
+                        // Nested sub-tasks ("steps inside steps")
+                        let sub_count = task.sub_tasks.len();
+                        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+                            let is_sub_last = s_idx == sub_count - 1;
+                            let parent_rail = if is_last_task {
+                                "          "
+                            } else {
+                                "      │   "
+                            };
+                            let sub_branch = if is_sub_last {
+                                "└── "
+                            } else {
+                                "├── "
+                            };
+                            let (s_bullet, s_color, s_mod) = match sub.status {
+                                TaskItemStatus::Completed => {
+                                    ("✔ ", theme.success, Modifier::empty())
+                                }
+                                TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
+                                TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled("   │", Style::default().fg(theme.border)),
+                                Span::styled(parent_rail, Style::default().fg(theme.muted)),
+                                Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                                Span::styled(
+                                    s_bullet,
+                                    Style::default().fg(s_color).add_modifier(s_mod),
+                                ),
+                                Span::styled(
+                                    sub.title.clone(),
+                                    Style::default()
+                                        .fg(if sub.status == TaskItemStatus::InProgress {
+                                            theme.text_primary
+                                        } else {
+                                            theme.muted
+                                        })
+                                        .add_modifier(s_mod),
+                                ),
+                            ]));
+                        }
                     }
                 }
             }

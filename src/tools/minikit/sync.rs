@@ -204,10 +204,36 @@ impl MiniKitSyncEngine {
                             let _ = fs::rename(&path, &target);
                         }
                     } else if file_name.ends_with(".md") {
-                        // Migrate skill/domain markdown files into skills/
-                        let target = skills_dir.join(&file_name);
+                        let target =
+                            if file_name.starts_with("minikit_") && file_name != "miniblocks.md" {
+                                packages_dir.join(&file_name)
+                            } else {
+                                skills_dir.join(&file_name)
+                            };
                         if !target.exists() {
                             let _ = fs::rename(&path, &target);
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Automated Migration of Package Docs mistakenly placed in skills/ ---
+        if let Ok(skill_entries) = fs::read_dir(&skills_dir) {
+            for entry in skill_entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    if file_name.starts_with("minikit_") && file_name != "miniblocks.md" {
+                        let target = packages_dir.join(&file_name);
+                        if !target.exists() {
+                            let _ = fs::rename(&path, &target);
+                        } else {
+                            let _ = fs::remove_file(&path);
                         }
                     }
                 }

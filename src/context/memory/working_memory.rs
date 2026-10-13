@@ -24,6 +24,8 @@ pub struct TaskItem {
     pub line_index: usize,
     pub status: TaskItemStatus,
     pub title: String,
+    #[serde(default)]
+    pub sub_tasks: Vec<TaskItem>,
 }
 
 /// A milestone or phase section containing a collection of atomic tasks.
@@ -470,6 +472,7 @@ impl WorkingMemory {
                             line_index: idx,
                             status,
                             title: clean_title,
+                            sub_tasks: Vec::new(),
                         });
                     }
                 }
@@ -733,29 +736,60 @@ impl WorkingMemory {
             .iter()
             .any(|t| t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending);
 
+        let milestones = self.read_roadmap_milestones();
+        let active_milestone = milestones
+            .iter()
+            .find(|m| m.in_progress_tasks > 0)
+            .or_else(|| milestones.iter().find(|m| m.pending_tasks > 0));
+
         // 1. If task_plan has active or pending tactical tasks, display the tactical plan!
         if !task_plan_tasks.is_empty() && has_active_or_pending {
-            let title = self
-                .read_task_plan_title()
-                .unwrap_or_else(|| "Active Milestone Tasks".to_string());
-            return Self::build_plan_summary(title, &task_plan_tasks);
+            let label = if let Some(m) = active_milestone {
+                if m.id == m.title {
+                    m.id.clone()
+                } else {
+                    format!("{}: {}", m.id, m.title)
+                }
+            } else {
+                self.read_task_plan_title()
+                    .unwrap_or_else(|| "Active Milestone Tasks".to_string())
+            };
+
+            // If the active milestone has multiple meaningful tasks in core/todo.md,
+            // nest the tactical task_plan_tasks as sub_tasks of the active in-progress task.
+            // Otherwise, present the tactical tasks directly under the milestone label.
+            if let Some(m) = active_milestone {
+                let is_single_placeholder = m.tasks.len() == 1
+                    && (m.tasks[0].title.eq_ignore_ascii_case("active execution")
+                        || m.tasks[0].title.eq_ignore_ascii_case("execution"));
+                if m.tasks.len() > 1 && !is_single_placeholder {
+                    let mut milestone_tasks = m.tasks.clone();
+                    let active_idx = milestone_tasks
+                        .iter()
+                        .position(|t| t.status == TaskItemStatus::InProgress)
+                        .or_else(|| {
+                            milestone_tasks
+                                .iter()
+                                .position(|t| t.status == TaskItemStatus::Pending)
+                        });
+                    if let Some(idx) = active_idx {
+                        milestone_tasks[idx].sub_tasks = task_plan_tasks.clone();
+                    }
+                    return Self::build_plan_summary(label, &milestone_tasks);
+                }
+            }
+
+            return Self::build_plan_summary(label, &task_plan_tasks);
         }
 
         // 2. If task_plan is finished or empty, check roadmap milestones from canonical todo.md!
-        let milestones = self.read_roadmap_milestones();
-        if !milestones.is_empty() {
-            if let Some(milestone) = milestones
-                .iter()
-                .find(|m| m.in_progress_tasks > 0)
-                .or_else(|| milestones.iter().find(|m| m.pending_tasks > 0))
-            {
-                let phase_label = if milestone.id == milestone.title {
-                    milestone.id.clone()
-                } else {
-                    format!("{}: {}", milestone.id, milestone.title)
-                };
-                return Self::build_plan_summary(phase_label, &milestone.tasks);
-            }
+        if let Some(milestone) = active_milestone {
+            let phase_label = if milestone.id == milestone.title {
+                milestone.id.clone()
+            } else {
+                format!("{}: {}", milestone.id, milestone.title)
+            };
+            return Self::build_plan_summary(phase_label, &milestone.tasks);
         }
 
         // 3. Fallback to task_plan_tasks if all are completed

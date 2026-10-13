@@ -3358,7 +3358,7 @@ export default defineConfig([
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit___eslint__js.md".into(),
+                path: "minikit_docs/packages/minikit___eslint__js.md".into(),
                 content: r###"# @eslint/js — minikit docs
 > **Version**: 10.0.1 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@eslint/js
 
@@ -3402,7 +3402,7 @@ import ... from '@eslint/js';
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit___hookform__resolvers.md".into(),
+                path: "minikit_docs/packages/minikit___hookform__resolvers.md".into(),
                 content: r###"# @hookform/resolvers
 
 > Schema validation adapters for react-hook-form — Zod, Yup, Valibot, Joi, and more
@@ -3581,7 +3581,7 @@ useForm<z.input<typeof schema>, any, z.output<typeof schema>>({
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit___tailwindcss__vite.md".into(),
+                path: "minikit_docs/packages/minikit___tailwindcss__vite.md".into(),
                 content: r###"# @tailwindcss/vite — minikit docs
 > **Version**: 4.2.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@tailwindcss/vite
 
@@ -3625,7 +3625,7 @@ import ... from '@tailwindcss/vite';
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit___tanstack__react-query.md".into(),
+                path: "minikit_docs/packages/minikit___tanstack__react-query.md".into(),
                 content: r####"# @tanstack/react-query
 
 > Server state management — fetching, caching, syncing async data in React
@@ -3925,7 +3925,7 @@ export function useCreateUser() {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit___types__node.md".into(),
+                path: "minikit_docs/packages/minikit___types__node.md".into(),
                 content: r####"# @types/node — minikit docs
 > **Version**: 25.5.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/@types/node
 
@@ -3963,7 +3963,7 @@ These definitions were written by [Microsoft TypeScript](https://github.com/Micr
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_axios.md".into(),
+                path: "minikit_docs/packages/minikit_axios.md".into(),
                 content: r####"# axios
 
 > Promise-based HTTP client for the browser and Node.js
@@ -4374,7 +4374,7 @@ await axios.get('/data', {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_eslint-plugin-react-hooks.md".into(),
+                path: "minikit_docs/packages/minikit_eslint-plugin-react-hooks.md".into(),
                 content: r###"# eslint-plugin-react-hooks — minikit docs
 > **Version**: 7.0.1 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint-plugin-react-hooks
 
@@ -4418,7 +4418,7 @@ import ... from 'eslint-plugin-react-hooks';
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_eslint-plugin-react-refresh.md".into(),
+                path: "minikit_docs/packages/minikit_eslint-plugin-react-refresh.md".into(),
                 content: r####"# eslint-plugin-react-refresh — minikit docs
 > **Version**: 0.5.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint-plugin-react-refresh
 
@@ -4663,7 +4663,7 @@ If you're using JSX inside `.js` files (which I don't recommend because it force
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_eslint.md".into(),
+                path: "minikit_docs/packages/minikit_eslint.md".into(),
                 content: r####"# eslint — minikit docs
 > **Version**: 10.1.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/eslint
 
@@ -5055,7 +5055,7 @@ Technology sponsors allow us to use their products and services for free as part
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_framer-motion.md".into(),
+                path: "minikit_docs/packages/minikit_framer-motion.md".into(),
                 content: r####"# framer-motion
 
 > Production-ready motion and physics gesture library for React
@@ -5142,7 +5142,7 @@ export default function ToggleModal({ isOpen }: { isOpen: boolean }) {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_globals.md".into(),
+                path: "minikit_docs/packages/minikit_globals.md".into(),
                 content: r###"# globals — minikit docs
 > **Version**: 17.4.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/globals
 
@@ -5207,7 +5207,7 @@ When analyzing code that is known to run outside of a CommonJS wrapper, for exam
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_gsap.md".into(),
+                path: "minikit_docs/packages/minikit_gsap.md".into(),
                 content: r####"# gsap
 
 > Professional-grade animation and scroll-triggered timelines for modern web apps
@@ -5276,7 +5276,7 @@ gsap.to(".card-reveal", {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_lenis.md".into(),
+                path: "minikit_docs/packages/minikit_lenis.md".into(),
                 content: r####"# lenis
 
 > High-performance smooth scroll library for modern browsers
@@ -5355,7 +5355,7 @@ useEffect(() => {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_lordicons.md".into(),
+                path: "minikit_docs/packages/minikit_lordicons.md".into(),
                 content: r####"# lordicons
 
 > Highly-interactive, vector-based animated icons for user interfaces
@@ -5421,7 +5421,7 @@ Triggers indicate when and how the vector animation plays:
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_lottie.md".into(),
+                path: "minikit_docs/packages/minikit_lottie.md".into(),
                 content: r####"# lottie
 
 > Lightweight vector-based visual animations rendered in real-time
@@ -5495,7 +5495,7 @@ const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').mat
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_lucide-react.md".into(),
+                path: "minikit_docs/packages/minikit_lucide-react.md".into(),
                 content: r####"# lucide-react — minikit docs
 > **Version**: 1.6.0 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/lucide-react
 
@@ -5600,7 +5600,7 @@ You can find all our past and non-recurring financial contributors at [our Open 
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_react-dom.md".into(),
+                path: "minikit_docs/packages/minikit_react-dom.md".into(),
                 content: r###"# react-dom
 
 > React renderer for the browser DOM
@@ -5758,7 +5758,7 @@ import { useFormState } from 'react-dom'  // renamed to useActionState in React 
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_react-hook-form.md".into(),
+                path: "minikit_docs/packages/minikit_react-hook-form.md".into(),
                 content: r###"# react-hook-form
 
 > Performant, flexible form library for React using hooks
@@ -5963,7 +5963,7 @@ const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_react-router-dom.md".into(),
+                path: "minikit_docs/packages/minikit_react-router-dom.md".into(),
                 content: r###"# react-router-dom — minikit docs
 > **Version**: 7.13.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/react-router-dom
 
@@ -6007,7 +6007,7 @@ import ... from 'react-router-dom';
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_react.md".into(),
+                path: "minikit_docs/packages/minikit_react.md".into(),
                 content: r####"# react
 
 > JavaScript library for building user interfaces
@@ -6320,7 +6320,7 @@ function useLocalStorage<T>(key: string, initial: T) {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_shadcn.md".into(),
+                path: "minikit_docs/packages/minikit_shadcn.md".into(),
                 content: r####"# shadcn
 
 > Beautiful, accessible, fully-customizable UI components built on Radix Primitives
@@ -6389,7 +6389,7 @@ export function AccordionDemo() {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_tailwindcss.md".into(),
+                path: "minikit_docs/packages/minikit_tailwindcss.md".into(),
                 content: r####"# tailwindcss
 
 > Utility-first CSS framework
@@ -7559,7 +7559,7 @@ EOF"####.into(),
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_typescript-eslint.md".into(),
+                path: "minikit_docs/packages/minikit_typescript-eslint.md".into(),
                 content: r###"# typescript-eslint — minikit docs
 > **Version**: 8.57.2 · **Runtime**: bun · **npm**: https://www.npmjs.com/package/typescript-eslint
 
@@ -7603,7 +7603,7 @@ import ... from 'typescript-eslint';
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_typescript.md".into(),
+                path: "minikit_docs/packages/minikit_typescript.md".into(),
                 content: r###"# typescript
 
 > Typed superset of JavaScript
@@ -7887,7 +7887,7 @@ const config = { port: 3000, host: 'localhost' } as const
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_vite.md".into(),
+                path: "minikit_docs/packages/minikit_vite.md".into(),
                 content: r####"# vite
 
 > Next-generation frontend build tool — instant dev server, fast HMR, optimized builds
@@ -8121,7 +8121,7 @@ build: {
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_zod.md".into(),
+                path: "minikit_docs/packages/minikit_zod.md".into(),
                 content: r####"# zod
 
 > TypeScript-first schema validation with static type inference
@@ -8617,7 +8617,7 @@ const UpdateUserSchema = z.object({
                 binary_content: None,
             },
             StackFile {
-                path: "minikit_docs/skills/minikit_zustand.md".into(),
+                path: "minikit_docs/packages/minikit_zustand.md".into(),
                 content: r####"# zustand
 
 > Minimal, fast state management for React

@@ -100,14 +100,17 @@ fn test_integration_todo_widget_all_styles_and_heights() {
             LivePlanTaskItem {
                 title: "T1: Scaffolding and project structure setup".to_string(),
                 status: LivePlanTaskStatus::Completed,
+                sub_tasks: Vec::new(),
             },
             LivePlanTaskItem {
                 title: "T2: Form validation logic and interactive UI".to_string(),
                 status: LivePlanTaskStatus::InProgress,
+                sub_tasks: Vec::new(),
             },
             LivePlanTaskItem {
                 title: "T3: End-to-end verification and documentation".to_string(),
                 status: LivePlanTaskStatus::Pending,
+                sub_tasks: Vec::new(),
             },
         ],
     };

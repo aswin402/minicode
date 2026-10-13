@@ -743,6 +743,18 @@ impl MiniKitScaffolder {
             } else {
                 f.path.clone()
             };
+            // Normalize package documentation: package docs prefixed with minikit_ must always live in packages/ not skills/
+            let clean_rel_path = if clean_rel_path.contains("/skills/minikit_")
+                && !clean_rel_path.ends_with("miniblocks.md")
+            {
+                clean_rel_path.replacen("/skills/minikit_", "/packages/minikit_", 1)
+            } else if clean_rel_path.starts_with("skills/minikit_")
+                && !clean_rel_path.ends_with("miniblocks.md")
+            {
+                clean_rel_path.replacen("skills/minikit_", "packages/minikit_", 1)
+            } else {
+                clean_rel_path
+            };
             let is_doc = clean_rel_path.starts_with(crate::constants::MINIKIT_DOCS_DIR);
             let file_path = if is_doc {
                 workspace_root.join(&clean_rel_path)
@@ -791,6 +803,7 @@ impl MiniKitScaffolder {
             &stack_file_paths,
             &stack_packages,
         );
+        active_skills.retain(|s| !s.starts_with("minikit-") && !s.starts_with("pkg-"));
         if active_skills.is_empty() {
             active_skills.push(stack.runtime.clone());
         }

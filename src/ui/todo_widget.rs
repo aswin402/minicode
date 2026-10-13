@@ -17,12 +17,12 @@ use unicode_width::UnicodeWidthStr;
 pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidgetStyle) -> u16 {
     match plan {
         Some(p) if !p.tasks.is_empty() => {
-            let task_count = p.tasks.len() as u16;
+            let total_count: u16 = p.tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
             match style {
-                TodoWidgetStyle::Tree => task_count + 4,
-                TodoWidgetStyle::Card => task_count + 4,
-                TodoWidgetStyle::Rail => task_count + 3,
-                TodoWidgetStyle::Minimal => task_count + 3,
+                TodoWidgetStyle::Tree => total_count + 4,
+                TodoWidgetStyle::Card => total_count + 4,
+                TodoWidgetStyle::Rail => total_count + 3,
+                TodoWidgetStyle::Minimal => total_count + 3,
             }
         }
         _ => 0,
@@ -85,7 +85,7 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     // Lines 3..N: Tree branch tasks
     let task_count = plan.tasks.len();
     for (idx, task) in plan.tasks.iter().enumerate() {
-        let is_last = idx == task_count - 1;
+        let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
         let branch = if is_last {
             "    └── "
         } else {
@@ -111,6 +111,44 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
+
+        // Render nested sub_tasks if present ("steps inside steps")
+        let sub_count = task.sub_tasks.len();
+        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+            let is_sub_last = s_idx == sub_count - 1;
+            let parent_rail = if idx == task_count - 1 {
+                "        "
+            } else {
+                "    │   "
+            };
+            let sub_branch = if is_sub_last {
+                "└── "
+            } else {
+                "├── "
+            };
+            let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
+                LivePlanTaskStatus::Completed => {
+                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                }
+                LivePlanTaskStatus::InProgress => {
+                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                }
+                LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(parent_rail, Style::default().fg(theme.muted)),
+                Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                Span::styled(
+                    s_bullet,
+                    Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                ),
+                Span::styled(
+                    sub.title.clone(),
+                    Style::default().fg(s_text_color).add_modifier(s_modifier),
+                ),
+            ]));
+        }
     }
 
     // Divider line below the tree
@@ -154,7 +192,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     // Tasks
     let task_count = plan.tasks.len();
     for (idx, task) in plan.tasks.iter().enumerate() {
-        let is_last = idx == task_count - 1;
+        let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
         let branch = if is_last {
             "    └── "
         } else {
@@ -181,6 +219,44 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
+
+        let sub_count = task.sub_tasks.len();
+        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+            let is_sub_last = s_idx == sub_count - 1;
+            let parent_rail = if idx == task_count - 1 {
+                "        "
+            } else {
+                "    │   "
+            };
+            let sub_branch = if is_sub_last {
+                "└── "
+            } else {
+                "├── "
+            };
+            let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
+                LivePlanTaskStatus::Completed => {
+                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                }
+                LivePlanTaskStatus::InProgress => {
+                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                }
+                LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(theme.brand_accent)),
+                Span::styled(parent_rail, Style::default().fg(theme.muted)),
+                Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                Span::styled(
+                    s_bullet,
+                    Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                ),
+                Span::styled(
+                    sub.title.clone(),
+                    Style::default().fg(s_text_color).add_modifier(s_modifier),
+                ),
+            ]));
+        }
     }
 
     // Bottom border
@@ -241,6 +317,37 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
+
+        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+            let is_sub_last = s_idx == task.sub_tasks.len() - 1;
+            let sub_branch = if is_sub_last {
+                "└── "
+            } else {
+                "├── "
+            };
+            let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
+                LivePlanTaskStatus::Completed => {
+                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                }
+                LivePlanTaskStatus::InProgress => {
+                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                }
+                LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("▎       ", Style::default().fg(theme.brand_accent)),
+                Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                Span::styled(
+                    s_bullet,
+                    Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                ),
+                Span::styled(
+                    sub.title.clone(),
+                    Style::default().fg(s_text_color).add_modifier(s_modifier),
+                ),
+            ]));
+        }
     }
 
     // Divider line
@@ -295,6 +402,37 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
+
+        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+            let is_sub_last = s_idx == task.sub_tasks.len() - 1;
+            let sub_branch = if is_sub_last {
+                "└── "
+            } else {
+                "├── "
+            };
+            let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
+                LivePlanTaskStatus::Completed => {
+                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                }
+                LivePlanTaskStatus::InProgress => {
+                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                }
+                LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw("       "),
+                Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                Span::styled(
+                    s_bullet,
+                    Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                ),
+                Span::styled(
+                    sub.title.clone(),
+                    Style::default().fg(s_text_color).add_modifier(s_modifier),
+                ),
+            ]));
+        }
     }
 
     // Divider line
@@ -321,14 +459,28 @@ mod tests {
                 LivePlanTaskItem {
                     title: "T1: Scaffolding".to_string(),
                     status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
                 },
                 LivePlanTaskItem {
                     title: "T2: Form validation".to_string(),
                     status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: vec![
+                        LivePlanTaskItem {
+                            title: "T2.1: Schema definition".to_string(),
+                            status: LivePlanTaskStatus::Completed,
+                            sub_tasks: Vec::new(),
+                        },
+                        LivePlanTaskItem {
+                            title: "T2.2: Field validators".to_string(),
+                            status: LivePlanTaskStatus::InProgress,
+                            sub_tasks: Vec::new(),
+                        },
+                    ],
                 },
                 LivePlanTaskItem {
                     title: "T3: Verification".to_string(),
                     status: LivePlanTaskStatus::Pending,
+                    sub_tasks: Vec::new(),
                 },
             ],
         }
@@ -337,12 +489,12 @@ mod tests {
     #[test]
     fn test_todo_widget_required_height() {
         let plan = Some(sample_plan());
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 7);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 7);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 6);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 9);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 9);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 8);
         assert_eq!(
             todo_widget_required_height(&plan, TodoWidgetStyle::Minimal),
-            6
+            8
         );
 
         // Empty plan should return 0
@@ -366,19 +518,19 @@ mod tests {
         let theme = Theme::default();
 
         let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
-        assert_eq!(tree_lines.len(), 7);
+        assert_eq!(tree_lines.len(), 9);
         assert!(tree_lines[0].spans.is_empty() || tree_lines[0].spans[0].content.is_empty());
 
         let card_lines = render_todo_widget(&plan, TodoWidgetStyle::Card, 80, &theme);
-        assert_eq!(card_lines.len(), 7);
+        assert_eq!(card_lines.len(), 9);
         assert!(card_lines[0].spans.is_empty() || card_lines[0].spans[0].content.is_empty());
 
         let rail_lines = render_todo_widget(&plan, TodoWidgetStyle::Rail, 80, &theme);
-        assert_eq!(rail_lines.len(), 6);
+        assert_eq!(rail_lines.len(), 8);
         assert!(rail_lines[0].spans.is_empty() || rail_lines[0].spans[0].content.is_empty());
 
         let minimal_lines = render_todo_widget(&plan, TodoWidgetStyle::Minimal, 80, &theme);
-        assert_eq!(minimal_lines.len(), 6);
+        assert_eq!(minimal_lines.len(), 8);
         assert!(minimal_lines[0].spans.is_empty() || minimal_lines[0].spans[0].content.is_empty());
     }
 }
