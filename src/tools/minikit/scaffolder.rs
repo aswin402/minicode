@@ -743,15 +743,11 @@ impl MiniKitScaffolder {
             } else {
                 f.path.clone()
             };
-            // Normalize package documentation: package docs prefixed with minikit_ must always live in packages/ not skills/
-            let clean_rel_path = if clean_rel_path.contains("/skills/minikit_")
-                && !clean_rel_path.ends_with("miniblocks.md")
-            {
-                clean_rel_path.replacen("/skills/minikit_", "/packages/minikit_", 1)
-            } else if clean_rel_path.starts_with("skills/minikit_")
-                && !clean_rel_path.ends_with("miniblocks.md")
-            {
-                clean_rel_path.replacen("skills/minikit_", "packages/minikit_", 1)
+            // Normalize package documentation: documentation must always live in packages/ not skills/
+            let clean_rel_path = if clean_rel_path.contains("/skills/") {
+                clean_rel_path.replacen("/skills/", "/packages/", 1)
+            } else if clean_rel_path.starts_with("skills/") {
+                clean_rel_path.replacen("skills/", "packages/", 1)
             } else {
                 clean_rel_path
             };

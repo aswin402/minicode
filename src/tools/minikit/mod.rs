@@ -512,16 +512,16 @@ mod tests {
             workspace.join("minikit_docs").join("core").join("prd.md")
         );
 
-        // If legacy flat file exists, it resolves flat file
+        // Canonical core docs unconditionally resolve to core/ even if legacy flat file exists
         let flat_todo = workspace.join("minikit_docs").join("todo.md");
         std::fs::create_dir_all(workspace.join("minikit_docs")).unwrap();
         std::fs::write(&flat_todo, "# Todo").unwrap();
-        assert_eq!(resolve_doc_path(workspace, "todo.md"), flat_todo);
-
-        // But if core/todo.md exists, core/ takes precedence
         let core_todo = workspace.join("minikit_docs").join("core").join("todo.md");
-        std::fs::create_dir_all(workspace.join("minikit_docs").join("core")).unwrap();
-        std::fs::write(&core_todo, "# Core Todo").unwrap();
         assert_eq!(resolve_doc_path(workspace, "todo.md"), core_todo);
+
+        // For non-core docs, flat path resolves if present
+        let flat_notes = workspace.join("minikit_docs").join("notes.md");
+        std::fs::write(&flat_notes, "# Notes").unwrap();
+        assert_eq!(resolve_doc_path(workspace, "notes.md"), flat_notes);
     }
 }

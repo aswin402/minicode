@@ -1384,9 +1384,18 @@ impl AgentLoop {
                                         | "x"
                                         | "check"
                                 );
+                                let has_workspace_modifications = turn_files_modified.len()
+                                    > completed_steps_in_turn
+                                    || crate::git::GitService::new(self.workspace_root.clone())
+                                        .get_status()
+                                        .await
+                                        .map(|s| !s.is_clean)
+                                        .unwrap_or(false);
+
                                 if is_done
                                     && completed_steps_in_turn > 0
                                     && !verifiable_action_performed
+                                    && !has_workspace_modifications
                                 {
                                     let reject_msg = "Error: Cannot batch-complete multiple plan steps simultaneously without intermediate implementation or verification. Focus on completing and verifying the current active step first before advancing subsequent steps.".to_string();
                                     let res_event = AgentEvent::ToolResult {

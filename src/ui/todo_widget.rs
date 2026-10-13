@@ -8,16 +8,42 @@
 
 use crate::config::TodoWidgetStyle;
 use crate::ui::theme::Theme;
-use crate::ui::view::{LivePlanBlock, LivePlanTaskStatus};
+use crate::ui::view::{LivePlanBlock, LivePlanTaskItem, LivePlanTaskStatus};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
+
+/// Dynamically filters tasks for the inline TUI widget.
+/// When an active in-progress task contains tactical sub-tasks (e.g. from MiniPowers),
+/// it focuses exclusively on that active task and its sub-tasks so the terminal is not cluttered.
+/// When no sub-tasks are active, it displays the milestone tasks.
+pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem> {
+    if tasks.is_empty() {
+        return Vec::new();
+    }
+    // If the active in-progress task has sub-tasks, focus exclusively on that active task!
+    if let Some(active) = tasks
+        .iter()
+        .find(|t| t.status == LivePlanTaskStatus::InProgress)
+    {
+        if !active.sub_tasks.is_empty() {
+            return vec![active];
+        }
+    }
+    // If no in-progress task has sub-tasks, check if any task has sub-tasks
+    if let Some(first_with_sub) = tasks.iter().find(|t| !t.sub_tasks.is_empty()) {
+        return vec![first_with_sub];
+    }
+    // Otherwise, return all milestone tasks
+    tasks.iter().collect()
+}
 
 /// Calculates the exact required row height for the inline todo widget.
 pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidgetStyle) -> u16 {
     match plan {
         Some(p) if !p.tasks.is_empty() => {
-            let total_count: u16 = p.tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
+            let tasks = filter_inline_tasks(&p.tasks);
+            let total_count: u16 = tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
             match style {
                 TodoWidgetStyle::Tree => total_count + 4,
                 TodoWidgetStyle::Card => total_count + 4,
@@ -56,7 +82,8 @@ pub fn render_todo_widget<'a>(
 
 /// Style 1: Oh My Pi tree layout (Default)
 fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let mut lines = Vec::with_capacity(plan.tasks.len() + 3);
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 3);
 
     // Line 1: Header "TODO" in bold cyan/info
     lines.push(Line::from(vec![Span::styled(
@@ -83,8 +110,8 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     ]));
 
     // Lines 3..N: Tree branch tasks
-    let task_count = plan.tasks.len();
-    for (idx, task) in plan.tasks.iter().enumerate() {
+    let task_count = tasks.len();
+    for (idx, task) in tasks.iter().enumerate() {
         let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
         let branch = if is_last {
             "    └── "
@@ -163,7 +190,8 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 
 /// Style 2: Rounded container card with interior tree
 fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let mut lines = Vec::with_capacity(plan.tasks.len() + 3);
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 3);
 
     // Top border
     let left_header = format!(
@@ -190,8 +218,8 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     ]));
 
     // Tasks
-    let task_count = plan.tasks.len();
-    for (idx, task) in plan.tasks.iter().enumerate() {
+    let task_count = tasks.len();
+    for (idx, task) in tasks.iter().enumerate() {
         let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
         let branch = if is_last {
             "    └── "
@@ -271,7 +299,8 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 
 /// Style 3: Modern left accent rail
 fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let mut lines = Vec::with_capacity(plan.tasks.len() + 2);
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 2);
 
     // Header line
     lines.push(Line::from(vec![
@@ -297,7 +326,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     ]));
 
     // Tasks
-    for task in &plan.tasks {
+    for task in tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
             LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
@@ -361,7 +390,8 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 
 /// Style 4: Clean minimalist top rule and open layout
 fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let mut lines = Vec::with_capacity(plan.tasks.len() + 2);
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 2);
 
     // Header line with dashes
     let left_header = format!(
@@ -382,7 +412,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
     )]));
 
     // Tasks with clean indentation
-    for task in &plan.tasks {
+    for task in tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
             LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
@@ -489,12 +519,13 @@ mod tests {
     #[test]
     fn test_todo_widget_required_height() {
         let plan = Some(sample_plan());
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 9);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 9);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 8);
+        // In sample_plan, T2 is active and has 2 subtasks. The inline widget focuses on T2 and its 2 subtasks (3 total items).
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 7);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 7);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 6);
         assert_eq!(
             todo_widget_required_height(&plan, TodoWidgetStyle::Minimal),
-            8
+            6
         );
 
         // Empty plan should return 0
@@ -518,19 +549,44 @@ mod tests {
         let theme = Theme::default();
 
         let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
-        assert_eq!(tree_lines.len(), 9);
+        assert_eq!(tree_lines.len(), 7);
         assert!(tree_lines[0].spans.is_empty() || tree_lines[0].spans[0].content.is_empty());
 
         let card_lines = render_todo_widget(&plan, TodoWidgetStyle::Card, 80, &theme);
-        assert_eq!(card_lines.len(), 9);
+        assert_eq!(card_lines.len(), 7);
         assert!(card_lines[0].spans.is_empty() || card_lines[0].spans[0].content.is_empty());
 
         let rail_lines = render_todo_widget(&plan, TodoWidgetStyle::Rail, 80, &theme);
-        assert_eq!(rail_lines.len(), 8);
+        assert_eq!(rail_lines.len(), 6);
         assert!(rail_lines[0].spans.is_empty() || rail_lines[0].spans[0].content.is_empty());
 
         let minimal_lines = render_todo_widget(&plan, TodoWidgetStyle::Minimal, 80, &theme);
-        assert_eq!(minimal_lines.len(), 8);
+        assert_eq!(minimal_lines.len(), 6);
         assert!(minimal_lines[0].spans.is_empty() || minimal_lines[0].spans[0].content.is_empty());
+    }
+
+    #[test]
+    fn test_render_without_subtasks() {
+        let plan = LivePlanBlock {
+            title: "Milestone".to_string(),
+            total_tasks: 2,
+            completed_tasks: 1,
+            active_task: Some("T2".to_string()),
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "T1".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
+                },
+                LivePlanTaskItem {
+                    title: "T2".to_string(),
+                    status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: Vec::new(),
+                },
+            ],
+        };
+        let theme = Theme::default();
+        let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
+        assert_eq!(tree_lines.len(), 6); // 1 spacer + 1 header + 1 subheader + 2 tasks + 1 divider
     }
 }

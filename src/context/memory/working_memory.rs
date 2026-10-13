@@ -741,9 +741,33 @@ impl WorkingMemory {
                     .unwrap_or_else(|| "Active Milestone Tasks".to_string())
             };
 
-            // If the active milestone has multiple meaningful tasks in core/todo.md,
-            // nest the tactical task_plan_tasks as sub_tasks of the active in-progress task.
-            // Otherwise, present the tactical tasks directly under the milestone label.
+            // Check if task_plan_tasks directly represents the milestone tasks themselves
+            let is_same_task_set = if let Some(m) = active_milestone {
+                if m.tasks.len() == task_plan_tasks.len() {
+                    m.tasks
+                        .iter()
+                        .zip(task_plan_tasks.iter())
+                        .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
+                } else {
+                    let matches = task_plan_tasks
+                        .iter()
+                        .filter(|t| {
+                            m.tasks
+                                .iter()
+                                .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
+                        })
+                        .count();
+                    matches > 0 && matches == task_plan_tasks.len()
+                }
+            } else {
+                false
+            };
+
+            if is_same_task_set {
+                return Self::build_plan_summary(label, &task_plan_tasks);
+            }
+
+            // Otherwise, task_plan_tasks are distinct tactical sub-steps for the active in-progress task.
             if let Some(m) = active_milestone {
                 let is_single_placeholder = m.tasks.len() == 1
                     && (m.tasks[0].title.eq_ignore_ascii_case("active execution")
@@ -1503,6 +1527,41 @@ impl WorkingMemory {
             self.workspace_root
                 .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE),
         );
+
+        // Synchronize canonical todo.md: mark remaining tasks of active milestone as completed
+        let todo_path = self.canonical_todo_path();
+        if todo_path.exists() {
+            if let Ok(content) = fs::read_to_string(&todo_path) {
+                let mut updated_lines = Vec::new();
+                let mut in_active_milestone = false;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("## Active Milestone")
+                        || trimmed.starts_with("# Tasks & Milestone Roadmap")
+                    {
+                        in_active_milestone = true;
+                        updated_lines.push(line.to_string());
+                    } else if in_active_milestone
+                        && trimmed.starts_with("## ")
+                        && !trimmed.starts_with("## Active Milestone")
+                    {
+                        in_active_milestone = false;
+                        updated_lines.push(line.to_string());
+                    } else if in_active_milestone {
+                        if line.contains("[>]") {
+                            updated_lines.push(line.replace("[>]", "[x]"));
+                        } else if line.contains("[ ]") {
+                            updated_lines.push(line.replace("[ ]", "[x]"));
+                        } else {
+                            updated_lines.push(line.to_string());
+                        }
+                    } else {
+                        updated_lines.push(line.to_string());
+                    }
+                }
+                let _ = fs::write(&todo_path, updated_lines.join("\n"));
+            }
+        }
 
         Ok(Some(archive_file))
     }

@@ -163,15 +163,37 @@ impl MiniKitSyncEngine {
     }
 
     /// Ensures the canonical 8 core spec workflow files exist under `docs_dir/core/`,
-    /// categorizes `skills/` and `packages/`, and seamlessly migrates any legacy flat files.
+    /// categorizes `packages/`, and seamlessly migrates any legacy flat files or legacy skills/ directories.
     pub fn ensure_workflow_docs(docs_dir: &Path, project_name: &str, runtime: &str) {
         let core_dir = docs_dir.join("core");
-        let skills_dir = docs_dir.join("skills");
         let packages_dir = docs_dir.join("packages");
+        let legacy_skills_dir = docs_dir.join("skills");
 
         fs::create_dir_all(&core_dir).ok();
-        fs::create_dir_all(&skills_dir).ok();
         fs::create_dir_all(&packages_dir).ok();
+
+        // --- Automated Migration of Legacy skills/ directory into packages/ ---
+        if legacy_skills_dir.exists() {
+            if let Ok(skill_entries) = fs::read_dir(&legacy_skills_dir) {
+                for entry in skill_entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let file_name = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let target = packages_dir.join(&file_name);
+                        if !target.exists() {
+                            let _ = fs::rename(&path, &target);
+                        } else {
+                            let _ = fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+            let _ = fs::remove_dir_all(&legacy_skills_dir);
+        }
 
         // --- Automated Migration of Legacy Flat Docs without Data Loss ---
         if let Ok(entries) = fs::read_dir(docs_dir) {
@@ -206,33 +228,6 @@ impl MiniKitSyncEngine {
                             let _ = fs::remove_file(&path);
                         }
                     } else if file_name.ends_with(".md") {
-                        let target =
-                            if file_name.starts_with("minikit_") && file_name != "miniblocks.md" {
-                                packages_dir.join(&file_name)
-                            } else {
-                                skills_dir.join(&file_name)
-                            };
-                        if !target.exists() {
-                            let _ = fs::rename(&path, &target);
-                        } else {
-                            let _ = fs::remove_file(&path);
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- Automated Migration of Package Docs mistakenly placed in skills/ ---
-        if let Ok(skill_entries) = fs::read_dir(&skills_dir) {
-            for entry in skill_entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let file_name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    if file_name.starts_with("minikit_") && file_name != "miniblocks.md" {
                         let target = packages_dir.join(&file_name);
                         if !target.exists() {
                             let _ = fs::rename(&path, &target);
@@ -405,8 +400,8 @@ impl MiniKitSyncEngine {
             let _ = fs::remove_file(root_todo);
         }
 
-        // 9. skills/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
-        let miniblocks_path = skills_dir.join("miniblocks.md");
+        // 9. packages/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
+        let miniblocks_path = packages_dir.join("miniblocks.md");
         if !miniblocks_path.exists() {
             let miniblocks_content = "# MiniBlocks Native UI Component & Design Warehouse 🎨\n\n\
                 ## Overview\n\
@@ -662,9 +657,9 @@ mod tests {
 
         MiniKitSyncEngine::ensure_workflow_docs(&docs, "my_app", "rust");
 
-        // Verify categories exist
+        // Verify categories exist: core/ and packages/ exist, skills/ is purged
         assert!(docs.join("core").is_dir());
-        assert!(docs.join("skills").is_dir());
+        assert!(!docs.join("skills").exists());
         assert!(docs.join("packages").is_dir());
 
         // Verify index.md was preserved at root
@@ -682,9 +677,9 @@ mod tests {
         // Verify package docs were populated into packages/
         assert!(docs.join("packages").join("minikit_react.md").exists());
 
-        // Verify non-core .md was migrated to skills/
-        let migrated_skill = fs::read_to_string(docs.join("skills").join("rust.md")).unwrap();
-        assert_eq!(migrated_skill, "# Rust Skill");
+        // Verify non-core .md was migrated to packages/
+        let migrated_pkg = fs::read_to_string(docs.join("packages").join("rust.md")).unwrap();
+        assert_eq!(migrated_pkg, "# Rust Skill");
 
         // Verify all 8 canonical core files exist
         for core_file in crate::tools::minikit::CORE_DOC_FILES {
@@ -695,7 +690,8 @@ mod tests {
             );
         }
 
-        // Verify skills/miniblocks.md was generated
-        assert!(docs.join("skills").join("miniblocks.md").exists());
+        // Verify packages/miniblocks.md was generated and skills/ directory does not exist
+        assert!(docs.join("packages").join("miniblocks.md").exists());
+        assert!(!docs.join("skills").exists());
     }
 }

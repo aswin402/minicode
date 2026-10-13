@@ -213,23 +213,46 @@ impl ModalState {
                         })
                         .count();
                 } else {
-                    let target_idx = active_m
-                        .tasks
-                        .iter()
-                        .position(|t| {
-                            t.status
-                                == crate::context::memory::working_memory::TaskItemStatus::InProgress
-                        })
-                        .or_else(|| {
-                            active_m.tasks.iter().position(|t| {
-                                t.status
-                                    == crate::context::memory::working_memory::TaskItemStatus::Pending
+                    let is_same_task_set = if active_m.tasks.len() == task_plan_tasks.len() {
+                        active_m
+                            .tasks
+                            .iter()
+                            .zip(task_plan_tasks.iter())
+                            .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
+                    } else {
+                        let matches = task_plan_tasks
+                            .iter()
+                            .filter(|t| {
+                                active_m
+                                    .tasks
+                                    .iter()
+                                    .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
                             })
-                        });
-                    if let Some(idx) = target_idx {
-                        active_m.tasks[idx].sub_tasks = task_plan_tasks;
-                    } else if let Some(last) = active_m.tasks.last_mut() {
-                        last.sub_tasks = task_plan_tasks;
+                            .count();
+                        matches > 0 && matches == task_plan_tasks.len()
+                    };
+
+                    if is_same_task_set {
+                        active_m.tasks = task_plan_tasks;
+                    } else {
+                        let target_idx = active_m
+                            .tasks
+                            .iter()
+                            .position(|t| {
+                                t.status
+                                    == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                            })
+                            .or_else(|| {
+                                active_m.tasks.iter().position(|t| {
+                                    t.status
+                                        == crate::context::memory::working_memory::TaskItemStatus::Pending
+                                })
+                            });
+                        if let Some(idx) = target_idx {
+                            active_m.tasks[idx].sub_tasks = task_plan_tasks;
+                        } else if let Some(last) = active_m.tasks.last_mut() {
+                            last.sub_tasks = task_plan_tasks;
+                        }
                     }
                 }
             } else {

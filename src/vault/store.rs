@@ -466,16 +466,7 @@ impl VaultStore {
         // 3b. Structured project documentation directory (minikit_docs/ or onpkg_docs/)
         let docs_dir = crate::tools::minikit::resolve_docs_dir(&self.workspace_root);
         if docs_dir.exists() {
-            // Tier 3a: skills/ -> Procedural & Domain Skills
-            let skills_dir = docs_dir.join("skills");
-            self.scan_directory_into_map(
-                &skills_dir,
-                SkillScope::Project,
-                Some(SkillKind::Workflow),
-                &mut skill_map,
-            );
-
-            // Tier 3b: packages/ -> Package Reference Docs & Continuous Learning Base
+            // Tier 3a: packages/ -> Package Reference Docs & Continuous Learning Base
             let packages_dir = docs_dir.join("packages");
             self.scan_directory_into_map(
                 &packages_dir,
@@ -1118,6 +1109,9 @@ impl VaultStore {
                                     }
                                 }
                             }
+                            if lower.contains("tailwind") {
+                                tokens.insert("tailwind".to_string());
+                            }
                         }
                     }
                 }
@@ -1246,31 +1240,90 @@ impl VaultStore {
         stack_tokens: &std::collections::HashSet<String>,
     ) -> bool {
         let name_lower = skill.name.to_lowercase();
+
+        // 1. Domain/Category Invariants
+        // Mobile skills require mobile runtime or mobile files
+        if skill.frontmatter.category.as_deref() == Some("mobile") || name_lower == "flutter" {
+            let has_mobile = stack_tokens.contains("flutter")
+                || stack_tokens.contains("dart")
+                || self.workspace_root.join("pubspec.yaml").exists();
+            if !has_mobile {
+                return false;
+            }
+        }
+
+        // Backend server framework skills require exact framework package dependency
+        let is_backend_framework = matches!(
+            name_lower.as_str(),
+            "express" | "hono" | "fastapi" | "actix-web" | "axum" | "nestjs" | "koa"
+        );
+        if is_backend_framework {
+            return stack_tokens.contains(&name_lower);
+        }
+
+        // Database/ORM skills require explicit ORM package or schema file
+        if name_lower == "prisma" {
+            return stack_tokens.contains("prisma")
+                || stack_tokens.contains("@prisma/client")
+                || self
+                    .workspace_root
+                    .join("prisma")
+                    .join("schema.prisma")
+                    .exists();
+        }
+
+        // Next.js requires explicit next dependency
+        if name_lower == "nextjs" || name_lower == "next" {
+            return stack_tokens.contains("next") || stack_tokens.contains("nextjs");
+        }
+
+        // Tailwind skills match either "tailwind" or "tailwindcss"
+        if name_lower.starts_with("tailwind")
+            && (stack_tokens.contains("tailwind") || stack_tokens.contains("tailwindcss"))
+        {
+            return true;
+        }
+
+        // 2. Exact name match
         if stack_tokens.contains(&name_lower) {
             return true;
         }
 
-        // Check clean stem (e.g. "rust-tokio" stem "tokio" or "rust", "tailwind-v4" stem "tailwind")
+        // 3. Clean stem match (e.g. "rust-tokio" stem "tokio" or "rust", "tailwind-v4" stem "tailwind")
         for part in name_lower.split('-') {
-            if !part.is_empty() && stack_tokens.contains(part) {
-                return true;
+            if part.len() >= 3 && stack_tokens.contains(part) {
+                // Ensure part is not an overly generic stop-word
+                if !matches!(
+                    part,
+                    "api" | "web" | "app" | "cli" | "full" | "lib" | "core"
+                ) {
+                    return true;
+                }
             }
         }
 
-        // Check frontmatter triggers
+        // 4. Exact frontmatter trigger match (never loose substring 'contains')
         for trigger in &skill.frontmatter.triggers {
             let trig_lower = trigger.to_lowercase();
-            if trig_lower.is_empty() {
+            if trig_lower.len() < 3 {
+                continue;
+            }
+            // Disallow generic stop words from triggering stack match
+            if matches!(
+                trig_lower.as_str(),
+                "node"
+                    | "bun"
+                    | "router"
+                    | "rest"
+                    | "api"
+                    | "orm"
+                    | "middleware"
+                    | "database"
+                    | "sql"
+            ) {
                 continue;
             }
             if stack_tokens.contains(&trig_lower) {
-                return true;
-            }
-            // Check if any stack token contains the trigger or vice-versa
-            if stack_tokens
-                .iter()
-                .any(|tok| tok.contains(&trig_lower) || trig_lower.contains(tok))
-            {
                 return true;
             }
         }

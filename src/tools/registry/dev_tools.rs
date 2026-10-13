@@ -1362,14 +1362,18 @@ mod tests {
         assert!(start_res.contains("Development process launched successfully"));
 
         // Wait brief moment for logs and ports
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // 2. List
-        let list_args = json!({ "action": "list" });
-        let list_res = dispatch("minitask", &list_args, temp.path())
-            .await
-            .unwrap()
-            .unwrap();
+        let mut list_res = String::new();
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let list_args = json!({ "action": "list" });
+            if let Some(Ok(res)) = dispatch("minitask", &list_args, temp.path()).await {
+                if res.contains("mock-api") {
+                    list_res = res;
+                    break;
+                }
+                list_res = res;
+            }
+        }
         assert!(list_res.contains("mock-api"));
 
         // 3. Resources
