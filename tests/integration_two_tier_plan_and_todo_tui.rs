@@ -272,3 +272,84 @@ fn test_integration_todo_modal_smart_collapse_and_rendering() {
     assert!(text.contains("[Tab]"));
     assert!(text.contains("[Space]"));
 }
+
+#[test]
+fn test_integration_todo_modal_synthesizes_active_milestone_from_task_plan() {
+    use minicode::ui::modals::todo::render_todo_modal;
+    use minicode::ui::modals::ModalState;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let dir = tempdir().expect("Failed to create tempdir");
+    let core_dir = dir.path().join("minikit_docs").join("core");
+    let plan_dir = dir.path().join(".minicode").join("plan");
+    fs::create_dir_all(&core_dir).expect("Failed to create core dir");
+    fs::create_dir_all(&plan_dir).expect("Failed to create plan dir");
+
+    // 1. Initial boilerplate setup in core/todo.md (all tasks [x])
+    let initial_todo = "# Task Tracker (todo.md) 📋\n\n## Active Milestone\n- [x] Initial project setup and architecture sync\n\n> Scaffolding complete. Decompose features into milestones using `create_plan`.\n";
+    fs::write(core_dir.join("todo.md"), initial_todo).expect("Failed to write initial todo.md");
+
+    // 2. Active MiniPower plan in .minicode/plan/task_plan.md
+    let task_plan = "# Task Plan: Build Premium minicode Landing Page\n\n## Objectives & Steps:\n1. [x] Inspect scaffold output\n2. [>] Build global CSS design tokens\n3. [ ] Build Navbar component\n";
+    fs::write(plan_dir.join("task_plan.md"), task_plan).expect("Failed to write task_plan.md");
+
+    // 3. Open Todo Modal
+    let modal = ModalState::new_todo(dir.path());
+    let ModalState::Todo(state) = modal else {
+        panic!("Expected ModalState::Todo");
+    };
+
+    // Must contain 2 milestones: the completed setup + synthesized active milestone
+    assert_eq!(state.milestones.len(), 2);
+    assert_eq!(state.milestones[0].id, "Active Milestone");
+    assert!(!state.milestones[0].is_active);
+
+    assert_eq!(
+        state.milestones[1].id,
+        "Build Premium minicode Landing Page"
+    );
+    assert!(state.milestones[1].is_active);
+    assert_eq!(state.milestones[1].total_tasks, 3);
+    assert_eq!(state.milestones[1].completed_tasks, 1);
+    assert_eq!(state.milestones[1].in_progress_tasks, 1);
+    assert_eq!(state.milestones[1].pending_tasks, 1);
+
+    // Selected milestone must be the active milestone
+    assert_eq!(state.selected_milestone, 1);
+
+    // 4. Render modal and verify output
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("Failed to create terminal");
+    let theme = Theme::aura_dark();
+
+    terminal
+        .draw(|f| {
+            render_todo_modal(f, f.area(), &state, &theme);
+        })
+        .expect("Failed to draw todo modal");
+
+    let buffer = terminal.backend().buffer();
+    let text = format!("{:?}", buffer);
+
+    // Must NOT say "All Completed"
+    assert!(!text.contains("All Completed"));
+    // Must contain the active plan title
+    assert!(text.contains("Build Premium minicode Landing Page"));
+    // Must contain the active task
+    assert!(text.contains("Build global CSS design tokens"));
+
+    // 5. Test WorkingMemory::init_two_tier_plan updating todo.md over boilerplate
+    let wm = WorkingMemory::new(dir.path());
+    let steps = vec![
+        "Step 1: Scaffolding".to_string(),
+        "Step 2: Core Components".to_string(),
+    ];
+    wm.init_two_tier_plan("Feature Rollout", &steps, None, None)
+        .expect("Failed to init plan");
+
+    let updated_todo =
+        fs::read_to_string(core_dir.join("todo.md")).expect("Failed to read updated todo");
+    assert!(updated_todo.contains("Feature Rollout"));
+    assert!(updated_todo.contains("Step 1: Scaffolding"));
+}

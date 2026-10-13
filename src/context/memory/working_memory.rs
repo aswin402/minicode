@@ -155,23 +155,6 @@ impl WorkingMemory {
 
     /// Checks if there is an active task plan in progress.
     pub fn has_active_plan(&self) -> bool {
-        let todo_path = self.canonical_todo_path();
-        if todo_path.exists() {
-            if let Ok(content) = fs::read_to_string(&todo_path) {
-                if content.lines().any(|l| {
-                    let t = l.trim();
-                    t.starts_with("- [ ]")
-                        || t.starts_with("* [ ]")
-                        || t.starts_with("- [>]")
-                        || t.starts_with("* [>]")
-                        || t.starts_with("- [x]")
-                        || t.starts_with("* [x]")
-                }) {
-                    return true;
-                }
-            }
-        }
-
         let plan_path = self.task_plan_path();
         match fs::read_to_string(&plan_path) {
             Ok(s) => !s.trim().is_empty(),
@@ -285,33 +268,36 @@ impl WorkingMemory {
                 let _ = fs::write(&todo_path, todo_content);
             }
         } else {
-            let should_write_todo = if !todo_path.exists() {
-                true
-            } else if let Ok(existing) = fs::read_to_string(&todo_path) {
-                let has_tasks = existing.lines().any(|l| {
+            let (has_uncompleted, is_boilerplate) = if let Ok(existing) =
+                fs::read_to_string(&todo_path)
+            {
+                let uncompleted = existing.lines().any(|l| {
                     let t = l.trim();
                     t.starts_with("- [ ]")
                         || t.starts_with("* [ ]")
                         || t.starts_with("- [>]")
                         || t.starts_with("* [>]")
-                        || t.starts_with("- [x]")
-                        || t.starts_with("* [x]")
-                        || (t.contains("[ ]") || t.contains("[>]") || t.contains("[x]"))
                 });
-                !has_tasks
+                let boilerplate = existing.contains("Initial project setup and architecture sync")
+                    || existing
+                        .contains("Scaffolding complete. Decompose features into milestones");
+                (uncompleted, boilerplate)
             } else {
-                false
+                (false, false)
             };
+
+            let should_write_todo = !todo_path.exists() || is_boilerplate || !has_uncompleted;
 
             if should_write_todo && !steps.is_empty() {
                 let mut todo_content = format!(
-                    "# Tasks & Todo: {}\n\n> Initialized: {}\n\n",
+                    "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n",
                     title, timestamp
                 );
+                todo_content.push_str(&format!("## Active Milestone: {}\n", title));
                 for (idx, step) in steps.iter().enumerate() {
                     let clean = Self::sanitize_step_title(step);
                     let marker = if idx == 0 { "[>]" } else { "[ ]" };
-                    todo_content.push_str(&format!("{}. {} {}\n", idx + 1, marker, clean));
+                    todo_content.push_str(&format!("- {} {}\n", marker, clean));
                 }
                 let _ = fs::write(&todo_path, todo_content);
             }
@@ -1523,7 +1509,12 @@ impl WorkingMemory {
 
     /// Renders active working memory as a unified, senior-engineer prompt block.
     pub fn to_prompt_block(&self) -> String {
-        if !self.has_active_plan() && self.read_notes().is_none() {
+        let has_plan = self.has_active_plan()
+            || self
+                .read_roadmap_todo()
+                .map(|o| o.is_some())
+                .unwrap_or(false);
+        if !has_plan && self.read_notes().is_none() {
             return String::new();
         }
 

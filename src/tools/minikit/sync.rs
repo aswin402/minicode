@@ -202,6 +202,8 @@ impl MiniKitSyncEngine {
                         let target = core_dir.join(&file_name);
                         if !target.exists() {
                             let _ = fs::rename(&path, &target);
+                        } else {
+                            let _ = fs::remove_file(&path);
                         }
                     } else if file_name.ends_with(".md") {
                         let target =
@@ -212,6 +214,8 @@ impl MiniKitSyncEngine {
                             };
                         if !target.exists() {
                             let _ = fs::rename(&path, &target);
+                        } else {
+                            let _ = fs::remove_file(&path);
                         }
                     }
                 }
@@ -237,6 +241,19 @@ impl MiniKitSyncEngine {
                         }
                     }
                 }
+            }
+        }
+
+        // --- Populate Package Documentation into packages/ ---
+        let package_docs = crate::tools::minikit::stacks::builtin::react_package_docs();
+        for doc in &package_docs {
+            let file_name = std::path::Path::new(&doc.path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let target = packages_dir.join(&*file_name);
+            if !target.exists() {
+                let _ = fs::write(&target, &doc.content);
             }
         }
 
@@ -274,9 +291,10 @@ impl MiniKitSyncEngine {
                 project_name, runtime
             );
             fs::write(&prd_path, &prd).ok();
-            fs::write(docs_dir.join("prd.md"), &prd).ok();
-        } else if !docs_dir.join("prd.md").exists() {
-            let _ = fs::copy(&prd_path, docs_dir.join("prd.md"));
+        }
+        let root_prd = docs_dir.join("prd.md");
+        if root_prd.exists() {
+            let _ = fs::remove_file(root_prd);
         }
 
         // 3. architecture.md (Architecture & AST CodeGraph)
@@ -381,9 +399,10 @@ impl MiniKitSyncEngine {
                     .to_string()
             };
             fs::write(&todo_path, &todo).ok();
-            fs::write(docs_dir.join("todo.md"), &todo).ok();
-        } else if !docs_dir.join("todo.md").exists() {
-            let _ = fs::copy(&todo_path, docs_dir.join("todo.md"));
+        }
+        let root_todo = docs_dir.join("todo.md");
+        if root_todo.exists() {
+            let _ = fs::remove_file(root_todo);
         }
 
         // 9. skills/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
@@ -654,9 +673,14 @@ mod tests {
         // Verify legacy flat core files were migrated to core/ without data loss
         let migrated_prd = fs::read_to_string(docs.join("core").join("prd.md")).unwrap();
         assert_eq!(migrated_prd, "# Custom PRD");
+        assert!(!docs.join("prd.md").exists());
 
         let migrated_todo = fs::read_to_string(docs.join("core").join("todo.md")).unwrap();
         assert_eq!(migrated_todo, "# Custom Todo");
+        assert!(!docs.join("todo.md").exists());
+
+        // Verify package docs were populated into packages/
+        assert!(docs.join("packages").join("minikit_react.md").exists());
 
         // Verify non-core .md was migrated to skills/
         let migrated_skill = fs::read_to_string(docs.join("skills").join("rust.md")).unwrap();

@@ -356,9 +356,12 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                         .bg(m_bg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  ", Style::default().bg(m_bg)),
                 Span::styled(
-                    format!("{}: {}", milestone.id, milestone.title),
+                    if milestone.id == milestone.title {
+                        milestone.title.clone()
+                    } else {
+                        format!("{}: {}", milestone.id, milestone.title)
+                    },
                     Style::default()
                         .fg(if is_selected_m {
                             theme.text_primary
@@ -544,12 +547,30 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
     // Responsive Integrated Footer Dock: Dynamic Progress Meter + Navigation Keyhints
     let selected_m = state.milestones.get(state.selected_milestone);
     let (m_label, pct, done, total) = if let Some(m) = selected_m {
-        let p = if m.total_tasks > 0 {
-            (m.completed_tasks * 100) / m.total_tasks
+        let (done, total) = if m.tasks.iter().any(|t| !t.sub_tasks.is_empty()) {
+            let mut sub_total = 0;
+            let mut sub_done = 0;
+            for t in &m.tasks {
+                if !t.sub_tasks.is_empty() {
+                    sub_total += t.sub_tasks.len();
+                    sub_done += t
+                        .sub_tasks
+                        .iter()
+                        .filter(|s| s.status == TaskItemStatus::Completed)
+                        .count();
+                } else {
+                    sub_total += 1;
+                    if t.status == TaskItemStatus::Completed {
+                        sub_done += 1;
+                    }
+                }
+            }
+            (sub_done, sub_total)
         } else {
-            100
+            (m.completed_tasks, m.total_tasks)
         };
-        (m.id.clone(), p, m.completed_tasks, m.total_tasks)
+        let p = if total > 0 { (done * 100) / total } else { 100 };
+        (m.id.clone(), p, done, total)
     } else {
         ("Roadmap".to_string(), 100, 0, 0)
     };

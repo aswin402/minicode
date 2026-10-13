@@ -174,8 +174,12 @@ impl ModalState {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let mut milestones = wm.read_roadmap_milestones();
         let task_plan_tasks = wm.read_task_plan_tasks();
-        if !task_plan_tasks.is_empty() {
-            if let Some(active_m) = milestones.iter_mut().find(|m| m.is_active) {
+        let has_task_plan = !task_plan_tasks.is_empty();
+
+        if has_task_plan {
+            let active_pos = milestones.iter().position(|m| m.is_active);
+            if let Some(pos) = active_pos {
+                let active_m = &mut milestones[pos];
                 let is_single_placeholder = active_m.tasks.len() == 1
                     && (active_m.tasks[0]
                         .title
@@ -224,8 +228,48 @@ impl ModalState {
                         });
                     if let Some(idx) = target_idx {
                         active_m.tasks[idx].sub_tasks = task_plan_tasks;
+                    } else if let Some(last) = active_m.tasks.last_mut() {
+                        last.sub_tasks = task_plan_tasks;
                     }
                 }
+            } else {
+                // When roadmap milestones are all completed or empty, synthesize active milestone from task plan
+                let plan_title = wm
+                    .read_task_plan_title()
+                    .unwrap_or_else(|| "Active Milestone".to_string());
+                let total = task_plan_tasks.len();
+                let completed = task_plan_tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status
+                            == crate::context::memory::working_memory::TaskItemStatus::Completed
+                    })
+                    .count();
+                let in_progress = task_plan_tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status
+                            == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                    })
+                    .count();
+                let pending = task_plan_tasks
+                    .iter()
+                    .filter(|t| {
+                        t.status == crate::context::memory::working_memory::TaskItemStatus::Pending
+                    })
+                    .count();
+                let is_active = in_progress > 0 || pending > 0 || total > 0;
+
+                milestones.push(crate::context::memory::working_memory::MilestonePhase {
+                    id: plan_title.clone(),
+                    title: plan_title,
+                    total_tasks: total,
+                    completed_tasks: completed,
+                    in_progress_tasks: in_progress,
+                    pending_tasks: pending,
+                    tasks: task_plan_tasks,
+                    is_active,
+                });
             }
         }
         Self::Todo(todo::TodoModalState::new(milestones))

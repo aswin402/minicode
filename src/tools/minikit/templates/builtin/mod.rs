@@ -6,10 +6,13 @@ mod flutter;
 mod hono;
 mod mern;
 mod next_template;
+pub(crate) mod package_docs;
 mod pern;
 mod react_vite;
 mod rust_cli;
 mod static_website;
+
+pub use package_docs::react_package_docs;
 
 use crate::tools::minikit::stacks::Stack;
 
