@@ -21,6 +21,25 @@ pub const PLAN_GATED_TOOLS: &[&str] = &[
     "block_scaffold",
 ];
 
+/// Tools that represent verifiable implementation or runtime verification actions.
+pub const VERIFIABLE_ACTION_TOOLS: &[&str] = &[
+    "write_file",
+    "patch_file",
+    "replace_in_files",
+    "exec_cmd",
+    "kit_stack_add",
+    "block_scaffold",
+    "block_insert",
+    "minitask",
+    "git_commit",
+];
+
+/// Returns true if the tool call performs a verifiable implementation or verification action.
+#[must_use]
+pub fn is_verifiable_action_tool(name: &str) -> bool {
+    VERIFIABLE_ACTION_TOOLS.contains(&name) || name.starts_with("browser_")
+}
+
 /// Per-session plan approval state.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PlanGate {
@@ -121,5 +140,23 @@ mod tests {
         gate.observe_success("ask_user", &json!({}));
         gate.observe_success("create_plan", &plan(7));
         assert!(gate.check("write_file").is_some());
+    }
+
+    #[test]
+    fn test_is_verifiable_action_tool() {
+        assert!(is_verifiable_action_tool("write_file"));
+        assert!(is_verifiable_action_tool("patch_file"));
+        assert!(is_verifiable_action_tool("exec_cmd"));
+        assert!(is_verifiable_action_tool("kit_stack_add"));
+        assert!(is_verifiable_action_tool("browser_navigate"));
+        assert!(is_verifiable_action_tool("browser_screenshot"));
+        assert!(is_verifiable_action_tool("browser_debug_logs"));
+        assert!(is_verifiable_action_tool("minitask"));
+        assert!(is_verifiable_action_tool("git_commit"));
+
+        assert!(!is_verifiable_action_tool("read_file"));
+        assert!(!is_verifiable_action_tool("grep_search"));
+        assert!(!is_verifiable_action_tool("ask_user"));
+        assert!(!is_verifiable_action_tool("update_progress"));
     }
 }

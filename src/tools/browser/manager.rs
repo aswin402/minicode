@@ -118,8 +118,21 @@ impl BrowserManager {
 
     /// Shuts down the pooled live engine, killing the child process, its process group,
     /// and all child/descendant processes cleanly.
+    /// Preserves GUI browser instances unless `force: true` is passed.
     pub async fn shutdown_live_engine() -> Result<bool> {
+        Self::shutdown_live_engine_opt(false).await
+    }
+
+    /// Shuts down the live engine with optional forced override for GUI instances.
+    pub async fn shutdown_live_engine_opt(force: bool) -> Result<bool> {
         let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(ref engine) = *guard {
+            if engine.process.config.mode == BrowserMode::Gui && !force {
+                tracing::info!("Live browser engine is running in GUI mode; preserving window for user viewing.");
+                return Ok(false);
+            }
+        }
+
         if let Some(engine) = guard.take() {
             let pid = engine.process.child.id();
             if let Some(p) = pid {
@@ -151,6 +164,13 @@ impl BrowserManager {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Returns the execution mode (`Headless` or `Gui`) of the currently running live engine, if any.
+    #[allow(dead_code)]
+    pub async fn live_engine_mode() -> Option<BrowserMode> {
+        let guard = LIVE_ENGINE.lock().await;
+        guard.as_ref().map(|e| e.process.config.mode)
     }
 
     /// Checks if a live browser engine is currently running and alive.

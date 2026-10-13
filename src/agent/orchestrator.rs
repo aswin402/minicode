@@ -1363,7 +1363,7 @@ impl WorkflowRouter {
             }
             out.push_str("  Dev Server Persistence Invariant:\n");
             out.push_str("  • Dev servers (frontend, backend, docker) MUST remain running across turns so the user can interact with and view their application. NEVER call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
-            out.push_str("  • Ephemeral inspection engines (headless Obscura, Chrome, Firefox) opened for automated verification MUST be closed via `browser_close` once automated inspection finishes.\n");
+            out.push_str("  • Ephemeral inspection engines (headless Obscura, Chrome, Firefox) opened for automated verification MUST be closed via `browser_close` once automated inspection finishes. However, GUI browser windows opened for human viewing MUST remain open across turns so the user can inspect their app.\n");
             out.push_str("  Status & Inspection Invariant:\n");
             out.push_str("  • When the user asks what is happening, checks tasks, or requests telemetry, directly explain the current state of active services, scheduled tasks, and recent outputs above. Use `minitask(action=\"resources\")` or `minitask(action=\"status\")` if further live details are needed.\n");
             out.push_str("  Resource / Telemetry Invariant:\n");

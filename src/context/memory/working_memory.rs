@@ -889,6 +889,11 @@ impl WorkingMemory {
             || step_trimmed.eq_ignore_ascii_case("remaining")
             || step_trimmed.eq_ignore_ascii_case("rest")
             || step_trimmed.starts_with("remaining");
+        if is_target_all_remaining {
+            return Err(ContextError::Memory(
+                "Bulk completion ('all' / 'remaining') is rejected. Each task step must be verified and updated individually.".to_string()
+            ).into());
+        }
         let clean_needle = Self::sanitize_step_title(step_trimmed).to_ascii_lowercase();
 
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -906,32 +911,6 @@ impl WorkingMemory {
             let Ok(content) = fs::read_to_string(path) else {
                 return UpdateFileOutcome::NotFound;
             };
-
-            if is_target_all_remaining && is_done {
-                let mut updated_lines = Vec::new();
-                let mut any_modified = false;
-                for line in content.lines() {
-                    if line.contains("[ ]") {
-                        updated_lines.push(line.replacen("[ ]", "[x]", 1));
-                        any_modified = true;
-                    } else if line.contains("[>]") {
-                        updated_lines.push(line.replacen("[>]", "[x]", 1));
-                        any_modified = true;
-                    } else if line.contains("[/]") {
-                        updated_lines.push(line.replacen("[/]", "[x]", 1));
-                        any_modified = true;
-                    } else {
-                        updated_lines.push(line.to_string());
-                    }
-                }
-                if any_modified {
-                    let updated = updated_lines.join("\n");
-                    let _ = fs::write(path, updated);
-                    return UpdateFileOutcome::Modified;
-                } else {
-                    return UpdateFileOutcome::AlreadyInStatus;
-                }
-            }
 
             // First pass: identify all parsed task items with their line indices
             let mut parsed_items = Vec::new();
@@ -2183,9 +2162,15 @@ mod tests {
         let tasks = wm.read_parsed_tasks();
         assert_eq!(tasks[0].status, TaskItemStatus::Completed);
 
-        // Test bulk remaining completion via "remaining"
+        // Verify bulk completion via "remaining" is strictly rejected
         let res = wm.update_progress("remaining", "completed");
-        assert!(res.is_ok());
+        assert!(res.is_err(), "Bulk completion must be rejected");
+
+        // Complete remaining tasks individually
+        for idx in 2..=5 {
+            let res = wm.update_progress(&idx.to_string(), "completed");
+            assert!(res.is_ok());
+        }
 
         let final_tasks = wm.read_parsed_tasks();
         assert_eq!(final_tasks[4].status, TaskItemStatus::Completed);

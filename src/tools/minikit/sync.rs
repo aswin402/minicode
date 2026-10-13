@@ -350,10 +350,8 @@ impl MiniKitSyncEngine {
             } else {
                 "# Task Tracker (todo.md) 📋\n\n\
                 ## Active Milestone\n\
-                - [x] Initial project setup and architecture sync\n\
-                - [ ] Implement core features\n\
-                - [ ] Add integration and unit tests\n\
-                - [ ] Verification and documentation\n"
+                - [x] Initial project setup and architecture sync\n\n\
+                > Scaffolding complete. Decompose features into milestones using `create_plan`.\n"
                     .to_string()
             };
             fs::write(&todo_path, &todo).ok();

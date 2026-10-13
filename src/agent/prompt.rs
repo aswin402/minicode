@@ -118,8 +118,11 @@ Below is the definitive reference for minicode's native tools, their schemas, an
    - `browser_navigate(url: str, headless: optional bool)`: Launch browser session to inspect rendered UI.
    - `browser_snapshot(annotated: optional bool)`: Capture DOM tree, accessibility nodes, and screenshot.
    - `browser_click(selector: str)` / `browser_type(selector: str, text: str)` / `browser_scroll(direction: str)`: Interact with browser page.
-   - `browser_close`: Close active browser window.
-   - **Ephemeral Browser Invariant**: Browser engines (headless Obscura, Chrome, Firefox) opened for visual verification or testing MUST be closed via `browser_close` once automated inspection finishes! Do not leave headless browser engines running indefinitely.
+   - `browser_close(force: optional bool)`: Close active browser session.
+   - **Browser Lifecycle & GUI Invariant**:
+     - Headless browser sessions (`mode="headless"`) opened for automated visual inspection or testing MUST be closed via `browser_close` once automated inspection finishes! Do not leave headless engines running indefinitely in the background.
+     - GUI browser windows (`mode="gui"`) opened for human inspection or live viewing MUST remain open across turns so the user can interact with their application. NEVER call `browser_close` on a GUI session unless the user explicitly commands to close or stop it!
+     - Dev servers (e.g. `vite`, `cargo run`, `bun run dev`, `next dev`) MUST remain running across turns so the user can test their application. Never call action="stop" at the end of a turn unless the user explicitly asked to stop the server.
 
 7. **MiniPower Methodology & Verification Barrier**:
    - `power_plan(topic: str, save_to_docs: optional bool)`: Author structured architecture plan in docs/core/todo.md.
@@ -523,7 +526,7 @@ impl PromptBuilder {
             }
             recency.push_str("    Task Management Rules:\n");
             recency.push_str("    • Process Lifecycle: Dev servers (frontend, backend, docker) MUST stay running across turns so the user can interact with their app. Never call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
-            recency.push_str("    • Ephemeral Engines: If a browser or debug session was opened for automated verification, close it with `browser_close` when inspection finishes.\n");
+            recency.push_str("    • Ephemeral Engines: If a headless browser or debug session was opened for automated verification, close it with `browser_close` when inspection finishes. If a GUI browser window was opened for human viewing, preserve it across turns.\n");
             recency.push_str("    • To inspect telemetry or resource usage: ALWAYS call `minitask(action=\"resources\")` or `minitask(action=\"status\")`. NEVER run raw shell commands like `ps`, `top`, or `grep`.\n");
             recency.push_str("    • To stop tasks or servers when requested: ALWAYS call `minitask(action=\"stop\", id=\"...\")` or `minitask(action=\"kill_all\")`. NEVER run raw `pkill` or `kill` commands.\n");
             recency.push_str("  </active_background_tasks>\n");

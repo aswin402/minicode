@@ -380,7 +380,7 @@ MIT
             StackFile {
                 path: "index.html".into(),
                 content: r###"<!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -696,8 +696,13 @@ export default defineConfig([
   h1, h2, h3, h4, h5, h6 {
     @apply font-heading font-bold;
   }
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+  .reveal, .animate-reveal, [data-animate] {
+    opacity: 1;
+  }
 }
-
 "###.into(),
                 binary_content: None,
             },
@@ -1254,7 +1259,7 @@ export function HomePage() {
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-1000">
-      <section id="center" className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-8">
+      <section id="center" className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-8 scroll-mt-20">
         <div className="hero relative mb-12">
           <div className="absolute -inset-4 bg-primary/20 blur-3xl rounded-full animate-pulse" />
           <img src={heroImg} className="relative base w-48 h-auto drop-shadow-2xl" alt="" />
@@ -1289,7 +1294,7 @@ export function HomePage() {
 
       <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent w-full" />
 
-      <section id="features" className="p-16 max-w-6xl mx-auto grid md:grid-cols-3 gap-8">
+      <section id="features" className="p-16 max-w-6xl mx-auto grid md:grid-cols-3 gap-8 scroll-mt-20">
         <FeatureCard
           title="Fast Refresh"
           desc="Lightning fast HMR provided by Vite 8 for an ultra-smooth dev experience."
@@ -1404,7 +1409,7 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'dark',
       setTheme: (theme) => set({ theme }),
     }),
     {
@@ -1859,7 +1864,7 @@ MIT
             StackFile {
                 path: "index.html".into(),
                 content: r###"<!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -2175,8 +2180,13 @@ export default defineConfig([
   h1, h2, h3, h4, h5, h6 {
     @apply font-heading font-bold;
   }
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+  .reveal, .animate-reveal, [data-animate] {
+    opacity: 1;
+  }
 }
-
 "###.into(),
                 binary_content: None,
             },
@@ -2733,7 +2743,7 @@ export function HomePage() {
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-1000">
-      <section id="center" className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-8">
+      <section id="center" className="min-h-[calc(100vh-4rem)] flex flex-col items-center justify-center p-8 scroll-mt-20">
         <div className="hero relative mb-12">
           <div className="absolute -inset-4 bg-primary/20 blur-3xl rounded-full animate-pulse" />
           <img src={heroImg} className="relative base w-48 h-auto drop-shadow-2xl" alt="" />
@@ -2768,7 +2778,7 @@ export function HomePage() {
 
       <div className="h-px bg-gradient-to-r from-transparent via-border to-transparent w-full" />
 
-      <section id="features" className="p-16 max-w-6xl mx-auto grid md:grid-cols-3 gap-8">
+      <section id="features" className="p-16 max-w-6xl mx-auto grid md:grid-cols-3 gap-8 scroll-mt-20">
         <FeatureCard
           title="Fast Refresh"
           desc="Lightning fast HMR provided by Vite 8 for an ultra-smooth dev experience."
@@ -2883,7 +2893,7 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'dark',
       setTheme: (theme) => set({ theme }),
     }),
     {
@@ -3332,7 +3342,7 @@ export default defineConfig([
             StackFile {
                 path: "index.html".into(),
                 content: r#"<!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -10238,6 +10248,12 @@ export const useUser = (userId: string) => {
   h1, h2, h3, h4, h5, h6 {
     @apply font-heading font-bold;
   }
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+  .reveal, .animate-reveal, [data-animate] {
+    opacity: 1;
+  }
 }
 
 @theme inline {
@@ -10799,7 +10815,7 @@ export function HomePage() {
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] bg-primary/10 rounded-full blur-[140px] pointer-events-none" />
 
       {/* Main Hero Container */}
-      <section className="flex-1 flex flex-col items-center justify-center p-8 max-w-4xl mx-auto w-full text-center relative z-10 pt-16">
+      <section id="center" className="flex-1 flex flex-col items-center justify-center p-8 max-w-4xl mx-auto w-full text-center relative z-10 pt-16 scroll-mt-20">
 
         {/* Floating Logo / Lottie Hero Graphic */}
         <div className="hero-graphic relative mb-10 w-72 h-72 flex items-center justify-center bg-card/10 border border-border/20 rounded-full p-4 backdrop-blur-sm">
@@ -10868,7 +10884,7 @@ export function HomePage() {
       <div className="h-px bg-gradient-to-r from-transparent via-border/40 to-transparent w-full" />
 
       {/* Features Grid Section */}
-      <section className="features-section p-16 max-w-6xl mx-auto w-full relative z-10">
+      <section id="features" className="features-section p-16 max-w-6xl mx-auto w-full relative z-10 scroll-mt-20">
         <div className="grid md:grid-cols-3 gap-8">
           <div className="feature-card-wrapper">
             <FeatureCard
@@ -11039,7 +11055,7 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      theme: 'dark',
       setTheme: (theme) => set({ theme }),
     }),
     {

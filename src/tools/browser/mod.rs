@@ -63,11 +63,30 @@ impl BrowserController {
     ) -> Result<PageSnapshot> {
         validate_browser_url(url)?;
 
-        // On Linux/macOS, localhost often resolves to IPv6 ::1 first while local dev servers
-        // (Vite, Next.js, Express, Bun) bind only to IPv4 127.0.0.1. Normalizing localhost to
-        // 127.0.0.1 prevents TCP SYN stalls and connection aborts inside the browser engine.
-        let normalized_url = normalize_loopback_url(url);
-        let target_url = normalized_url.as_str();
+        // Reconcile loopback port with active dev servers in the registry, and normalize localhost to 127.0.0.1
+        let (reconciled_url, reconciliation_notice) = reconcile_loopback_url(url).await;
+        if let Some(ref notice) = reconciliation_notice {
+            tracing::info!(notice = %notice, "Reconciled loopback target URL");
+        }
+        let target_url = reconciled_url.as_str();
+
+        // TCP Socket Readiness Barrier: Verify that loopback target port is listening
+        // before attempting CDP navigation to eliminate ConnectionRefused (OS 111) and CDP timeouts.
+        if let Ok(parsed) = url::Url::parse(target_url) {
+            let is_loopback = matches!(
+                parsed.host_str(),
+                Some("127.0.0.1") | Some("localhost") | Some("0.0.0.0") | Some("::1")
+            );
+            if is_loopback {
+                let port = parsed.port().unwrap_or(80);
+                if !wait_for_port_ready(port, std::time::Duration::from_millis(4000)).await {
+                    return Err(ToolError::CommandExec(format!(
+                        "Target server at http://127.0.0.1:{} is not yet accepting TCP connections (port {} closed). Please wait for compilation to complete or check logs via minitask(action=\"logs\").",
+                        port, port
+                    )).into());
+                }
+            }
+        }
 
         // Try launching preferred browser engine according to priority chain
         match BrowserManager::get_or_launch(mode, workspace_root).await {
@@ -93,7 +112,11 @@ impl BrowserController {
                     let elements = acc_mgr.update_from_html(&html);
                     let mut snapshot = Self::parse_html_to_aria_snapshot(target_url, &html);
                     snapshot.interactive_elements = elements;
-                    snapshot.engine_used = engine_name;
+                    if let Some(ref notice) = reconciliation_notice {
+                        snapshot.engine_used = format!("{} [{}]", engine_name, notice);
+                    } else {
+                        snapshot.engine_used = engine_name;
+                    }
                     return Ok(snapshot);
                 } else if let Err(e) = cdp_res {
                     tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
@@ -179,6 +202,7 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<PageSnapshot> {
         validate_browser_url(url)?;
+        let (reconciled_url, _) = reconcile_loopback_url(url).await;
 
         if let Ok(engine) = BrowserManager::get_or_launch(mode, workspace_root).await {
             let engine_name = format!("{} ({})", engine.process.config.engine, mode);
@@ -190,24 +214,27 @@ impl BrowserController {
                 .unwrap_or_default();
             let clean_current = current_url.trim_matches('"').trim_end_matches('/');
             let clean_target = url.trim_end_matches('/');
+            let clean_reconciled = reconciled_url.trim_end_matches('/');
 
-            if !clean_current.is_empty() && clean_current == clean_target {
+            if !clean_current.is_empty()
+                && (clean_current == clean_target || clean_current == clean_reconciled)
+            {
                 tracing::info!(
-                    url = %url,
+                    url = %reconciled_url,
                     "Live page is already active at URL; snapshotting current DOM state"
                 );
                 let _ = PageAgent::inject_probe(&engine.cdp).await;
                 let html = engine.cdp.get_document_html().await.unwrap_or_default();
                 let mut acc_mgr = engine.accessibility.lock().await;
                 let elements = acc_mgr.update_from_html(&html);
-                let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
+                let mut snapshot = Self::parse_html_to_aria_snapshot(&reconciled_url, &html);
                 snapshot.interactive_elements = elements;
                 snapshot.engine_used = engine_name;
                 return Ok(snapshot);
             }
         }
 
-        Self::navigate_and_snapshot(url, mode, workspace_root).await
+        Self::navigate_and_snapshot(&reconciled_url, mode, workspace_root).await
     }
 
     /// Captures a snapshot of the currently active browser page, or navigates to `url_opt` if provided.
@@ -1479,6 +1506,81 @@ pub fn normalize_loopback_url(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+/// Reconciles requested loopback target URL with active dev servers in the registry.
+/// If port 5173 was requested, but our managed dev server auto-shifted to port 5174,
+/// this transparently updates the port so we hit our own dev server instead of
+/// orphaned external processes or closed sockets.
+pub async fn reconcile_loopback_url(url: &str) -> (String, Option<String>) {
+    let normalized = normalize_loopback_url(url);
+    let Ok(mut parsed) = url::Url::parse(&normalized) else {
+        return (normalized, None);
+    };
+
+    let is_loopback = matches!(
+        parsed.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("0.0.0.0") | Some("::1")
+    );
+    if !is_loopback {
+        return (normalized, None);
+    }
+
+    let req_port = parsed.port().unwrap_or(80);
+    let reg = crate::dev::registry::get_global_dev_registry();
+    let procs = reg.list().await;
+
+    // Check if req_port is already associated with one of our active processes
+    let matches_active = procs.iter().any(|p| p.ports.contains(&req_port));
+    if matches_active {
+        return (normalized, None);
+    }
+
+    // Look for an active frontend or backend dev server that has a listening port
+    let dev_server = procs.iter().find(|p| {
+        p.status.is_alive()
+            && matches!(
+                p.process_type,
+                crate::dev::models::DevProcessType::Frontend
+                    | crate::dev::models::DevProcessType::Backend
+            )
+            && !p.ports.is_empty()
+    });
+
+    if let Some(ds) = dev_server {
+        // Find the first port of this dev server that is actively listening
+        if let Some(&active_port) = ds
+            .ports
+            .iter()
+            .find(|&&p| crate::dev::ports::is_port_listening(p))
+        {
+            if active_port != req_port {
+                let _ = parsed.set_port(Some(active_port));
+                let new_url = parsed.to_string();
+                let notice = format!(
+                    "⚡ Port auto-reconciliation: rewritten target from port {} to active dev server port {} ({})",
+                    req_port, active_port, ds.name
+                );
+                return (new_url, Some(notice));
+            }
+        }
+    }
+
+    (normalized, None)
+}
+
+/// Probes a loopback TCP port until it is accepting connections, with exponential backoff up to max_wait.
+pub async fn wait_for_port_ready(port: u16, max_wait: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    let mut delay = std::time::Duration::from_millis(50);
+    while start.elapsed() < max_wait {
+        if crate::dev::ports::is_port_listening(port) {
+            return true;
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+    }
+    crate::dev::ports::is_port_listening(port)
 }
 
 fn extract_readable_text(html: &str) -> String {

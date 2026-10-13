@@ -629,10 +629,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_close".to_string(),
-            description: "Close and terminate the active browser session (Chrome, Firefox, or Obscura) and reap all associated browser processes and background workers.".to_string(),
+            description: "Close and terminate the active browser session (Chrome, Firefox, or Obscura) and reap all associated browser processes. Preserves GUI browser windows for user viewing unless force=true is specified.".to_string(),
             parameters: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force shutdown even if browser was opened in GUI mode for user inspection (default: false)"
+                    }
+                }
             }),
         },
     ]
@@ -651,14 +656,18 @@ pub async fn dispatch(
     match tool_name {
         "browser_close" => Some(
             async {
-                let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
-                if stopped {
-                    Ok(
+                let force = opt_bool(args, "force", false);
+                let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(force).await?;
+                let is_running = crate::tools::browser::BrowserManager::is_live_engine_running().await;
+                match (stopped, is_running) {
+                    (true, _) => Ok(
                         "✔ Browser closed successfully. All browser processes terminated."
                             .to_string(),
-                    )
-                } else {
-                    Ok("ℹ No active browser session was running.".to_string())
+                    ),
+                    (false, true) => Ok(
+                        "ℹ Active GUI browser window preserved for user viewing. To terminate, pass force=true or use minitask(action=\"stop\", id=\"browser\").".to_string(),
+                    ),
+                    (false, false) => Ok("ℹ No active browser session was running.".to_string()),
                 }
             }
             .await,

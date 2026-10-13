@@ -799,16 +799,24 @@ pub async fn dispatch(
                 }
                 Ok(out)
             }
-            "stop" | "kill" | "browser_close" => {
-                if action == "browser_close" {
-                    let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
-                    let _ = registry.stop(&DevProcessId::from("browser")).await;
-                    if stopped {
-                        return Ok("✔ Browser session closed successfully. All browser processes terminated.".to_string());
-                    } else {
-                        return Ok("ℹ No active browser session was running.".to_string());
+            "browser_close" => {
+                let force = opt_bool(args, "force", false);
+                let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(force).await?;
+                let is_running = crate::tools::browser::BrowserManager::is_live_engine_running().await;
+                match (stopped, is_running) {
+                    (true, _) => {
+                        let _ = registry.stop(&DevProcessId::from("browser")).await;
+                        Ok("✔ Browser session closed successfully. All browser processes terminated.".to_string())
+                    }
+                    (false, true) => {
+                        Ok("ℹ Active GUI browser window preserved for user viewing. Pass force=true to terminate.".to_string())
+                    }
+                    (false, false) => {
+                        Ok("ℹ No active browser session was running.".to_string())
                     }
                 }
+            }
+            "stop" | "kill" => {
 
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
@@ -817,7 +825,7 @@ pub async fn dispatch(
 
                 if id_opt == Some("all") {
                     let count = registry.kill_all().await?;
-                    let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                    let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
                     return Ok(format!("✔ Terminated all {} active development processes and browser sessions.", count));
                 }
 
@@ -829,7 +837,7 @@ pub async fn dispatch(
                             list[0].id.as_str().to_string()
                         } else if list.is_empty() {
                             if crate::tools::browser::BrowserManager::is_live_engine_running().await {
-                                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
                                 return Ok("✔ Active browser session closed successfully.".to_string());
                             }
                             return Ok("ℹ No active development processes or browser sessions to stop.".to_string());
@@ -840,7 +848,7 @@ pub async fn dispatch(
                 };
 
                 if id_to_stop == "browser" || id_to_stop == "chrome" {
-                    let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
+                    let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await?;
                     let _ = registry.stop(&DevProcessId::from("browser")).await;
                     if stopped {
                         return Ok("✔ Browser session closed successfully.".to_string());
