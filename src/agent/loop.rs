@@ -2179,14 +2179,33 @@ impl AgentLoop {
                     break;
                 }
 
-                // === 4-Gate Pre-Completion Verification Barrier (Phase 89) ===
-                if !turn_files_modified.is_empty()
+                // === 4-Gate Pre-Completion Verification Barrier (Phase 89 & Superpowers Protocol) ===
+                let files_to_verify: Vec<String> = if !turn_files_modified.is_empty() {
+                    turn_files_modified.clone()
+                } else {
+                    let git = crate::git::GitService::new(self.workspace_root.clone());
+                    if git.is_git_repo().await {
+                        if let Ok(st) = git.get_status().await {
+                            let mut all = st.staged;
+                            all.extend(st.unstaged);
+                            all.sort();
+                            all.dedup();
+                            all
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                };
+
+                if !files_to_verify.is_empty()
                     && !circuit_tripped
                     && heal_attempts < crate::constants::VERIFICATION_MAX_ATTEMPTS
                 {
                     let report = crate::agent::verification_barrier::VerificationBarrier::verify(
                         &self.workspace_root,
-                        &turn_files_modified,
+                        &files_to_verify,
                     )
                     .await;
 
@@ -2226,7 +2245,7 @@ impl AgentLoop {
                             );
                             let failed_summary = format!(
                                 "Approach failed verification barrier on files: {}. Remediation failure summary: {}",
-                                turn_files_modified.join(", "),
+                                files_to_verify.join(", "),
                                 report
                                     .format_remediation_prompt()
                                     .lines()

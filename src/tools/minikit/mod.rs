@@ -100,6 +100,12 @@ pub fn resolve_packages_docs_dir(workspace: &Path) -> PathBuf {
 pub fn resolve_doc_path(workspace: &Path, doc_name: &str) -> PathBuf {
     let docs_dir = resolve_docs_dir(workspace);
     let core_path = docs_dir.join("core").join(doc_name);
+    if CORE_DOC_FILES
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(doc_name))
+    {
+        return core_path;
+    }
     if core_path.exists() {
         return core_path;
     }
@@ -115,16 +121,7 @@ pub fn resolve_doc_path(workspace: &Path, doc_name: &str) -> PathBuf {
     if packages_path.exists() {
         return packages_path;
     }
-
-    // Default to core/ for canonical workflow documents, otherwise flat docs_dir
-    if CORE_DOC_FILES
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(doc_name))
-    {
-        core_path
-    } else {
-        flat_path
-    }
+    flat_path
 }
 
 /// Full-featured native operations for MiniKit stack scaffolding, skill management, and project sync.

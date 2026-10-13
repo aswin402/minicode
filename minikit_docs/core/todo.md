@@ -2079,5 +2079,11 @@
 - [x] 160.5: Two-Tier Plan Init Boilerplate Auto-Replacement: In `WorkingMemory::init_two_tier_plan` (`src/context/memory/working_memory.rs`), write the new active milestone to `minikit_docs/core/todo.md` when the existing file contains only completed starter boilerplate (`Initial project setup and architecture sync`), keeping the macro roadmap and tactical steps in sync.
 - [x] 160.6: Todo Modal Visual Polish & Accurate Footer Progress: In `src/ui/modals/todo.rs`, deduplicated milestone titles when `milestone.id == milestone.title` and computed the footer progress meter factoring in all child sub-tasks. Added integration test `test_integration_todo_modal_synthesizes_active_milestone_from_task_plan`.
 
+### Phase 161: Superpowers Protocol Integration — Autonomous MiniPower Lifecycle & Iron Law Verification Barrier (v0.3.80)
+- [x] 161.1: Core Doc Path Invariant Guarantee: Hardened `resolve_doc_path` in `src/tools/minikit/mod.rs` so that all canonical `CORE_DOC_FILES` (`todo.md`, `prd.md`, `architecture.md`, etc.) unconditionally resolve to `minikit_docs/core/<file>` rather than root flat fallbacks, preventing any future duplicate creation.
+- [x] 161.2: Autonomous Pre-Completion Verification Barrier on All Git Changes: Upgraded the 4-gate verification barrier in `src/agent/loop.rs` so that even if `turn_files_modified` is empty in the current turn, it checks for any uncommitted/unstaged git changes and forces fresh AST/syntax/test verification before the agent can conclude.
+- [x] 161.3: Superpowers Protocol & Anti-Rationalization Guardrails in Core Prompt: Embedded the complete 5-phase autonomous engineering lifecycle (Discovery → Two-Tier Plan → TDD → Systematic Debugging → Iron Law of Verification) directly into `STATIC_SYSTEM_PROMPT` in `src/agent/prompt.rs`, with active `<think>` anti-rationalization interceptors to eliminate excuses without needing manual CLI or TUI commands.
+- [x] 161.4: Verification, Zero-Warning Clippy & Global Release: Verified `cargo check`, unit tests, integration test suite `tests/integration_two_tier_plan_and_todo_tui.rs`, `cargo clippy -j 1 -- -D warnings`, and `cargo fmt --check`. Bumped crate version to `0.3.80` and deployed globally via `localupdate.sh`.
+
 
 
