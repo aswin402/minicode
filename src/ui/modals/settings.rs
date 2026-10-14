@@ -1147,7 +1147,7 @@ pub fn render_config_approval(
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
-        .title(" ⚙️ Permission Required ")
+        .title(" Permission Required ")
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
@@ -1169,7 +1169,7 @@ pub fn render_config_approval(
 
     // Header title
     let header_p = Paragraph::new(Line::from(vec![Span::styled(
-        "  ⚙️ minicode requests permission to modify configuration:",
+        "  minicode requests permission to modify configuration:",
         Style::default()
             .fg(theme.brand_accent)
             .add_modifier(Modifier::BOLD),
@@ -1297,9 +1297,9 @@ pub fn render_config_approval(
 
     let buttons_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(" [1] Allow Change ", allow_style),
+        Span::styled(" 1. Approve ", allow_style),
         Span::raw("    "),
-        Span::styled(" [2] Deny Change ", deny_style),
+        Span::styled(" 2. Reject ", deny_style),
     ]);
     frame.render_widget(Paragraph::new(buttons_line), chunks[3]);
 }

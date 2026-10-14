@@ -36,19 +36,19 @@ impl ApprovalOption {
 
     pub fn label(&self) -> &'static str {
         match self {
-            ApprovalOption::Accept => "✔ Approve (Execute action)",
-            ApprovalOption::Reject => "✖ Reject (Cancel action)",
-            ApprovalOption::AllowSession => "⚡ Always Allow for this Session",
-            ApprovalOption::TypeFeedback => "💬 Type Instructions / Custom Feedback",
+            ApprovalOption::Accept => "Approve",
+            ApprovalOption::Reject => "Reject",
+            ApprovalOption::AllowSession => "Allow session",
+            ApprovalOption::TypeFeedback => "Instruct",
         }
     }
 
     pub fn key_hint(&self) -> &'static str {
         match self {
-            ApprovalOption::Accept => "[1]",
-            ApprovalOption::Reject => "[2]",
-            ApprovalOption::AllowSession => "[3]",
-            ApprovalOption::TypeFeedback => "[4]",
+            ApprovalOption::Accept => "1.",
+            ApprovalOption::Reject => "2.",
+            ApprovalOption::AllowSession => "3.",
+            ApprovalOption::TypeFeedback => "4.",
         }
     }
 }
@@ -95,38 +95,48 @@ impl ApprovalModalState {
         args: &serde_json::Value,
         theme: &Theme,
     ) -> Self {
+        let parsed_str_args: Option<serde_json::Value> =
+            args.as_str().and_then(|s| serde_json::from_str(s).ok());
+        let effective_args = parsed_str_args.as_ref().unwrap_or(args);
+
+        let extract_path = |val: &serde_json::Value| -> Option<String> {
+            val.get("path")
+                .or_else(|| val.get("file_path"))
+                .or_else(|| val.get("target_file"))
+                .or_else(|| val.get("file"))
+                .or_else(|| val.get("filename"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+        };
+
         let (target_desc, diff_lines) = match tool_name {
             "exec_cmd" => {
-                let cmd = args
+                let cmd = effective_args
                     .get("command")
-                    .or_else(|| args.get("cmd"))
+                    .or_else(|| effective_args.get("cmd"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("command");
                 let desc = format!("$ {}", cmd);
                 (desc, vec![])
             }
             "patch_file" => {
-                let path = args
-                    .get("path")
-                    .or_else(|| args.get("file_path"))
-                    .or_else(|| args.get("target_file"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let search = args
+                let path = extract_path(effective_args).unwrap_or_else(|| "file".to_string());
+                let search = effective_args
                     .get("search_block")
-                    .or_else(|| args.get("search"))
+                    .or_else(|| effective_args.get("search"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let replace = args
+                let replace = effective_args
                     .get("replace_block")
-                    .or_else(|| args.get("replace"))
+                    .or_else(|| effective_args.get("replace"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let search_lines = search.lines().count();
                 let replace_lines = replace.lines().count();
                 let desc = format!("{} (+{}/-{} lines)", path, replace_lines, search_lines);
                 let diff = DiffViewer::render_patch_args(
-                    path,
+                    &path,
                     search,
                     replace,
                     theme,
@@ -135,15 +145,10 @@ impl ApprovalModalState {
                 (desc, diff)
             }
             "write_file" => {
-                let path = args
-                    .get("path")
-                    .or_else(|| args.get("file_path"))
-                    .or_else(|| args.get("target_file"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let content = args
+                let path = extract_path(effective_args).unwrap_or_else(|| "file".to_string());
+                let content = effective_args
                     .get("content")
-                    .or_else(|| args.get("code_content"))
+                    .or_else(|| effective_args.get("code_content"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let size_kb = (content.len() as f64) / 1024.0;
@@ -161,19 +166,15 @@ impl ApprovalModalState {
                 (desc, diff)
             }
             _ => {
-                let desc = if let Some(obj) = args.as_object() {
+                let desc = if let Some(obj) = effective_args.as_object() {
                     if let Some(cmd) = obj
                         .get("command")
                         .or_else(|| obj.get("cmd"))
                         .and_then(|v| v.as_str())
                     {
                         format!("$ {}", cmd)
-                    } else if let Some(path) = obj
-                        .get("path")
-                        .or_else(|| obj.get("file_path"))
-                        .and_then(|v| v.as_str())
-                    {
-                        path.to_string()
+                    } else if let Some(path) = extract_path(effective_args) {
+                        path
                     } else if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
                         url.to_string()
                     } else {
@@ -227,7 +228,7 @@ impl ApprovalModalState {
                 'y' | 'Y' => Some(ApprovalResponse::Accept),
                 'n' | 'N' => Some(ApprovalResponse::Reject),
                 'a' | 'A' => Some(ApprovalResponse::AllowSession),
-                'f' | 'F' => {
+                'f' | 'F' | 'i' | 'I' => {
                     self.select_by_number(4);
                     None
                 }
@@ -296,7 +297,7 @@ impl ApprovalModalState {
         frame.render_widget(Clear, popup_area);
 
         let block = Block::default()
-            .title(" ⚡ Permission Required ")
+            .title(" Permission Required ")
             .title_alignment(Alignment::Left)
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -344,7 +345,7 @@ impl ApprovalModalState {
         let header_p = match self.tool_name.as_str() {
             "exec_cmd" => Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "  ▶ Run: ",
+                    "  Run: ",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -358,7 +359,7 @@ impl ApprovalModalState {
             ])),
             "patch_file" => Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "  📝 Patch: ",
+                    "  Patch: ",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -372,7 +373,7 @@ impl ApprovalModalState {
             ])),
             "write_file" => Paragraph::new(Line::from(vec![
                 Span::styled(
-                    "  📄 Write: ",
+                    "  Write: ",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -386,7 +387,7 @@ impl ApprovalModalState {
             ])),
             _ => Paragraph::new(Line::from(vec![
                 Span::styled(
-                    format!("  🔧 {}: ", self.tool_name),
+                    format!("  {}: ", self.tool_name),
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -408,7 +409,7 @@ impl ApprovalModalState {
         )]));
         frame.render_widget(divider, chunks[1]);
 
-        // 2. Selectable Options Menu (Pill-Highlighted)
+        // 2. Selectable Options Menu
         let options = ApprovalOption::all();
         let mut option_lines = Vec::new();
 
@@ -417,7 +418,7 @@ impl ApprovalModalState {
             let full_width = inner_area.width as usize;
 
             if is_selected {
-                let text = format!(" ❯ {} {}", opt.key_hint(), opt.label());
+                let text = format!(" › {} {}", opt.key_hint(), opt.label());
                 let padded = format!("{:<width$}", text, width = full_width);
                 option_lines.push(Line::from(vec![Span::styled(
                     padded,
@@ -442,13 +443,13 @@ impl ApprovalModalState {
         // 3. Custom Feedback Box
         if self.is_typing_feedback && chunks.len() >= 5 {
             let feedback_block = Block::default()
-                .title(" Instructions (Enter to submit) ")
+                .title(" Instruct (Enter to submit) ")
                 .borders(Borders::ALL)
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .border_style(Style::default().fg(theme.brand_accent))
                 .style(Style::default().bg(theme.bg_primary));
             let feedback_p =
-                Paragraph::new(format!("❯ {}█", self.feedback_input)).block(feedback_block);
+                Paragraph::new(format!(" › {}█", self.feedback_input)).block(feedback_block);
             frame.render_widget(feedback_p, chunks[4]);
         }
     }

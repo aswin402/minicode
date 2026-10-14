@@ -929,11 +929,12 @@ pub const SESSION_FIRST_PROMPT_MAX_BYTES: usize = 120;
 /// Maximum byte length for tool output in markdown export before truncation
 pub const SESSION_TOOL_OUTPUT_MAX_BYTES: usize = 1000;
 /// Display columns for session ID in TUI session browser list
+#[allow(dead_code)]
 pub const SESSION_ID_DISPLAY_COLS: usize = 14;
 /// Git commit hash short display length in bytes
 pub const GIT_SHORT_HASH_BYTES: usize = 7;
 /// Height in lines of each session list item (for viewport calculation)
-pub const SESSION_LIST_ITEM_HEIGHT: usize = 2;
+pub const SESSION_LIST_ITEM_HEIGHT: usize = 1;
 /// Maximum sessions shown in /load listing
 pub const SESSION_LOAD_LIST_MAX: usize = 10;
 /// Default model name when no TurnStart event found

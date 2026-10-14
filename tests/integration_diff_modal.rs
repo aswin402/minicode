@@ -60,10 +60,14 @@ fn test_approval_modal_options_and_navigation() {
     // Verify option labels
     let options = ApprovalOption::all();
     assert_eq!(options.len(), 4);
-    assert!(options[0].label().contains("Approve"));
-    assert!(options[1].label().contains("Reject"));
-    assert!(options[2].label().contains("Allow for this Session"));
-    assert!(options[3].label().contains("Feedback"));
+    assert_eq!(options[0].key_hint(), "1.");
+    assert_eq!(options[0].label(), "Approve");
+    assert_eq!(options[1].key_hint(), "2.");
+    assert_eq!(options[1].label(), "Reject");
+    assert_eq!(options[2].key_hint(), "3.");
+    assert_eq!(options[2].label(), "Allow session");
+    assert_eq!(options[3].key_hint(), "4.");
+    assert_eq!(options[3].label(), "Instruct");
 }
 
 #[test]

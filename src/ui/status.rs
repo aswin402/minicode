@@ -232,14 +232,8 @@ impl StatusWidgets {
                 100
             };
             right_spans.push(Span::styled(
-                format!(
-                    "⚡ KV:{}% ({}) ",
-                    hit_pct,
-                    Self::format_tokens(ctx.cached_tokens)
-                ),
-                Style::default()
-                    .fg(ctx.theme.success)
-                    .add_modifier(Modifier::BOLD),
+                format!("kv ({}%) ", hit_pct),
+                Style::default().fg(ctx.theme.muted),
             ));
             right_spans.push(Span::styled("• ", Style::default().fg(ctx.theme.muted)));
         }
@@ -358,5 +352,7 @@ mod tests {
 
         assert!(line_str.contains("tasks:3 (142MB · 12.8%) [F7]"));
         assert!(line_str.contains("mcp:2 active"));
+        assert!(line_str.contains("kv (50%) •"));
+        assert!(!line_str.contains("⚡"));
     }
 }

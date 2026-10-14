@@ -168,6 +168,44 @@ impl MarkdownRenderer {
         lines
     }
 
+    /// Normalizes wide multi-cell emojis and variation selectors into crisp 1-cell
+    /// terminal status icons (`✔`, `✖`, `!`, `→`) and strips decorative emojis so
+    /// terminal cell widths never drift or overlap adjacent characters.
+    pub fn normalize_status_glyphs(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                // Variation selectors (U+FE0E, U+FE0F) force 2-cell emoji presentation
+                '\u{fe0e}' | '\u{fe0f}' => continue,
+                // Pass / check icons -> 1-cell ✔
+                '✅' | '☑' => out.push('✔'),
+                // Fail / error icons -> 1-cell ✖
+                '❌' | '❎' => out.push('✖'),
+                // Warning / alert icons -> 1-cell !
+                '⚠' | '🚨' => out.push('!'),
+                // Action / launch icons -> 1-cell →
+                '🚀' | '⚡' | '▶' => out.push('→'),
+                // Strip decorative multi-cell emojis and any immediate single space after them
+                '📄' | '📝' | '🔧' | '💬' | '📜' | '🔍' | '💡' | '🎯' | '✨' | '🎉' | '📦'
+                | '🛠' | '🧪' | '🎨' | '🌐' | '🔒' | '📁' | '📂' => {
+                    while matches!(chars.peek(), Some('\u{fe0e}' | '\u{fe0f}')) {
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&' ')
+                        && (out.is_empty() || out.ends_with(' ') || out.ends_with("**"))
+                    {
+                        chars.next();
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+
+        out
+    }
+
     /// Safely detects and parses standalone bold section headers (e.g. "**Recent Commits:**" or "**Summary**")
     fn parse_section_header(line: &str) -> Option<String> {
         if line.len() < 5 {
@@ -176,11 +214,13 @@ impl MarkdownRenderer {
         if let Some(without_prefix) = line.strip_prefix("**") {
             if let Some(inner) = without_prefix.strip_suffix("**:") {
                 if !inner.contains("**") && !inner.trim().is_empty() {
-                    return Some(format!("{}:", inner.trim()));
+                    let clean = Self::normalize_status_glyphs(inner.trim());
+                    return Some(format!("{}:", clean.trim()));
                 }
             } else if let Some(inner) = without_prefix.strip_suffix("**") {
                 if !inner.contains("**") && !inner.trim().is_empty() {
-                    return Some(inner.trim().to_string());
+                    let clean = Self::normalize_status_glyphs(inner.trim());
+                    return Some(clean.trim().to_string());
                 }
             }
         }
@@ -402,6 +442,7 @@ impl MarkdownRenderer {
 
     /// Parses inline Markdown styling (bold, code, paths, URLs, metrics) safely
     pub fn parse_inline<'a>(text: &'a str, theme: &'a Theme) -> Vec<Span<'a>> {
+        let normalized = Self::normalize_status_glyphs(text);
         let mut spans = Vec::new();
         let mut current_buf = String::new();
 
@@ -413,7 +454,7 @@ impl MarkdownRenderer {
             }
         };
 
-        let mut rem = text;
+        let mut rem = normalized.as_str();
         while !rem.is_empty() {
             // 1. Inline Code: `code`
             if rem.starts_with('`') {
@@ -504,7 +545,7 @@ impl MarkdownRenderer {
         spans
     }
 
-    /// Highlights individual word tokens (file paths, URLs, metrics, versions, keywords)
+    /// Highlights individual word tokens (file paths, URLs, metrics, versions, keywords, status icons)
     fn highlight_tokens<'a>(text: &str, theme: &'a Theme) -> Vec<Span<'a>> {
         let mut spans = Vec::new();
         let words =
@@ -512,10 +553,44 @@ impl MarkdownRenderer {
 
         for word in words {
             let trimmed = word.trim_matches(|c: char| {
-                c == ',' || c == '(' || c == ')' || c == ';' || c == '"' || c == '\''
+                c.is_whitespace()
+                    || c == ','
+                    || c == '('
+                    || c == ')'
+                    || c == ';'
+                    || c == '"'
+                    || c == '\''
             });
 
-            if Self::is_file_path(trimmed) {
+            if trimmed == "✔" || trimmed == "✓" {
+                spans.push(Span::styled(
+                    word.to_string(),
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if trimmed == "✖" || trimmed == "✗" {
+                spans.push(Span::styled(
+                    word.to_string(),
+                    Style::default()
+                        .fg(theme.destructive)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if trimmed == "!" {
+                spans.push(Span::styled(
+                    word.to_string(),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if trimmed == "→" {
+                spans.push(Span::styled(
+                    word.to_string(),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if Self::is_file_path(trimmed) {
                 spans.push(Span::styled(
                     word.to_string(),
                     Style::default().fg(theme.success),
@@ -734,5 +809,36 @@ mod tests {
                 idx, w, expected_w
             );
         }
+    }
+
+    #[test]
+    fn test_markdown_normalize_status_glyphs_and_rendering() {
+        let theme = Theme::default();
+        let input = "\
+**✨ Verification results:**
+- ✅ `bun run build` — clean, 0 TypeScript errors
+- ⚠️ 8 non-blocking lint warnings
+- ❌ Build failed on step 2
+- 🚀 Dev server running";
+
+        let lines = MarkdownRenderer::render(input, &theme);
+        let rendered_text: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(rendered_text[0], "Verification results:");
+        assert_eq!(
+            rendered_text[1],
+            "• ✔ bun run build — clean, 0 TypeScript errors"
+        );
+        assert_eq!(rendered_text[2], "• ! 8 non-blocking lint warnings");
+        assert_eq!(rendered_text[3], "• ✖ Build failed on step 2");
+        assert_eq!(rendered_text[4], "• → Dev server running");
     }
 }
