@@ -80,41 +80,37 @@ impl MarkdownRenderer {
                 continue;
             }
 
-            // Headings
+            // Headings (rendered without '#' prefix; differentiated by color & font weight/modifiers)
             if let Some(rest) = line.strip_prefix("#### ") {
-                let mut spans = vec![Span::styled(
-                    "#### ",
+                lines.push(Self::render_heading_line(
+                    rest,
                     Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                )];
-                spans.extend(Self::parse_inline(rest, theme));
-                lines.push(Line::from(spans));
+                    theme,
+                ));
             } else if let Some(rest) = line.strip_prefix("### ") {
-                let mut spans = vec![Span::styled(
-                    "### ",
+                lines.push(Self::render_heading_line(
+                    rest,
                     Style::default()
                         .fg(theme.highlight)
                         .add_modifier(Modifier::BOLD),
-                )];
-                spans.extend(Self::parse_inline(rest, theme));
-                lines.push(Line::from(spans));
+                    theme,
+                ));
             } else if let Some(rest) = line.strip_prefix("## ") {
-                let mut spans = vec![Span::styled(
-                    "## ",
+                lines.push(Self::render_heading_line(
+                    rest,
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
-                )];
-                spans.extend(Self::parse_inline(rest, theme));
-                lines.push(Line::from(spans));
+                    theme,
+                ));
             } else if let Some(rest) = line.strip_prefix("# ") {
-                let mut spans = vec![Span::styled(
-                    "# ",
+                lines.push(Self::render_heading_line(
+                    rest,
                     Style::default()
                         .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                )];
-                spans.extend(Self::parse_inline(rest, theme));
-                lines.push(Line::from(spans));
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    theme,
+                ));
             } else if let Some(header_title) = Self::parse_section_header(line) {
                 // Standalone bold section header (e.g., "**Recent Commits (latest 20):**" or "**Summary:**")
                 lines.push(Line::from(vec![Span::styled(
@@ -204,6 +200,38 @@ impl MarkdownRenderer {
         }
 
         out
+    }
+
+    /// Renders a Markdown heading line without any `#` characters, applying the
+    /// heading level's color and font weight/modifiers across all spans.
+    fn render_heading_line<'a>(rest: &'a str, heading_style: Style, theme: &'a Theme) -> Line<'a> {
+        let trimmed = rest.trim();
+        let unwrapped = if let Some(inner) = trimmed
+            .strip_prefix("**")
+            .and_then(|s| s.strip_suffix("**"))
+        {
+            if !inner.contains("**") && !inner.trim().is_empty() {
+                inner.trim()
+            } else {
+                trimmed
+            }
+        } else {
+            trimmed
+        };
+
+        let spans: Vec<Span<'a>> = Self::parse_inline(unwrapped, theme)
+            .into_iter()
+            .map(|mut span| {
+                if span.style.bg.is_some() {
+                    span.style = span.style.add_modifier(Modifier::BOLD);
+                } else {
+                    span.style = heading_style;
+                }
+                span
+            })
+            .collect();
+
+        Line::from(spans)
     }
 
     /// Safely detects and parses standalone bold section headers (e.g. "**Recent Commits:**" or "**Summary**")
@@ -840,5 +868,37 @@ mod tests {
         assert_eq!(rendered_text[2], "• ! 8 non-blocking lint warnings");
         assert_eq!(rendered_text[3], "• ✖ Build failed on step 2");
         assert_eq!(rendered_text[4], "• → Dev server running");
+    }
+
+    #[test]
+    fn test_markdown_headings_without_hashes() {
+        let theme = Theme::default();
+        let input = "# Main Title\n## Landing Page Summary\n### Section Details\n#### Sub-heading";
+        let lines = MarkdownRenderer::render(input, &theme);
+        assert_eq!(lines.len(), 4);
+
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(texts[0], "Main Title");
+        assert_eq!(texts[1], "Landing Page Summary");
+        assert_eq!(texts[2], "Section Details");
+        assert_eq!(texts[3], "Sub-heading");
+
+        assert!(lines[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::UNDERLINED));
+        assert_eq!(lines[0].spans[0].style.fg, Some(theme.brand_accent));
+        assert_eq!(lines[1].spans[0].style.fg, Some(theme.brand_accent));
+        assert_eq!(lines[2].spans[0].style.fg, Some(theme.highlight));
+        assert_eq!(lines[3].spans[0].style.fg, Some(theme.info));
     }
 }

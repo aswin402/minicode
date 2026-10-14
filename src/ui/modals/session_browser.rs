@@ -40,7 +40,7 @@ pub fn render_session_browser(
     let outer_block = Block::default()
         .title(Line::from(vec![
             Span::styled(
-                " Session History ",
+                " Resume Session ",
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
@@ -184,7 +184,7 @@ mod tests {
             all_text.push('\n');
         }
 
-        assert!(all_text.contains("Session History"));
+        assert!(all_text.contains("Resume Session"));
         assert!(!all_text.contains("📜"));
         assert!(!all_text.contains("events"));
         assert!(!all_text.contains("id:"));

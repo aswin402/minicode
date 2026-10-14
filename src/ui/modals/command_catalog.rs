@@ -32,19 +32,11 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/goal | /goal add <item> | /goal done <id> | /goal reset | /goal run <prompt>",
     },
     CommandCatalogItem {
-        name: "/power",
-        category: "Agent & Automation",
-        shortcut: "Ctrl+P",
-        description:
-            "MiniPower autonomous engineering principles, verification barrier & methodology status",
-        example: "/power",
-    },
-    CommandCatalogItem {
         name: "/todo",
         category: "Agent & Automation",
         shortcut: "F8",
         description: "Inspect active milestone tasks and project roadmap in interactive DAG modal",
-        example: "/todo | /tasks | F8",
+        example: "/todo | F8",
     },
     CommandCatalogItem {
         name: "/diff",
@@ -68,20 +60,12 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/blocks | /miniblocks",
     },
     CommandCatalogItem {
-        name: "/vault",
-        category: "Workflows & Scaffolding",
-        shortcut: "",
-        description:
-            "Explore, search, and load MiniVault domain skills and bundles into the active project",
-        example: "/vault | /skills | /bundles | /vault bundle [list|load <name>]",
-    },
-    CommandCatalogItem {
         name: "/tasks",
         category: "Agent & Automation",
         shortcut: "F7",
         description:
-            "MiniTask Manager: inspect, manage, and supervise running dev servers, webservers, subagents, background builds & ports",
-        example: "/tasks | /minitask | /processes | /dev | /tasks stop <id>",
+            "Background Tasks: inspect, manage, and supervise running dev servers, subagents, builds & ports",
+        example: "/tasks | /tasks stop <id>",
     },
     CommandCatalogItem {
         name: "/review",
@@ -103,13 +87,6 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         shortcut: "Ctrl+H",
         description: "Browse & resume past workspace sessions, or resume by ID",
         example: "/resume | /resume <session_id> | /resume last",
-    },
-    CommandCatalogItem {
-        name: "/session",
-        category: "History & Sessions",
-        shortcut: "Ctrl+H",
-        description: "Browse & resume past workspace sessions (/session, /sessions)",
-        example: "/session | /session <session_id> | /session last",
     },
     CommandCatalogItem {
         name: "/new",
@@ -136,29 +113,15 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         name: "/theme",
         category: "Display & Aesthetics",
         shortcut: "",
-        description: "Switch TUI color theme palette interactively",
+        description: "Switch TUI color theme, animation & todo layout style interactively",
         example: "/theme | /theme catppuccin",
-    },
-    CommandCatalogItem {
-        name: "/todo-style",
-        category: "Display & Aesthetics",
-        shortcut: "",
-        description: "Switch inline todo widget layout style (tree, card, rail, minimal)",
-        example: "/todo-style | /todo-style tree | /todo-style card",
     },
     CommandCatalogItem {
         name: "/settings",
         category: "Config & Runtime",
         shortcut: "F3",
-        description: "Interactive settings modal: providers, models, autonomy & connection probes",
+        description: "Interactive settings modal: providers, API keys, models, autonomy & probes",
         example: "/settings | /settings autonomy | /settings probes",
-    },
-    CommandCatalogItem {
-        name: "/configure",
-        category: "Config & Runtime",
-        shortcut: "F2",
-        description: "Interactive API key & endpoint manager for providers",
-        example: "/configure | /init",
     },
     CommandCatalogItem {
         name: "/stack",
@@ -180,8 +143,8 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         name: "/skills",
         category: "Workflows & Scaffolding",
         shortcut: "",
-        description: "List and view domain-specific architectural skills and best practices",
-        example: "/skills | /kit skill <name>",
+        description: "Explore, search, and load domain skills and bundles into the active project",
+        example: "/skills | /skills bundle list | /skills load <name>",
     },
     CommandCatalogItem {
         name: "/terminal",

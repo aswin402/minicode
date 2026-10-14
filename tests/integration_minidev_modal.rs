@@ -121,17 +121,21 @@ fn test_process_monitor_modal_tab_filtering_and_navigation() {
         Some("Autonomous Codegen Subagent")
     );
 
-    // 4. Tab: Logs
+    // 4. Tab: Swarm
+    state.next_tab();
+    assert_eq!(state.active_tab, ProcessesTab::Swarm);
+
+    // 5. Tab: Logs
     state.next_tab();
     assert_eq!(state.active_tab, ProcessesTab::Logs);
     assert_eq!(state.selected_logs.len(), 2);
 
-    // 5. Tab: Telemetry
+    // 6. Tab: Telemetry
     state.next_tab();
     assert_eq!(state.active_tab, ProcessesTab::Telemetry);
     assert!(state.resources.is_some());
 
-    // 6. Loop back to All
+    // 7. Loop back to All
     state.next_tab();
     assert_eq!(state.active_tab, ProcessesTab::All);
     assert_eq!(state.filtered_indices.len(), 3);
@@ -242,21 +246,13 @@ fn test_command_catalog_and_help_registrations() {
     let item = catalog_item.expect("catalog_item");
     assert_eq!(item.shortcut, "F7");
 
-    // Assert /tasks or /processes exists in PALETTE_COMMANDS
-    let has_processes_palette = PALETTE_COMMANDS.iter().any(|cmd| {
-        (cmd.slash_name == "/tasks" || cmd.slash_name == "/processes") && cmd.shortcut == Some("F7")
-    });
-    assert!(
-        has_processes_palette,
-        "/tasks or /processes with shortcut F7 must be in PALETTE_COMMANDS"
-    );
-
-    let has_dev_palette = PALETTE_COMMANDS
+    // Assert /tasks exists in PALETTE_COMMANDS with F7
+    let has_tasks_palette = PALETTE_COMMANDS
         .iter()
-        .any(|cmd| cmd.slash_name == "/dev" && cmd.shortcut == Some("F7"));
+        .any(|cmd| cmd.slash_name == "/tasks" && cmd.shortcut == Some("F7"));
     assert!(
-        has_dev_palette,
-        "/dev with shortcut F7 must be in PALETTE_COMMANDS"
+        has_tasks_palette,
+        "/tasks with shortcut F7 must be in PALETTE_COMMANDS"
     );
 
     // Verify render_help renders without panic

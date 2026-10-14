@@ -187,12 +187,11 @@ impl StatusWidgets {
                 format!("{:.0}MB", task_mem_mb)
             };
 
-            let badge_text = format!("tasks:{} ({} · {:.1}%)", task_count, mem_str, task_cpu_pct);
+            let badge_text = format!("tasks:{} ({})", task_count, mem_str);
             left_spans.push(Span::styled(
                 badge_text,
                 Style::default().fg(task_color).add_modifier(Modifier::BOLD),
             ));
-            left_spans.push(Span::styled(" [F7]", Style::default().fg(ctx.theme.muted)));
         }
 
         // Format right context token metrics and dollar cost (e.g., "⚡ $0.0042 • 4.2k / 128k")
@@ -350,7 +349,8 @@ mod tests {
             line_str.push_str(buffer[(x, 0)].symbol());
         }
 
-        assert!(line_str.contains("tasks:3 (142MB · 12.8%) [F7]"));
+        assert!(line_str.contains("tasks:3 (142MB)"));
+        assert!(!line_str.contains("[F7]"));
         assert!(line_str.contains("mcp:2 active"));
         assert!(line_str.contains("kv (50%) •"));
         assert!(!line_str.contains("⚡"));
