@@ -250,59 +250,50 @@ impl WorkingMemory {
         if let Some(parent) = todo_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Some(ms) = milestones {
-            if !ms.is_empty() {
-                let mut todo_content = format!(
-                    "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n",
-                    title, timestamp
-                );
-                todo_content.push_str(&format!("## Active Milestone: {}\n", title));
-                for (idx, m) in ms.iter().enumerate() {
-                    let clean = Self::sanitize_step_title(m);
-                    let marker = if idx == 0 { "[>]" } else { "[ ]" };
-                    todo_content.push_str(&format!("- {} {}\n", marker, clean));
-                }
-                let _ = fs::write(&todo_path, todo_content);
-            }
+        let (has_uncompleted, is_boilerplate) = if let Ok(existing) = fs::read_to_string(&todo_path)
+        {
+            let uncompleted = existing.lines().any(|l| {
+                let t = l.trim();
+                t.starts_with("- [ ]")
+                    || t.starts_with("* [ ]")
+                    || t.starts_with("- [>]")
+                    || t.starts_with("* [>]")
+            });
+            let boilerplate = existing.contains("Initial project setup and architecture sync")
+                || existing.contains("Scaffolding complete. Decompose features into milestones");
+            (uncompleted, boilerplate)
         } else {
-            let (has_uncompleted, is_boilerplate) = if let Ok(existing) =
-                fs::read_to_string(&todo_path)
-            {
-                let uncompleted = existing.lines().any(|l| {
-                    let t = l.trim();
-                    t.starts_with("- [ ]")
-                        || t.starts_with("* [ ]")
-                        || t.starts_with("- [>]")
-                        || t.starts_with("* [>]")
-                });
-                let boilerplate = existing.contains("Initial project setup and architecture sync")
-                    || existing
-                        .contains("Scaffolding complete. Decompose features into milestones");
-                (uncompleted, boilerplate)
-            } else {
-                (false, false)
-            };
+            (false, false)
+        };
 
-            let should_write_todo = !todo_path.exists() || is_boilerplate || !has_uncompleted;
+        let should_write_todo = milestones.is_some_and(|ms| !ms.is_empty())
+            || !todo_path.exists()
+            || is_boilerplate
+            || !has_uncompleted;
 
-            if should_write_todo && !steps.is_empty() {
-                let mut todo_content = format!(
-                    "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n",
-                    title, timestamp
-                );
-                todo_content.push_str(&format!("## Active Milestone: {}\n", title));
-                for (idx, step) in steps.iter().enumerate() {
-                    let clean = Self::sanitize_step_title(step);
-                    let marker = if idx == 0 { "[>]" } else { "[ ]" };
-                    todo_content.push_str(&format!("- {} {}\n", marker, clean));
-                }
-                let _ = fs::write(&todo_path, todo_content);
+        if should_write_todo && !steps.is_empty() {
+            let mut todo_content = format!(
+                "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n",
+                title, timestamp
+            );
+            if let Some(ms) = milestones.filter(|ms| !ms.is_empty()) {
+                let cleaned_ms: Vec<String> =
+                    ms.iter().map(|m| Self::sanitize_step_title(m)).collect();
+                todo_content.push_str(&format!("> Milestones: {}\n", cleaned_ms.join(" | ")));
             }
+            todo_content.push('\n');
+            todo_content.push_str(&format!("## Active Milestone: {}\n", title));
+            for (idx, step) in steps.iter().enumerate() {
+                let clean = Self::sanitize_step_title(step);
+                let marker = if idx == 0 { "[>]" } else { "[ ]" };
+                todo_content.push_str(&format!("- {} {}\n", marker, clean));
+            }
+            let _ = fs::write(&todo_path, todo_content);
         }
 
         // 3. Tier 2 Tactical Steps -> .minicode/plan/task_plan.md
         let mut plan_content = format!(
-            "# Task Plan: {}\n\n> Created: {}\n\n## Objectives & Steps:\n",
+            "# Task Plan: {}\n\n> Created: {}\n> Mode: direct\n\n## Objectives & Steps:\n",
             title, timestamp
         );
         for (idx, step) in steps.iter().enumerate() {
@@ -374,7 +365,7 @@ impl WorkingMemory {
         }
 
         let mut plan_content = format!(
-            "# Task Plan: {}\n\n> Created: {}\n\n## Objectives & Steps:\n",
+            "# Task Plan: {}\n\n> Created: {}\n> Mode: subplan\n\n## Objectives & Steps:\n",
             topic, timestamp
         );
         for (idx, step) in steps.iter().enumerate() {
@@ -769,6 +760,64 @@ impl WorkingMemory {
         })
     }
 
+    /// Returns whether `.minicode/plan/task_plan.md` is a `Direct` 1-to-1 project plan
+    /// (`create_plan`) or a `SubPlan` decomposing the active `[>]` macro task (`power_plan`).
+    pub fn is_tactical_subplan(&self) -> bool {
+        if let Ok(Some(content)) = self.read_task_plan() {
+            for line in content.lines().take(10) {
+                let trimmed = line.trim();
+                if let Some(mode) = trimmed
+                    .strip_prefix("> Mode:")
+                    .or_else(|| trimmed.strip_prefix("> mode:"))
+                {
+                    return mode.trim().eq_ignore_ascii_case("subplan");
+                }
+            }
+        }
+        false
+    }
+
+    /// Reconciles any uncompleted plan step titles in `task_plan.md` and `todo.md` if they
+    /// mention a different MiniKit stack identifier than the `chosen_stack` actually scaffolded.
+    pub fn reconcile_stack_choice(&self, chosen_stack: &str) {
+        let chosen = chosen_stack.trim();
+        if chosen.is_empty() {
+            return;
+        }
+        let all_stacks: Vec<String> =
+            crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None)
+                .into_iter()
+                .map(|s| s.name)
+                .filter(|name| !name.eq_ignore_ascii_case(chosen))
+                .collect();
+        if all_stacks.is_empty() {
+            return;
+        }
+
+        for path in [self.task_plan_path(), self.canonical_todo_path()] {
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut changed = false;
+            let mut new_lines = Vec::with_capacity(content.lines().count());
+            for line in content.lines() {
+                let mut updated = line.to_string();
+                if line.contains("[ ]") || line.contains("[>]") {
+                    for other_stack in &all_stacks {
+                        if updated.contains(other_stack.as_str()) {
+                            updated = updated.replace(other_stack.as_str(), chosen);
+                            changed = true;
+                        }
+                    }
+                }
+                new_lines.push(updated);
+            }
+            if changed {
+                let _ = fs::write(&path, new_lines.join("\n"));
+            }
+        }
+    }
+
     /// Returns the active plan summary for UI synchronization.
     /// Prioritizes active MiniPower execution steps from `.minicode/plan/task_plan.md`
     /// when tactical tasks are in-flight, and smoothly switches to canonical `todo.md`
@@ -798,23 +847,17 @@ impl WorkingMemory {
                     .unwrap_or_else(|| "Active Milestone Tasks".to_string())
             };
 
-            // Check if task_plan_tasks directly represents the milestone tasks themselves
-            let is_same_task_set = if let Some(m) = active_milestone {
+            // Check if task_plan.md is a `SubPlan` (`power_plan`) or a `Direct` 1-to-1 plan (`create_plan`)
+            let is_same_task_set = if !self.is_tactical_subplan() {
+                true
+            } else if let Some(m) = active_milestone {
                 if m.tasks.len() == task_plan_tasks.len() {
                     m.tasks
                         .iter()
                         .zip(task_plan_tasks.iter())
                         .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
                 } else {
-                    let matches = task_plan_tasks
-                        .iter()
-                        .filter(|t| {
-                            m.tasks
-                                .iter()
-                                .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
-                        })
-                        .count();
-                    matches > 0 && matches == task_plan_tasks.len()
+                    false
                 }
             } else {
                 false
@@ -1177,18 +1220,10 @@ impl WorkingMemory {
         let todo_has_uncompleted = pre_todo_tasks
             .iter()
             .any(|t| t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending);
-        let has_active_subplan =
-            !pre_plan_tasks.is_empty() && !pre_todo_tasks.is_empty() && plan_has_uncompleted && {
-                let matches = pre_plan_tasks
-                    .iter()
-                    .filter(|t| {
-                        pre_todo_tasks
-                            .iter()
-                            .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
-                    })
-                    .count();
-                matches == 0
-            };
+        let has_active_subplan = self.is_tactical_subplan()
+            && !pre_plan_tasks.is_empty()
+            && !pre_todo_tasks.is_empty()
+            && plan_has_uncompleted;
 
         let (outcome_plan, outcome_todo) = if has_active_subplan {
             let op = update_file(&self.task_plan_path());
@@ -1428,6 +1463,50 @@ impl WorkingMemory {
         candidates
     }
 
+    /// Splits a file path's stem on CamelCase, PascalCase, snake_case, and kebab-case boundaries
+    /// into lowercase tokens of length >= 3 (e.g. `src/components/FeaturesBento.tsx` -> `["features", "bento"]`).
+    fn split_identifier_stem_tokens(file_path: &str) -> Vec<String> {
+        let Some(stem) = Path::new(file_path).file_stem().and_then(|s| s.to_str()) else {
+            return Vec::new();
+        };
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut prev_lower_or_digit = false;
+
+        for ch in stem.chars() {
+            if !ch.is_ascii_alphanumeric() {
+                if current.len() >= 3 {
+                    tokens.push(current.to_ascii_lowercase());
+                }
+                current.clear();
+                prev_lower_or_digit = false;
+            } else {
+                if prev_lower_or_digit && ch.is_ascii_uppercase() && current.len() >= 3 {
+                    tokens.push(current.to_ascii_lowercase());
+                    current.clear();
+                }
+                current.push(ch);
+                prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+            }
+        }
+        if current.len() >= 3 {
+            tokens.push(current.to_ascii_lowercase());
+        }
+        tokens
+    }
+
+    /// Returns whether a stem token `s` matches any alphanumeric word `w` in `task_lower`.
+    fn stem_token_matches_task(s: &str, task_lower: &str) -> bool {
+        task_lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .any(|w| {
+                w == s
+                    || (w.len() >= 4 && s.len() >= 4 && (w.starts_with(s) || s.starts_with(w)))
+                    || (w.len() >= 6 && s.len() >= 6 && w[..3] == s[..3])
+            })
+    }
+
     /// Dynamically reconciles uncompleted tasks against files modified during the turn
     /// or verified on disk in the workspace.
     ///
@@ -1439,6 +1518,8 @@ impl WorkingMemory {
         }
 
         let mut reconciled = 0;
+        let mut consumed_modified: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
 
         for task in &tasks {
             if task.status == TaskItemStatus::Completed {
@@ -1451,7 +1532,7 @@ impl WorkingMemory {
 
             for candidate in &candidates {
                 // 1. Check if candidate matches any explicitly modified file
-                let in_modified = modified_files.iter().any(|m| {
+                let matched_mod_idx = modified_files.iter().position(|m| {
                     m.eq_ignore_ascii_case(candidate)
                         || m.ends_with(&format!("/{}", candidate))
                         || candidate.ends_with(&format!("/{}", m))
@@ -1475,8 +1556,9 @@ impl WorkingMemory {
                 };
 
                 if !modified_files.is_empty() {
-                    if in_modified {
+                    if let Some(m_idx) = matched_mod_idx {
                         file_satisfied = true;
+                        consumed_modified.insert(m_idx);
                         break;
                     }
                 } else if on_disk && task.status == TaskItemStatus::InProgress {
@@ -1492,16 +1574,59 @@ impl WorkingMemory {
                     &task_lower,
                     &["setup", "scaffold", "init", "bootstrap", "boilerplate"],
                 );
-                let setup_matched = is_setup_task
-                    && modified_files.iter().any(|m| {
+                if is_setup_task {
+                    if let Some(m_idx) = modified_files.iter().position(|m| {
                         m.contains("package.json")
                             || m.contains("Cargo.toml")
                             || m.contains("index.html")
                             || m.contains("vite.config")
-                    });
+                    }) {
+                        file_satisfied = true;
+                        consumed_modified.insert(m_idx);
+                    }
+                }
+            }
 
-                if setup_matched {
-                    file_satisfied = true;
+            // Identifier-Stem Token Alignment: if no literal filename was in the task title,
+            // check if an unconsumed modified file's CamelCase/identifier stem tokens match
+            // this task with high specificity across the plan.
+            if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
+                for (m_idx, m_path) in modified_files.iter().enumerate() {
+                    if consumed_modified.contains(&m_idx) {
+                        continue;
+                    }
+                    let stem_tokens = Self::split_identifier_stem_tokens(m_path);
+                    if stem_tokens.is_empty() {
+                        continue;
+                    }
+                    let matched_count = stem_tokens
+                        .iter()
+                        .filter(|tok| Self::stem_token_matches_task(tok, &task_lower))
+                        .count();
+                    if matched_count == 0 {
+                        continue;
+                    }
+                    // Specificity (IDF) check: count how many uncompleted tasks have >= matched_count
+                    let competing_tasks = tasks
+                        .iter()
+                        .filter(|other| {
+                            other.status != TaskItemStatus::Completed && {
+                                let other_lower = other.title.to_ascii_lowercase();
+                                let c = stem_tokens
+                                    .iter()
+                                    .filter(|tok| Self::stem_token_matches_task(tok, &other_lower))
+                                    .count();
+                                c >= matched_count
+                            }
+                        })
+                        .count();
+                    let is_specific_match = competing_tasks == 1
+                        || (competing_tasks <= 2 && task.status == TaskItemStatus::InProgress);
+                    if is_specific_match {
+                        file_satisfied = true;
+                        consumed_modified.insert(m_idx);
+                        break;
+                    }
                 }
             }
 
@@ -2398,6 +2523,73 @@ mod tests {
         let todo_final = fs::read_to_string(wm.canonical_todo_path()).unwrap();
         assert!(todo_final.contains("- [x] Create landing page hero section"));
         assert!(todo_final.contains("- [x] Build interactive bento features"));
+        assert!(!todo_final.contains("[>]"));
+        assert!(!todo_final.contains("[ ]"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_minitest54_direct_plan_sync_and_stem_reconciliation() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_minitest54_sync_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Scaffold static-website foundation".to_string(),
+            "Build navigation bar with links and CTA".to_string(),
+            "Build hero section with terminal preview animation".to_string(),
+            "Build 6-feature bento grid".to_string(),
+            "Verify and build production bundle".to_string(),
+        ];
+        let milestones = vec![
+            "Foundation & Structure".to_string(),
+            "Hero Section".to_string(),
+            "Bento Features".to_string(),
+            "Verification".to_string(),
+        ];
+        wm.init_two_tier_plan("WarpFlow Landing", &steps, None, Some(&milestones))
+            .unwrap();
+
+        // 1. Reconcile stack choice when user selects react-vite
+        wm.reconcile_stack_choice("react-vite");
+        let plan_text = wm.read_task_plan().unwrap().unwrap();
+        assert!(plan_text.contains("Scaffold react-vite foundation"));
+        assert!(!plan_text.contains("static-website"));
+
+        // 2. Reconcile step 1 via package.json
+        fs::write(temp_dir.join("package.json"), "{}").unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["package.json".to_string()]),
+            1
+        );
+
+        // 3. Reconcile steps 2, 3, 4 via CamelCase component stems (no literal filenames in step titles)
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Navbar.tsx".to_string()]),
+            1
+        );
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Hero.tsx".to_string()]),
+            1
+        );
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/FeaturesBento.tsx".to_string()]),
+            1
+        );
+
+        // 4. Complete final step 5 -> both task_plan.md and todo.md must be 5/5 (100%), never jumping backward to 1/4!
+        wm.update_progress("5", "completed").unwrap();
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.total_tasks, 5);
+        assert_eq!(summary.completed_tasks, 5);
+        assert_eq!(summary.in_progress_tasks, 0);
+        assert_eq!(summary.pending_tasks, 0);
+
+        let todo_final = fs::read_to_string(wm.canonical_todo_path()).unwrap();
         assert!(!todo_final.contains("[>]"));
         assert!(!todo_final.contains("[ ]"));
 

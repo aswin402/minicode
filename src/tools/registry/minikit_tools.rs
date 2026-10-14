@@ -348,13 +348,16 @@ pub async fn dispatch(
                         })?;
                 let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
-                crate::tools::minikit::MiniKitService::add_stack(
+                let res = crate::tools::minikit::MiniKitService::add_stack(
                     workspace_root,
                     stack_name,
                     target_dir,
                     no_install,
                 )
-                .await
+                .await?;
+                crate::context::working_memory::WorkingMemory::new(workspace_root)
+                    .reconcile_stack_choice(stack_name);
+                Ok(res)
             }
             .await,
         ),

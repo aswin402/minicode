@@ -376,6 +376,8 @@ impl WorkflowArchetype {
         use crate::tools::category::ToolCategory;
         match self {
             Self::UiDesign => vec![
+                ToolCategory::MiniPower,
+                ToolCategory::Memory,
                 ToolCategory::Blocks,
                 ToolCategory::MiniKit,
                 ToolCategory::Web,

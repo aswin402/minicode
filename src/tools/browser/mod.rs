@@ -539,20 +539,26 @@ impl BrowserController {
         workspace_root: &Path,
         custom_path: Option<&str>,
     ) -> std::path::PathBuf {
+        let ensure_png = |mut path: std::path::PathBuf| -> std::path::PathBuf {
+            if path.extension().is_none() {
+                path.set_extension("png");
+            }
+            path
+        };
         let dir = workspace_root.join(BROWSER_SCREENSHOTS_DIR);
         if let Some(raw) = custom_path.map(str::trim).filter(|s| !s.is_empty()) {
             let p = Path::new(raw);
             if p.is_absolute() {
-                return p.to_path_buf();
+                return ensure_png(p.to_path_buf());
             }
             let normalized = raw.trim_start_matches("./");
             if normalized.starts_with(".minicode/") {
-                return workspace_root.join(normalized);
+                return ensure_png(workspace_root.join(normalized));
             }
             let sub = normalized
                 .strip_prefix("screenshots/")
                 .unwrap_or(normalized);
-            return dir.join(sub);
+            return ensure_png(dir.join(sub));
         }
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         dir.join(format!("screenshot_{}.png", timestamp))
@@ -589,8 +595,44 @@ impl BrowserController {
                 const linkStyles = document.querySelectorAll('link[rel="stylesheet"]').length;
                 const styleTags = document.querySelectorAll('style').length;
                 const bodyComputed = (window.getComputedStyle && document.body) ? window.getComputedStyle(document.body) : null;
+                const htmlComputed = (window.getComputedStyle && document.documentElement) ? window.getComputedStyle(document.documentElement) : null;
+                const rootEl = document.querySelector('#root, main, body > div');
+                const rootComputed = (window.getComputedStyle && rootEl) ? window.getComputedStyle(rootEl) : null;
                 const fontFamily = bodyComputed ? bodyComputed.fontFamily : "";
-                const bgColor = bodyComputed ? bodyComputed.backgroundColor : "";
+                const isTransparent = (c) => !c || c === "rgba(0, 0, 0, 0)" || c === "transparent";
+                let bgColor = bodyComputed ? bodyComputed.backgroundColor : "";
+                if (isTransparent(bgColor) && rootComputed && !isTransparent(rootComputed.backgroundColor)) {
+                    bgColor = rootComputed.backgroundColor;
+                } else if (isTransparent(bgColor) && htmlComputed && !isTransparent(htmlComputed.backgroundColor)) {
+                    bgColor = htmlComputed.backgroundColor;
+                }
+                const h1 = document.querySelector('h1, h2');
+                const h1Computed = (window.getComputedStyle && h1) ? window.getComputedStyle(h1) : null;
+                const headingColor = h1Computed ? h1Computed.color : (bodyComputed ? bodyComputed.color : "");
+                const parseRgb = (str) => {
+                    if (!str) return null;
+                    const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+                    if (!m) return null;
+                    const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+                    if (a === 0) return [255, 255, 255];
+                    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+                };
+                const lum = (rgb) => {
+                    if (!rgb) return null;
+                    const srgb = rgb.map(v => {
+                        const c = v / 255;
+                        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+                    });
+                    return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
+                };
+                const bgLum = lum(parseRgb(bgColor) || [255, 255, 255]);
+                const fgLum = lum(parseRgb(headingColor));
+                let contrastRatio = null;
+                if (bgLum !== null && fgLum !== null) {
+                    const l1 = Math.max(bgLum, fgLum);
+                    const l2 = Math.min(bgLum, fgLum);
+                    contrastRatio = Number(((l1 + 0.05) / (l2 + 0.05)).toFixed(2));
+                }
                 const fLower = fontFamily.toLowerCase();
                 const isDefaultSerif = (fLower.includes("times") || /(^|[\s,])serif([\s,]|$)/i.test(fLower)) && !fLower.includes("sans-serif");
                 const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
@@ -604,6 +646,8 @@ impl BrowserController {
                     styleTags,
                     fontFamily,
                     bgColor,
+                    headingColor,
+                    contrastRatio,
                     isDefaultSerif,
                     bodyTextLen,
                     semanticSections
@@ -641,6 +685,12 @@ impl BrowserController {
                     .get("fontFamily")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let bg_color = probe.get("bgColor").and_then(|v| v.as_str()).unwrap_or("");
+                let heading_color = probe
+                    .get("headingColor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let contrast_ratio = probe.get("contrastRatio").and_then(|v| v.as_f64());
                 let body_len = probe
                     .get("bodyTextLen")
                     .and_then(|v| v.as_u64())
@@ -659,13 +709,21 @@ impl BrowserController {
                 } else if is_default_serif {
                     health_notes.push(format!("⚠ UNSTYLED FONT WARNING: Page body is displaying default browser serif font ('{}'). Check if your CSS stylesheet was loaded.", font_family));
                 }
+                if let Some(ratio) = contrast_ratio {
+                    if ratio < 2.0 {
+                        health_notes.push(format!(
+                            "⚠ CRITICAL CONTRAST DEFECT (WCAG ratio {:.2}:1): Heading text ('{}') is nearly invisible against the computed page background ('{}')! Check for invalid CSS variables or malformed color functions (e.g. invalid oklch() values) in your CSS.",
+                            ratio, heading_color, bg_color
+                        ));
+                    }
+                }
                 if body_len < 50 {
                     health_notes.push("⚠ EMPTY BODY WARNING: Page body contains almost no text content (<50 characters). Check if content loaded properly.".to_string());
                 }
 
                 health_notes.push(format!(
-                    "• Page Title: \"{}\" | Stylesheets: {} active ({} linked, {} embedded) | Sections: {} | Body Text: {} chars",
-                    title, style_sheets, link_styles, style_tags, sections, body_len
+                    "• Page Title: \"{}\" | Stylesheets: {} active ({} linked, {} embedded) | Sections: {} | Body Text: {} chars | Background: {} | Heading: {}",
+                    title, style_sheets, link_styles, style_tags, sections, body_len, bg_color, heading_color
                 ));
             }
         }
@@ -1688,6 +1746,10 @@ mod tests {
         assert_eq!(
             BrowserController::resolve_screenshot_path(ws, Some("hero.png")),
             std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero.png")
+        );
+        assert_eq!(
+            BrowserController::resolve_screenshot_path(ws, Some("hero-section")),
+            std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero-section.png")
         );
         assert_eq!(
             BrowserController::resolve_screenshot_path(ws, Some(".minicode/screenshots/hero.png")),

@@ -722,6 +722,9 @@ impl AgentLoop {
         let mut items_progressed_this_turn = false;
         let mut completed_steps_in_turn: usize = 0;
         let mut verifiable_action_performed: bool = false;
+        let mut distinct_files_mutated_in_active_step: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut step_checkpoint_fired_for_active_step: bool = false;
 
         // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
         let turn_tx_id = if let Ok(None) =
@@ -1355,6 +1358,81 @@ impl AgentLoop {
                             {
                                 self.record_file_access(path);
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                                    let norm_path =
+                                        path.trim().trim_start_matches("./").to_string();
+                                    // === Forward Active-Step Drift Checkpoint ===
+                                    // If >= 2 distinct files have already been mutated during the current
+                                    // active step without plan advancement, checkpoint before mutating a 3rd.
+                                    if !distinct_files_mutated_in_active_step.contains(&norm_path)
+                                        && distinct_files_mutated_in_active_step.len() >= 2
+                                        && !step_checkpoint_fired_for_active_step
+                                    {
+                                        let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                            &self.workspace_root,
+                                        );
+                                        if let Some(summary) = wm.read_active_plan_summary() {
+                                            if summary.in_progress_tasks + summary.pending_tasks
+                                                >= 2
+                                            {
+                                                if let Some(active_title) = summary.active_task {
+                                                    step_checkpoint_fired_for_active_step = true;
+                                                    let mut files_so_far: Vec<&str> =
+                                                        distinct_files_mutated_in_active_step
+                                                            .iter()
+                                                            .map(String::as_str)
+                                                            .collect();
+                                                    files_so_far.sort_unstable();
+                                                    let checkpoint_msg = serde_json::json!({
+                                                        "status": "step_progress_checkpoint",
+                                                        "executed": false,
+                                                        "active_step": active_title,
+                                                        "files_mutated_in_step": files_so_far,
+                                                        "message": format!(
+                                                            "`{}` on `{}` was held because you have already modified {} distinct files ({}) while `[>] {}` is active without updating plan progress. If `[>] {}` is complete, call `update_progress(step=\"active\", status=\"completed\")` now and then re-issue `{}`. If `{}` belongs to the same step, re-issue `{}` directly.",
+                                                            tool_call.name,
+                                                            norm_path,
+                                                            files_so_far.len(),
+                                                            files_so_far.join(", "),
+                                                            active_title,
+                                                            active_title,
+                                                            tool_call.name,
+                                                            norm_path,
+                                                            tool_call.name
+                                                        )
+                                                    })
+                                                    .to_string();
+                                                    let res_event = AgentEvent::ToolResult {
+                                                        turn_id,
+                                                        tool_id: tool_call.id.clone(),
+                                                        tool: tool_call.name.clone(),
+                                                        success: false,
+                                                        output: checkpoint_msg.clone(),
+                                                        duration_ms: 0,
+                                                    };
+                                                    let _ = self
+                                                        .session_store
+                                                        .append_event(&self.session_id, &res_event);
+                                                    let _ = event_sender.send(res_event);
+                                                    self.messages.push(Message::tool_result(
+                                                        tool_call.id.clone(),
+                                                        tool_call.name.clone(),
+                                                        checkpoint_msg.clone(),
+                                                    ));
+                                                    turn_tool_results.push(
+                                                        crate::agent::types::ToolResult {
+                                                            tool_id: tool_call.id.clone(),
+                                                            tool_name: tool_call.name.clone(),
+                                                            success: false,
+                                                            output: checkpoint_msg,
+                                                            display_output: String::new(),
+                                                            duration_ms: 0,
+                                                        },
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
                                     turn_files_modified.push(path.to_string());
                                 }
                             }
@@ -1384,20 +1462,12 @@ impl AgentLoop {
                                         | "x"
                                         | "check"
                                 );
-                                let has_workspace_modifications = turn_files_modified.len()
-                                    > completed_steps_in_turn
-                                    || crate::git::GitService::new(self.workspace_root.clone())
-                                        .get_status()
-                                        .await
-                                        .map(|s| !s.is_clean)
-                                        .unwrap_or(false);
 
                                 if is_done
                                     && completed_steps_in_turn > 0
                                     && !verifiable_action_performed
-                                    && !has_workspace_modifications
                                 {
-                                    let reject_msg = "Error: Cannot batch-complete multiple plan steps simultaneously without intermediate implementation or verification. Focus on completing and verifying the current active step first before advancing subsequent steps.".to_string();
+                                    let reject_msg = "Error: Cannot batch-complete multiple plan steps simultaneously without intermediate implementation or verification. Execute and verify the next active step first before calling `update_progress` again.".to_string();
                                     let res_event = AgentEvent::ToolResult {
                                         turn_id,
                                         tool_id: tool_call.id.clone(),
@@ -1793,12 +1863,17 @@ impl AgentLoop {
                                     verifiable_action_performed = true;
                                 }
                                 if tool_call.name == "create_plan"
+                                    || tool_call.name == "power_plan"
                                     || tool_call.name == "archive_plan"
                                 {
                                     completed_steps_in_turn = 0;
                                     verifiable_action_performed = false;
+                                    distinct_files_mutated_in_active_step.clear();
+                                    step_checkpoint_fired_for_active_step = false;
                                 }
                                 if tool_call.name == "update_progress" {
+                                    distinct_files_mutated_in_active_step.clear();
+                                    step_checkpoint_fired_for_active_step = false;
                                     let status_arg = tool_call
                                         .arguments
                                         .get("status")
@@ -2017,7 +2092,13 @@ impl AgentLoop {
                                         wm.reconcile_workspace_tasks(&[path_str.to_string()]);
                                     if reconciled > 0 {
                                         total_reconciled += reconciled;
+                                        distinct_files_mutated_in_active_step.clear();
+                                        step_checkpoint_fired_for_active_step = false;
                                         self.emit_current_plan(Some(turn_id), &event_sender);
+                                    } else {
+                                        distinct_files_mutated_in_active_step.insert(
+                                            path_str.trim().trim_start_matches("./").to_string(),
+                                        );
                                     }
                                 }
                             }
@@ -2033,6 +2114,8 @@ impl AgentLoop {
                                 let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
                                 if auto_reconciled_extra > 0 {
                                     total_reconciled += auto_reconciled_extra;
+                                    distinct_files_mutated_in_active_step.clear();
+                                    step_checkpoint_fired_for_active_step = false;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
 

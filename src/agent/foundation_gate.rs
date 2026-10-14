@@ -28,6 +28,8 @@ use crate::agent::orchestrator::{RepoState, WorkflowRouter};
 /// which otherwise bypasses the gate; before a foundation exists there is
 /// nothing to build or run, and read-only inspection has dedicated tools.
 pub const FOUNDATION_GATED_TOOLS: &[&str] = &[
+    "create_plan",
+    "power_plan",
     "kit_stack_add",
     "write_file",
     "patch_file",
@@ -94,121 +96,95 @@ fn normalize(text: &str) -> String {
         .to_string()
 }
 
-static FOUNDATION_STOP_WORDS: &[&str] = &[
-    "website",
-    "web",
-    "page",
-    "pages",
-    "app",
-    "apps",
-    "application",
-    "project",
-    "starter",
-    "template",
-    "full",
-    "basic",
-    "simple",
-    "modern",
-    "new",
-    "responsive",
-    "design",
-    "ui",
-    "ux",
-    "code",
-    "landing",
-];
+/// Returns whether a built-in skill is a concrete technology/framework skill
+/// rather than a cross-stack design/methodology skill, determined purely from
+/// whether its file globs target specific config/module paths rather than only
+/// universal `**/*.<ext>` extension wildcards.
+fn is_concrete_technology_skill(
+    skill: &crate::tools::minikit::builtin_skills::BuiltinSkill,
+) -> bool {
+    skill
+        .globs
+        .iter()
+        .any(|g| !g.strip_prefix("**/").unwrap_or(g).starts_with("*."))
+}
 
-static DYNAMIC_FOUNDATION_TOKENS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+/// Collects the discriminative technology tokens for a specific `Stack` without
+/// splitting hyphenated stack names into generic modifier words.
+fn stack_identity_tokens(stack: &crate::tools::minikit::stacks::Stack) -> HashSet<String> {
     let mut tokens = HashSet::new();
+    let name_lower = stack.name.to_ascii_lowercase();
+    tokens.insert(name_lower.clone());
 
-    // 1. MiniKit Stacks: names, runtimes, and stack packages
-    let stacks = crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None);
-    for stack in stacks {
-        let name_lower = stack.name.to_ascii_lowercase();
-        tokens.insert(name_lower.clone());
-        for part in name_lower.split(|c: char| !c.is_alphanumeric()) {
-            if part.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&part) {
-                tokens.insert(part.to_string());
+    let runtime_lower = stack.runtime.to_ascii_lowercase();
+    if runtime_lower.len() >= 2 {
+        tokens.insert(runtime_lower);
+    }
+
+    for pkg in stack.packages.iter().chain(stack.dev_packages.iter()) {
+        let pkg_lower = pkg.to_ascii_lowercase();
+        let clean = pkg_lower.trim_start_matches('@');
+        let clean_name = clean.split('/').next_back().unwrap_or(clean);
+        if clean_name.len() >= 2 {
+            tokens.insert(clean_name.to_string());
+        }
+    }
+
+    for skill in crate::tools::minikit::builtin_skills::get_all_builtin_skills() {
+        if is_concrete_technology_skill(skill) {
+            let s_name = skill.name.to_ascii_lowercase();
+            if name_lower
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|seg| seg == s_name)
+            {
+                tokens.insert(s_name);
             }
         }
-        let runtime_lower = stack.runtime.to_ascii_lowercase();
-        if runtime_lower.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&runtime_lower.as_str()) {
-            tokens.insert(runtime_lower);
-        }
-        for pkg in stack.packages.iter().chain(stack.dev_packages.iter()) {
-            let pkg_lower = pkg.to_ascii_lowercase();
-            let clean = pkg_lower.trim_start_matches('@');
-            let clean_name = clean.split('/').next_back().unwrap_or(clean);
-            for part in clean_name.split(|c: char| !c.is_alphanumeric()) {
-                if part.len() >= 3 && !FOUNDATION_STOP_WORDS.contains(&part) {
-                    tokens.insert(part.to_string());
+    }
+
+    // For zero-dependency templates (e.g. static HTML/CSS/JS), derive entry file extensions.
+    if stack.packages.is_empty() && stack.dev_packages.is_empty() {
+        for file in &stack.files {
+            if let Some(ext) = Path::new(&file.path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+            {
+                if ext.len() >= 2 {
+                    tokens.insert(ext);
                 }
             }
         }
     }
 
-    // 2. MiniKit Builtin Skills
+    tokens
+}
+
+static DYNAMIC_FOUNDATION_TOKENS: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let mut tokens = HashSet::new();
+
+    // 1. MiniKit Stacks: full stack names, runtimes, packages, and entry extensions
+    let stacks = crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None);
+    for stack in &stacks {
+        tokens.extend(stack_identity_tokens(stack));
+    }
+
+    // 2. MiniKit Builtin Technology Skills & Language Extensions (derived from globs)
     for skill in crate::tools::minikit::builtin_skills::get_all_builtin_skills() {
-        let s_name = skill.name.to_ascii_lowercase();
-        if !FOUNDATION_STOP_WORDS.contains(&s_name.as_str()) {
-            tokens.insert(s_name.clone());
+        if is_concrete_technology_skill(skill) {
+            tokens.insert(skill.name.to_ascii_lowercase());
         }
-        for part in s_name.split(|c: char| !c.is_alphanumeric()) {
-            if part.len() >= 2 && !FOUNDATION_STOP_WORDS.contains(&part) {
-                tokens.insert(part.to_string());
-            }
-        }
-    }
-
-    // 3. MiniVault Builtin Skills
-    for vault_skill in crate::vault::builtin::get_all_builtin_skills() {
-        let v_name = vault_skill.name.to_ascii_lowercase();
-        if !FOUNDATION_STOP_WORDS.contains(&v_name.as_str()) {
-            tokens.insert(v_name.clone());
-        }
-        for trigger in &vault_skill.frontmatter.triggers {
-            let trig_lower = trigger.to_ascii_lowercase();
-            if trig_lower.len() >= 2
-                && trig_lower.split_whitespace().count() <= 2
-                && !FOUNDATION_STOP_WORDS.contains(&trig_lower.as_str())
+        for glob in skill.globs {
+            if let Some(ext) = Path::new(glob)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
             {
-                tokens.insert(trig_lower);
+                if (2..=6).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+                    tokens.insert(ext);
+                }
             }
         }
-    }
-
-    // 4. Common standard languages, runtimes, and databases
-    for common in &[
-        "html",
-        "html5",
-        "css",
-        "css3",
-        "vanilla",
-        "cli",
-        "tui",
-        "spa",
-        "api",
-        "node",
-        "deno",
-        "go",
-        "golang",
-        "sqlite",
-        "mysql",
-        "redis",
-        "postgres",
-        "postgresql",
-        "mongodb",
-        "vue",
-        "svelte",
-        "angular",
-        "astro",
-        "solid",
-        "django",
-        "flask",
-        "mern",
-        "pern",
-    ] {
-        tokens.insert(common.to_string());
     }
 
     tokens
@@ -225,8 +201,13 @@ impl FoundationGate {
     }
 
     /// Returns the normalized basis if it is a short verbatim quote from a user
-    /// request, otherwise the reason it was refused.
-    fn verify_basis(&self, basis: &str) -> Result<String, &'static str> {
+    /// request that names a concrete technology stack or explicit file deliverable.
+    fn verify_basis(
+        &self,
+        basis: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<String, &'static str> {
         let needle = normalize(basis);
         if needle.chars().filter(|c| c.is_alphanumeric()).count() < MIN_BASIS_ALNUM {
             return Err("it is empty or too short to be evidence");
@@ -240,35 +221,62 @@ impl FoundationGate {
             return Err("it is not a verbatim, contiguous quote from the user's request");
         }
 
-        // Must name a concrete stack, framework, language, or single-file deliverable.
-        // Descriptive words (e.g. "premium, modern landing page", "responsive website") do NOT settle a stack.
-        let has_deliverable_indicator = needle.split_whitespace().any(|word| {
-            if let Some(pos) = word.rfind('.') {
-                let ext = &word[pos + 1..];
-                !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        // Check if the basis names an explicit file with extension (e.g. `index.html`, `script.py`).
+        let has_explicit_filename = needle.split_whitespace().any(|word| {
+            let clean = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.');
+            if let Some((stem, ext)) = clean.rsplit_once('.') {
+                !stem.is_empty()
+                    && stem.chars().any(|c| c.is_ascii_alphabetic())
+                    && (1..=5).contains(&ext.len())
+                    && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                    && ext.chars().any(|c| c.is_ascii_alphabetic())
             } else {
                 false
             }
-        }) || [
-            "single file",
-            "one file",
-            "standalone",
-            "single page",
-            "one page",
-            "script",
-        ]
-        .iter()
-        .any(|phrase| needle.contains(phrase));
+        });
+
+        // If calling `kit_stack_add` with a known stack, the basis must match a token of THAT stack.
+        if matches!(
+            tool_name,
+            "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add"
+        ) {
+            if let Some(requested_stack) = ["stack_name", "name", "stack", "template"]
+                .iter()
+                .find_map(|k| arguments.get(*k).and_then(serde_json::Value::as_str))
+            {
+                let stacks =
+                    crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None);
+                if let Some(target_stack) = stacks
+                    .iter()
+                    .find(|s| s.name.eq_ignore_ascii_case(requested_stack.trim()))
+                {
+                    let stack_tokens = stack_identity_tokens(target_stack);
+                    let matches_stack = stack_tokens.iter().any(|token| {
+                        if token.contains(' ') || token.contains('-') {
+                            needle.contains(token)
+                        } else {
+                            crate::utils::has_word(&needle, token)
+                        }
+                    });
+                    if !matches_stack && !has_explicit_filename {
+                        return Err(
+                            "it does not name the requested stack/framework. Call `ask_user` once to let the user select their stack/framework.",
+                        );
+                    }
+                    return Ok(needle);
+                }
+            }
+        }
 
         let has_concrete_token = DYNAMIC_FOUNDATION_TOKENS.iter().any(|token| {
-            if token.contains(' ') {
+            if token.contains(' ') || token.contains('-') {
                 needle.contains(token)
             } else {
                 crate::utils::has_word(&needle, token)
             }
         });
 
-        if !has_deliverable_indicator && !has_concrete_token {
+        if !has_explicit_filename && !has_concrete_token {
             return Err(
                 "it is descriptive feature/styling copy, not an explicit stack name or single-file deliverable. Call `ask_user` once to let the user select their stack/framework with user's permission.",
             );
@@ -315,7 +323,7 @@ impl FoundationGate {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         let rejection = match basis {
-            Some(basis) => match self.verify_basis(basis) {
+            Some(basis) => match self.verify_basis(basis, tool_name, arguments) {
                 Ok(verified) => {
                     tracing::info!(tool = tool_name, basis = %verified, "foundation basis verified");
                     self.resolved = true;
@@ -579,5 +587,64 @@ mod tests {
             gate.evaluate(temp.path(), "write_file", &json!({})),
             GateDecision::Checkpoint(_)
         ));
+    }
+
+    #[test]
+    fn test_minitest54_generic_skill_trigger_basis_is_rejected() {
+        // Regression from minitest54: `foundation_basis: "landing page"` previously matched
+        // a MiniVault skill trigger and bypassed the gate for `static-website`.
+        let temp = tempfile::tempdir().unwrap();
+        let mut gate = gate_with(
+            "Build a modern, dark-themed developer tools landing page for WarpFlow with pricing",
+        );
+        for basis in [
+            "landing page",
+            "dark-themed",
+            "developer tools landing page",
+        ] {
+            let args = json!({
+                "stack_name": "static-website",
+                "foundation_basis": basis
+            });
+            assert!(
+                matches!(
+                    gate.evaluate(temp.path(), "kit_stack_add", &args),
+                    GateDecision::Checkpoint(_)
+                ),
+                "basis {basis:?} must be rejected"
+            );
+        }
+        assert!(!gate.is_resolved());
+    }
+
+    #[test]
+    fn test_create_plan_and_power_plan_are_gated_until_foundation_settled() {
+        // Regression from minitest53/54: `create_plan` committed to a 17-step static-website
+        // plan before `ask_user` was called (where the user chose `react-vite`).
+        let temp = tempfile::tempdir().unwrap();
+        let mut gate = gate_with("Build a landing page for WarpFlow");
+        assert!(matches!(
+            gate.evaluate(
+                temp.path(),
+                "create_plan",
+                &json!({"title": "WarpFlow", "steps": ["Scaffold static-website"]})
+            ),
+            GateDecision::Checkpoint(_)
+        ));
+        assert!(matches!(
+            gate.evaluate(temp.path(), "power_plan", &json!({"title": "WarpFlow"})),
+            GateDecision::Checkpoint(_)
+        ));
+        assert!(!gate.is_resolved());
+
+        // Once ask_user is called, create_plan and power_plan are allowed.
+        assert_eq!(
+            gate.evaluate(temp.path(), "ask_user", &json!({})),
+            GateDecision::Allow
+        );
+        assert_eq!(
+            gate.evaluate(temp.path(), "create_plan", &json!({})),
+            GateDecision::Allow
+        );
     }
 }
