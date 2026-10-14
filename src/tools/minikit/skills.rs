@@ -136,7 +136,7 @@ impl MiniKitSkillsManager {
         let mut available = Vec::new();
 
         for s in all {
-            if s.is_active_in_project || s.scope == crate::vault::models::SkillScope::Project {
+            if s.is_active_in_project {
                 installed.push(s);
             } else {
                 available.push(s);
@@ -418,11 +418,22 @@ impl MiniKitSkillsManager {
 
         let mut matched = Vec::new();
         for skill in store.list_all_skills() {
+            // Only true procedural/behavioral Agent Skills (`Workflow`) belong in `active_skills` and `.minicode/skills/`.
+            // Package reference documentation (`Reference`) belongs in `minikit_docs/packages/`.
+            if skill.kind() != crate::vault::models::SkillKind::Workflow {
+                continue;
+            }
             if store.matches_skill_to_stack(&skill, &tokens) {
                 matched.push(skill.name.clone());
                 continue;
             }
-            if !stack_files.is_empty() {
+            let has_specific_globs = !skill.frontmatter.globs.is_empty()
+                && !skill
+                    .frontmatter
+                    .globs
+                    .iter()
+                    .any(|g| g == "**/*" || g == "*");
+            if has_specific_globs && !stack_files.is_empty() {
                 for f in stack_files {
                     if skill.matches_file(workspace_root, Path::new(f)) {
                         matched.push(skill.name.clone());
@@ -599,5 +610,39 @@ Follow design tokens.
         // Tier 2 check: auto-activated react because App.tsx matches react globs
         assert!(prompt_context.contains("Active Technology & Methodology Skills"));
         assert!(prompt_context.contains("Skill `react`"));
+    }
+
+    #[test]
+    fn test_resolve_skills_for_stack_only_returns_workflow_skills() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        let stack_files = vec![
+            "package.json".to_string(),
+            "vite.config.ts".to_string(),
+            "src/App.tsx".to_string(),
+            "src/main.tsx".to_string(),
+        ];
+        let stack_packages = vec![
+            "react".to_string(),
+            "react-dom".to_string(),
+            "vite".to_string(),
+            "tailwindcss".to_string(),
+        ];
+
+        let resolved =
+            MiniKitSkillsManager::resolve_skills_for_stack(ws, &stack_files, &stack_packages);
+
+        // Must include behavioral frontend/UI workflow skills
+        assert!(resolved.contains(&"frontend-design".to_string()));
+        assert!(resolved.contains(&"ui-ux-pro-max".to_string()));
+
+        // Must NOT include package reference docs
+        assert!(!resolved.contains(&"react".to_string()));
+        assert!(!resolved.contains(&"vite".to_string()));
+        assert!(!resolved.contains(&"hono".to_string()));
+        assert!(!resolved.contains(&"tailwind-v4".to_string()));
+        assert!(!resolved.contains(&"express".to_string()));
+        assert!(!resolved.contains(&"flutter".to_string()));
     }
 }

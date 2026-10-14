@@ -45,13 +45,19 @@ pub fn is_verifiable_action_tool(name: &str) -> bool {
 pub struct PlanGate {
     /// Step count of a plan created but not yet approved.
     pending_steps: Option<usize>,
+    /// True if `ask_user` was already invoked prior to `create_plan` (e.g., greenfield consultation).
+    pre_approved: bool,
 }
 
 impl PlanGate {
     /// Records a tool call that has just been executed successfully.
     pub fn observe_success(&mut self, tool_name: &str, arguments: &serde_json::Value) {
         if tool_name == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME {
-            self.pending_steps = None;
+            if self.pending_steps.is_some() {
+                self.pending_steps = None;
+            } else {
+                self.pre_approved = true;
+            }
             return;
         }
         if tool_name == "create_plan" {
@@ -62,8 +68,13 @@ impl PlanGate {
             let is_swarm_worker = std::env::var("MINICODE_SWARM_DIR")
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
-            self.pending_steps =
-                (steps >= PLAN_APPROVAL_MIN_STEPS && !is_swarm_worker).then_some(steps);
+            if self.pre_approved {
+                self.pre_approved = false;
+                self.pending_steps = None;
+            } else {
+                self.pending_steps =
+                    (steps >= PLAN_APPROVAL_MIN_STEPS && !is_swarm_worker).then_some(steps);
+            }
         }
     }
 
@@ -140,6 +151,15 @@ mod tests {
         gate.observe_success("ask_user", &json!({}));
         gate.observe_success("create_plan", &plan(7));
         assert!(gate.check("write_file").is_some());
+    }
+
+    #[test]
+    fn test_ask_user_before_create_plan_satisfies_approval() {
+        let mut gate = PlanGate::default();
+        gate.observe_success("ask_user", &json!({}));
+        gate.observe_success("create_plan", &plan(18));
+        assert!(!gate.is_pending());
+        assert!(gate.check("write_file").is_none());
     }
 
     #[test]

@@ -1,189 +1,62 @@
 ---
 name: frontend-design
-description: "Design distinctive, production-grade frontend interfaces — mockups as HTML pages or working application pages. Use when the user asks to design a web page, landing page, UI mockup, dashboard, application page, or any visual HTML interface. Supports single designs, multiple variant generation, and integration with existing project frameworks."
+description: "Design and build distinctive, production-grade frontend interfaces, landing pages, dashboards, and interactive web applications with editorial typography, curated color palettes, tactile motion, and clean modular architecture."
+kind: "workflow"
+category: "frontend"
+globs: ["**/*.tsx", "**/*.jsx", "**/*.html", "**/*.css", "**/*.vue", "**/*.svelte"]
 triggers: ["landing page", "frontend", "ui", "ux", "design", "css", "layout", "responsive", "website", "dashboard", "page"]
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
-You are a **frontend design orchestrator**. You plan designs, write briefs, and coordinate subagents for implementation and evaluation. You do NOT implement designs yourself — you delegate implementation to subagents and run quality evaluation from here.
+# Frontend Design & Aesthetic Engineering
 
----
-
-## Operating Rules
-
-These rules govern how you operate. Apply whichever are relevant to the request.
-
-### Output format
-
-- **Mockups / standalone pages**: Generate as a self-contained `index.html` + `assets/` folder. Place in a mockups/designs directory (use an existing one, create one in the project root, or use a folder the user specifies). Name the folder for mockup descriptively (e.g., `landing_page/`, `dashboard/`).
-- **Real application pages**: Use the project's existing frontend framework, component library, and styling conventions. Place files in their correct project directories according to the project's structure and routing. Never dump standalone HTML into an app project.
-- If ambiguous, infer from context: is there an existing app with a framework? → application page. No project context or user says "mockup"/"design"? → standalone HTML.
-
-### Research
-
-- If you need to understand a project's framework, routing, components, or styling conventions before implementing, use a **research subagent** to explore the codebase first.
-- If the project has existing brand guidelines, design systems, or style guides, research those before designing.
-- For simple standalone mockups with a clear brief, skip research and go straight to design.
-
-### Clarification
-
-- If the request is ambiguous, ask up to 3 focused questions about purpose/audience, aesthetic preferences, and content needs.
-- If the prompt is already detailed, skip and proceed.
-
-### Responding to feedback
-
-- When the user requests changes ("make it more corporate", "try a different style", "I don't like it"), treat it as a new iteration: update the brief incorporating their feedback, re-run implementation + evaluation, and re-deliver.
-- Do not start from scratch unless the user explicitly asks — build on the existing work and adjust.
+Build distinctive, memorable, production-grade user interfaces that avoid generic AI templates. Every interface must have a clear aesthetic point of view, cohesive color tokens, editorial typography, and interactive polish.
 
 ---
 
-## How to Orchestrate
+## 1. Aesthetic Direction & Design Tokens
 
-### 1. Plan the Direction
+Before writing component markup, establish a cohesive visual language:
+- **Palette Selection (`block_palettes`)**: Query `block_palettes` for curated industry-specific color palettes (surface backgrounds, elevated cards, muted borders, primary/accent tokens, semantic status colors) and inject CSS custom properties (`--bg-primary`, `--surface-elevated`, `--border-subtle`, `--accent-primary`) in your global stylesheet.
+- **Component Accelerators (`block_search` & `block_scaffold`)**: Search `block_search` for production-tested UI patterns (hero sections, bento grids, pricing matrices, testimonials, interactive navbars) and adapt them to the project's domain rather than writing boilerplate from scratch.
+- **Intentional Theme Polarity**:
+  - **High-Craft Dark UI**: Deep carbon/obsidian canvas (`#090A0F` to `#0D1117`), elevated slate surfaces (`#131722`) with `1px solid rgba(255,255,255,0.08)` hairline borders, crisp alabaster primary text (`#F8FAFC`), and cool slate muted text (`#94A3B8`).
+  - **Editorial Light UI**: Warm ivory/alabaster canvas (`#FAF8F5` or `#F8FAFC`), pure surface cards (`#FFFFFF`) with subtle border (`#E2E8F0`), deep ink text (`#0F172A`), and restrained accent highlights.
 
-Before delegating anything, commit to:
-- **Objective**: What the page is and who it's for
-- **Aesthetic direction**: A specific, opinionated direction (not generic)
-- **Content structure**: Sections, hierarchy, key elements
-- **Typography direction**: Font mood and pairing strategy
-- **Color direction**: Mood-based palette guidance
-- **What makes it memorable**: The one thing that makes someone stop scrolling
-- **Image needs**: Identify any images the design requires (hero photos, illustrations, avatars, textures, backgrounds, etc.) so the implementation agent can generate them. **Prefer raster images over SVG** — use SVG only for simple schematic visuals (icons, diagrams, simple geometric shapes). Never reference Unsplash, Pexels, or any external image service. Don't generate images yourself, let the implementation agent handle that.
+---
 
-### 2. Write the Brief
+## 2. Typography & Scannable Hierarchy
 
-Write the design brief to a file at `{temp_dir}/brief.md`. The `{temp_dir}` is a unique temporary directory for this design session. Create it using `mktemp`:
+- **Font Pairing**: Pair an expressive display/geometric heading font (`Space Grotesk`, `Plus Jakarta Sans`, `Syne`, `Outfit`, or `Instrument Serif`) with a highly legible UI body font (`Inter`, `DM Sans`) and a crisp monospace font (`JetBrains Mono`, `Fira Code`) for metrics, code, and badges.
+- **Scale & Tracking**:
+  - Hero Headline: `clamp(2.5rem, 5vw, 4.25rem)`, `font-weight: 700–800`, tight tracking (`-0.03em`), line-height `1.08`.
+  - Section Header: `clamp(1.75rem, 3vw, 2.5rem)`, `font-weight: 700`, tracking `-0.02em`.
+  - Eyebrow / Kicker Badge: `0.75rem` (`12px`), uppercase, letter-spacing `0.08em`, monospace or semi-bold, pill container with subtle border.
+  - Body Copy: `1rem–1.125rem` (`16px–18px`), line-height `1.65`, constrained to `60ch–70ch` max-width for effortless reading.
+- **Numeric Discipline**: Always apply `tabular-nums` (`font-variant-numeric: tabular-nums`) to counters, pricing tables, live metrics, and timestamps.
 
-```bash
-# macOS / Linux / Git Bash on Windows
-mktemp -d "${TMPDIR:-/tmp}/{short_task_name}-XXXXXXXX"
-```
+---
 
-If `mktemp` is not available (e.g., native Windows without Git Bash), use PowerShell:
+## 3. Spatial Architecture & Viewport Budget
 
-```powershell
-$dir = Join-Path ([System.IO.Path]::GetTempPath()) ("{short_task_name}-" + [System.IO.Path]::GetRandomFileName()); New-Item -ItemType Directory -Path $dir | Select-Object -ExpandProperty FullName
-```
+- **Above-the-Fold Discipline**: Maximum 2 distinct component groups visible without scrolling (e.g., Sticky Glass Navbar + Hero Split/Centered Section). Never stack multiple heavy banners above the fold.
+- **Fixed Navbar Clearance**: When using a `fixed` or `sticky` top navigation bar (`h-16` / `64px` or `h-20` / `80px`), always give the hero section sufficient top padding (`pt-28` to `pt-36` / `112px–144px`) so the headline or eyebrow badge never collides with the header.
+- **Bento Grids & Card Density**:
+  - Maximum 3–4 data points per card (Icon/Badge, Title, 2-line description, optional metric or micro-preview).
+  - Maximum 3 cards in a single desktop row (`grid-cols-1 md:grid-cols-2 lg:grid-cols-3`, `gap-6` / `24px`).
+  - Maintain at least 25% open canvas/whitespace across the viewport (`py-20` to `py-28` vertical section rhythm).
+- **Performant Ambient Glows**: Use lightweight CSS `radial-gradient(...)` backgrounds for atmospheric depth instead of oversized `filter: blur(128px)` DOM nodes that cause GPU repaint lag and text contrast washout.
 
-The `XXXXXXXX` (8 random characters) ensures uniqueness across concurrent sessions. Use the resulting path as `{temp_dir}` for the rest of the session.
+---
 
-The brief must include everything the implementation agent needs: objective, target audience, aesthetic direction, content structure, typography, colors, output path, image needs, and any user-provided constraints or design system references.
+## 4. Interactive Craft & Functional Completeness
 
-If the project has an existing design system file, reference its path in the brief — do not inline the contents.
-
-### 3. Spawn Implementation
-
-**Always spawn a subagent for implementation — even for a single design.** Use the same model you are running on.
-
-Pass the implementation instruction file:
-- `{skill_dir}/implementation.md`
-
-Where `{skill_dir}` is the directory containing this SKILL.md file. **Do NOT read this file yourself** — just pass it to the subagent.
-
-Prompt the subagent with:
-```
-You are a Design Implementation Agent. Your role, process, design principles, and technical standards are defined in the attached instruction file — read and follow it precisely.
-
-Implement this design:
-- Brief: {temp_dir}/brief.md
-- Output path: {output_path}
-```
-
-Include any additional context files the implementer needs (e.g., existing design system files, component references).
-
-Wait for the subagent to complete, then note the path to the produced HTML file.
-
-#### Multiple variants
-
-If the user asks for **several variants / alternatives / options**:
-
-1. **Define divergent aesthetic directions yourself** before spawning. Don't let subagents pick — you assign directions to maximize diversity. Variants must differ across at least 3 axes (e.g., layout structure, typography pairing, palette/mood, interaction style, density/composition).
-2. **Write a separate brief for each variant** at `{temp_dir}/brief_variant_{N}.md`. Each brief includes the shared requirements plus the distinct aesthetic direction for that variant.
-3. **Spawn one implementation subagent per variant in parallel.** Each gets `{skill_dir}/implementation.md` and its own brief path.
-4. After all complete, run evaluation on each (see step 4).
-
-### 4. Evaluate & Fix Loop
-
-**Mandatory.** After implementation completes, run an external design evaluation. Do NOT skip this step — even for variants, even if you think the design is perfect.
-
-#### Setup
-
-**Determine the evaluator model.** Pick the most powerful model from a **different provider** than the one used for implementation.
-
-#### Evaluation Loop (max 3 rounds per design)
-
-For each design (or variant), run this loop. For multiple variants, you may run evaluation loops in parallel.
-
-For **attempt N** (starting at 1, up to 3):
-
-**A. Spawn or resume the evaluator subagent:**
-
-- **Round 1 (spawn new session):** Spawn subagent with the evaluator instruction file:
-  - `{skill_dir}/evaluation.md`
-
-  **Do NOT read this file yourself** — just pass it to the subagent.
-
-  Prompt the subagent with:
-  ```
-  You are a Design Evaluator. Your role, criteria, and process are defined in the attached files — read and follow them precisely.
-
-  Evaluate this design:
-  - Brief: {brief_path}
-  - HTML page: {html_path}
-  - Write evaluation to: {temp_dir}/eval_{eval_id}_1.md
-  - Attempt number: 1
-  ```
-
-  Where `{brief_path}` is `{temp_dir}/brief.md` for a single design, or `{temp_dir}/brief_variant_{N}.md` for the Nth variant. `{eval_id}` is a unique identifier for this design (e.g., `main` for a single design, or `variant_{N}` for variants) to avoid file collisions when running evaluations in parallel.
-
-- **Rounds 2–3 (resume existing session):** Resume the same evaluator subagent session using the session ID from the previous response. Prompt:
-  ```
-  Fixes have been applied. Please re-evaluate:
-  - The HTML page at {html_path} has been updated
-  - Write evaluation to: {temp_dir}/eval_{eval_id}_{N}.md
-  - Attempt number: {N}
-  ```
-
-**B. Check the verdict** from the evaluator subagent's response text (look for PASS / NEEDS REVISION / MAJOR REVISION). Do NOT read the evaluation file yourself.
-
-**C. Act on the verdict:**
-
-- **PASS** → Done with this design. Proceed to step 5 (Deliver).
-- **NEEDS REVISION** or **MAJOR REVISION** → Continue to step D.
-- If this was **round 3** and still not PASS → Stop the loop and proceed to step 5 with a note about remaining issues.
-
-**D. Send fixes to the implementation subagent:**
-
-Resume the implementation subagent (using its session ID from step 3) with:
-```
-An evaluator has reviewed your design and found issues. Read the evaluation and apply fixes:
-- Evaluation file: {temp_dir}/eval_{eval_id}_{N}.md
-- Address every priority fix listed in the evaluation.
-- Report what you changed when done.
-```
-
-Wait for the implementation subagent to complete. Increment N and go back to step A.
-
-#### Important Rules
-
-- **Never skip evaluation.** Even if you think the design is perfect, run the loop.
-- **Never read evaluation files yourself.** The evaluator writes them, the implementer reads them. You only check the verdict from the evaluator's response text.
-- **Track session IDs** — reuse the same evaluator session and the same implementer session across rounds.
-- **The evaluator sees the page fresh each time** — it re-opens the browser and takes new screenshots on resume.
-
-#### Error Handling
-
-- If an **implementation subagent fails** (crash, timeout, or error), retry once with the same brief. If it fails again, report the error to the user and stop.
-- If an **evaluator subagent fails**, skip evaluation for that round and deliver the design with a note that evaluation could not be completed. Do not retry evaluation more than once.
-- If a subagent **times out**, treat it as a failure and follow the rules above.
-
-### 5. Deliver
-
-Report to the user:
-- **Summary**: What was designed, aesthetic direction, key decisions
-- **Final screenshots**: Desktop and mobile views
-- **Paths**: To all created files/folders
-- **How to view**: Instructions to open/run
-- **Known limitations**: Any unresolved issues from evaluation
-- If multiple variants were generated, compare them — what makes each distinct and their relative strengths.
+- **Real Interactive State**: Every filter tab, billing toggle (Monthly/Annual), interactive demo control, command palette, or modal trigger MUST be wired to real state (`useState` / reactive state) with visible feedback.
+- **Micro-Interactions**:
+  - Cards: Subtle border luminance shift and `translateY(-2px)` lift on `:hover` (`transition-all duration-200`).
+  - Buttons: Clear `:hover`, `:focus-visible` (`ring-2 ring-offset-2`), and `:active` (`scale-[0.98]`) states.
+- **Iconography Hygiene**:
+  - Use `lucide-react` (or inline SVG) for interface icons (`Terminal`, `Cpu`, `Sparkles`, `Shield`, `Zap`, `Check`, `ArrowRight`).
+  - **NEVER import deprecated brand icons** (`Github`, `Twitter`, `Linkedin`, `Discord`, `Slack`) from `lucide-react` — they do not exist in modern `lucide-react` releases and will crash TypeScript compilation. Always render brand/social logos as clean inline `<svg viewBox="0 0 24 24">` components.
+- **Modular Component Architecture**: Split complex pages into focused section components under `src/components/` (`Navbar.tsx`, `HeroSection.tsx`, `BentoFeatures.tsx`, `InteractiveDemo.tsx`, `PricingSection.tsx`, `Footer.tsx`), keeping each file under 200 lines.

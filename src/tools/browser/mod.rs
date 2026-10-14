@@ -533,6 +533,31 @@ impl BrowserController {
         engine.cdp.evaluate_js(script).await
     }
 
+    /// Resolves screenshot paths so relative paths always live inside `.minicode/screenshots/`
+    /// instead of polluting the project root directory.
+    pub fn resolve_screenshot_path(
+        workspace_root: &Path,
+        custom_path: Option<&str>,
+    ) -> std::path::PathBuf {
+        let dir = workspace_root.join(BROWSER_SCREENSHOTS_DIR);
+        if let Some(raw) = custom_path.map(str::trim).filter(|s| !s.is_empty()) {
+            let p = Path::new(raw);
+            if p.is_absolute() {
+                return p.to_path_buf();
+            }
+            let normalized = raw.trim_start_matches("./");
+            if normalized.starts_with(".minicode/") {
+                return workspace_root.join(normalized);
+            }
+            let sub = normalized
+                .strip_prefix("screenshots/")
+                .unwrap_or(normalized);
+            return dir.join(sub);
+        }
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        dir.join(format!("screenshot_{}.png", timestamp))
+    }
+
     /// Captures a screenshot and saves it to `.minicode/screenshots/`
     pub async fn take_screenshot(
         mode: BrowserMode,
@@ -542,14 +567,7 @@ impl BrowserController {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let png_bytes = engine.cdp.take_screenshot().await?;
 
-        let target_path = if let Some(p) = custom_path {
-            workspace_root.join(p)
-        } else {
-            let dir = workspace_root.join(BROWSER_SCREENSHOTS_DIR);
-            let _ = std::fs::create_dir_all(&dir);
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            dir.join(format!("screenshot_{}.png", timestamp))
-        };
+        let target_path = Self::resolve_screenshot_path(workspace_root, custom_path);
         if let Some(parent) = target_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -1657,6 +1675,23 @@ mod tests {
         assert_eq!(
             normalize_loopback_url("file:///tmp/index.html"),
             "file:///tmp/index.html"
+        );
+    }
+
+    #[test]
+    fn test_resolve_screenshot_path_routes_into_minicode_screenshots() {
+        let ws = Path::new("/tmp/ws");
+        assert_eq!(
+            BrowserController::resolve_screenshot_path(ws, Some("screenshots/hero.png")),
+            std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero.png")
+        );
+        assert_eq!(
+            BrowserController::resolve_screenshot_path(ws, Some("hero.png")),
+            std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero.png")
+        );
+        assert_eq!(
+            BrowserController::resolve_screenshot_path(ws, Some(".minicode/screenshots/hero.png")),
+            std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero.png")
         );
     }
 }

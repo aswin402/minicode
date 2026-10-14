@@ -441,6 +441,7 @@ impl VaultStore {
                 &global_dir,
                 SkillScope::Global,
                 Some(SkillKind::Workflow),
+                false,
                 &mut skill_map,
             );
         }
@@ -449,6 +450,7 @@ impl VaultStore {
                 &legacy_dir,
                 SkillScope::Global,
                 Some(SkillKind::Workflow),
+                false,
                 &mut skill_map,
             );
         }
@@ -460,6 +462,7 @@ impl VaultStore {
             &project_dir,
             SkillScope::Project,
             Some(SkillKind::Workflow),
+            true,
             &mut skill_map,
         );
 
@@ -472,6 +475,7 @@ impl VaultStore {
                 &packages_dir,
                 SkillScope::Project,
                 Some(SkillKind::Reference),
+                false,
                 &mut skill_map,
             );
 
@@ -481,6 +485,7 @@ impl VaultStore {
                 &runtimes_dir,
                 SkillScope::Project,
                 Some(SkillKind::Runtime),
+                false,
                 &mut skill_map,
             );
 
@@ -499,6 +504,7 @@ impl VaultStore {
                                 &p,
                                 SkillScope::Project,
                                 Some(SkillKind::Runtime),
+                                false,
                                 &mut skill_map,
                             );
                         }
@@ -512,20 +518,20 @@ impl VaultStore {
                 &core_dir,
                 SkillScope::Project,
                 Some(SkillKind::Core),
+                false,
                 &mut skill_map,
             );
         }
 
-        // Mark active status based on manifest (minikit.json / onpkg.json) or presence in project
+        // Mark active status based on manifest (minikit.json / onpkg.json) or presence in .minicode/skills/
         let manifest_active = self.get_manifest_active_skills();
 
         let mut skills: Vec<VaultSkill> = skill_map
             .into_values()
             .map(|mut s| {
-                if s.scope == SkillScope::Project
-                    || manifest_active
-                        .iter()
-                        .any(|m| m.eq_ignore_ascii_case(&s.name))
+                if manifest_active
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(&s.name))
                 {
                     s.is_active_in_project = true;
                 }
@@ -543,6 +549,7 @@ impl VaultStore {
         dir: &Path,
         scope: SkillScope,
         default_kind: Option<SkillKind>,
+        is_active: bool,
         map: &mut std::collections::BTreeMap<String, VaultSkill>,
     ) {
         if !dir.exists() || !dir.is_dir() {
@@ -580,7 +587,7 @@ impl VaultStore {
                         instructions,
                         raw_content: content,
                         path: Some(path),
-                        is_active_in_project: scope == SkillScope::Project,
+                        is_active_in_project: is_active,
                     };
                     map.insert(skill.name.to_lowercase(), skill);
                 }
@@ -616,7 +623,7 @@ impl VaultStore {
                             instructions,
                             raw_content: content,
                             path: Some(target),
-                            is_active_in_project: scope == SkillScope::Project,
+                            is_active_in_project: is_active,
                         };
                         map.insert(skill.name.to_lowercase(), skill);
                     }
@@ -1282,6 +1289,35 @@ impl VaultStore {
             && (stack_tokens.contains("tailwind") || stack_tokens.contains("tailwindcss"))
         {
             return true;
+        }
+
+        // Behavioral Frontend / UI-Styling workflow skills (e.g., frontend-design, ui-ux-pro-max)
+        // match any workspace that has frontend/UI stack tokens or an HTML entrypoint.
+        if skill.kind() == SkillKind::Workflow
+            && matches!(skill.category(), "frontend" | "ui-styling")
+        {
+            let has_ui_token = stack_tokens.iter().any(|t| {
+                matches!(
+                    t.as_str(),
+                    "react"
+                        | "vue"
+                        | "svelte"
+                        | "next"
+                        | "nextjs"
+                        | "tailwind"
+                        | "tailwindcss"
+                        | "gsap"
+                        | "lucide"
+                        | "shadcn"
+                        | "radix"
+                        | "flutter"
+                        | "astro"
+                        | "solid"
+                )
+            }) || self.workspace_root.join("index.html").exists();
+            if has_ui_token {
+                return true;
+            }
         }
 
         // 2. Exact name match

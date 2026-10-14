@@ -32,17 +32,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_plan".to_string(),
-            description: "Generate or update a structured MiniPower implementation plan with bite-sized atomic tasks (2-5 min each), target file paths, verifiable acceptance criteria, and concrete verification commands. Saves to todo.md in project documentation.".to_string(),
+            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md`. While these tactical sub-steps are active, the inline TUI widget focuses exclusively on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "Feature, bug, or task specification to plan into bite-sized tasks"
+                        "description": "Title of the active macro task or feature being decomposed into tactical sub-steps"
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Ordered list of bite-sized tactical sub-steps (e.g. ['1. Check theme tokens in index.css', '2. Search miniblocks for hero layout', '3. Implement HeroSection.tsx']) for this active task"
                     },
                     "save_to_docs": {
                         "type": "boolean",
-                        "description": "Whether to append/persist the plan into project documentation (todo.md / implementation.md). Defaults to true."
+                        "description": "Whether to persist architectural notes into minikit_docs/core/implementation.md. Defaults to true."
                     }
                 },
                 "required": ["topic"]
@@ -123,25 +128,30 @@ pub async fn dispatch(
                         name: "power_plan".to_string(),
                         reason: "Missing required argument 'topic'".to_string(),
                     })?;
+                let steps = opt_string_array(args, "steps")
+                    .or_else(|| opt_string_array(args, "tasks"))
+                    .unwrap_or_default();
                 let save_to_docs = opt_bool(args, "save_to_docs", true);
-                let plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
+                let mut plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
+
+                if !steps.is_empty() {
+                    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    wm.init_tactical_subplan(topic, &steps)?;
+                    let first_step = steps
+                        .first()
+                        .map(|s| {
+                            crate::context::working_memory::WorkingMemory::sanitize_step_title(s)
+                        })
+                        .unwrap_or_default();
+                    plan.push_str(&format!(
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress`.",
+                        steps.len(),
+                        topic,
+                        first_step
+                    ));
+                }
 
                 if save_to_docs {
-                    let todo_file =
-                        crate::tools::minikit::resolve_doc_path(workspace_root, "todo.md");
-                    if let Some(parent) = todo_file.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let append_content =
-                        format!("\n\n<!-- MiniPower Plan: {} -->\n{}", topic, plan);
-                    let _ = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&todo_file)
-                        .and_then(|mut f| {
-                            std::io::Write::write_all(&mut f, append_content.as_bytes())
-                        });
-
                     let impl_file = crate::tools::minikit::resolve_doc_path(
                         workspace_root,
                         "implementation.md",
@@ -149,8 +159,18 @@ pub async fn dispatch(
                     if let Some(parent) = impl_file.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
+                    let steps_md = if steps.is_empty() {
+                        plan.clone()
+                    } else {
+                        steps
+                            .iter()
+                            .enumerate()
+                            .map(|(i, s)| format!("{}. {}", i + 1, s))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
                     let append_impl =
-                        format!("\n\n## 🛠️ MiniPower Architecture: {}\n{}\n", topic, plan);
+                        format!("\n\n## 🛠️ MiniPower Sub-Plan: {}\n{}\n", topic, steps_md);
                     let _ = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)

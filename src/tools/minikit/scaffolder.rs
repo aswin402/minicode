@@ -795,26 +795,26 @@ impl MiniKitScaffolder {
         let mut stack_packages = stack.packages.clone();
         stack_packages.extend(stack.dev_packages.clone());
         let mut active_skills = super::skills::MiniKitSkillsManager::resolve_skills_for_stack(
-            workspace_root,
+            &dest_dir,
             &stack_file_paths,
             &stack_packages,
         );
         active_skills.retain(|s| !s.starts_with("minikit-") && !s.starts_with("pkg-"));
-        if active_skills.is_empty() {
-            active_skills.push(stack.runtime.clone());
-        }
 
-        // Install resolved active skills into workspace .minicode/skills/
-        let skills_dir = workspace_root
+        // Install resolved active workflow skills into target workspace .minicode/skills/
+        let vault_store = crate::vault::store::VaultStore::new(&dest_dir);
+        let skills_dir = dest_dir
             .join(crate::constants::WORKSPACE_DIR_NAME)
             .join("skills");
         for skill_name in &active_skills {
-            if let Some(builtin) = super::builtin_skills::find_builtin_skill(skill_name) {
-                let target_skill_dir = skills_dir.join(builtin.name);
-                let _ = fs::create_dir_all(&target_skill_dir);
-                let target_file = target_skill_dir.join(crate::constants::SKILL_MD_FILE);
-                if !target_file.exists() {
-                    let _ = fs::write(&target_file, builtin.content);
+            if vault_store.load_to_project(skill_name).is_err() {
+                if let Some(builtin) = super::builtin_skills::find_builtin_skill(skill_name) {
+                    let target_skill_dir = skills_dir.join(builtin.name);
+                    let _ = fs::create_dir_all(&target_skill_dir);
+                    let target_file = target_skill_dir.join(crate::constants::SKILL_MD_FILE);
+                    if !target_file.exists() {
+                        let _ = fs::write(&target_file, builtin.content);
+                    }
                 }
             }
         }
@@ -828,7 +828,7 @@ impl MiniKitScaffolder {
             "description": stack.description,
             "packages": stack.packages,
             "dev_packages": stack.dev_packages,
-            "active_skills": active_skills
+            "active_skills": active_skills.clone()
         });
 
         let manifest_path = dest_dir.join(crate::constants::MINIKIT_MANIFEST_FILE);
@@ -973,14 +973,25 @@ impl MiniKitScaffolder {
             format!("\n{}", guidance_lines.join("\n"))
         };
 
+        let skills_summary = if active_skills.is_empty() {
+            "none".to_string()
+        } else {
+            format!(
+                "{} (loaded in `.minicode/skills/` & active in session)",
+                active_skills.join(", ")
+            )
+        };
+
         Ok(format!(
             "✔ Successfully scaffolded stack `{}` in `{}`\n\
             • Files created: {} files\n\
             • Manifest: minikit.json, AGENTS.md, minikit_docs/\n\
+            • Active Skills: {}\n\
             • Runtime: {}\n{}{}",
             stack.name,
             dest_dir.display(),
             files_count,
+            skills_summary,
             stack.runtime,
             install_msg,
             layout_notice

@@ -34,48 +34,11 @@ always_apply: false
     },
     BuiltinSkillDef {
         name: "frontend-design",
-        content: r#"---
-name: "frontend-design"
-description: "High-end production UI design, aesthetics, typography, visual hierarchy, whitespace, and micro-interactions."
-category: "frontend"
-kind: "workflow"
-globs: ["*.tsx", "*.jsx", "*.html", "*.css", "*.vue", "*.svelte"]
-triggers: ["landing page", "frontend", "ui", "ux", "card", "hero", "design", "navbar"]
-always_apply: false
----
-
-# High-End Frontend Design & Aesthetics
-
-## Core Aesthetic Principles
-1. **Bold Typography & Hierarchy**: Anchor screens with striking display headers (`text-4xl md:text-6xl font-extrabold tracking-tight`). Use muted secondary subtitles with generous line-height (`leading-relaxed`).
-2. **Generous Whitespace**: Avoid cramped layouts. Use `py-16 md:py-24`, `space-y-8`, and `gap-8` to allow design elements room to breathe.
-3. **Subtle Gradients & Glows**: Use radial gradient highlights, backdrop blurs (`backdrop-blur-md`), and translucent border rings (`border-white/10`) to create depth without visual noise.
-4. **Interactive Polish**:
-   - Every interactive element (buttons, cards, links) must have clear hover, focus, and active states with `transition-all duration-200 ease-out`.
-   - Card lift on hover: `hover:-translate-y-1 hover:shadow-lg`.
-5. **Dark and Light Harmony**: Support both dark and light modes cleanly with cohesive color palettes. Avoid pure `#000000` or `#ffffff` backgrounds; prefer rich neutrals (`#09090b` or `#0f172a`).
-"#,
+        content: include_str!("../tools/minikit/builtin_skills/frontend-design/SKILL.md"),
     },
     BuiltinSkillDef {
         name: "ui-ux-pro-max",
-        content: r#"---
-name: "ui-ux-pro-max"
-description: "Comprehensive UI/UX design tokens, micro-interactions, responsive grids, and accessibility (WCAG AA)."
-category: "ui-styling"
-kind: "workflow"
-globs: ["*.tsx", "*.jsx", "*.html", "*.css"]
-triggers: ["ux", "accessibility", "a11y", "contrast", "tokens", "keyboard"]
-always_apply: false
----
-
-# UI/UX Pro Max Guidelines
-
-## Invariants
-1. **WCAG AA Compliance**: Ensure a minimum 4.5:1 contrast ratio for normal text and 3:1 for large text.
-2. **Keyboard Navigation**: All interactive elements must have visible focus rings (`focus-visible:ring-2 focus-visible:ring-offset-2`).
-3. **Semantic HTML**: Use `<header>`, `<nav>`, `<main>`, `<section>`, `<article>`, `<aside>`, and `<footer>` rather than soup of `<div>` tags.
-4. **Touch Targets**: Mobile buttons and clickable targets must have a minimum dimension of 44x44 pixels.
-"#,
+        content: include_str!("../tools/minikit/builtin_skills/ui-ux-pro-max/SKILL.md"),
     },
     BuiltinSkillDef {
         name: "react",
@@ -296,7 +259,7 @@ name: "hono"
 description: "Hono modern ultrafast web framework for TypeScript and edge environments."
 category: "backend"
 kind: "reference"
-globs: ["src/**/*.ts", "*.ts"]
+globs: ["**/hono*.ts", "**/routes/**/*.ts"]
 triggers: ["hono", "edge", "cloudflare workers", "bun"]
 always_apply: false
 ---

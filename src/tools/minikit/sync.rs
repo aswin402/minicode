@@ -134,11 +134,11 @@ impl MiniKitSyncEngine {
         serde_json::Value::Object(arch)
     }
 
-    /// Ensures that `.minicode/` local runtime and transient memory directory is present in `.gitignore`.
+    /// Ensures that `.minicode/` local runtime/transient memory and `screenshots/` directories are present in `.gitignore`.
     pub fn ensure_gitignore(workspace_root: &Path) {
         let gitignore_path = workspace_root.join(".gitignore");
         if !gitignore_path.exists() {
-            let initial = "# minicode local runtime & transient memory\n.minicode/\n";
+            let initial = "# minicode local runtime & transient memory\n.minicode/\nscreenshots/\n";
             let _ = fs::write(&gitignore_path, initial);
             return;
         }
@@ -151,12 +151,24 @@ impl MiniKitSyncEngine {
                     || t.starts_with(".minicode/")
                     || t.contains("/.minicode")
             });
-            if !has_minicode {
+            let has_screenshots = content.lines().any(|l| {
+                let t = l.trim();
+                t == "screenshots"
+                    || t == "screenshots/"
+                    || t.starts_with("screenshots/")
+                    || t.contains("/screenshots")
+            });
+            if !has_minicode || !has_screenshots {
                 let mut updated = content;
                 if !updated.ends_with('\n') {
                     updated.push('\n');
                 }
-                updated.push_str("\n# minicode local runtime & transient memory\n.minicode/\n");
+                if !has_minicode {
+                    updated.push_str("\n# minicode local runtime & transient memory\n.minicode/\n");
+                }
+                if !has_screenshots {
+                    updated.push_str("screenshots/\n");
+                }
                 let _ = fs::write(&gitignore_path, updated);
             }
         }
@@ -497,7 +509,12 @@ impl MiniKitSyncEngine {
         manifest["package_manager"] = serde_json::json!(package_manager);
 
         if manifest.get("active_skills").is_none() {
-            manifest["active_skills"] = serde_json::json!([runtime]);
+            let resolved = super::skills::MiniKitSkillsManager::resolve_skills_for_stack(
+                workspace_root,
+                &[],
+                &[],
+            );
+            manifest["active_skills"] = serde_json::json!(resolved);
         }
 
         // Deep architecture detection

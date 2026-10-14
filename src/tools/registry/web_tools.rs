@@ -349,7 +349,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path in workspace to save the screenshot image"
+                        "description": "Optional filename or relative path inside `.minicode/screenshots/` to save the screenshot image (e.g. `hero.png` or `.minicode/screenshots/hero.png`)"
                     },
                     "mode": {
                         "type": "string",
@@ -367,7 +367,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "actions": {
                         "type": "array",
-                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"scroll\", \"direction\": \"down\"}, {\"action\": \"screenshot\", \"path\": \"screenshots/hero.png\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
+                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"scroll\", \"direction\": \"down\"}, {\"action\": \"screenshot\", \"path\": \".minicode/screenshots/hero.png\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
                         "items": {
                             "type": "object"
                         }

@@ -1841,6 +1841,27 @@ impl AgentLoop {
                                         );
                                     }
                                 }
+
+                                // Refresh static system prompt when stack scaffolding or skill installation
+                                // updates workspace skills (.minicode/skills/), minikit.json, or AGENTS.md.
+                                if matches!(
+                                    tool_call.name.as_str(),
+                                    "kit_stack_add"
+                                        | "kit_skill_install"
+                                        | "kit_skill_remove"
+                                        | "vault_load"
+                                        | "vault_unload"
+                                        | "vault_bundle_load"
+                                ) {
+                                    if let Some(first_msg) = self.messages.first_mut() {
+                                        if first_msg.role == crate::agent::types::Role::System {
+                                            first_msg.content = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
+                                                &self.workspace_root,
+                                                None,
+                                            );
+                                        }
+                                    }
+                                }
                             }
 
                             // === Smart Donut Truncator (Phase 88, 115) ===

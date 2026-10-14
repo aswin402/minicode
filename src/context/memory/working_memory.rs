@@ -256,14 +256,11 @@ impl WorkingMemory {
                     "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n",
                     title, timestamp
                 );
+                todo_content.push_str(&format!("## Active Milestone: {}\n", title));
                 for (idx, m) in ms.iter().enumerate() {
                     let clean = Self::sanitize_step_title(m);
-                    let phase_num = idx + 1;
                     let marker = if idx == 0 { "[>]" } else { "[ ]" };
-                    todo_content.push_str(&format!(
-                        "## Phase {}: {}\n- {} Active Execution\n\n",
-                        phase_num, clean, marker
-                    ));
+                    todo_content.push_str(&format!("- {} {}\n", marker, clean));
                 }
                 let _ = fs::write(&todo_path, todo_content);
             }
@@ -348,6 +345,60 @@ impl WorkingMemory {
 
         // Initialize NOTES.md template if missing
         let _ = self.ensure_notes_template();
+
+        Ok(())
+    }
+
+    /// Initializes tactical sub-steps in `.minicode/plan/task_plan.md` for the currently active `[>]`
+    /// macro task in `minikit_docs/core/todo.md` (used by `power_plan` to decompose an active task).
+    pub fn init_tactical_subplan(&self, topic: &str, steps: &[String]) -> Result<()> {
+        if steps.is_empty() {
+            return Ok(());
+        }
+        let dir = self.plan_dir();
+        fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
+        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+
+        // Ensure canonical todo.md exists; if not, initialize it with `topic` as the macro task.
+        let todo_path = self.canonical_todo_path();
+        if !todo_path.exists() {
+            if let Some(parent) = todo_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let clean_topic = Self::sanitize_step_title(topic);
+            let todo_content = format!(
+                "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n## Active Milestone: {}\n- [>] {}\n",
+                clean_topic, timestamp, clean_topic, clean_topic
+            );
+            let _ = fs::write(&todo_path, todo_content);
+        }
+
+        let mut plan_content = format!(
+            "# Task Plan: {}\n\n> Created: {}\n\n## Objectives & Steps:\n",
+            topic, timestamp
+        );
+        for (idx, step) in steps.iter().enumerate() {
+            let clean = Self::sanitize_step_title(step);
+            let marker = if idx == 0 { "[>]" } else { "[ ]" };
+            plan_content.push_str(&format!("{}. {} {}\n", idx + 1, marker, clean));
+        }
+
+        fs::write(self.task_plan_path(), &plan_content)
+            .map_err(|e| ContextError::Memory(e.to_string()))?;
+
+        let first_step_clean = steps
+            .first()
+            .map(|s| Self::sanitize_step_title(s))
+            .unwrap_or_default();
+        let entry = format!(
+            "\n- [{}] **Sub-Plan ({})**: [>] {}\n",
+            timestamp, topic, first_step_clean
+        );
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.progress_path())
+            .and_then(|mut f| f.write_all(entry.as_bytes()));
 
         Ok(())
     }
@@ -643,26 +694,32 @@ impl WorkingMemory {
             return None;
         }
 
-        let total_tasks = tasks.len();
-        let completed_tasks = tasks
+        let stats_source = tasks
+            .iter()
+            .find(|t| t.status == TaskItemStatus::InProgress && !t.sub_tasks.is_empty())
+            .map(|t| t.sub_tasks.as_slice())
+            .unwrap_or(tasks);
+
+        let total_tasks = stats_source.len();
+        let completed_tasks = stats_source
             .iter()
             .filter(|t| t.status == TaskItemStatus::Completed)
             .count();
-        let in_progress_tasks = tasks
+        let in_progress_tasks = stats_source
             .iter()
             .filter(|t| t.status == TaskItemStatus::InProgress)
             .count();
-        let pending_tasks = tasks
+        let pending_tasks = stats_source
             .iter()
             .filter(|t| t.status == TaskItemStatus::Pending)
             .count();
 
-        let active_task = tasks
+        let active_task = stats_source
             .iter()
             .find(|t| t.status == TaskItemStatus::InProgress)
             .map(|t| t.title.clone())
             .or_else(|| {
-                tasks
+                stats_source
                     .iter()
                     .find(|t| t.status == TaskItemStatus::Pending)
                     .map(|t| t.title.clone())
@@ -1108,8 +1165,48 @@ impl WorkingMemory {
             }
         };
 
-        let outcome_plan = update_file(&self.task_plan_path());
-        let outcome_todo = update_file(&self.canonical_todo_path());
+        let pre_plan_tasks = self.read_task_plan_tasks();
+        let pre_todo_tasks = self
+            .read_roadmap_milestones()
+            .into_iter()
+            .flat_map(|m| m.tasks)
+            .collect::<Vec<_>>();
+        let plan_has_uncompleted = pre_plan_tasks
+            .iter()
+            .any(|t| t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending);
+        let todo_has_uncompleted = pre_todo_tasks
+            .iter()
+            .any(|t| t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending);
+        let has_active_subplan =
+            !pre_plan_tasks.is_empty() && !pre_todo_tasks.is_empty() && plan_has_uncompleted && {
+                let matches = pre_plan_tasks
+                    .iter()
+                    .filter(|t| {
+                        pre_todo_tasks
+                            .iter()
+                            .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
+                    })
+                    .count();
+                matches == 0
+            };
+
+        let (outcome_plan, outcome_todo) = if has_active_subplan {
+            let op = update_file(&self.task_plan_path());
+            if op != UpdateFileOutcome::NotFound {
+                (op, UpdateFileOutcome::NotFound)
+            } else {
+                (op, update_file(&self.canonical_todo_path()))
+            }
+        } else if !pre_plan_tasks.is_empty() && !plan_has_uncompleted && todo_has_uncompleted {
+            (
+                UpdateFileOutcome::NotFound,
+                update_file(&self.canonical_todo_path()),
+            )
+        } else {
+            let op = update_file(&self.task_plan_path());
+            let ot = update_file(&self.canonical_todo_path());
+            (op, ot)
+        };
 
         // Also synchronize IntentLedger if active on disk
         let mut intent_outcome = UpdateFileOutcome::NotFound;
@@ -1231,33 +1328,37 @@ impl WorkingMemory {
                 .and_then(|mut f| f.write_all(entry.as_bytes()));
         }
 
-        // When all tactical tasks in task_plan.md are completed, advance milestone roadmap in canonical todo.md!
-        let task_plan_tasks = self.read_task_plan_tasks();
-        if !task_plan_tasks.is_empty()
-            && task_plan_tasks
-                .iter()
-                .all(|t| t.status == TaskItemStatus::Completed)
-        {
-            let todo_path = self.canonical_todo_path();
-            if todo_path.exists() {
-                if let Ok(content) = fs::read_to_string(&todo_path) {
-                    let mut updated_lines = Vec::new();
-                    let mut advanced_completed = false;
-                    let mut advanced_next = false;
-                    for line in content.lines() {
-                        if !advanced_completed && (line.contains("[>]") || line.contains("[/]")) {
-                            let replaced = line.replacen("[>]", "[x]", 1).replacen("[/]", "[x]", 1);
-                            updated_lines.push(replaced);
-                            advanced_completed = true;
-                        } else if advanced_completed && !advanced_next && line.contains("[ ]") {
-                            updated_lines.push(line.replacen("[ ]", "[>]", 1));
-                            advanced_next = true;
-                        } else {
-                            updated_lines.push(line.to_string());
+        // When a tactical sub-plan in task_plan.md finishes all its steps, advance the active task in canonical todo.md!
+        if has_active_subplan {
+            let task_plan_tasks = self.read_task_plan_tasks();
+            if !task_plan_tasks.is_empty()
+                && task_plan_tasks
+                    .iter()
+                    .all(|t| t.status == TaskItemStatus::Completed)
+            {
+                let todo_path = self.canonical_todo_path();
+                if todo_path.exists() {
+                    if let Ok(content) = fs::read_to_string(&todo_path) {
+                        let mut updated_lines = Vec::new();
+                        let mut advanced_completed = false;
+                        let mut advanced_next = false;
+                        for line in content.lines() {
+                            if !advanced_completed && (line.contains("[>]") || line.contains("[/]"))
+                            {
+                                let replaced =
+                                    line.replacen("[>]", "[x]", 1).replacen("[/]", "[x]", 1);
+                                updated_lines.push(replaced);
+                                advanced_completed = true;
+                            } else if advanced_completed && !advanced_next && line.contains("[ ]") {
+                                updated_lines.push(line.replacen("[ ]", "[>]", 1));
+                                advanced_next = true;
+                            } else {
+                                updated_lines.push(line.to_string());
+                            }
                         }
-                    }
-                    if advanced_completed {
-                        let _ = fs::write(&todo_path, updated_lines.join("\n"));
+                        if advanced_completed {
+                            let _ = fs::write(&todo_path, updated_lines.join("\n"));
+                        }
                     }
                 }
             }
@@ -1528,33 +1629,18 @@ impl WorkingMemory {
                 .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE),
         );
 
-        // Synchronize canonical todo.md: mark remaining tasks of active milestone as completed
+        // Synchronize canonical todo.md: mark all remaining tasks as completed [x]
         let todo_path = self.canonical_todo_path();
         if todo_path.exists() {
             if let Ok(content) = fs::read_to_string(&todo_path) {
                 let mut updated_lines = Vec::new();
-                let mut in_active_milestone = false;
                 for line in content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("## Active Milestone")
-                        || trimmed.starts_with("# Tasks & Milestone Roadmap")
-                    {
-                        in_active_milestone = true;
-                        updated_lines.push(line.to_string());
-                    } else if in_active_milestone
-                        && trimmed.starts_with("## ")
-                        && !trimmed.starts_with("## Active Milestone")
-                    {
-                        in_active_milestone = false;
-                        updated_lines.push(line.to_string());
-                    } else if in_active_milestone {
-                        if line.contains("[>]") {
-                            updated_lines.push(line.replace("[>]", "[x]"));
-                        } else if line.contains("[ ]") {
-                            updated_lines.push(line.replace("[ ]", "[x]"));
-                        } else {
-                            updated_lines.push(line.to_string());
-                        }
+                    if line.contains("[>]") || line.contains("[/]") || line.contains("[ ]") {
+                        updated_lines.push(
+                            line.replace("[>]", "[x]")
+                                .replace("[/]", "[x]")
+                                .replace("[ ]", "[x]"),
+                        );
                     } else {
                         updated_lines.push(line.to_string());
                     }
@@ -2261,6 +2347,59 @@ mod tests {
         let summary = wm.read_active_plan_summary().unwrap();
         assert_eq!(summary.completed_tasks, 5);
         assert_eq!(summary.total_tasks, 5);
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_init_tactical_subplan_and_archive_completion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_tactical_subplan_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let macro_tasks = vec![
+            "Create landing page hero section".to_string(),
+            "Build interactive bento features".to_string(),
+        ];
+        wm.init_plan("Landing Page", &macro_tasks).unwrap();
+
+        // Decompose active task 1 into tactical sub-steps via init_tactical_subplan
+        let sub_steps = vec![
+            "Check theme tokens in index.css".to_string(),
+            "Implement HeroSection.tsx with terminal preview".to_string(),
+        ];
+        wm.init_tactical_subplan("Create landing page hero section", &sub_steps)
+            .unwrap();
+
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.total_tasks, 2);
+        assert_eq!(summary.completed_tasks, 0);
+        assert_eq!(
+            summary.active_task.as_deref(),
+            Some("Check theme tokens in index.css")
+        );
+
+        // Complete sub-step 1 -> macro task 1 in todo.md must remain [>]
+        wm.update_progress("1", "completed").unwrap();
+        let todo_mid = fs::read_to_string(wm.canonical_todo_path()).unwrap();
+        assert!(todo_mid.contains("- [>] Create landing page hero section"));
+
+        // Complete sub-step 2 -> macro task 1 in todo.md becomes [x] and macro task 2 becomes [>]
+        wm.update_progress("2", "completed").unwrap();
+        let todo_after = fs::read_to_string(wm.canonical_todo_path()).unwrap();
+        assert!(todo_after.contains("- [x] Create landing page hero section"));
+        assert!(todo_after.contains("- [>] Build interactive bento features"));
+
+        // Archive plan -> all remaining tasks in todo.md become [x]
+        wm.archive_plan().unwrap();
+        let todo_final = fs::read_to_string(wm.canonical_todo_path()).unwrap();
+        assert!(todo_final.contains("- [x] Create landing page hero section"));
+        assert!(todo_final.contains("- [x] Build interactive bento features"));
+        assert!(!todo_final.contains("[>]"));
+        assert!(!todo_final.contains("[ ]"));
 
         fs::remove_dir_all(temp_dir).ok();
     }
