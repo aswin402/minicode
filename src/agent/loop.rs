@@ -2100,13 +2100,19 @@ impl AgentLoop {
                                             path_str.trim().trim_start_matches("./").to_string(),
                                         );
                                     }
+                                } else if tool_call.name == "write_file" {
+                                    distinct_files_mutated_in_active_step.clear();
+                                    step_checkpoint_fired_for_active_step = false;
+                                    self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
                             }
 
                             if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
-                                    || tool_call.name == "block_insert")
+                                    || tool_call.name == "block_insert"
+                                    || tool_call.name == "create_plan"
+                                    || tool_call.name == "power_plan")
                             {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,

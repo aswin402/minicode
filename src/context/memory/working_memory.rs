@@ -1456,9 +1456,6 @@ impl WorkingMemory {
                     }
                 }
             }
-            if clean.contains('/') && !clean.starts_with("http") && clean.len() >= 3 {
-                candidates.push(clean.to_string());
-            }
         }
         candidates
     }
@@ -1492,6 +1489,21 @@ impl WorkingMemory {
         if current.len() >= 3 {
             tokens.push(current.to_ascii_lowercase());
         }
+        if tokens.len() > 1 {
+            let filtered: Vec<String> = tokens
+                .iter()
+                .filter(|t| {
+                    !matches!(
+                        t.as_str(),
+                        "section" | "sections" | "component" | "components"
+                    )
+                })
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                return filtered;
+            }
+        }
         tokens
     }
 
@@ -1501,10 +1513,70 @@ impl WorkingMemory {
             .split(|c: char| !c.is_ascii_alphanumeric())
             .filter(|w| w.len() >= 3)
             .any(|w| {
+                if (w == "section" || w == "sections") && s != "section" && s != "sections" {
+                    return false;
+                }
                 w == s
                     || (w.len() >= 4 && s.len() >= 4 && (w.starts_with(s) || s.starts_with(w)))
                     || (w.len() >= 6 && s.len() >= 6 && w[..3] == s[..3])
             })
+    }
+
+    /// Extracts completed `<section id="...">`, `<header id="...">`, `<nav>`, and `<footer>`
+    /// identifiers from an HTML document (requiring at least 25 lines so starter templates do not trigger).
+    fn extract_html_section_ids(html_content: &str) -> std::collections::HashSet<String> {
+        let mut ids = std::collections::HashSet::new();
+        if html_content.lines().count() < 25 {
+            return ids;
+        }
+        let lower = html_content.to_ascii_lowercase();
+        if lower.contains("<nav") && lower.contains("</nav>") {
+            ids.insert("nav".to_string());
+            ids.insert("navbar".to_string());
+        }
+        if lower.contains("<footer") && lower.contains("</footer>") {
+            ids.insert("footer".to_string());
+        }
+
+        let mut search_pos = 0;
+        while let Some(rel_lt) = lower[search_pos..].find('<') {
+            let tag_start = search_pos + rel_lt;
+            let rest = &lower[tag_start..];
+            let is_section_like = rest.starts_with("<section")
+                || rest.starts_with("<header")
+                || rest.starts_with("<footer")
+                || rest.starts_with("<nav")
+                || rest.starts_with("<main");
+            if is_section_like {
+                if let Some(rel_gt) = rest.find('>') {
+                    let open_tag = &rest[..rel_gt];
+                    // If this is a <section>, verify that a closing </section> exists after it
+                    let has_closing =
+                        !rest.starts_with("<section") || rest[rel_gt..].contains("</section>");
+                    if has_closing {
+                        for attr in ["id=\"", "id='"] {
+                            if let Some(id_start_rel) = open_tag.find(attr) {
+                                let quote = attr.chars().last().unwrap_or('"');
+                                let val_start = id_start_rel + attr.len();
+                                if let Some(val_end_rel) = open_tag[val_start..].find(quote) {
+                                    let raw_id = &open_tag[val_start..val_start + val_end_rel];
+                                    for tok in raw_id
+                                        .split(|c: char| !c.is_ascii_alphanumeric())
+                                        .filter(|t| t.len() >= 3)
+                                    {
+                                        ids.insert(tok.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    search_pos = tag_start + rel_gt + 1;
+                    continue;
+                }
+            }
+            search_pos = tag_start + 1;
+        }
+        ids
     }
 
     /// Dynamically reconciles uncompleted tasks against files modified during the turn
@@ -1517,6 +1589,16 @@ impl WorkingMemory {
             return 0;
         }
 
+        let mut html_section_ids = std::collections::HashSet::new();
+        for m_path in modified_files {
+            if m_path.ends_with(".html") || m_path.ends_with(".htm") {
+                let full_path = self.workspace_root.join(m_path.trim_start_matches("./"));
+                if let Ok(content) = fs::read_to_string(&full_path) {
+                    html_section_ids.extend(Self::extract_html_section_ids(&content));
+                }
+            }
+        }
+
         let mut reconciled = 0;
         let mut consumed_modified: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
@@ -1527,6 +1609,11 @@ impl WorkingMemory {
             }
 
             let task_lower = task.title.to_ascii_lowercase();
+            let primary_head = task_lower
+                .split([':', '—'])
+                .next()
+                .unwrap_or(&task_lower)
+                .trim();
             let candidates = Self::extract_candidate_files(&task.title);
             let mut file_satisfied = false;
 
@@ -1569,28 +1656,80 @@ impl WorkingMemory {
 
             // Scaffolding intent fallback: If candidate files were not explicitly named in the task title,
             // but this is a setup/init/scaffold task and manifest/config files were created on disk:
-            if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
+            if !file_satisfied {
                 let is_setup_task = crate::utils::has_any_word(
-                    &task_lower,
-                    &["setup", "scaffold", "init", "bootstrap", "boilerplate"],
+                    primary_head,
+                    &[
+                        "setup",
+                        "scaffold",
+                        "init",
+                        "bootstrap",
+                        "boilerplate",
+                        "foundation",
+                    ],
                 );
                 if is_setup_task {
-                    if let Some(m_idx) = modified_files.iter().position(|m| {
-                        m.contains("package.json")
-                            || m.contains("Cargo.toml")
-                            || m.contains("index.html")
-                            || m.contains("vite.config")
-                    }) {
-                        file_satisfied = true;
-                        consumed_modified.insert(m_idx);
+                    if !modified_files.is_empty() {
+                        if let Some(m_idx) = modified_files.iter().position(|m| {
+                            m.contains("package.json")
+                                || m.contains("Cargo.toml")
+                                || m.contains("index.html")
+                                || m.contains("vite.config")
+                        }) {
+                            file_satisfied = true;
+                            consumed_modified.insert(m_idx);
+                        }
+                    } else if task.status == TaskItemStatus::InProgress {
+                        let has_foundation_on_disk =
+                            self.workspace_root.join("minikit.json").is_file()
+                                || self.workspace_root.join("package.json").is_file()
+                                || self.workspace_root.join("Cargo.toml").is_file()
+                                || self.workspace_root.join("index.html").is_file();
+                        if has_foundation_on_disk {
+                            file_satisfied = true;
+                        }
                     }
                 }
             }
 
-            // Identifier-Stem Token Alignment: if no literal filename was in the task title,
+            // In-file HTML `<section id="...">` / `<nav>` / `<footer>` reconciliation:
+            if !file_satisfied && !html_section_ids.is_empty() {
+                let is_verify_or_setup = crate::utils::has_any_word(
+                    primary_head,
+                    &[
+                        "verify",
+                        "screenshot",
+                        "test",
+                        "launch",
+                        "scaffold",
+                        "setup",
+                        "init",
+                    ],
+                );
+                if !is_verify_or_setup {
+                    let requires_nav = crate::utils::has_any_word(primary_head, &["nav", "navbar"]);
+                    let requires_footer = crate::utils::has_any_word(primary_head, &["footer"]);
+                    if requires_nav && requires_footer {
+                        if html_section_ids.contains("navbar")
+                            && html_section_ids.contains("footer")
+                        {
+                            file_satisfied = true;
+                        }
+                    } else {
+                        let matched_section = html_section_ids
+                            .iter()
+                            .any(|sec_id| Self::stem_token_matches_task(sec_id, primary_head));
+                        if matched_section {
+                            file_satisfied = true;
+                        }
+                    }
+                }
+            }
+
+            // Identifier-Stem Token Alignment: if no literal filename matched,
             // check if an unconsumed modified file's CamelCase/identifier stem tokens match
             // this task with high specificity across the plan.
-            if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
+            if !file_satisfied && !modified_files.is_empty() {
                 for (m_idx, m_path) in modified_files.iter().enumerate() {
                     if consumed_modified.contains(&m_idx) {
                         continue;
@@ -1599,9 +1738,23 @@ impl WorkingMemory {
                     if stem_tokens.is_empty() {
                         continue;
                     }
+                    // Generic entry/stylesheet stems ("style", "index", "main", "app") should only
+                    // match the currently active (InProgress) task or a task whose primary heading
+                    // explicitly names them, never jumping ahead to a Pending composite task.
+                    let is_generic_stem = stem_tokens.len() == 1
+                        && matches!(
+                            stem_tokens[0].as_str(),
+                            "style" | "styles" | "index" | "main" | "app" | "global" | "globals"
+                        );
+                    let target_text =
+                        if is_generic_stem && task.status != TaskItemStatus::InProgress {
+                            primary_head
+                        } else {
+                            task_lower.as_str()
+                        };
                     let matched_count = stem_tokens
                         .iter()
-                        .filter(|tok| Self::stem_token_matches_task(tok, &task_lower))
+                        .filter(|tok| Self::stem_token_matches_task(tok, target_text))
                         .count();
                     if matched_count == 0 {
                         continue;
@@ -1612,9 +1765,21 @@ impl WorkingMemory {
                         .filter(|other| {
                             other.status != TaskItemStatus::Completed && {
                                 let other_lower = other.title.to_ascii_lowercase();
+                                let other_head = other_lower
+                                    .split([':', '—'])
+                                    .next()
+                                    .unwrap_or(&other_lower)
+                                    .trim();
+                                let other_target = if is_generic_stem
+                                    && other.status != TaskItemStatus::InProgress
+                                {
+                                    other_head
+                                } else {
+                                    other_lower.as_str()
+                                };
                                 let c = stem_tokens
                                     .iter()
-                                    .filter(|tok| Self::stem_token_matches_task(tok, &other_lower))
+                                    .filter(|tok| Self::stem_token_matches_task(tok, other_target))
                                     .count();
                                 c >= matched_count
                             }
@@ -1735,8 +1900,23 @@ impl WorkingMemory {
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let archive_file = archive_dir.join(format!("{}_archived_plan.md", timestamp));
 
-        let plan = fs::read_to_string(self.task_plan_path()).unwrap_or_default();
-        let progress = fs::read_to_string(self.progress_path()).unwrap_or_default();
+        let plan_raw = fs::read_to_string(self.task_plan_path()).unwrap_or_default();
+        let plan = plan_raw
+            .lines()
+            .map(|l| {
+                if l.contains("[>]") || l.contains("[/]") || l.contains("[ ]") {
+                    l.replace("[>]", "[x]")
+                        .replace("[/]", "[x]")
+                        .replace("[ ]", "[x]")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let progress_raw = fs::read_to_string(self.progress_path()).unwrap_or_default();
+        let progress =
+            progress_raw.replacen("- Status: In Progress", "- Status: Completed (100%)", 1);
         let findings = fs::read_to_string(self.findings_path()).unwrap_or_default();
 
         let combined = format!(

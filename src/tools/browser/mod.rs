@@ -610,12 +610,28 @@ impl BrowserController {
                 const h1Computed = (window.getComputedStyle && h1) ? window.getComputedStyle(h1) : null;
                 const headingColor = h1Computed ? h1Computed.color : (bodyComputed ? bodyComputed.color : "");
                 const parseRgb = (str) => {
-                    if (!str) return null;
+                    if (!str || isTransparent(str)) return [255, 255, 255];
                     const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-                    if (!m) return null;
-                    const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
-                    if (a === 0) return [255, 255, 255];
-                    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+                    if (m) {
+                        const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
+                        if (a === 0) return [255, 255, 255];
+                        return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+                    }
+                    try {
+                        const cv = document.createElement('canvas');
+                        cv.width = 1;
+                        cv.height = 1;
+                        const ctx = cv.getContext('2d');
+                        if (ctx) {
+                            ctx.fillStyle = '#ffffff';
+                            ctx.fillRect(0, 0, 1, 1);
+                            ctx.fillStyle = str;
+                            ctx.fillRect(0, 0, 1, 1);
+                            const d = ctx.getImageData(0, 0, 1, 1).data;
+                            return [d[0], d[1], d[2]];
+                        }
+                    } catch (_) {}
+                    return null;
                 };
                 const lum = (rgb) => {
                     if (!rgb) return null;

@@ -131,7 +131,7 @@ impl ToolRegistry {
     fn format_minimal_display_error(tool_name: &str, err: &crate::error::MinicodeError) -> String {
         let err_str = err.to_string();
         if err_str.contains("EOF while parsing") || err_str.contains("Invalid JSON syntax") {
-            "Arguments truncated (payload too large). Decompose into modular files (<250 lines) or scaffold with `kit_stack_add`.".to_string()
+            "Arguments truncated (LLM output token ceiling reached). Write in chunks (<180 lines) using write_file(overwrite=true) then write_file(append=true); never use heredocs or generator scripts.".to_string()
         } else if let Some(idx) = err_str.find("Raw arguments preview: '") {
             let prefix = err_str[..idx].trim().trim_end_matches('.');
             format!("{}: {}", tool_name, prefix)
@@ -143,10 +143,195 @@ impl ToolRegistry {
                 .lines()
                 .map(|l| l.trim())
                 .filter(|l| !l.is_empty())
-                .take(2)
+                .take(4)
                 .collect();
             clean_lines.join("\n")
         }
+    }
+
+    /// Decodes a JSON string field value for `key` from a raw (potentially truncated) JSON payload.
+    /// Returns `Some((decoded_value, is_complete_string))`.
+    fn extract_json_string_field(raw: &str, key: &str) -> Option<(String, bool)> {
+        let needle = format!("\"{}\"", key);
+        let mut search_from = 0;
+        while let Some(rel_pos) = raw[search_from..].find(&needle) {
+            let after_key = search_from + rel_pos + needle.len();
+            let rest = raw[after_key..].trim_start();
+            if let Some(after_colon) = rest.strip_prefix(':') {
+                let after_colon_trimmed = after_colon.trim_start();
+                if let Some(str_body) = after_colon_trimmed.strip_prefix('"') {
+                    let mut decoded = String::with_capacity(str_body.len().min(65536));
+                    let mut chars = str_body.chars();
+                    while let Some(ch) = chars.next() {
+                        if ch == '"' {
+                            return Some((decoded, true));
+                        } else if ch == '\\' {
+                            let Some(esc) = chars.next() else {
+                                return Some((decoded, false));
+                            };
+                            match esc {
+                                'n' => decoded.push('\n'),
+                                'r' => decoded.push('\r'),
+                                't' => decoded.push('\t'),
+                                '"' => decoded.push('"'),
+                                '\\' => decoded.push('\\'),
+                                '/' => decoded.push('/'),
+                                'b' => decoded.push('\u{0008}'),
+                                'f' => decoded.push('\u{000C}'),
+                                'u' => {
+                                    let mut hex = String::with_capacity(4);
+                                    for _ in 0..4 {
+                                        if let Some(h) = chars.next() {
+                                            hex.push(h);
+                                        } else {
+                                            return Some((decoded, false));
+                                        }
+                                    }
+                                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                        if let Some(u_ch) = char::from_u32(code) {
+                                            decoded.push(u_ch);
+                                        }
+                                    }
+                                }
+                                other => decoded.push(other),
+                            }
+                        } else {
+                            decoded.push(ch);
+                        }
+                    }
+                    return Some((decoded, false));
+                }
+            }
+            search_from = after_key;
+        }
+        None
+    }
+
+    /// Transactionally commits all complete top-level blocks (`</section>`, `</footer>`, or `\n}\n`)
+    /// when a large `write_file` call is cut off mid-stream by the LLM single-turn output token limit.
+    fn try_recover_truncated_write_file(
+        workspace_root: &Path,
+        raw: &str,
+        backup_manager: Option<&BackupManager>,
+        turn_id: usize,
+    ) -> Option<String> {
+        if raw.len() < 3000 {
+            return None;
+        }
+        let (decoded_content, _) = Self::extract_json_string_field(raw, "content")?;
+        if decoded_content.len() < 1500 {
+            return None;
+        }
+
+        let explicit_path = Self::extract_json_string_field(raw, "path")
+            .or_else(|| Self::extract_json_string_field(raw, "file_path"))
+            .and_then(|(p, complete)| {
+                if complete && !p.trim().is_empty() {
+                    Some(p.trim().to_string())
+                } else {
+                    None
+                }
+            });
+
+        let trimmed_start = decoded_content.trim_start();
+        let lower_start = trimmed_start
+            .chars()
+            .take(256)
+            .collect::<String>()
+            .to_ascii_lowercase();
+
+        let target_path = if let Some(p) = explicit_path {
+            p
+        } else if lower_start.starts_with("<!doctype html")
+            || lower_start.starts_with("<html")
+            || lower_start.starts_with("<section")
+            || (lower_start.starts_with("<!--") && decoded_content.contains("<section"))
+        {
+            "index.html".to_string()
+        } else if lower_start.starts_with("/*")
+            || lower_start.starts_with(":root")
+            || lower_start.starts_with("@import")
+        {
+            if workspace_root.join("style.css").exists() {
+                "style.css".to_string()
+            } else if workspace_root.join("styles.css").exists() {
+                "styles.css".to_string()
+            } else if workspace_root.join("src/index.css").exists() {
+                "src/index.css".to_string()
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        };
+
+        let is_html = target_path.ends_with(".html") || target_path.ends_with(".htm");
+        let is_css = target_path.ends_with(".css");
+
+        let boundary_end = if is_html {
+            let candidates = ["</section>", "</footer>", "</header>", "</nav>"];
+            candidates
+                .iter()
+                .filter_map(|tag| decoded_content.rfind(tag).map(|idx| idx + tag.len()))
+                .max()?
+        } else if is_css {
+            decoded_content.rfind("\n}\n").map(|idx| idx + 3)?
+        } else {
+            return None;
+        };
+
+        if boundary_end < 1000 {
+            return None;
+        }
+
+        let committed = format!("{}\n", decoded_content[..boundary_end].trim_end());
+        let explicit_append = raw.contains("\"append\":true") || raw.contains("\"append\": true");
+        let is_html_fragment =
+            is_html && !lower_start.starts_with("<!doctype") && !lower_start.starts_with("<html");
+        let use_append = explicit_append || is_html_fragment;
+        let use_overwrite = !use_append;
+
+        if let Some(bm) = backup_manager {
+            let _ =
+                bm.create_checkpoint(workspace_root, &workspace_root.join(&target_path), turn_id);
+        }
+
+        fs::write_file_with_options(
+            workspace_root,
+            &target_path,
+            &committed,
+            use_append,
+            use_overwrite,
+        )
+        .ok()?;
+
+        // Immediately reconcile any completed tasks/sections in WorkingMemory
+        let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+        let _ = wm.reconcile_workspace_tasks(&[target_path.clone()]);
+
+        let committed_lines: Vec<&str> = committed.lines().collect();
+        let total_lines = committed_lines.len();
+        let tail_preview = committed_lines
+            .iter()
+            .rev()
+            .take(6)
+            .rev()
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(format!(
+            "⚡ Partial Write Committed to `{}` ({} lines, {} bytes):\n\
+             Your tool call hit the single-turn output token ceiling (~{} bytes), so minicode transactionally saved all complete blocks up through the last complete block boundary.\n\
+             • Last committed lines:\n{}\n\
+             • NEXT ACTION: Call `write_file(path=\"{}\", append=true, content=\"...\")` with ONLY the remaining sections/rules after the lines shown above (plus closing `</body></html>` tags if HTML). Do NOT rewrite the sections already committed, and do NOT use `exec_cmd` heredocs or generator scripts!",
+            target_path,
+            total_lines,
+            committed.len(),
+            raw.len(),
+            tail_preview,
+            target_path
+        ))
     }
 
     async fn dispatch_tool(
@@ -161,6 +346,16 @@ impl ToolRegistry {
                 .get("__raw")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
+            if tool_name == "write_file" {
+                if let Some(recovered_msg) = Self::try_recover_truncated_write_file(
+                    workspace_root,
+                    raw,
+                    backup_manager,
+                    turn_id,
+                ) {
+                    return Ok(recovered_msg);
+                }
+            }
             let raw_preview = if raw.chars().count() > 200 {
                 format!(
                     "{}... [clamped {} bytes]",
@@ -173,10 +368,12 @@ impl ToolRegistry {
             let mut reason = format!("{}. Raw arguments preview: '{}'", err_msg, raw_preview);
             if err_msg.contains("EOF while parsing") || raw.len() > 8000 {
                 reason.push_str(&format!(
-                    "\n[Recovery]: Nothing was written. The tool-call payload (~{} bytes) was cut off because it was too large for one call. Do not retry the same content. Options: \
-                     (a) new project without a foundation: kit_stack_add(stack_name=\"static-website\") for plain HTML/CSS/JS or \"react-vite\" for React, then fill in the generated files; \
-                     (b) split into modular files under ~200 lines / 8KB each (index.html + styles.css + js modules, or one component per section); \
-                     (c) one large file: write a short skeleton, then add sections with write_file(append=true) or patch_file.",
+                    "\n[Recovery]: Nothing was written because the tool-call payload (~{} bytes) exceeded the LLM single-turn output token ceiling (~12KB / 200 lines max per tool call) and was cut off mid-JSON.\n\
+                     CRITICAL RECOVERY RULES:\n\
+                     1. NEVER try to bypass this with `exec_cmd` heredocs (`cat << 'EOF'`) or Python/JS generator scripts — every tool call shares the exact same LLM output token ceiling and WILL fail with the same truncation error!\n\
+                     2. Write the file incrementally in chunks of <=180 lines (~8-12KB) per call:\n\
+                        • First chunk: `write_file(path=\"...\", overwrite=true, content=\"...\")` with the initial structure + first 3-4 sections.\n\
+                        • Next chunks: `write_file(path=\"...\", append=true, content=\"...\")` to append 3-4 sections at a time until finished.",
                     raw.len()
                 ));
             }

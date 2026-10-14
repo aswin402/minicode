@@ -135,22 +135,22 @@ pub fn write_file_with_options(
 
         // Template Placeholder & Starter Scaffold Exemption:
         // When a stack is scaffolded (e.g. with onpkg/minikit), it generates starter template files
-        // (docs stubs, starter CSS, default Navbar/App/HomePage with demo counters/logos) intended to be replaced.
-        // Overwriting an unmodified boilerplate starter does not destroy custom user work.
-        let is_template_placeholder = ((relative_path.starts_with("minikit_docs/")
-            || relative_path.starts_with("onpkg_docs/"))
-            && (orig_content.lines().count() <= 35
-                || orig_content.contains("> Template")
-                || orig_content.contains("<!-- template -->")
-                || orig_content.contains("TODO:")))
-            || orig_content.contains("viteLogo")
-            || orig_content.contains("reactLogo")
-            || orig_content.contains("Kinetic Motion Template")
-            || orig_content.contains("minikit.json")
-            || orig_content.contains("Vite + React")
-            || (relative_path == "src/index.css"
-                && orig_content.contains("@import \"tailwindcss\";")
-                && orig_content.contains("--color-background: oklch"));
+        // intended to be replaced. Overwriting an unmodified boilerplate starter does not destroy user work.
+        let clean_rel = relative_path.trim_start_matches("./");
+        let is_builtin_scaffold_file =
+            crate::tools::minikit::MiniKitScaffolder::get_all_stacks_for(Some(workspace_root))
+                .iter()
+                .flat_map(|s| s.files.iter())
+                .any(|sf| {
+                    sf.path.trim_start_matches("./") == clean_rel
+                        && sf.content.trim() == orig_content.trim()
+                });
+        let is_template_placeholder = is_builtin_scaffold_file
+            || ((clean_rel.starts_with("minikit_docs/") || clean_rel.starts_with("onpkg_docs/"))
+                && (orig_content.lines().count() <= 35
+                    || orig_content.contains("> Template")
+                    || orig_content.contains("<!-- template -->")
+                    || orig_content.contains("TODO:")));
 
         if !is_template_placeholder {
             let mut hint = String::new();
@@ -194,7 +194,27 @@ pub fn write_file_with_options(
     }
 
     let effective_content = if append && !orig_content.is_empty() {
-        format!("{}{}", orig_content, content)
+        let is_html = relative_path.ends_with(".html") || relative_path.ends_with(".htm");
+        if is_html {
+            let orig_lower = orig_content.to_ascii_lowercase();
+            let new_lower = content.to_ascii_lowercase();
+            if let Some(body_pos) = orig_lower.rfind("</body>") {
+                if new_lower.contains("</html>") || new_lower.contains("</body>") {
+                    format!("{}{}", &orig_content[..body_pos], content)
+                } else {
+                    format!(
+                        "{}{}\n{}",
+                        &orig_content[..body_pos],
+                        content,
+                        &orig_content[body_pos..]
+                    )
+                }
+            } else {
+                format!("{}{}", orig_content, content)
+            }
+        } else {
+            format!("{}{}", orig_content, content)
+        }
     } else {
         content.to_string()
     };
