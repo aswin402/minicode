@@ -938,8 +938,10 @@ impl TimelineView {
     }
 
     /// Splits a long line of text into sub-chunks of max `max_width` visual cells.
-    /// Splits on whitespace boundaries when possible, breaking long indivisible words cleanly.
+    /// Normalizes emojis/tabs first and splits on whitespace boundaries when possible.
     pub fn split_line_into_chunks(text: &str, max_width: usize) -> Vec<String> {
+        let sanitized = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(text);
+        let text = sanitized.as_str();
         if max_width == 0 {
             return vec![text.to_string()];
         }
@@ -1053,6 +1055,7 @@ impl TimelineView {
     pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &TimelineContext) {
         let theme = ctx.theme;
         let mut lines: Vec<Line> = Vec::new();
+        let usable_width = (area.width.saturating_sub(1) as usize).max(20);
 
         if self.entries.is_empty() {
             return;
@@ -1087,10 +1090,14 @@ impl TimelineView {
                             } else {
                                 Style::default().fg(theme.muted)
                             };
+                            let clean_pline =
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    pline,
+                                );
                             lines.push(Line::from(vec![
                                 Span::styled(prefix, prefix_style),
                                 Span::styled(
-                                    pline.to_string(),
+                                    clean_pline,
                                     Style::default().fg(theme.text_primary).add_modifier(
                                         if idx == 0 {
                                             Modifier::BOLD
@@ -1149,7 +1156,7 @@ impl TimelineView {
                     }
                 }
                 TimelineEntry::AssistantMarkdown(text) => {
-                    let parsed_lines = Self::render_markdown(text, theme);
+                    let parsed_lines = Self::render_markdown_with_width(text, theme, usable_width);
                     lines.extend(parsed_lines);
                 }
                 TimelineEntry::ToolStart {
@@ -1167,8 +1174,12 @@ impl TimelineView {
                         ),
                     ];
                     if !command_or_path.is_empty() {
+                        let clean_cmd =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                command_or_path,
+                            );
                         spans.push(Span::styled(
-                            command_or_path,
+                            clean_cmd,
                             Style::default().fg(theme.text_primary),
                         ));
                     }
@@ -1190,9 +1201,12 @@ impl TimelineView {
                     ..
                 } => {
                     let title = Self::format_tool_title(name);
+                    let clean_cmd = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                        command_or_path,
+                    );
                     lines.push(Line::from(vec![
                         Span::styled(
-                            "✔ ",
+                            "✓ ",
                             Style::default()
                                 .fg(theme.success)
                                 .add_modifier(Modifier::BOLD),
@@ -1204,7 +1218,7 @@ impl TimelineView {
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(command_or_path, Style::default().fg(theme.text_primary)),
+                        Span::styled(clean_cmd, Style::default().fg(theme.text_primary)),
                         Span::styled(" this time", Style::default().fg(theme.muted)),
                     ]));
                     lines.push(Line::from(String::new()));
@@ -1224,7 +1238,7 @@ impl TimelineView {
                         theme.destructive
                     };
 
-                    let bullet = if *success { "• " } else { "✖ " };
+                    let bullet = if *success { "• " } else { "✗ " };
                     let mut spans = vec![
                         Span::styled(
                             bullet,
@@ -1240,8 +1254,12 @@ impl TimelineView {
                         ),
                     ];
                     if !command_or_path.is_empty() {
+                        let clean_cmd =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                command_or_path,
+                            );
                         spans.push(Span::styled(
-                            command_or_path,
+                            clean_cmd,
                             Style::default().fg(theme.text_primary),
                         ));
                     }
@@ -1263,8 +1281,8 @@ impl TimelineView {
 
                     // Render diff lines with +/- colouring
                     if !diff_section.is_empty() {
-                        let usable_width = area.width.saturating_sub(2) as usize;
-                        let max_content_width = usable_width.saturating_sub(6).max(20);
+                        let diff_usable_width = area.width.saturating_sub(2) as usize;
+                        let max_content_width = diff_usable_width.saturating_sub(6).max(20);
                         let mut diff_line_count = 0;
                         for diff_line in diff_section.lines() {
                             if diff_line.starts_with("---") || diff_line.starts_with("+++") {
@@ -1373,8 +1391,8 @@ impl TimelineView {
                     // Render regular tool output (summary after diff)
                     let trimmed = regular_output;
                     if !trimmed.is_empty() {
-                        let usable_width = area.width.saturating_sub(2) as usize;
-                        let max_content_width = usable_width.saturating_sub(6).max(20);
+                        let out_usable_width = area.width.saturating_sub(2) as usize;
+                        let max_content_width = out_usable_width.saturating_sub(6).max(20);
                         let max_lines = if *success {
                             crate::constants::UI_MAX_TOOL_OUTPUT_LINES
                         } else {
@@ -1442,7 +1460,7 @@ impl TimelineView {
                     let (status_glyph, glyph_color, status_text) = if *success {
                         ("✓", theme.success, "completed")
                     } else {
-                        ("✖", theme.destructive, "failed")
+                        ("✗", theme.destructive, "failed")
                     };
 
                     let foot_border = if *success {
@@ -1483,7 +1501,7 @@ impl TimelineView {
                         } else {
                             format!(" ({} tokens)", block.tokens_used)
                         };
-                        ("✔", theme.success, dur)
+                        ("✓", theme.success, dur)
                     } else {
                         let dur = if let Some(ms) = block.duration_ms {
                             format!(
@@ -1520,6 +1538,10 @@ impl TimelineView {
                     let prompt_lines: Vec<&str> = prompt_trimmed.lines().collect();
 
                     if let Some(first_line) = prompt_lines.first() {
+                        let clean_first =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                first_line,
+                            );
                         lines.push(Line::from(vec![
                             Span::styled("   ", Style::default()),
                             Span::styled(
@@ -1530,13 +1552,17 @@ impl TimelineView {
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(" ", Style::default()),
-                            Span::styled(*first_line, Style::default().fg(theme.text_primary)),
+                            Span::styled(clean_first, Style::default().fg(theme.text_primary)),
                         ]));
 
                         for rest_line in prompt_lines.iter().skip(1) {
+                            let clean_rest =
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    rest_line,
+                                );
                             lines.push(Line::from(vec![
                                 Span::styled("         ", Style::default()),
-                                Span::styled(*rest_line, Style::default().fg(theme.text_primary)),
+                                Span::styled(clean_rest, Style::default().fg(theme.text_primary)),
                             ]));
                         }
                     }
@@ -1558,10 +1584,14 @@ impl TimelineView {
 
                         let (item_bullet, item_color) = match &item.status {
                             SubagentItemStatus::Running => (spinner, theme.warning),
-                            SubagentItemStatus::Success => ("✔", theme.success),
+                            SubagentItemStatus::Success => ("✓", theme.success),
                             SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                         };
 
+                        let clean_detail =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                &item.detail,
+                            );
                         lines.push(Line::from(vec![
                             Span::styled(branch, Style::default().fg(theme.border)),
                             Span::styled(
@@ -1572,12 +1602,16 @@ impl TimelineView {
                                 format!("{} ", item.name),
                                 Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(&item.detail, Style::default().fg(theme.muted)),
+                            Span::styled(clean_detail, Style::default().fg(theme.muted)),
                         ]));
                     }
 
                     // Outcome / Error
                     if let Some(ref outcome) = block.outcome {
+                        let clean_outcome =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                outcome.trim(),
+                            );
                         lines.push(Line::from(String::new()));
                         lines.push(Line::from(vec![
                             Span::styled(
@@ -1586,9 +1620,13 @@ impl TimelineView {
                                     .fg(theme.success)
                                     .add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(outcome.trim(), Style::default().fg(theme.text_primary)),
+                            Span::styled(clean_outcome, Style::default().fg(theme.text_primary)),
                         ]));
                     } else if let Some(ref err) = block.error_message {
+                        let clean_err =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                err.trim(),
+                            );
                         lines.push(Line::from(String::new()));
                         lines.push(Line::from(vec![
                             Span::styled(
@@ -1597,7 +1635,7 @@ impl TimelineView {
                                     .fg(theme.destructive)
                                     .add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(err.trim(), Style::default().fg(theme.destructive)),
+                            Span::styled(clean_err, Style::default().fg(theme.destructive)),
                         ]));
                     }
 
@@ -1609,7 +1647,7 @@ impl TimelineView {
                         % SPINNER_FRAMES.len();
                     let spinner = SPINNER_FRAMES[frame_idx];
 
-                    let top_bullet = if swarm.is_running { spinner } else { "✔" };
+                    let top_bullet = if swarm.is_running { spinner } else { "✓" };
                     let bullet_color = if swarm.is_running {
                         theme.warning
                     } else {
@@ -1645,7 +1683,7 @@ impl TimelineView {
                             let (w_bullet, w_color) = if worker.is_running {
                                 ("◉", role_color)
                             } else if worker.is_success {
-                                ("✔", theme.success)
+                                ("✓", theme.success)
                             } else {
                                 ("✗", theme.destructive)
                             };
@@ -1653,7 +1691,11 @@ impl TimelineView {
                             let last_action = worker
                                 .items
                                 .last()
-                                .map(|it| format!("{} {}", it.name, it.detail))
+                                .map(|it| {
+                                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                        &format!("{} {}", it.name, it.detail),
+                                    )
+                                })
                                 .unwrap_or_else(|| "Initializing...".to_string());
 
                             lines.push(Line::from(vec![
@@ -1699,7 +1741,7 @@ impl TimelineView {
                             let (w_bullet, w_color) = if worker.is_running {
                                 ("◉", role_color)
                             } else if worker.is_success {
-                                ("✔", theme.success)
+                                ("✓", theme.success)
                             } else {
                                 ("✗", theme.destructive)
                             };
@@ -1707,7 +1749,7 @@ impl TimelineView {
                             lines.push(Line::from(vec![
                                 Span::styled("│ ", Style::default().fg(theme.border)),
                                 Span::styled(
-                                    format!("▼ {} ", w_bullet),
+                                    format!("▾ {} ", w_bullet),
                                     Style::default().fg(w_color).add_modifier(Modifier::BOLD),
                                 ),
                                 Span::styled(
@@ -1720,7 +1762,9 @@ impl TimelineView {
                                 Span::styled("│ ", Style::default().fg(theme.border)),
                                 Span::styled("   Task: ", Style::default().fg(role_color)),
                                 Span::styled(
-                                    worker.task_prompt.lines().next().unwrap_or(""),
+                                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                        worker.task_prompt.lines().next().unwrap_or(""),
+                                    ),
                                     Style::default().fg(theme.text_primary),
                                 ),
                             ]));
@@ -1735,7 +1779,7 @@ impl TimelineView {
                                 };
                                 let (i_bullet, i_color) = match &item.status {
                                     SubagentItemStatus::Running => (spinner, theme.warning),
-                                    SubagentItemStatus::Success => ("✔", theme.success),
+                                    SubagentItemStatus::Success => ("✓", theme.success),
                                     SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                                 };
 
@@ -1752,7 +1796,10 @@ impl TimelineView {
                                             .fg(role_color)
                                             .add_modifier(Modifier::BOLD),
                                     ),
-                                    Span::styled(&item.detail, Style::default().fg(theme.muted)),
+                                    Span::styled(
+                                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&item.detail),
+                                        Style::default().fg(theme.muted),
+                                    ),
                                 ]));
                             }
 
@@ -1803,7 +1850,7 @@ impl TimelineView {
                         tokens_after.to_string()
                     };
                     lines.push(Line::from(vec![
-                        Span::styled("🗜️ ", Style::default().fg(theme.brand_accent)),
+                        Span::styled("• ", Style::default().fg(theme.brand_accent)),
                         Span::styled(
                             format!(
                                 "Context Auto-Compacted [{}]: {} turns summarized, {} → {} tokens ({}% saved)",
@@ -1816,7 +1863,7 @@ impl TimelineView {
                 }
                 TimelineEntry::LivePlan(plan) => {
                     let header_text = format!(
-                        "┌── 📋 Plan Progress: {}/{} Tasks Completed ──",
+                        "┌── Plan Progress: {}/{} Tasks Completed ──",
                         plan.completed_tasks, plan.total_tasks
                     );
                     let header_len = UnicodeWidthStr::width(header_text.as_str());
@@ -1835,16 +1882,20 @@ impl TimelineView {
                     for task in &plan.tasks {
                         let (bullet, bullet_color, text_color, modifier) = match task.status {
                             LivePlanTaskStatus::Completed => {
-                                ("✔", theme.success, theme.text_primary, Modifier::empty())
+                                ("✓", theme.success, theme.text_primary, Modifier::empty())
                             }
                             LivePlanTaskStatus::InProgress => {
-                                ("▶", theme.info, theme.brand_accent, Modifier::BOLD)
+                                ("▸", theme.info, theme.brand_accent, Modifier::BOLD)
                             }
                             LivePlanTaskStatus::Pending => {
                                 ("○", theme.muted, theme.muted, Modifier::empty())
                             }
                         };
 
+                        let clean_title =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                &task.title,
+                            );
                         lines.push(Line::from(vec![
                             Span::styled("│ ", Style::default().fg(theme.border)),
                             Span::styled(
@@ -1854,7 +1905,7 @@ impl TimelineView {
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
-                                &task.title,
+                                clean_title,
                                 Style::default().fg(text_color).add_modifier(modifier),
                             ),
                         ]));
@@ -1870,30 +1921,23 @@ impl TimelineView {
                 }
                 TimelineEntry::SystemStatus(status) => {
                     for raw_line in status.lines() {
-                        let normalized = raw_line
-                            .replace("⚠️", "⚠")
-                            .replace("🛑", "▲")
-                            .replace("🚀", "▶")
-                            .replace("⏳", "◷");
+                        let normalized =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                raw_line,
+                            );
                         let trimmed = normalized.trim();
                         if trimmed.is_empty() {
                             continue;
                         }
                         let prefixes = [
-                            ("✔ ", theme.success),
                             ("✓ ", theme.success),
-                            ("✕ ", theme.destructive),
                             ("✗ ", theme.destructive),
-                            ("✖ ", theme.destructive),
+                            ("! ", theme.warning),
                             ("▲ ", theme.warning),
-                            ("⚠ ", theme.warning),
-                            ("◷ ", theme.warning),
-                            ("⧖ ", theme.warning),
-                            ("ℹ ", theme.info),
-                            ("⏹ ", theme.warning),
+                            ("→ ", theme.brand_accent),
+                            ("▸ ", theme.brand_accent),
                             ("• ", theme.brand_accent),
                             ("◆ ", theme.brand_accent),
-                            ("⚙ ", theme.muted),
                             ("● ", theme.brand_accent),
                         ];
 
@@ -1920,7 +1964,7 @@ impl TimelineView {
                             if lower.starts_with("error") || lower.contains("error:") {
                                 lines.push(Line::from(vec![
                                     Span::styled(
-                                        "✕ ",
+                                        "✗ ",
                                         Style::default()
                                             .fg(theme.destructive)
                                             .add_modifier(Modifier::BOLD),
@@ -1933,7 +1977,7 @@ impl TimelineView {
                             } else if lower.contains("rate limit") || lower.contains("retrying") {
                                 lines.push(Line::from(vec![
                                     Span::styled(
-                                        "⚠ ",
+                                        "! ",
                                         Style::default()
                                             .fg(theme.warning)
                                             .add_modifier(Modifier::BOLD),
@@ -1958,7 +2002,7 @@ impl TimelineView {
             }
         }
 
-        let lines = Self::wrap_lines_to_width(lines, area.width as usize);
+        let lines = Self::wrap_lines_to_width(lines, usable_width);
 
         let total_lines = lines.len().min(u16::MAX as usize) as u16;
         let viewport_height = area.height;
@@ -1977,21 +2021,112 @@ impl TimelineView {
         self.selection.cache_plain_lines(&lines);
         let lines = self.selection.apply_highlight(lines, theme);
 
+        // Slice directly to the visible viewport and pad every row to `area.width`
+        // so differential buffer updates on scroll are 100% deterministic.
+        let start_idx = (scroll as usize).min(lines.len());
+        let end_idx = (start_idx + viewport_height as usize).min(lines.len());
+        let full_w = area.width as usize;
+        let clear_style = Style::default().bg(theme.bg_primary).fg(theme.text_primary);
+        let mut visible_lines: Vec<Line> = Vec::with_capacity(viewport_height as usize);
+
+        for mut line in lines.into_iter().skip(start_idx).take(end_idx - start_idx) {
+            let line_w: usize = line
+                .spans
+                .iter()
+                .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
+            if line_w < full_w {
+                line.spans
+                    .push(Span::styled(" ".repeat(full_w - line_w), clear_style));
+            }
+            visible_lines.push(line);
+        }
+        while visible_lines.len() < viewport_height as usize {
+            visible_lines.push(Line::from(vec![Span::styled(
+                " ".repeat(full_w),
+                clear_style,
+            )]));
+        }
+
         let block = Block::default()
             .borders(Borders::NONE)
             .style(Style::default().bg(theme.bg_primary));
 
-        let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
+        let paragraph = Paragraph::new(visible_lines).block(block);
 
         frame.render_widget(paragraph, area);
     }
 
+    /// Computes the hanging-indentation continuation prefix `(prefix_str, style, width)`
+    /// for wrapped continuation lines so bullet lists, numbered lists, code blocks,
+    /// and indented paragraphs maintain clean column alignment when wrapped.
+    fn continuation_prefix_for_line(line: &Line<'_>) -> (String, Style, usize) {
+        let first_span = match line.spans.first() {
+            Some(s) => s,
+            None => return (String::new(), Style::default(), 0),
+        };
+        let first_text = first_span.content.as_ref();
+
+        if first_text == "  │ " || first_text == "  │   " {
+            let w = UnicodeWidthStr::width(first_text);
+            return (first_text.to_string(), first_span.style, w);
+        }
+        if first_text == "│ " {
+            if let Some(second) = line.spans.get(1) {
+                let s2 = second.content.as_ref();
+                if s2 == " ✓ " || s2 == " ▸ " || s2 == " ○ " || s2 == " ✔ " || s2 == " ▶ "
+                {
+                    return ("│    ".to_string(), first_span.style, 5);
+                }
+            }
+            return ("│ ".to_string(), first_span.style, 2);
+        }
+        if first_text == "• "
+            || first_text == "› "
+            || first_text == "✓ "
+            || first_text == "✗ "
+            || first_text == "! "
+            || first_text == "→ "
+            || first_text == "▸ "
+        {
+            return ("  ".to_string(), Style::default(), 2);
+        }
+        if first_text == "  - " || first_text == "  • " || first_text == "    - " {
+            let w = UnicodeWidthStr::width(first_text);
+            return (" ".repeat(w), Style::default(), w);
+        }
+        if first_text.ends_with(". ")
+            && first_text.len() <= 6
+            && first_text[..first_text.len() - 2]
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        {
+            let w = first_text.len();
+            return (" ".repeat(w), Style::default(), w);
+        }
+
+        // Preserve leading space indentation (up to 8 spaces)
+        let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let leading_spaces = full_text.chars().take_while(|&c| c == ' ').count();
+        if leading_spaces > 0 && leading_spaces <= 8 {
+            return (" ".repeat(leading_spaces), Style::default(), leading_spaces);
+        }
+
+        (String::new(), Style::default(), 0)
+    }
+
     /// Pre-wraps lines to the given visual column width so that each `Line`
-    /// maps 1:1 to a rendered terminal row. This guarantees that mouse selection,
-    /// scrolling, and plain text extraction are pixel-perfect and never out of sync.
+    /// maps 1:1 to a rendered terminal row. Groups contiguous non-whitespace characters
+    /// across adjacent `Span`s into atomic words and preserves hanging indentation.
     pub fn wrap_lines_to_width<'a>(lines: Vec<Line<'a>>, max_width: usize) -> Vec<Line<'a>> {
         let max_width = max_width.max(10);
         let mut wrapped: Vec<Line<'a>> = Vec::with_capacity(lines.len());
+
+        struct StyledRun {
+            chars: Vec<(char, Style)>,
+            is_ws: bool,
+            width: usize,
+        }
 
         for line in lines {
             let total_width: usize = line
@@ -2006,92 +2141,157 @@ impl TimelineView {
                 continue;
             }
 
-            let mut cur_line_spans: Vec<Span<'a>> = Vec::new();
-            let mut cur_line_width: usize = 0;
+            let (cont_pfx, cont_style, cont_w) = if max_width >= 20 {
+                Self::continuation_prefix_for_line(&line)
+            } else {
+                (String::new(), Style::default(), 0)
+            };
+            let (cont_pfx, cont_w) = if cont_w * 2 >= max_width {
+                (String::new(), 0)
+            } else {
+                (cont_pfx, cont_w)
+            };
 
+            // Split logical sub-lines on '\n' while preserving per-character styles
+            let mut logical_sublines: Vec<Vec<(char, Style)>> = vec![Vec::new()];
             for span in line.spans {
                 let style = span.style;
-                let content = span.content;
-
-                let sublines: Vec<&str> = content.split('\n').collect();
-                for (sub_idx, sub_text) in sublines.iter().enumerate() {
-                    if sub_idx > 0 {
-                        wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
-                        cur_line_width = 0;
-                    }
-
-                    if sub_text.is_empty() {
-                        continue;
-                    }
-
-                    // Tokenize into (slice, is_whitespace)
-                    let mut tokens: Vec<(&str, bool)> = Vec::new();
-                    let mut start = 0;
-                    let mut in_ws: Option<bool> = None;
-                    for (idx, ch) in sub_text.char_indices() {
-                        let ws = ch.is_whitespace();
-                        if let Some(prev) = in_ws {
-                            if prev != ws {
-                                tokens.push((&sub_text[start..idx], prev));
-                                start = idx;
-                                in_ws = Some(ws);
+                for ch in span.content.chars() {
+                    if ch == '\n' {
+                        logical_sublines.push(Vec::new());
+                    } else if ch == '\t' {
+                        if let Some(last_sub) = logical_sublines.last_mut() {
+                            for _ in 0..4 {
+                                last_sub.push((' ', style));
                             }
-                        } else {
-                            in_ws = Some(ws);
                         }
-                    }
-                    if start < sub_text.len() {
-                        tokens.push((&sub_text[start..], in_ws.unwrap_or(false)));
-                    }
-
-                    for (tok, is_ws) in tokens {
-                        let tok_w = UnicodeWidthStr::width(tok);
-
-                        if is_ws {
-                            if cur_line_width == 0 {
-                                // Ignore leading space on a fresh wrapped line
-                                continue;
-                            } else if cur_line_width + tok_w <= max_width {
-                                Self::push_span_token(&mut cur_line_spans, tok, style);
-                                cur_line_width += tok_w;
-                            } else {
-                                wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
-                                cur_line_width = 0;
-                            }
-                        } else {
-                            // Non-whitespace word
-                            if cur_line_width + tok_w <= max_width {
-                                Self::push_span_token(&mut cur_line_spans, tok, style);
-                                cur_line_width += tok_w;
-                            } else if tok_w > max_width {
-                                // Word itself exceeds max_width: break by character
-                                for ch in tok.chars() {
-                                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                                    if cur_line_width + ch_w > max_width && cur_line_width > 0 {
-                                        wrapped
-                                            .push(Line::from(std::mem::take(&mut cur_line_spans)));
-                                        cur_line_width = 0;
-                                    }
-                                    let mut buf = [0u8; 4];
-                                    let s = ch.encode_utf8(&mut buf);
-                                    Self::push_span_token(&mut cur_line_spans, s, style);
-                                    cur_line_width += ch_w;
-                                }
-                            } else {
-                                // Word doesn't fit on this line; wrap to next line
-                                if !cur_line_spans.is_empty() {
-                                    wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
-                                }
-                                Self::push_span_token(&mut cur_line_spans, tok, style);
-                                cur_line_width = tok_w;
-                            }
+                    } else if !ch.is_control() {
+                        if let Some(last_sub) = logical_sublines.last_mut() {
+                            last_sub.push((ch, style));
                         }
                     }
                 }
             }
 
-            if !cur_line_spans.is_empty() {
-                wrapped.push(Line::from(cur_line_spans));
+            for sub_chars in logical_sublines {
+                if sub_chars.is_empty() {
+                    wrapped.push(Line::from(String::new()));
+                    continue;
+                }
+
+                // Group contiguous whitespace vs non-whitespace characters across spans
+                let mut runs: Vec<StyledRun> = Vec::new();
+                for (ch, style) in sub_chars {
+                    let is_ws = ch.is_whitespace();
+                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if ch_w == 0 {
+                        continue;
+                    }
+                    if let Some(last) = runs.last_mut() {
+                        if last.is_ws == is_ws {
+                            last.chars.push((ch, style));
+                            last.width += ch_w;
+                            continue;
+                        }
+                    }
+                    runs.push(StyledRun {
+                        chars: vec![(ch, style)],
+                        is_ws,
+                        width: ch_w,
+                    });
+                }
+
+                let mut cur_line_spans: Vec<Span<'a>> = Vec::new();
+                let mut cur_line_width: usize = 0;
+                let mut is_first_visual_line = true;
+
+                let start_continuation_line = |spans: &mut Vec<Span<'a>>, width: &mut usize| {
+                    spans.clear();
+                    if cont_w > 0 {
+                        spans.push(Span::styled(cont_pfx.clone(), cont_style));
+                        *width = cont_w;
+                    } else {
+                        *width = 0;
+                    }
+                };
+
+                for run in runs {
+                    if run.is_ws {
+                        let min_prefix_w = if is_first_visual_line { 0 } else { cont_w };
+                        if !is_first_visual_line && cur_line_width <= min_prefix_w {
+                            // Ignore leading whitespace right after a wrap on continuation lines
+                            continue;
+                        } else if cur_line_width + run.width <= max_width {
+                            for (ch, st) in run.chars {
+                                let mut buf = [0u8; 4];
+                                Self::push_span_token(
+                                    &mut cur_line_spans,
+                                    ch.encode_utf8(&mut buf),
+                                    st,
+                                );
+                            }
+                            cur_line_width += run.width;
+                        } else {
+                            wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                            is_first_visual_line = false;
+                            start_continuation_line(&mut cur_line_spans, &mut cur_line_width);
+                        }
+                    } else {
+                        // Atomic multi-span word unit
+                        let avail_on_fresh_line = max_width.saturating_sub(cont_w);
+                        if cur_line_width + run.width <= max_width {
+                            for (ch, st) in run.chars {
+                                let mut buf = [0u8; 4];
+                                Self::push_span_token(
+                                    &mut cur_line_spans,
+                                    ch.encode_utf8(&mut buf),
+                                    st,
+                                );
+                            }
+                            cur_line_width += run.width;
+                        } else if run.width > avail_on_fresh_line {
+                            // Word itself exceeds available line width: break by character
+                            for (ch, st) in run.chars {
+                                let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                                if cur_line_width + ch_w > max_width && cur_line_width > 0 {
+                                    wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                                    is_first_visual_line = false;
+                                    start_continuation_line(
+                                        &mut cur_line_spans,
+                                        &mut cur_line_width,
+                                    );
+                                }
+                                let mut buf = [0u8; 4];
+                                Self::push_span_token(
+                                    &mut cur_line_spans,
+                                    ch.encode_utf8(&mut buf),
+                                    st,
+                                );
+                                cur_line_width += ch_w;
+                            }
+                        } else {
+                            // Wrap entire word unit onto next continuation line
+                            if !cur_line_spans.is_empty() {
+                                wrapped.push(Line::from(std::mem::take(&mut cur_line_spans)));
+                            }
+                            is_first_visual_line = false;
+                            start_continuation_line(&mut cur_line_spans, &mut cur_line_width);
+                            for (ch, st) in run.chars {
+                                let mut buf = [0u8; 4];
+                                Self::push_span_token(
+                                    &mut cur_line_spans,
+                                    ch.encode_utf8(&mut buf),
+                                    st,
+                                );
+                            }
+                            cur_line_width += run.width;
+                        }
+                    }
+                }
+
+                if !cur_line_spans.is_empty() {
+                    wrapped.push(Line::from(cur_line_spans));
+                }
             }
         }
 
@@ -2110,7 +2310,17 @@ impl TimelineView {
         spans.push(Span::styled(text.to_string(), style));
     }
 
+    /// Renders assistant Markdown text into highlighted Ratatui lines constrained to `max_width`
+    fn render_markdown_with_width<'a>(
+        text: &'a str,
+        theme: &'a Theme,
+        max_width: usize,
+    ) -> Vec<Line<'a>> {
+        crate::ui::markdown::MarkdownRenderer::render_with_width(text, theme, max_width)
+    }
+
     /// Renders assistant Markdown text into highlighted Ratatui lines
+    #[allow(dead_code)]
     fn render_markdown<'a>(text: &'a str, theme: &'a Theme) -> Vec<Line<'a>> {
         crate::ui::markdown::MarkdownRenderer::render(text, theme)
     }
@@ -2570,5 +2780,99 @@ mod tests {
         assert!(transcript.contains("- [x] T1: Design"));
         assert!(transcript.contains("- [x] T2: Implementation"));
         assert!(transcript.contains("- [/] T3: Verification"));
+    }
+
+    #[test]
+    fn test_wrap_lines_preserves_multi_span_atomic_words_and_hanging_indent() {
+        let theme = crate::ui::theme::Theme::tokyo_night();
+        let md = "1. Configured Obsidian-Slate (`#090B12`) with `badge`, `button`, and `table` components.";
+        let rendered = crate::ui::markdown::MarkdownRenderer::render_with_width(md, &theme, 44);
+        let wrapped = TimelineView::wrap_lines_to_width(rendered, 44);
+
+        let plain_lines: Vec<String> = wrapped
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+
+        assert!(plain_lines.len() >= 2);
+        // Continuation lines of a numbered list ("1. ") must have 3-space hanging indent
+        for cont in &plain_lines[1..] {
+            assert!(
+                cont.starts_with("   "),
+                "Expected 3-space hanging indent on continuation line, got: {:?}",
+                cont
+            );
+            // Punctuation attached to inline code must never wrap onto a line by itself
+            let trimmed = cont.trim_start();
+            assert!(
+                !trimmed.starts_with(")") && !trimmed.starts_with(","),
+                "Punctuation should stay attached to inline code word, got: {:?}",
+                cont
+            );
+        }
+        // Check that `(#090B12)` stayed together on a single line
+        assert!(
+            plain_lines.iter().any(|l| l.contains("(#090B12)")),
+            "Expected (#090B12) to stay intact as a single word unit across spans: {:?}",
+            plain_lines
+        );
+    }
+
+    #[test]
+    fn test_wide_table_and_scroll_alignment_in_timeline_render() {
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let theme = crate::ui::theme::Theme::tokyo_night();
+        let mut view = TimelineView::new();
+        let md = "| Area | Implementation |\n|---|---|\n| **Design System** | Configured Obsidian-Slate (`#090B12`) + Indigo (`#6366F1`) + Emerald (`#10B981`) |\n| **Verification** | `npm run build` succeeded with 0 TypeScript or Vite bundle errors |\n";
+        view.append_assistant_text(md);
+
+        let backend = TestBackend::new(72, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 72, 12);
+
+        for scroll_pos in [0u16, 1, 2, 3] {
+            view.scroll_offset.set(scroll_pos);
+            view.auto_scroll.set(false);
+            terminal
+                .draw(|frame| {
+                    let ctx = TimelineContext {
+                        theme: &theme,
+                        is_working: false,
+                        working_millis: 0,
+                        current_activity: None,
+                        spinner_style: crate::ui::animation::SpinnerStyle::from_id("braille"),
+                        workspace: std::path::Path::new("/tmp"),
+                        provider: "openrouter",
+                        model: "qwen",
+                    };
+                    view.render(frame, area, &ctx);
+                })
+                .unwrap();
+
+            let buf = terminal.backend().buffer();
+            for y in 0..area.height {
+                let mut row_str = String::new();
+                for x in 0..area.width {
+                    row_str.push_str(buf[(x, y)].symbol());
+                }
+                if row_str.contains('│') {
+                    let trimmed = row_str.trim();
+                    assert!(
+                        trimmed.starts_with('│') && trimmed.ends_with('│'),
+                        "Table row at scroll={} y={} has misaligned borders: {:?}",
+                        scroll_pos,
+                        y,
+                        row_str
+                    );
+                }
+            }
+        }
     }
 }

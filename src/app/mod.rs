@@ -424,10 +424,20 @@ impl<'a> App<'a> {
                     );
                 } else {
                     let input_height = self.input_dock.required_height();
-                    let todo_height = crate::ui::todo_widget::todo_widget_required_height(
-                        &self.active_plan,
-                        self.config.ui.todo_style_enum(),
-                    );
+                    let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
+                        !p.tasks.is_empty()
+                            && (self.is_working
+                                || p.total_tasks == 0
+                                || p.completed_tasks < p.total_tasks)
+                    });
+                    let todo_height = if show_bottom_todo {
+                        crate::ui::todo_widget::todo_widget_required_height(
+                            &self.active_plan,
+                            self.config.ui.todo_style_enum(),
+                        )
+                    } else {
+                        0
+                    };
                     let activity_spacer_height = todo_height + if self.is_working { 2 } else { 1 };
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
@@ -456,9 +466,9 @@ impl<'a> App<'a> {
 
                     let mut activity_lines: Vec<Line> = Vec::new();
 
-                    // 1. Render active todo widget if present
-                    if let Some(ref plan) = self.active_plan {
-                        if !plan.tasks.is_empty() {
+                    // 1. Render active todo widget if present and still in progress
+                    if show_bottom_todo {
+                        if let Some(ref plan) = self.active_plan {
                             let todo_lines = crate::ui::todo_widget::render_todo_widget(
                                 plan,
                                 self.config.ui.todo_style_enum(),

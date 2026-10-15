@@ -7,8 +7,18 @@ use unicode_width::UnicodeWidthStr;
 pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
-    /// Renders markdown text into styled Ratatui Lines
+    /// Renders markdown text into styled Ratatui Lines with a default width of 100 columns
     pub fn render<'a>(text: &'a str, theme: &'a Theme) -> Vec<Line<'a>> {
+        Self::render_with_width(text, theme, 100)
+    }
+
+    /// Renders markdown text into styled Ratatui Lines constrained to `max_width` columns
+    pub fn render_with_width<'a>(
+        text: &'a str,
+        theme: &'a Theme,
+        max_width: usize,
+    ) -> Vec<Line<'a>> {
+        let max_width = max_width.max(20);
         let mut lines = Vec::new();
         let mut in_code_block = false;
         let raw_lines: Vec<&'a str> = text.lines().collect();
@@ -19,7 +29,7 @@ impl MarkdownRenderer {
             let line = raw_line.trim_end();
 
             // Code block fence detection
-            if line.starts_with("```") {
+            if line.trim_start().starts_with("```") {
                 if in_code_block {
                     in_code_block = false;
                     lines.push(Line::from(vec![Span::styled(
@@ -28,7 +38,7 @@ impl MarkdownRenderer {
                     )]));
                 } else {
                     in_code_block = true;
-                    let lang = line.strip_prefix("```").unwrap_or("").trim();
+                    let lang = line.trim_start().strip_prefix("```").unwrap_or("").trim();
                     let header = if lang.is_empty() {
                         "  ┌─ code ────────────────────────".to_string()
                     } else {
@@ -45,10 +55,11 @@ impl MarkdownRenderer {
 
             // Inside code block: render with syntax styling and border prefix
             if in_code_block {
+                let clean_code = Self::normalize_status_glyphs(raw_line);
                 lines.push(Line::from(vec![
                     Span::styled("  │ ", Style::default().fg(theme.border)),
                     Span::styled(
-                        raw_line,
+                        clean_code,
                         Style::default()
                             .fg(theme.text_primary)
                             .bg(theme.bg_elevated),
@@ -69,13 +80,13 @@ impl MarkdownRenderer {
             if Self::is_table_row(line) {
                 let mut j = i;
                 while j < raw_lines.len()
-                    && !raw_lines[j].trim_end().starts_with("```")
+                    && !raw_lines[j].trim_start().starts_with("```")
                     && Self::is_table_row(raw_lines[j].trim_end())
                 {
                     j += 1;
                 }
                 let table_lines = &raw_lines[i..j];
-                lines.extend(Self::render_table_block(table_lines, theme));
+                lines.extend(Self::render_table_block(table_lines, theme, max_width));
                 i = j;
                 continue;
             }
@@ -120,12 +131,15 @@ impl MarkdownRenderer {
                         .add_modifier(Modifier::BOLD),
                 )]));
             } else if let Some(rest) = line
-                .strip_prefix("  - ")
+                .strip_prefix("    - ")
+                .or_else(|| line.strip_prefix("    * "))
+                .or_else(|| line.strip_prefix("    • "))
+                .or_else(|| line.strip_prefix("  - "))
                 .or_else(|| line.strip_prefix("  * "))
                 .or_else(|| line.strip_prefix("  • "))
             {
                 // Sub-bullet list item
-                let mut spans = vec![Span::styled("    - ", Style::default().fg(theme.muted))];
+                let mut spans = vec![Span::styled("  - ", Style::default().fg(theme.muted))];
                 spans.extend(Self::parse_inline(rest, theme));
                 lines.push(Line::from(spans));
             } else if let Some(rest) = line
@@ -149,8 +163,9 @@ impl MarkdownRenderer {
                 lines.push(Line::from(spans));
             } else if line == "---" || line == "***" || line == "___" {
                 // Horizontal divider
+                let div_w = max_width.min(52);
                 lines.push(Line::from(vec![Span::styled(
-                    "────────────────────────────────────────────────────",
+                    "─".repeat(div_w),
                     Style::default().fg(theme.border),
                 )]));
             } else {
@@ -164,42 +179,104 @@ impl MarkdownRenderer {
         lines
     }
 
-    /// Normalizes wide multi-cell emojis and variation selectors into crisp 1-cell
-    /// terminal status icons (`✔`, `✖`, `!`, `→`) and strips decorative emojis so
-    /// terminal cell widths never drift or overlap adjacent characters.
+    /// Normalizes wide multi-cell emojis, variation selectors, tabs, and ambiguous-width
+    /// Unicode symbols into strictly 1-cell monospace terminal glyphs (`✓`, `✗`, `!`, `→`)
+    /// so terminal cell widths never drift or corrupt differential redraws on scroll.
     pub fn normalize_status_glyphs(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         let mut chars = text.chars().peekable();
 
         while let Some(ch) = chars.next() {
             match ch {
-                // Variation selectors (U+FE0E, U+FE0F) force 2-cell emoji presentation
-                '\u{fe0e}' | '\u{fe0f}' => continue,
-                // Pass / check icons -> 1-cell ✔
-                '✅' | '☑' => out.push('✔'),
-                // Fail / error icons -> 1-cell ✖
-                '❌' | '❎' => out.push('✖'),
-                // Warning / alert icons -> 1-cell !
-                '⚠' | '🚨' => out.push('!'),
-                // Action / launch icons -> 1-cell →
-                '🚀' | '⚡' | '▶' => out.push('→'),
-                // Strip decorative multi-cell emojis and any immediate single space after them
-                '📄' | '📝' | '🔧' | '💬' | '📜' | '🔍' | '💡' | '🎯' | '✨' | '🎉' | '📦'
-                | '🛠' | '🧪' | '🎨' | '🌐' | '🔒' | '📁' | '📂' => {
-                    while matches!(chars.peek(), Some('\u{fe0e}' | '\u{fe0f}')) {
+                // Expand tabs to 4 spaces so terminal tab stops never desync buffer columns
+                '\t' => out.push_str("    "),
+                // Strip carriage returns, zero-width spaces/joiners, and variation selectors
+                '\r'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{20e3}'
+                | '\u{1f3fb}'..='\u{1f3ff}' => continue,
+                // Pass / check icons -> strictly 1-cell Emoji=No `✓` (U+2713)
+                '✅' | '☑' | '✔' | '✓' => {
+                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
                         chars.next();
                     }
+                    out.push('✓');
+                }
+                // Fail / error icons -> strictly 1-cell Emoji=No `✗` (U+2717)
+                '❌' | '❎' | '✖' | '✕' | '✘' | '✗' => {
+                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
+                        chars.next();
+                    }
+                    out.push('✗');
+                }
+                // Warning / alert icons -> strictly 1-cell `!`
+                '⚠' | '🚨' | '🛑' | '❗' | '❕' => {
+                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
+                        chars.next();
+                    }
+                    out.push('!');
+                }
+                // Action / launch / pointer icons -> strictly 1-cell `→` (U+2192, Emoji=No)
+                '🚀' | '⚡' | '▶' | '►' | '➜' | '➔' | '❯' | '👉' => {
+                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
+                        chars.next();
+                    }
+                    out.push('→');
+                }
+                '▼' => {
+                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
+                        chars.next();
+                    }
+                    out.push('▾');
+                }
+                // Strip decorative multi-cell / ambiguous-width emojis across SMP & Misc blocks
+                c if Self::is_decorative_emoji_or_symbol(c) => {
+                    while matches!(
+                        chars.peek(),
+                        Some('\u{fe00}'..='\u{fe0f}' | '\u{200d}' | '\u{1f3fb}'..='\u{1f3ff}')
+                    ) {
+                        let next_c = chars.next();
+                        if next_c == Some('\u{200d}') {
+                            // Consume ZWJ linked emoji
+                            let _ = chars.next();
+                        }
+                    }
                     if chars.peek() == Some(&' ')
-                        && (out.is_empty() || out.ends_with(' ') || out.ends_with("**"))
+                        && (out.is_empty()
+                            || out.ends_with(' ')
+                            || out.ends_with("**")
+                            || out.ends_with('['))
                     {
                         chars.next();
                     }
                 }
-                other => out.push(other),
+                other if !other.is_control() => out.push(other),
+                _ => {}
             }
         }
 
         out
+    }
+
+    /// Returns true if `c` is a decorative emoji or ambiguous-width symbol that can render
+    /// as 2 cells in terminal emulators while reporting 1 or 2 cells inconsistently.
+    #[inline]
+    pub fn is_decorative_emoji_or_symbol(c: char) -> bool {
+        matches!(
+            c,
+            // Miscellaneous Technical (watch, hourglass, media symbols, etc.)
+            '\u{2300}'..='\u{23ff}'
+            // Miscellaneous Symbols & Dingbats (except ✓ U+2713 and ✗ U+2717 which are handled above)
+            | '\u{2600}'..='\u{27bf}'
+            // Supplemental Arrows, Misc Symbols and Arrows
+            | '\u{2b00}'..='\u{2bff}'
+            // Enclosed Alphanumerics / CJK symbols / Mahjong / Domino / Playing Cards / Enclosed Ideographic
+            | '\u{1f000}'..='\u{1faff}'
+        )
     }
 
     /// Renders a Markdown heading line without any `#` characters, applying the
@@ -274,35 +351,183 @@ impl MarkdownRenderer {
         trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() >= 2
     }
 
+    /// Splits a Markdown table row on unescaped `|` characters outside of inline `` `code` `` spans.
+    fn split_table_cells(line: &str) -> Vec<String> {
+        let trimmed = line.trim();
+        let inner = trimmed
+            .strip_prefix('|')
+            .unwrap_or(trimmed)
+            .strip_suffix('|')
+            .unwrap_or(trimmed);
+
+        let mut cells = Vec::new();
+        let mut current = String::new();
+        let mut in_code = false;
+        let mut chars = inner.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(&next_ch) = chars.peek() {
+                    if next_ch == '|' || next_ch == '\\' || next_ch == '`' {
+                        current.push(next_ch);
+                        chars.next();
+                        continue;
+                    }
+                }
+                current.push(ch);
+            } else if ch == '`' {
+                in_code = !in_code;
+                current.push(ch);
+            } else if ch == '|' && !in_code {
+                cells.push(current.trim().to_string());
+                current.clear();
+            } else {
+                current.push(ch);
+            }
+        }
+        cells.push(current.trim().to_string());
+        cells
+    }
+
+    /// Wraps styled `Span`s within a table cell to fit within `col_width` visual columns.
+    fn wrap_cell_spans<'a>(spans: &[Span<'a>], col_width: usize) -> Vec<Vec<Span<'a>>> {
+        use unicode_width::UnicodeWidthChar;
+
+        let col_width = col_width.max(1);
+        let total_w: usize = spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        if total_w <= col_width {
+            return vec![spans.to_vec()];
+        }
+
+        // Flatten spans into (char, Style) pairs so multi-span words wrap cleanly
+        let mut styled_chars: Vec<(char, Style)> = Vec::new();
+        for span in spans {
+            for ch in span.content.chars() {
+                styled_chars.push((ch, span.style));
+            }
+        }
+
+        // Group into contiguous whitespace vs non-whitespace runs
+        struct Run {
+            chars: Vec<(char, Style)>,
+            is_ws: bool,
+            width: usize,
+        }
+
+        let mut runs: Vec<Run> = Vec::new();
+        for (ch, style) in styled_chars {
+            let is_ws = ch.is_whitespace();
+            let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if let Some(last) = runs.last_mut() {
+                if last.is_ws == is_ws {
+                    last.chars.push((ch, style));
+                    last.width += ch_w;
+                    continue;
+                }
+            }
+            runs.push(Run {
+                chars: vec![(ch, style)],
+                is_ws,
+                width: ch_w,
+            });
+        }
+
+        let push_char = |line_spans: &mut Vec<Span<'a>>, ch: char, style: Style| {
+            if let Some(last) = line_spans.last_mut() {
+                if last.style == style {
+                    let mut s = last.content.to_string();
+                    s.push(ch);
+                    last.content = s.into();
+                    return;
+                }
+            }
+            let mut s = String::with_capacity(4);
+            s.push(ch);
+            line_spans.push(Span::styled(s, style));
+        };
+
+        let mut lines: Vec<Vec<Span<'a>>> = Vec::new();
+        let mut cur_spans: Vec<Span<'a>> = Vec::new();
+        let mut cur_w: usize = 0;
+
+        for run in runs {
+            if run.is_ws {
+                if cur_w == 0 {
+                    continue;
+                } else if cur_w + run.width <= col_width {
+                    for (ch, st) in run.chars {
+                        push_char(&mut cur_spans, ch, st);
+                    }
+                    cur_w += run.width;
+                } else {
+                    lines.push(std::mem::take(&mut cur_spans));
+                    cur_w = 0;
+                }
+            } else if cur_w + run.width <= col_width {
+                for (ch, st) in run.chars {
+                    push_char(&mut cur_spans, ch, st);
+                }
+                cur_w += run.width;
+            } else if run.width > col_width {
+                // Single word wider than col_width: break by character
+                for (ch, st) in run.chars {
+                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if cur_w + ch_w > col_width && cur_w > 0 {
+                        lines.push(std::mem::take(&mut cur_spans));
+                        cur_w = 0;
+                    }
+                    push_char(&mut cur_spans, ch, st);
+                    cur_w += ch_w;
+                }
+            } else {
+                if !cur_spans.is_empty() {
+                    lines.push(std::mem::take(&mut cur_spans));
+                }
+                for (ch, st) in run.chars {
+                    push_char(&mut cur_spans, ch, st);
+                }
+                cur_w = run.width;
+            }
+        }
+
+        if !cur_spans.is_empty() || lines.is_empty() {
+            lines.push(cur_spans);
+        }
+
+        lines
+    }
+
     /// Renders a full contiguous block of markdown table rows with character-aligned columns,
-    /// box-drawing borders (┌─┬─┐, ├─┼─┤, └─┴─┘), and header styling.
-    fn render_table_block<'a>(table_lines: &[&'a str], theme: &'a Theme) -> Vec<Line<'a>> {
+    /// box-drawing borders (┌─┬─┐, ├─┼─┤, └─┴─┘), proportional viewport fitting, and multi-line cell wrapping.
+    fn render_table_block<'a>(
+        table_lines: &[&'a str],
+        theme: &'a Theme,
+        max_width: usize,
+    ) -> Vec<Line<'a>> {
         if table_lines.is_empty() {
             return Vec::new();
         }
 
-        struct ParsedRow<'b> {
-            raw_cells: Vec<&'b str>,
+        struct ParsedRow {
+            raw_cells: Vec<String>,
             is_separator: bool,
         }
 
         let mut parsed_rows = Vec::new();
         for &line in table_lines {
-            let raw_cells: Vec<&'a str> = line
-                .trim()
-                .trim_matches('|')
-                .split('|')
-                .map(|s| s.trim())
-                .collect();
-
+            let raw_cells = Self::split_table_cells(line);
             if raw_cells.is_empty() {
                 continue;
             }
 
             let is_sep = !raw_cells.is_empty()
-                && raw_cells
-                    .iter()
-                    .all(|cell| !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':'));
+                && raw_cells.iter().all(|cell| {
+                    let t = cell.trim();
+                    !t.is_empty() && t.chars().all(|c| c == '-' || c == ':')
+                });
 
             parsed_rows.push(ParsedRow {
                 raw_cells,
@@ -355,7 +580,7 @@ impl MarkdownRenderer {
             } else {
                 let mut cells_spans = Vec::new();
                 for (c, col_w) in col_widths.iter_mut().enumerate().take(num_cols) {
-                    let cell_text = row.raw_cells.get(c).copied().unwrap_or("");
+                    let cell_text = row.raw_cells.get(c).map(|s| s.as_str()).unwrap_or("");
                     let spans = Self::parse_inline(cell_text, theme);
                     let visible_w: usize = spans
                         .iter()
@@ -365,6 +590,65 @@ impl MarkdownRenderer {
                     cells_spans.push(spans);
                 }
                 row_spans.push(Some(cells_spans));
+            }
+        }
+
+        // Constrain total table width to `max_width` so borders never wrap across terminal lines.
+        // Overhead: "┌─" (2) + (num_cols - 1) * "─┬─" (3) + "─┐" (2) = 3 * num_cols + 1
+        let border_overhead = 3 * num_cols + 1;
+        let avail_content_w = max_width.saturating_sub(border_overhead).max(num_cols * 3);
+        let natural_total: usize = col_widths.iter().sum();
+
+        if natural_total > avail_content_w {
+            let min_col_w = 4usize.min(avail_content_w / num_cols.max(1)).max(3);
+            let fair_share = (avail_content_w / num_cols.max(1)).max(min_col_w);
+
+            // Lock columns that already fit comfortably within fair_share (or <= 24 cols for label columns)
+            let mut locked = vec![false; num_cols];
+            let mut used_by_locked = 0usize;
+            for c in 0..num_cols {
+                let cap = if c == 0 && num_cols > 1 {
+                    fair_share.max(22).min(avail_content_w / 2)
+                } else {
+                    fair_share
+                };
+                if col_widths[c] <= cap {
+                    locked[c] = true;
+                    used_by_locked += col_widths[c];
+                }
+            }
+
+            let remaining_budget = avail_content_w.saturating_sub(used_by_locked);
+            let unlocked_natural_sum: usize = (0..num_cols)
+                .filter(|&c| !locked[c])
+                .map(|c| col_widths[c])
+                .sum();
+
+            if unlocked_natural_sum > 0 && remaining_budget > 0 {
+                for c in 0..num_cols {
+                    if !locked[c] {
+                        let scaled = (col_widths[c] * remaining_budget) / unlocked_natural_sum;
+                        col_widths[c] = scaled.max(min_col_w);
+                    }
+                }
+            } else {
+                for w in &mut col_widths {
+                    *w = fair_share;
+                }
+            }
+
+            // Final pass: clamp any excess due to rounding
+            while col_widths.iter().sum::<usize>() > avail_content_w {
+                if let Some((max_idx, _)) = col_widths
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &w)| w > min_col_w)
+                    .max_by_key(|(_, &w)| w)
+                {
+                    col_widths[max_idx] -= 1;
+                } else {
+                    break;
+                }
             }
         }
 
@@ -383,7 +667,7 @@ impl MarkdownRenderer {
         top_line.push(Span::styled("─┐", border_style));
         out.push(Line::from(top_line));
 
-        // 2. Render rows
+        // 2. Render rows (with multi-line cell wrapping when a cell exceeds `col_widths[c]`)
         let first_is_header =
             parsed_rows.len() > 1 && parsed_rows.get(1).is_some_and(|r| r.is_separator);
 
@@ -402,54 +686,67 @@ impl MarkdownRenderer {
                 out.push(Line::from(div_line));
             } else if let Some(ref cells_spans) = row_spans[row_idx] {
                 let is_header = row_idx == 0 && first_is_header;
-                let mut row_line = Vec::new();
-                row_line.push(Span::styled("│ ", border_style));
+                let wrapped_cells: Vec<Vec<Vec<Span<'a>>>> = (0..num_cols)
+                    .map(|c| Self::wrap_cell_spans(&cells_spans[c], col_widths[c]))
+                    .collect();
+                let max_sublines = wrapped_cells
+                    .iter()
+                    .map(|lines| lines.len())
+                    .max()
+                    .unwrap_or(1)
+                    .max(1);
 
-                for c in 0..num_cols {
-                    if c > 0 {
-                        row_line.push(Span::styled(" │ ", border_style));
-                    }
+                for sub_idx in 0..max_sublines {
+                    let mut row_line = Vec::new();
+                    row_line.push(Span::styled("│ ", border_style));
 
-                    let spans = &cells_spans[c];
-                    let visible_w: usize = spans
-                        .iter()
-                        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-                        .sum();
-                    let target_w = col_widths[c];
-                    let pad_total = target_w.saturating_sub(visible_w);
-
-                    let (pad_left, pad_right) = match alignments[c] {
-                        ColAlign::Right => (pad_total, 0),
-                        ColAlign::Center => {
-                            let pl = pad_total / 2;
-                            (pl, pad_total - pl)
+                    for c in 0..num_cols {
+                        if c > 0 {
+                            row_line.push(Span::styled(" │ ", border_style));
                         }
-                        ColAlign::Left => (0, pad_total),
-                    };
 
-                    if pad_left > 0 {
-                        row_line.push(Span::raw(" ".repeat(pad_left)));
-                    }
+                        let empty_spans: Vec<Span<'a>> = Vec::new();
+                        let spans = wrapped_cells[c].get(sub_idx).unwrap_or(&empty_spans);
+                        let visible_w: usize = spans
+                            .iter()
+                            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                            .sum();
+                        let target_w = col_widths[c];
+                        let pad_total = target_w.saturating_sub(visible_w);
 
-                    for span in spans {
-                        if is_header {
-                            let mut st = span.style.add_modifier(Modifier::BOLD);
-                            if st.fg.is_none() {
-                                st = st.fg(theme.highlight);
+                        let (pad_left, pad_right) = match alignments[c] {
+                            ColAlign::Right => (pad_total, 0),
+                            ColAlign::Center => {
+                                let pl = pad_total / 2;
+                                (pl, pad_total - pl)
                             }
-                            row_line.push(Span::styled(span.content.clone(), st));
-                        } else {
-                            row_line.push(span.clone());
+                            ColAlign::Left => (0, pad_total),
+                        };
+
+                        if pad_left > 0 {
+                            row_line.push(Span::raw(" ".repeat(pad_left)));
+                        }
+
+                        for span in spans {
+                            if is_header {
+                                let mut st = span.style.add_modifier(Modifier::BOLD);
+                                if st.fg.is_none() {
+                                    st = st.fg(theme.highlight);
+                                }
+                                row_line.push(Span::styled(span.content.clone(), st));
+                            } else {
+                                row_line.push(span.clone());
+                            }
+                        }
+
+                        if pad_right > 0 {
+                            row_line.push(Span::raw(" ".repeat(pad_right)));
                         }
                     }
 
-                    if pad_right > 0 {
-                        row_line.push(Span::raw(" ".repeat(pad_right)));
-                    }
+                    row_line.push(Span::styled(" │", border_style));
+                    out.push(Line::from(row_line));
                 }
-
-                row_line.push(Span::styled(" │", border_style));
-                out.push(Line::from(row_line));
             }
         }
 
@@ -469,7 +766,7 @@ impl MarkdownRenderer {
     }
 
     /// Parses inline Markdown styling (bold, code, paths, URLs, metrics) safely
-    pub fn parse_inline<'a>(text: &'a str, theme: &'a Theme) -> Vec<Span<'a>> {
+    pub fn parse_inline<'a>(text: &str, theme: &'a Theme) -> Vec<Span<'a>> {
         let normalized = Self::normalize_status_glyphs(text);
         let mut spans = Vec::new();
         let mut current_buf = String::new();
@@ -863,11 +1160,68 @@ mod tests {
         assert_eq!(rendered_text[0], "Verification results:");
         assert_eq!(
             rendered_text[1],
-            "• ✔ bun run build — clean, 0 TypeScript errors"
+            "• ✓ bun run build — clean, 0 TypeScript errors"
         );
         assert_eq!(rendered_text[2], "• ! 8 non-blocking lint warnings");
-        assert_eq!(rendered_text[3], "• ✖ Build failed on step 2");
+        assert_eq!(rendered_text[3], "• ✗ Build failed on step 2");
         assert_eq!(rendered_text[4], "• → Dev server running");
+    }
+
+    #[test]
+    fn test_markdown_wide_table_wraps_inside_columns_without_breaking_borders() {
+        let theme = Theme::default();
+        let markdown = "\
+| Section | Highlights |
+|---|---|
+| **Navbar** | Sticky glass header, backdrop-blur, mobile menu, GitHub link |
+| **Security** | 6-cell grid (kernel sandbox, encrypted creds, secret redaction, workspace isolation, audit logs, controlled execution) + posture table |
+";
+        let max_width = 80;
+        let lines = MarkdownRenderer::render_with_width(markdown, &theme, max_width);
+        assert!(
+            lines.len() > 6,
+            "Wide cell should wrap into multiple table sub-rows"
+        );
+
+        let expected_w: usize = lines[0]
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        assert!(
+            expected_w <= max_width,
+            "Table width {} exceeds max_width {}",
+            expected_w,
+            max_width
+        );
+
+        for (idx, line) in lines.iter().enumerate() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let w = UnicodeWidthStr::width(text.as_str());
+            assert_eq!(
+                w, expected_w,
+                "Table row {} width {} != top border width {} (line: {:?})",
+                idx, w, expected_w, text
+            );
+            assert!(
+                text.starts_with('┌')
+                    || text.starts_with('├')
+                    || text.starts_with('└')
+                    || text.starts_with('│'),
+                "Table line {} must start with box-drawing border: {:?}",
+                idx,
+                text
+            );
+            assert!(
+                text.ends_with('┐')
+                    || text.ends_with('┤')
+                    || text.ends_with('┘')
+                    || text.ends_with('│'),
+                "Table line {} must end with box-drawing border: {:?}",
+                idx,
+                text
+            );
+        }
     }
 
     #[test]

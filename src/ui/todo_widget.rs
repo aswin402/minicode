@@ -16,8 +16,9 @@ use unicode_width::UnicodeWidthStr;
 /// Dynamically filters tasks for the inline TUI widget.
 /// When an active in-progress task contains tactical sub-tasks (e.g. from MiniPowers),
 /// it focuses exclusively on that active task and its sub-tasks so the terminal is not cluttered.
-/// When no sub-tasks are active, it displays the milestone tasks.
+/// When no sub-tasks are active, it displays up to 5 milestone tasks around the active task.
 pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem> {
+    const MAX_INLINE_TASKS: usize = 5;
     if tasks.is_empty() {
         return Vec::new();
     }
@@ -34,8 +35,24 @@ pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem>
     if let Some(first_with_sub) = tasks.iter().find(|t| !t.sub_tasks.is_empty()) {
         return vec![first_with_sub];
     }
-    // Otherwise, return all milestone tasks
-    tasks.iter().collect()
+    if tasks.len() <= MAX_INLINE_TASKS {
+        return tasks.iter().collect();
+    }
+    // Sliding window of MAX_INLINE_TASKS around the active or next pending task
+    let focus_idx = tasks
+        .iter()
+        .position(|t| t.status == LivePlanTaskStatus::InProgress)
+        .or_else(|| {
+            tasks
+                .iter()
+                .position(|t| t.status == LivePlanTaskStatus::Pending)
+        })
+        .unwrap_or(tasks.len().saturating_sub(1));
+    let start = focus_idx
+        .saturating_sub(1)
+        .min(tasks.len().saturating_sub(MAX_INLINE_TASKS));
+    let end = (start + MAX_INLINE_TASKS).min(tasks.len());
+    tasks[start..end].iter().collect()
 }
 
 /// Calculates the exact required row height for the inline todo widget.
@@ -120,13 +137,15 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         };
 
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✓ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
-                ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
             LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
         lines.push(Line::from(vec![
             Span::styled(branch, Style::default().fg(theme.muted)),
             Span::styled(
@@ -134,7 +153,7 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(bullet_color).add_modifier(modifier),
             ),
             Span::styled(
-                task.title.clone(),
+                clean_title,
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
@@ -155,14 +174,16 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
             };
             let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
                 LivePlanTaskStatus::Completed => {
-                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                    ("✓ ", theme.success, theme.muted, Modifier::empty())
                 }
                 LivePlanTaskStatus::InProgress => {
-                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                    ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
                 }
                 LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
             };
 
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
             lines.push(Line::from(vec![
                 Span::styled(parent_rail, Style::default().fg(theme.muted)),
                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
@@ -171,7 +192,7 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                     Style::default().fg(s_bullet_color).add_modifier(s_modifier),
                 ),
                 Span::styled(
-                    sub.title.clone(),
+                    clean_sub,
                     Style::default().fg(s_text_color).add_modifier(s_modifier),
                 ),
             ]));
@@ -179,7 +200,7 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     }
 
     // Divider line below the tree
-    let divider_width = (width as usize).max(10);
+    let divider_width = (width.saturating_sub(1) as usize).max(10);
     lines.push(Line::from(vec![Span::styled(
         "─".repeat(divider_width),
         Style::default().fg(theme.border),
@@ -195,13 +216,13 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 
     // Top border
     let left_header = format!(
-        "╭── 📋 TODO · {}/{} Tasks Completed ──",
+        "╭── TODO · {}/{} Tasks Completed ──",
         plan.completed_tasks, plan.total_tasks
     );
     let right_tag = format!("── [{}] ──╮", plan.title);
     let left_len = UnicodeWidthStr::width(left_header.as_str());
     let right_len = UnicodeWidthStr::width(right_tag.as_str());
-    let middle_dashes = (width as usize).saturating_sub(left_len + right_len);
+    let middle_dashes = (width.saturating_sub(1) as usize).saturating_sub(left_len + right_len);
     let top_border = format!("{}{}{}", left_header, "─".repeat(middle_dashes), right_tag);
 
     lines.push(Line::from(vec![Span::styled(
@@ -228,13 +249,15 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         };
 
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✓ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
-                ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
             LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
         lines.push(Line::from(vec![
             Span::styled("│ ", Style::default().fg(theme.brand_accent)),
             Span::styled(branch, Style::default().fg(theme.muted)),
@@ -243,7 +266,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(bullet_color).add_modifier(modifier),
             ),
             Span::styled(
-                task.title.clone(),
+                clean_title,
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
@@ -263,14 +286,16 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
             };
             let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
                 LivePlanTaskStatus::Completed => {
-                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                    ("✓ ", theme.success, theme.muted, Modifier::empty())
                 }
                 LivePlanTaskStatus::InProgress => {
-                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                    ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
                 }
                 LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
             };
 
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
             lines.push(Line::from(vec![
                 Span::styled("│ ", Style::default().fg(theme.brand_accent)),
                 Span::styled(parent_rail, Style::default().fg(theme.muted)),
@@ -280,7 +305,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                     Style::default().fg(s_bullet_color).add_modifier(s_modifier),
                 ),
                 Span::styled(
-                    sub.title.clone(),
+                    clean_sub,
                     Style::default().fg(s_text_color).add_modifier(s_modifier),
                 ),
             ]));
@@ -288,7 +313,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     }
 
     // Bottom border
-    let bottom_dashes = (width as usize).saturating_sub(2);
+    let bottom_dashes = (width.saturating_sub(1) as usize).saturating_sub(2);
     lines.push(Line::from(vec![Span::styled(
         format!("╰{}╯", "─".repeat(bottom_dashes)),
         Style::default().fg(theme.brand_accent),
@@ -311,7 +336,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "📋 TODO · ",
+            "TODO · ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -328,13 +353,15 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     // Tasks
     for task in tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✓ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
-                ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
             LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
         lines.push(Line::from(vec![
             Span::styled("▎   ", Style::default().fg(theme.brand_accent)),
             Span::styled(
@@ -342,7 +369,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 Style::default().fg(bullet_color).add_modifier(modifier),
             ),
             Span::styled(
-                task.title.clone(),
+                clean_title,
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
@@ -356,14 +383,16 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
             };
             let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
                 LivePlanTaskStatus::Completed => {
-                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                    ("✓ ", theme.success, theme.muted, Modifier::empty())
                 }
                 LivePlanTaskStatus::InProgress => {
-                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                    ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
                 }
                 LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
             };
 
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
             lines.push(Line::from(vec![
                 Span::styled("▎       ", Style::default().fg(theme.brand_accent)),
                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
@@ -372,7 +401,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                     Style::default().fg(s_bullet_color).add_modifier(s_modifier),
                 ),
                 Span::styled(
-                    sub.title.clone(),
+                    clean_sub,
                     Style::default().fg(s_text_color).add_modifier(s_modifier),
                 ),
             ]));
@@ -381,7 +410,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
-        "─".repeat((width as usize).max(10)),
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
         Style::default().fg(theme.border),
     )]));
 
@@ -395,13 +424,13 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
 
     // Header line with dashes
     let left_header = format!(
-        "📋 TODO · {}/{} Completed ",
+        "TODO · {}/{} Completed ",
         plan.completed_tasks, plan.total_tasks
     );
     let right_tag = format!(" [{}]", plan.title);
     let left_len = UnicodeWidthStr::width(left_header.as_str());
     let right_len = UnicodeWidthStr::width(right_tag.as_str());
-    let middle_dashes = (width as usize).saturating_sub(left_len + right_len);
+    let middle_dashes = (width.saturating_sub(1) as usize).saturating_sub(left_len + right_len);
     let full_rule = format!("{}{}{}", left_header, "─".repeat(middle_dashes), right_tag);
 
     lines.push(Line::from(vec![Span::styled(
@@ -414,13 +443,15 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
     // Tasks with clean indentation
     for task in tasks {
         let (bullet, bullet_color, text_color, modifier) = match task.status {
-            LivePlanTaskStatus::Completed => ("✔ ", theme.success, theme.muted, Modifier::empty()),
+            LivePlanTaskStatus::Completed => ("✓ ", theme.success, theme.muted, Modifier::empty()),
             LivePlanTaskStatus::InProgress => {
-                ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
             }
             LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
         };
 
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
         lines.push(Line::from(vec![
             Span::raw("   "),
             Span::styled(
@@ -428,7 +459,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
                 Style::default().fg(bullet_color).add_modifier(modifier),
             ),
             Span::styled(
-                task.title.clone(),
+                clean_title,
                 Style::default().fg(text_color).add_modifier(modifier),
             ),
         ]));
@@ -442,14 +473,16 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
             };
             let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
                 LivePlanTaskStatus::Completed => {
-                    ("✔ ", theme.success, theme.muted, Modifier::empty())
+                    ("✓ ", theme.success, theme.muted, Modifier::empty())
                 }
                 LivePlanTaskStatus::InProgress => {
-                    ("▶ ", theme.info, theme.text_primary, Modifier::BOLD)
+                    ("▸ ", theme.info, theme.text_primary, Modifier::BOLD)
                 }
                 LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
             };
 
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
             lines.push(Line::from(vec![
                 Span::raw("       "),
                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
@@ -458,7 +491,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
                     Style::default().fg(s_bullet_color).add_modifier(s_modifier),
                 ),
                 Span::styled(
-                    sub.title.clone(),
+                    clean_sub,
                     Style::default().fg(s_text_color).add_modifier(s_modifier),
                 ),
             ]));
@@ -467,7 +500,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
-        "─".repeat((width as usize).max(10)),
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
         Style::default().fg(theme.border),
     )]));
 
