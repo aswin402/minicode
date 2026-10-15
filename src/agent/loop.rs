@@ -54,13 +54,6 @@ pub struct AgentLoop {
     pub last_seen_swarm_msg_id: Option<String>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
-    /// One-time foundation checkpoint before the first file mutation in a
-    /// workspace without an established project foundation.
-    foundation_gate: crate::agent::foundation_gate::FoundationGate,
-    plan_gate: crate::agent::plan_gate::PlanGate,
-    /// Decisions settled this turn without user confirmation (headless
-    /// defaults, plan assumptions), reported at turn end.
-    turn_unconfirmed: Vec<String>,
 }
 
 impl AgentLoop {
@@ -149,9 +142,6 @@ impl AgentLoop {
             mailbox,
             last_seen_swarm_msg_id: None,
             _active_guard: active_guard,
-            foundation_gate: crate::agent::foundation_gate::FoundationGate::default(),
-            plan_gate: crate::agent::plan_gate::PlanGate::default(),
-            turn_unconfirmed: Vec::new(),
         }
     }
 
@@ -607,8 +597,6 @@ impl AgentLoop {
                 format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
         }
 
-        self.foundation_gate.record_user_request(user_prompt);
-        self.turn_unconfirmed.clear();
         self.messages.push(Message::user(prompt_with_context));
 
         if let Some(metrics) = compaction_metrics {
@@ -674,7 +662,6 @@ impl AgentLoop {
             tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
         }
         tools.sort_by(|a, b| a.name.cmp(&b.name));
-        crate::agent::foundation_gate::augment_schemas(&mut tools, &self.workspace_root);
 
         let now_ts = chrono::Utc::now().to_rfc3339();
 
@@ -721,10 +708,6 @@ impl AgentLoop {
         let mut items_progressed_this_turn = false;
         let mut completed_steps_in_turn: usize = 0;
         let mut verifiable_action_performed: bool = false;
-        let mut distinct_files_mutated_in_active_step: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut step_checkpoint_fired_for_active_step: bool = false;
-        let mut state_dirty_for_next_iteration: bool = false;
 
         // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
         let turn_tx_id = if let Ok(None) =
@@ -787,83 +770,6 @@ impl AgentLoop {
             // to prevent context bloat before requesting next LLM completion.
             if iteration > 1 {
                 self.prune_context();
-
-                // Reactive State Projection: if workspace, decisions, plan, or runtime state changed
-                // in the previous iteration, refresh the recency context block and active tool schemas
-                // so the model never operates on stale Iteration-0 state.
-                if state_dirty_for_next_iteration {
-                    state_dirty_for_next_iteration = false;
-                    let live_enrichment =
-                        crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
-                            &self.workspace_root,
-                            user_prompt,
-                        )
-                        .await;
-                    let live_working_set: Vec<String> =
-                        self.active_working_set.iter().cloned().collect();
-                    let live_recency = PromptBuilder::build_recency_context(
-                        &self.workspace_root,
-                        if anchor_block.is_empty() {
-                            None
-                        } else {
-                            Some(&anchor_block)
-                        },
-                        &live_working_set,
-                        git_status.as_ref(),
-                        Some(&context_budget),
-                        if self.config.agent.intent.enabled {
-                            self.intent_ledger.as_ref()
-                        } else {
-                            None
-                        },
-                        live_enrichment.as_deref(),
-                    );
-                    let mut refreshed_prompt = if live_recency.trim().is_empty() {
-                        format!("<user_request>\n{}\n</user_request>", user_prompt.trim())
-                    } else {
-                        format!(
-                            "{}\n\n<user_request>\n{}\n</user_request>",
-                            live_recency.trim(),
-                            user_prompt.trim()
-                        )
-                    };
-                    if !peer_messages_block.is_empty() {
-                        refreshed_prompt =
-                            format!("{}\n\n{}", peer_messages_block.trim(), refreshed_prompt);
-                    }
-                    if let Some(turn_user_msg) = self.messages.iter_mut().rev().find(|m| {
-                        m.role == crate::agent::types::Role::User
-                            && m.content.contains("<user_request>")
-                    }) {
-                        turn_user_msg.content = refreshed_prompt;
-                    }
-
-                    let state_cats =
-                        crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
-                            &self.workspace_root,
-                        );
-                    for cat in state_cats {
-                        active_categories.insert(cat);
-                    }
-                    tools = crate::tools::category::assemble_active_tools_with_mcp(
-                        self.config.agent.tool_mode,
-                        user_prompt,
-                        &active_categories,
-                        &mcp_tools_by_server,
-                        &active_mcp_servers,
-                    );
-                    if self.config.agent.compact_tool_schemas {
-                        tools =
-                            crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(
-                                &tools,
-                            );
-                    }
-                    tools.sort_by(|a, b| a.name.cmp(&b.name));
-                    crate::agent::foundation_gate::augment_schemas(
-                        &mut tools,
-                        &self.workspace_root,
-                    );
-                }
             }
             let mut retry_count = 0;
 
@@ -1187,8 +1093,6 @@ impl AgentLoop {
 
                 let stages =
                     crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls.clone());
-                let files_mutated_before_iteration = distinct_files_mutated_in_active_step.len();
-                let mut iteration_step_checkpoint_triggered = false;
 
                 for stage in stages {
                     // Check cancellation before each stage execution
@@ -1361,74 +1265,9 @@ impl AgentLoop {
 
                             turn_tool_calls.push(tool_call.clone());
 
-                            // === Foundation gate (state-based; settled by ask_user or a verified quote) ===
-                            let gate_decision = self.foundation_gate.evaluate(
-                                &self.workspace_root,
-                                &tool_call.name,
-                                &tool_call.arguments,
-                            );
-                            // `foundation_basis` is a harness-only argument; never forward it.
+                            // Strip legacy foundation_basis argument if present
                             if let Some(obj) = tool_call.arguments.as_object_mut() {
                                 obj.remove(crate::agent::foundation_gate::FOUNDATION_BASIS_ARG);
-                            }
-                            if let crate::agent::foundation_gate::GateDecision::AllowVerified(
-                                ref basis,
-                            ) = gate_decision
-                            {
-                                if let Err(e) = crate::agent::decisions::record_basis(
-                                    &self.workspace_root,
-                                    &tool_call.name,
-                                    basis,
-                                ) {
-                                    tracing::warn!("Failed to record foundation basis: {}", e);
-                                }
-                            }
-                            // === Plan approval (state-based; large plans need one ask_user round) ===
-                            if tool_call.name
-                                == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
-                            {
-                                self.plan_gate
-                                    .observe_success(&tool_call.name, &tool_call.arguments);
-                            }
-                            let checkpoint = match gate_decision {
-                                crate::agent::foundation_gate::GateDecision::Checkpoint(g) => {
-                                    Some(g)
-                                }
-                                _ if self.config.agent.plan_approval => {
-                                    self.plan_gate.check(&tool_call.name)
-                                }
-                                _ => None,
-                            };
-                            if let Some(guidance) = checkpoint {
-                                let res_event = AgentEvent::ToolResult {
-                                    turn_id,
-                                    tool_id: tool_call.id.clone(),
-                                    tool: tool_call.name.clone(),
-                                    success: false,
-                                    output: guidance.clone(),
-                                    duration_ms: 0,
-                                };
-                                if let Err(e) = self
-                                    .session_store
-                                    .append_event(&self.session_id, &res_event)
-                                {
-                                    tracing::warn!("Failed to persist ToolResult event: {}", e);
-                                }
-                                let _ = event_sender.send(res_event);
-                                self.messages.push(Message::tool_result(
-                                    tool_call.id.clone(),
-                                    tool_call.name.clone(),
-                                    guidance.clone(),
-                                ));
-                                turn_tool_results.push(crate::agent::types::ToolResult {
-                                    tool_id: tool_call.id.clone(),
-                                    tool_name: tool_call.name.clone(),
-                                    success: false,
-                                    output: guidance,
-                                    display_output: String::new(),
-                                    duration_ms: 0,
-                                });
-                                continue;
                             }
 
                             // Record file access into active working set (Zone 3 Recency)
@@ -1437,85 +1276,6 @@ impl AgentLoop {
                             {
                                 self.record_file_access(path);
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                                    let norm_path =
-                                        path.trim().trim_start_matches("./").to_string();
-                                    // === Forward Active-Step Drift Checkpoint ===
-                                    // If >= 2 distinct files were already mutated in prior iterations of the
-                                    // current active step without plan advancement, checkpoint before mutating
-                                    // additional files in a new iteration (holding the iteration's batch atomically).
-                                    if iteration_step_checkpoint_triggered
-                                        || (!distinct_files_mutated_in_active_step
-                                            .contains(&norm_path)
-                                            && files_mutated_before_iteration >= 2
-                                            && !step_checkpoint_fired_for_active_step)
-                                    {
-                                        let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                            &self.workspace_root,
-                                        );
-                                        if let Some(summary) = wm.read_active_plan_summary() {
-                                            if summary.in_progress_tasks + summary.pending_tasks
-                                                >= 2
-                                            {
-                                                if let Some(active_title) = summary.active_task {
-                                                    step_checkpoint_fired_for_active_step = true;
-                                                    iteration_step_checkpoint_triggered = true;
-                                                    let mut files_so_far: Vec<&str> =
-                                                        distinct_files_mutated_in_active_step
-                                                            .iter()
-                                                            .map(String::as_str)
-                                                            .collect();
-                                                    files_so_far.sort_unstable();
-                                                    let checkpoint_msg = serde_json::json!({
-                                                        "status": "step_progress_checkpoint",
-                                                        "executed": false,
-                                                        "active_step": active_title,
-                                                        "files_mutated_in_step": files_so_far,
-                                                        "message": format!(
-                                                            "`{}` on `{}` was held because you have already modified {} distinct files ({}) while `[>] {}` is active without updating plan progress. If `[>] {}` is complete, call `update_progress(step=\"active\", status=\"completed\")` now and then re-issue `{}`. If `{}` belongs to the same step, re-issue `{}` directly.",
-                                                            tool_call.name,
-                                                            norm_path,
-                                                            files_so_far.len(),
-                                                            files_so_far.join(", "),
-                                                            active_title,
-                                                            active_title,
-                                                            tool_call.name,
-                                                            norm_path,
-                                                            tool_call.name
-                                                        )
-                                                    })
-                                                    .to_string();
-                                                    let res_event = AgentEvent::ToolResult {
-                                                        turn_id,
-                                                        tool_id: tool_call.id.clone(),
-                                                        tool: tool_call.name.clone(),
-                                                        success: false,
-                                                        output: checkpoint_msg.clone(),
-                                                        duration_ms: 0,
-                                                    };
-                                                    let _ = self
-                                                        .session_store
-                                                        .append_event(&self.session_id, &res_event);
-                                                    let _ = event_sender.send(res_event);
-                                                    self.messages.push(Message::tool_result(
-                                                        tool_call.id.clone(),
-                                                        tool_call.name.clone(),
-                                                        checkpoint_msg.clone(),
-                                                    ));
-                                                    turn_tool_results.push(
-                                                        crate::agent::types::ToolResult {
-                                                            tool_id: tool_call.id.clone(),
-                                                            tool_name: tool_call.name.clone(),
-                                                            success: false,
-                                                            output: checkpoint_msg,
-                                                            display_output: String::new(),
-                                                            duration_ms: 0,
-                                                        },
-                                                    );
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                    }
                                     turn_files_modified.push(path.to_string());
                                 }
                             }
@@ -1636,19 +1396,6 @@ impl AgentLoop {
                                 if !self.interactive_approvals {
                                     // Non-interactive / headless auto-resolve
                                     let auto_resp = request.auto_resolve_defaults();
-                                    if let Some(entry) = crate::agent::decisions::render_entry(
-                                        &request,
-                                        &auto_resp,
-                                        crate::agent::decisions::DecisionSource::AutoDefault,
-                                        "",
-                                    ) {
-                                        self.turn_unconfirmed.extend(
-                                            entry
-                                                .lines()
-                                                .filter(|l| l.starts_with("- "))
-                                                .map(|l| format!("{} (headless default)", &l[2..])),
-                                        );
-                                    }
                                     if let Err(e) = crate::agent::decisions::record(
                                         &self.workspace_root,
                                         &request,
@@ -1686,7 +1433,6 @@ impl AgentLoop {
                                         display_output: String::new(),
                                         duration_ms: 0,
                                     });
-                                    state_dirty_for_next_iteration = true;
                                     continue;
                                 }
 
@@ -1773,7 +1519,6 @@ impl AgentLoop {
                                     display_output: String::new(),
                                     duration_ms: 0,
                                 });
-                                state_dirty_for_next_iteration = true;
                                 continue;
                             }
 
@@ -1953,12 +1698,8 @@ impl AgentLoop {
                                 {
                                     completed_steps_in_turn = 0;
                                     verifiable_action_performed = false;
-                                    distinct_files_mutated_in_active_step.clear();
-                                    step_checkpoint_fired_for_active_step = false;
                                 }
                                 if tool_call.name == "update_progress" {
-                                    distinct_files_mutated_in_active_step.clear();
-                                    step_checkpoint_fired_for_active_step = false;
                                     let status_arg = tool_call
                                         .arguments
                                         .get("status")
@@ -1984,21 +1725,6 @@ impl AgentLoop {
                                     ) {
                                         completed_steps_in_turn += 1;
                                         verifiable_action_performed = false;
-                                    }
-                                }
-                                self.plan_gate
-                                    .observe_success(&tool_call.name, &tool_call.arguments);
-                                if tool_call.name == "create_plan" {
-                                    if let Some(items) = crate::tools::param::opt_string_array(
-                                        &tool_call.arguments,
-                                        "assumptions",
-                                    ) {
-                                        self.turn_unconfirmed.extend(
-                                            items
-                                                .into_iter()
-                                                .filter(|a| !a.trim().is_empty())
-                                                .map(|a| format!("{} (assumed)", a.trim())),
-                                        );
                                     }
                                 }
 
@@ -2111,10 +1837,6 @@ impl AgentLoop {
                                         tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
                                     }
                                     tools.sort_by(|a, b| a.name.cmp(&b.name));
-                                    crate::agent::foundation_gate::augment_schemas(
-                                        &mut tools,
-                                        &self.workspace_root,
-                                    );
                                     tracing::info!(
                                         "Dynamically activated '{}'; active schemas count now {}",
                                         cat_str,
@@ -2177,30 +1899,18 @@ impl AgentLoop {
                                         wm.reconcile_workspace_tasks(&[path_str.to_string()]);
                                     if reconciled > 0 {
                                         total_reconciled += reconciled;
-                                        distinct_files_mutated_in_active_step.clear();
-                                        step_checkpoint_fired_for_active_step = false;
                                         self.emit_current_plan(Some(turn_id), &event_sender);
-                                    } else {
-                                        distinct_files_mutated_in_active_step.insert(
-                                            path_str.trim().trim_start_matches("./").to_string(),
-                                        );
                                     }
                                 } else if tool_call.name == "write_file" {
-                                    distinct_files_mutated_in_active_step.clear();
-                                    step_checkpoint_fired_for_active_step = false;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
-                                state_dirty_for_next_iteration = true;
                             }
 
                             if tool_result.success
                                 && (tool_call.name == "create_plan"
                                     || tool_call.name == "power_plan")
                             {
-                                distinct_files_mutated_in_active_step.clear();
-                                step_checkpoint_fired_for_active_step = false;
                                 self.emit_current_plan(Some(turn_id), &event_sender);
-                                state_dirty_for_next_iteration = true;
                             } else if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
@@ -2212,8 +1922,6 @@ impl AgentLoop {
                                 let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
                                 if auto_reconciled_extra > 0 {
                                     total_reconciled += auto_reconciled_extra;
-                                    distinct_files_mutated_in_active_step.clear();
-                                    step_checkpoint_fired_for_active_step = false;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
 
@@ -2222,20 +1930,6 @@ impl AgentLoop {
                                     options.system_instruction = Some(refreshed);
                                     tracing::info!("Dynamic system instruction refreshed following stack scaffolding");
                                 }
-                                state_dirty_for_next_iteration = true;
-                            } else if tool_result.success
-                                && matches!(
-                                    tool_call.name.as_str(),
-                                    "ask_user"
-                                        | "update_progress"
-                                        | "archive_plan"
-                                        | "minitask"
-                                        | "browser_navigate"
-                                        | "browser_close"
-                                        | "exec_cmd"
-                                )
-                            {
-                                state_dirty_for_next_iteration = true;
                             }
 
                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
@@ -2773,22 +2467,6 @@ impl AgentLoop {
             );
         }
 
-        if !self.turn_unconfirmed.is_empty() {
-            let report = format!(
-                "\n\n**Unconfirmed decisions** (made without your confirmation; recorded in `.minicode/decisions.md`, tell me to change any):\n{}\n",
-                self.turn_unconfirmed
-                    .iter()
-                    .map(|d| format!("- {d}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            );
-            let _ = event_sender.send(AgentEvent::StreamDelta {
-                turn_id,
-                delta: report,
-            });
-            self.turn_unconfirmed.clear();
-        }
-
         let end_event = AgentEvent::TurnEnd {
             turn_id,
             status: if was_cancelled {
@@ -2909,7 +2587,6 @@ impl AgentLoop {
                         first_turn_prompt = Some(prompt.clone());
                     }
 
-                    self.foundation_gate.record_user_request(prompt);
                     self.messages.push(Message::user(prompt.clone()));
                 }
                 AgentEvent::StreamDelta { delta, .. } => {

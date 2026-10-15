@@ -6,6 +6,7 @@ pub mod critic;
 pub mod dag;
 pub mod decisions;
 pub mod features;
+#[allow(dead_code)]
 pub mod foundation_gate;
 pub mod hypothesis;
 pub mod inquiry;
@@ -15,6 +16,7 @@ pub mod minipower;
 pub mod mock_provider;
 pub mod models;
 pub mod orchestrator;
+#[allow(dead_code)]
 pub mod plan_gate;
 pub mod pricing;
 pub mod prompt;

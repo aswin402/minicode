@@ -845,7 +845,7 @@ impl WorkflowRouter {
     }
 
     /// Computes active `ToolCategory` set purely from live observable workspace and runtime state
-    /// (without keyword heuristics on the user prompt). Safe to call on every iteration of a turn.
+    /// (without keyword heuristics on the user prompt).
     pub fn state_driven_tool_categories(
         workspace_root: &Path,
     ) -> std::collections::HashSet<crate::tools::category::ToolCategory> {
@@ -855,9 +855,12 @@ impl WorkflowRouter {
 
         match repo_state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
-                // Foundation not established yet: expose scaffolding and design warehouse tools
+                // Expose scaffolding, UI design warehouse, dev task runner, and browser verification upfront
+                // so the entire workflow can execute smoothly within a turn without schema churn.
                 cats.insert(ToolCategory::MiniKit);
                 cats.insert(ToolCategory::Blocks);
+                cats.insert(ToolCategory::Dev);
+                cats.insert(ToolCategory::Web);
             }
             RepoState::ExistingCodebase => {
                 // Codebase exists: expose code navigation, dev task runner, and browser verification
@@ -1073,7 +1076,7 @@ impl WorkflowRouter {
     }
 
     /// Injects dynamic repository state analysis into context so the agent knows whether
-    /// the workspace is fresh, docs-only, or an existing codebase, and what files are present.
+    /// the workspace is fresh, docs-only, or an existing software codebase, and what files are present.
     pub fn enrich_repository_state(
         workspace_root: &Path,
         state: RepoState,
@@ -1136,20 +1139,18 @@ impl WorkflowRouter {
                     out.push_str("  The documentation files listed above may already state the stack or design; read them before deciding.\n");
                 }
                 if crate::agent::decisions::read_for_prompt(workspace_root).is_some() {
-                    out.push_str("  Recorded user decisions exist (see <user_decisions>): build on them and do not re-ask settled questions. Ask only about decisions still open.\n");
+                    out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions. Ask only about decisions still open.\n");
                 }
-                out.push_str(
-                    "  Resolve the foundation before writing project files (Reversibility Rule):\n",
-                );
+                out.push_str("  Real-Time User Inquiry (`ask_user`) & Foundation Rule:\n");
                 out.push_str("  1. Identify which foundation decisions the request (and any docs) actually state: framework/stack, architecture, visual direction for UI work, scope, and any content/data only the user has. A long or detailed request is not a decision; a named stack is.\n");
-                out.push_str("  2. Unstated decisions that are expensive to reverse once files exist belong to the user: ask them all in ONE `ask_user` call, presenting 2-4 concrete choices (e.g. stack options such as 'react-vite', 'static-website', 'next-template', and visual theme options) with recommended option first. The user can also write their own custom choice.\n");
+                out.push_str("  2. You can call `ask_user` in real time at ANY point (before scaffolding or mid-execution while working) whenever you need user input, missing data/credentials, or decisions that are expensive to reverse once files exist. Batch open questions into ONE `ask_user` call with 2-4 concrete options (recommended option first); answers are automatically saved to `.minicode/decisions.md`.\n");
                 out.push_str("  3. If every foundation decision is stated, or the deliverable is trivially a single file (one script, one standalone page), do not ask: state your assumption in one sentence and continue.\n");
-                out.push_str("  Then build on it:\n");
-                out.push_str("  4. Scaffold with `kit_stack_add` into the workspace root (`kit_stack_list` shows stacks; `static-website` covers plain HTML/CSS/JS) instead of hand-writing boilerplate.\n");
-                out.push_str("  5. Multi-step work: `create_plan` with 4-8 verifiable steps, then `update_progress` as each step finishes.\n");
+                out.push_str("  End-to-End Subsystem Workflow:\n");
+                out.push_str("  4. Multi-step work: call `create_plan` with 4-8 verifiable steps, and call `update_progress` as each step finishes.\n");
+                out.push_str("  5. Scaffold with `kit_stack_add` into the workspace root (`kit_stack_list` shows stacks; `static-website` covers plain HTML/CSS/JS) instead of hand-writing boilerplate.\n");
                 out.push_str("  6. UI work: choose tokens with `block_palettes` and components with `block_search` before writing CSS or markup from scratch.\n");
                 out.push_str("  7. Larger projects: after the foundation is decided, record specs in `minikit_docs/core/` (prd.md, design.md, architecture.md) if they help.\n");
-                out.push_str("  8. Verify by running it (`minitask` start or `exec_cmd`) and inspecting the result (`browser_navigate`, tests).\n");
+                out.push_str("  8. Verify by running the app (`minitask` with `action: \"start\"` or `exec_cmd`) and inspecting the live result (`browser_navigate`, `browser_screenshot`, tests).\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -1159,11 +1160,11 @@ impl WorkflowRouter {
                     ));
                 }
                 out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code.\n");
-                out.push_str("  Before your first edit, check: which decisions does this change make that the request does not state (storage or data model, architecture, API shape, visual direction, content)? Any that is costly to undo or a matter of the user's taste is theirs: ask in one `ask_user` round. Only cheap, reversible details may be assumed, and say so.\n");
-                out.push_str("  2. Respect existing patterns, styling and conventions; make surgical changes.\n");
-                out.push_str("  3. Multi-step work: `create_plan`, then `update_progress` as steps finish.\n");
-                out.push_str("  4. Dependencies: use the project's package manager via `exec_cmd`. UI components: `block_search`.\n");
-                out.push_str("  5. Decisions the code does not settle and that are costly to undo still belong to the user (`ask_user`, one batched round): new architecture or data model, API/spec changes, design direction, new heavy dependencies, destructive changes, missing data only they have. For large multi-step work, get the approach or plan approved before the first edit.\n");
+                out.push_str("  2. Real-Time User Inquiry (`ask_user`): you may call `ask_user` at ANY point during your work (before editing or mid-task when you hit a fork or need user data, credentials, API keys, product/design preferences, or architectural clarifications). Answers are persisted in `.minicode/decisions.md`.\n");
+                out.push_str("  3. Respect existing patterns, styling and conventions; make surgical changes.\n");
+                out.push_str("  4. Multi-step work: `create_plan`, then `update_progress` as steps finish.\n");
+                out.push_str("  5. Dependencies: use the project's package manager via `exec_cmd`. UI components & tokens: `block_search` and `block_palettes`.\n");
+                out.push_str("  6. Verify changes with `minitask` / `exec_cmd` and `browser_navigate` for UI changes.\n");
             }
         }
         out.push_str("</orchestrator_dynamic_guidance>");
