@@ -1326,6 +1326,13 @@ impl WorkflowRouter {
         }
 
         let mut out = String::from("<recommended_miniblocks>\n");
+        if Self::project_manifest(workspace_root).is_none()
+            && crate::agent::decisions::read_for_prompt(workspace_root).is_none()
+        {
+            out.push_str(
+                "  Important: Foundation is NOT established yet. These warehouse previews do NOT choose a stack or theme — if the user did not explicitly name the tech stack and visual direction, call `ask_user` FIRST before `create_plan` or `kit_stack_add`.\n",
+            );
+        }
         out.push_str(
             "  MiniBlocks warehouse matches for this request (retrieved, not mandatory):\n",
         );
