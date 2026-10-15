@@ -112,6 +112,7 @@ pub fn record(
 
 /// Records that the foundation was settled by a verified quote from the user's
 /// request (no question was asked).
+#[allow(dead_code)]
 pub fn record_basis(workspace_root: &Path, tool_name: &str, basis: &str) -> std::io::Result<()> {
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
     let entry = format!(

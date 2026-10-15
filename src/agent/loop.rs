@@ -706,8 +706,6 @@ impl AgentLoop {
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
         let mut items_progressed_this_turn = false;
-        let mut completed_steps_in_turn: usize = 0;
-        let mut verifiable_action_performed: bool = false;
 
         // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
         let turn_tx_id = if let Ok(None) =
@@ -1144,14 +1142,6 @@ impl AgentLoop {
                                     None,
                                 );
 
-                                if tool_result.success
-                                    && crate::agent::plan_gate::is_verifiable_action_tool(
-                                        &tool_call.name,
-                                    )
-                                {
-                                    verifiable_action_performed = true;
-                                }
-
                                 // === Smart Donut Truncator (Phase 88, 115) ===
                                 let ctx_limit = self.compactor.model_token_limit();
                                 tool_result.output =
@@ -1241,7 +1231,7 @@ impl AgentLoop {
                                 break;
                             }
                         }
-                        crate::agent::speculative::ExecutionStage::Sequential(mut tool_call) => {
+                        crate::agent::speculative::ExecutionStage::Sequential(tool_call) => {
                             // Check cancellation before tool execution
                             if let Some(cancel) = &cancel_token {
                                 if cancel.is_cancelled() {
@@ -1265,11 +1255,6 @@ impl AgentLoop {
 
                             turn_tool_calls.push(tool_call.clone());
 
-                            // Strip legacy foundation_basis argument if present
-                            if let Some(obj) = tool_call.arguments.as_object_mut() {
-                                obj.remove(crate::agent::foundation_gate::FOUNDATION_BASIS_ARG);
-                            }
-
                             // Record file access into active working set (Zone 3 Recency)
                             if let Some(path) =
                                 tool_call.arguments.get("path").and_then(|p| p.as_str())
@@ -1277,66 +1262,6 @@ impl AgentLoop {
                                 self.record_file_access(path);
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
                                     turn_files_modified.push(path.to_string());
-                                }
-                            }
-
-                            // === Plan Progression Anti-Batching Gate ===
-                            if tool_call.name == "update_progress" {
-                                let status_arg = tool_call
-                                    .arguments
-                                    .get("status")
-                                    .and_then(|s| s.as_str())
-                                    .unwrap_or("");
-                                let status_clean = status_arg
-                                    .trim()
-                                    .to_ascii_lowercase()
-                                    .replace([' ', '-', '_'], "");
-                                let is_done = matches!(
-                                    status_clean.as_str(),
-                                    "completed"
-                                        | "complete"
-                                        | "done"
-                                        | "closed"
-                                        | "finished"
-                                        | "resolved"
-                                        | "success"
-                                        | "pass"
-                                        | "passed"
-                                        | "x"
-                                        | "check"
-                                );
-
-                                if is_done
-                                    && completed_steps_in_turn > 0
-                                    && !verifiable_action_performed
-                                {
-                                    let reject_msg = "Error: Cannot batch-complete multiple plan steps simultaneously without intermediate implementation or verification. Execute and verify the next active step first before calling `update_progress` again.".to_string();
-                                    let res_event = AgentEvent::ToolResult {
-                                        turn_id,
-                                        tool_id: tool_call.id.clone(),
-                                        tool: tool_call.name.clone(),
-                                        success: false,
-                                        output: reject_msg.clone(),
-                                        duration_ms: 0,
-                                    };
-                                    let _ = self
-                                        .session_store
-                                        .append_event(&self.session_id, &res_event);
-                                    let _ = event_sender.send(res_event);
-                                    self.messages.push(Message::tool_result(
-                                        tool_call.id.clone(),
-                                        tool_call.name.clone(),
-                                        reject_msg.clone(),
-                                    ));
-                                    turn_tool_results.push(crate::agent::types::ToolResult {
-                                        tool_id: tool_call.id.clone(),
-                                        tool_name: tool_call.name.clone(),
-                                        success: false,
-                                        output: reject_msg,
-                                        display_output: String::new(),
-                                        duration_ms: 0,
-                                    });
-                                    continue;
                                 }
                             }
 
@@ -1687,47 +1612,6 @@ impl AgentLoop {
                                 file_before.as_deref(),
                             );
                             if tool_result.success {
-                                if crate::agent::plan_gate::is_verifiable_action_tool(
-                                    &tool_call.name,
-                                ) {
-                                    verifiable_action_performed = true;
-                                }
-                                if tool_call.name == "create_plan"
-                                    || tool_call.name == "power_plan"
-                                    || tool_call.name == "archive_plan"
-                                {
-                                    completed_steps_in_turn = 0;
-                                    verifiable_action_performed = false;
-                                }
-                                if tool_call.name == "update_progress" {
-                                    let status_arg = tool_call
-                                        .arguments
-                                        .get("status")
-                                        .and_then(|s| s.as_str())
-                                        .unwrap_or("");
-                                    let status_clean = status_arg
-                                        .trim()
-                                        .to_ascii_lowercase()
-                                        .replace([' ', '-', '_'], "");
-                                    if matches!(
-                                        status_clean.as_str(),
-                                        "completed"
-                                            | "complete"
-                                            | "done"
-                                            | "closed"
-                                            | "finished"
-                                            | "resolved"
-                                            | "success"
-                                            | "pass"
-                                            | "passed"
-                                            | "x"
-                                            | "check"
-                                    ) {
-                                        completed_steps_in_turn += 1;
-                                        verifiable_action_performed = false;
-                                    }
-                                }
-
                                 // Refresh static system prompt when stack scaffolding or skill installation
                                 // updates workspace skills (.minicode/skills/), minikit.json, or AGENTS.md.
                                 if matches!(
