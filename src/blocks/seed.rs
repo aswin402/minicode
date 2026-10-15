@@ -181,6 +181,13 @@ pub fn detect_project_framework(project_root: &Path) -> Option<BlockFramework> {
         }
     }
 
+    if project_root.join("index.html").is_file()
+        || project_root.join("styles.css").is_file()
+        || project_root.join("style.css").is_file()
+    {
+        return Some(BlockFramework::Css);
+    }
+
     None
 }
 
@@ -296,11 +303,18 @@ impl ProjectStackInfo {
             Some(BlockFramework::Scss) => {
                 "Detected Project Stack: SCSS / SASS.\n    Guideline: Default `block_search` queries with framework=\"scss\".".to_string()
             }
-            Some(BlockFramework::Css) | None => {
+            Some(BlockFramework::Css) => {
                 if self.has_tailwind {
                     "Detected Project Stack: Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"tailwind\".".to_string()
                 } else {
                     "Detected Project Stack: Standard Web (HTML/CSS).\n    Guideline: Default `block_search` queries with framework=\"html\" or framework=\"css\".".to_string()
+                }
+            }
+            None => {
+                if self.has_tailwind {
+                    "Detected Project Stack: Tailwind CSS.\n    Guideline: Default `block_search` queries with framework=\"tailwind\".".to_string()
+                } else {
+                    "Detected Project Stack: None yet (uninitialized workspace — no stack or framework established yet).\n    Guideline: Resolve the project stack first (via `ask_user` if the user did not specify one, then scaffold with `kit_stack_add`), and then filter `block_search` by the chosen framework (`react`, `tailwind`, `shadcn`, `html`, or `css`).".to_string()
                 }
             }
         }
@@ -511,13 +525,21 @@ mod tests {
         assert!(directive.contains("React with Tailwind CSS"));
         assert!(directive.contains("framework=\"react\" or framework=\"tailwind\""));
 
-        // 2. Empty directory fallback
+        // 2. Empty directory fallback (uninitialized workspace)
         let temp_empty = tempdir().unwrap();
         let empty_info = ProjectStackInfo::detect(temp_empty.path());
         assert_eq!(empty_info.framework, None);
         assert!(!empty_info.has_tailwind);
         let empty_directive = empty_info.format_prompt_directive();
-        assert!(empty_directive.contains("Standard Web (HTML/CSS)"));
-        assert!(empty_directive.contains("framework=\"html\" or framework=\"css\""));
+        assert!(empty_directive.contains("None yet (uninitialized workspace"));
+        assert!(empty_directive.contains("ask_user"));
+
+        // 3. Static HTML directory
+        std::fs::write(temp_empty.path().join("index.html"), "<!doctype html>").unwrap();
+        let html_info = ProjectStackInfo::detect(temp_empty.path());
+        assert_eq!(html_info.framework, Some(BlockFramework::Css));
+        let html_directive = html_info.format_prompt_directive();
+        assert!(html_directive.contains("Standard Web (HTML/CSS)"));
+        assert!(html_directive.contains("framework=\"html\" or framework=\"css\""));
     }
 }

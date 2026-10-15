@@ -1142,15 +1142,15 @@ impl WorkflowRouter {
                     out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions. Ask only about decisions still open.\n");
                 }
                 out.push_str("  Real-Time User Inquiry (`ask_user`) & Foundation Rule:\n");
-                out.push_str("  1. Identify which foundation decisions the request (and any docs) actually state: framework/stack, architecture, visual direction for UI work, scope, and any content/data only the user has. A long or detailed request is not a decision; a named stack is.\n");
-                out.push_str("  2. You can call `ask_user` in real time at ANY point (before scaffolding or mid-execution while working) whenever you need user input, missing data/credentials, or decisions that are expensive to reverse once files exist. Batch open questions into ONE `ask_user` call with 2-4 concrete options (recommended option first); answers are automatically saved to `.minicode/decisions.md`.\n");
-                out.push_str("  3. If every foundation decision is stated, or the deliverable is trivially a single file (one script, one standalone page), do not ask: state your assumption in one sentence and continue.\n");
+                out.push_str("  1. Check what the user's request (and any docs) explicitly states: tech stack/framework (e.g. React/Vite vs Next.js vs Static HTML/CSS/JS), architecture, and visual theme/aesthetic direction for UI work. A long or detailed request is not a decision; a named stack is.\n");
+                out.push_str("  2. When the tech stack/framework or visual direction is not explicitly named by the user and not yet recorded in `.minicode/decisions.md`, make `ask_user` your very first tool call (before `block_search`, `create_plan`, or `write_file`) so the user chooses the foundation (batch 1-3 questions with 2-4 options each, recommended option first). You can also call `ask_user` in real time mid-execution whenever you need additional user data, credentials, or clarifications.\n");
+                out.push_str("  3. Only skip `ask_user` if the user's prompt already explicitly names the stack/framework and design direction, or if `.minicode/decisions.md` already records them.\n");
                 out.push_str("  End-to-End Subsystem Workflow:\n");
-                out.push_str("  4. Multi-step work: call `create_plan` with 4-8 verifiable steps, and call `update_progress` as each step finishes.\n");
-                out.push_str("  5. Scaffold with `kit_stack_add` into the workspace root (`kit_stack_list` shows stacks; `static-website` covers plain HTML/CSS/JS) instead of hand-writing boilerplate.\n");
-                out.push_str("  6. UI work: choose tokens with `block_palettes` and components with `block_search` before writing CSS or markup from scratch.\n");
-                out.push_str("  7. Larger projects: after the foundation is decided, record specs in `minikit_docs/core/` (prd.md, design.md, architecture.md) if they help.\n");
-                out.push_str("  8. Verify by running the app (`minitask` with `action: \"start\"` or `exec_cmd`) and inspecting the live result (`browser_navigate`, `browser_screenshot`, tests).\n");
+                out.push_str("  4. Once foundation decisions are settled, scaffold the project into the workspace root using `kit_stack_add` (`kit_stack_list` shows stacks; e.g. `react-vite-gsap`, `static-website`, `next-template`, `hono-api`) before writing custom application files.\n");
+                out.push_str("  5. Create a structured execution plan with `create_plan` (4-8 verifiable steps), and advance each step with `update_progress` as you finish it.\n");
+                out.push_str("  6. For UI work, query `block_palettes` for design tokens and `block_search` / `block_get` for pre-built components before writing CSS or markup.\n");
+                out.push_str("  7. Larger projects: record specs in `minikit_docs/core/` (prd.md, design.md, architecture.md) if they help.\n");
+                out.push_str("  8. Verify by launching the app (`minitask` with `action: \"start\"`) and inspecting the live result (`browser_navigate`, `browser_screenshot`, tests).\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {

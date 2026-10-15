@@ -1518,7 +1518,9 @@ impl WorkingMemory {
                 }
                 w == s
                     || (w.len() >= 4 && s.len() >= 4 && (w.starts_with(s) || s.starts_with(w)))
-                    || (w.len() >= 6 && s.len() >= 6 && w[..3] == s[..3])
+                    || (w.len() >= 6 && s.len() >= 6 && w[..5] == s[..5])
+                    || (s == "navbar" && w.starts_with("navig"))
+                    || (w == "navbar" && s.starts_with("navig"))
             })
     }
 
@@ -1614,7 +1616,22 @@ impl WorkingMemory {
                 .next()
                 .unwrap_or(&task_lower)
                 .trim();
+
+            // Verification / browser / test steps are completed when verification runs or
+            // `update_progress` is called explicitly, never auto-completed by writing source files.
+            if primary_head.starts_with("verify")
+                || primary_head.starts_with("test ")
+                || task_lower.contains("browser_navigate")
+                || task_lower.contains("browser_screenshot")
+            {
+                continue;
+            }
+
             let candidates = Self::extract_candidate_files(&task.title);
+            let has_explicit_non_html_candidates = !candidates.is_empty()
+                && !candidates
+                    .iter()
+                    .any(|c| c.ends_with(".html") || c.ends_with(".htm"));
             let mut file_satisfied = false;
 
             for candidate in &candidates {
@@ -1690,7 +1707,9 @@ impl WorkingMemory {
             }
 
             // In-file HTML `<section id="...">` / `<nav>` / `<footer>` DOM ID reconciliation:
-            if !file_satisfied && !html_section_ids.is_empty() {
+            // Only applies when the task does not explicitly name a non-HTML file (such as `styles.css` or `app.js`).
+            if !file_satisfied && !has_explicit_non_html_candidates && !html_section_ids.is_empty()
+            {
                 let matched_ids: Vec<&String> = html_section_ids
                     .iter()
                     .filter(|sec_id| Self::stem_token_matches_task(sec_id, primary_head))
@@ -1700,10 +1719,10 @@ impl WorkingMemory {
                 }
             }
 
-            // Identifier-Stem Token Alignment: if no literal filename matched,
-            // check if an unconsumed modified file's CamelCase/identifier stem tokens match
-            // this task with high specificity across the plan.
-            if !file_satisfied && !modified_files.is_empty() {
+            // Identifier-Stem Token Alignment: if no literal filename matched and the task does not
+            // explicitly require a specific target file, check if an unconsumed modified file's
+            // CamelCase/identifier stem tokens match this task with high specificity across the plan.
+            if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
                 for (m_idx, m_path) in modified_files.iter().enumerate() {
                     if consumed_modified.contains(&m_idx) {
                         continue;
@@ -2746,6 +2765,49 @@ mod tests {
         let todo_final = fs::read_to_string(wm.canonical_todo_path()).unwrap();
         assert!(!todo_final.contains("[>]"));
         assert!(!todo_final.contains("[ ]"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_minitest58_html_write_does_not_complete_css_js_or_verify_steps() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_minitest58_sync_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Create index.html with all sections (navbar, hero, features bento, latency comparison, pricing, footer)".to_string(),
+            "Create styles.css with design tokens and component styles".to_string(),
+            "Create app.js with interactive latency comparison animation".to_string(),
+            "Verify with browser_navigate and browser_screenshot".to_string(),
+        ];
+        wm.init_plan("PulseDB Landing", &steps).unwrap();
+
+        // Write index.html containing <nav>, <section id="comparison">, etc. (>= 25 lines)
+        let mut html_lines = vec![
+            "<!DOCTYPE html>".to_string(),
+            "<html><body>".to_string(),
+            "<nav>PulseDB</nav>".to_string(),
+            "<section id=\"comparison\">Comparison</section>".to_string(),
+            "<footer>Footer</footer>".to_string(),
+        ];
+        for i in 0..25 {
+            html_lines.push(format!("<!-- line {} -->", i));
+        }
+        html_lines.push("</body></html>".to_string());
+        fs::write(temp_dir.join("index.html"), html_lines.join("\n")).unwrap();
+
+        // Reconciling index.html MUST only complete Step 1, never Steps 2, 3, or 4!
+        let completed_count = wm.reconcile_workspace_tasks(&["index.html".to_string()]);
+        assert_eq!(completed_count, 1);
+
+        let summary = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary.completed_tasks, 1);
+        assert_eq!(summary.in_progress_tasks, 1);
+        assert_eq!(summary.pending_tasks, 2);
 
         fs::remove_dir_all(temp_dir).ok();
     }
