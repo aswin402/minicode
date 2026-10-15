@@ -36,15 +36,24 @@ pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
     result
 }
 
-/// Checks whether a TCP port is currently open and accepting connections on localhost (IPv4 or IPv6).
-pub fn is_port_listening(port: u16) -> bool {
+/// Probes which loopback host (`"127.0.0.1"` for IPv4 or `"localhost"` for IPv6 `::1`)
+/// is actively accepting TCP connections on `port`.
+pub fn resolve_listening_loopback_host(port: u16) -> Option<&'static str> {
     let timeout = Duration::from_millis(crate::constants::DEFAULT_PORT_CONNECT_TIMEOUT_MS);
     let v4 = SocketAddr::from(([127, 0, 0, 1], port));
     if TcpStream::connect_timeout(&v4, timeout).is_ok() {
-        return true;
+        return Some("127.0.0.1");
     }
     let v6 = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port));
-    TcpStream::connect_timeout(&v6, timeout).is_ok()
+    if TcpStream::connect_timeout(&v6, timeout).is_ok() {
+        return Some("localhost");
+    }
+    None
+}
+
+/// Checks whether a TCP port is currently open and accepting connections on localhost (IPv4 or IPv6).
+pub fn is_port_listening(port: u16) -> bool {
+    resolve_listening_loopback_host(port).is_some()
 }
 
 /// Discovers open listening ports associated with a process ID by inspecting active sockets.

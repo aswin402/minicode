@@ -234,14 +234,7 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
     // 5. Human-in-the-loop interactive inquiry (ask_user)
     core.extend(registry::agent_tools::inquiry::get_schemas());
 
-    // 6. Design phase entry (drives ask_user rounds for open-ended work)
-    core.extend(
-        registry::minipower_tools::get_schemas()
-            .into_iter()
-            .filter(|s| s.name == "power_brainstorm"),
-    );
-
-    // 7. Meta-Tool
+    // 6. Meta-Tool
     core.push(activate_tools_schema());
 
     core
@@ -424,7 +417,6 @@ mod tests {
         assert!(core.len() >= 8 && core.len() <= 13);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"power_brainstorm"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"replace_in_files"));

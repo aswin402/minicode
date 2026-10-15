@@ -434,6 +434,7 @@ pub async fn dispatch(
                 let mut live_summary = summary.clone();
                 let mut tcp_ready = false;
                 let mut target_port = None;
+                let mut resolved_host = "127.0.0.1";
 
                 while tokio::time::Instant::now() < probe_deadline {
                     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -455,10 +456,9 @@ pub async fn dispatch(
                         });
 
                     if let Some(port) = target_port {
-                        if let Ok(Ok(_)) = tokio::time::timeout(
-                            Duration::from_millis(200),
-                            tokio::net::TcpStream::connect(("127.0.0.1", port)),
-                        ).await {
+                        if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(port)
+                        {
+                            resolved_host = host;
                             tcp_ready = true;
                             // Brief settle delay to allow dev server (Vite/Next) to finalize HTTP routing
                             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -467,9 +467,9 @@ pub async fn dispatch(
                     }
                 }
 
-                let derived_url = live_summary.url.clone().or_else(|| {
-                    target_port.map(|p| format!("http://127.0.0.1:{}", p))
-                });
+                let derived_url = target_port
+                    .map(|p| format!("http://{}:{}", resolved_host, p))
+                    .or_else(|| live_summary.url.clone());
                 let url_str = derived_url
                     .as_deref()
                     .unwrap_or("(port scanning in progress...)");
@@ -488,8 +488,8 @@ pub async fn dispatch(
                 if tcp_ready {
                     if let Some(p) = target_port {
                         msg.push_str(&format!(
-                            "\n• ⚡ TCP Socket Ready: http://127.0.0.1:{} is actively listening and verified responsive! (Safe for browser_navigate)",
-                            p
+                            "\n• ⚡ TCP Socket Ready: http://{}:{} is actively listening and verified responsive! (Safe for browser_navigate)",
+                            resolved_host, p
                         ));
                     }
                 } else if let Some(p) = target_port {

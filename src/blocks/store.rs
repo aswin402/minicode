@@ -454,7 +454,7 @@ impl BlockStore {
     /// Searches palettes by name or tags using multi-term ranked scoring.
     pub fn search_palettes(&self, query: &str) -> Vec<&BlockPalette> {
         let q_tokens: Vec<String> = query
-            .split_whitespace()
+            .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty())
             .collect();
@@ -465,6 +465,10 @@ impl BlockStore {
         let mut scored: Vec<(f32, &BlockPalette)> = Vec::new();
         for p in self.palettes.values() {
             let name_lower = p.name.to_lowercase();
+            let name_words: Vec<&str> = name_lower
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .collect();
             let tags_lower: Vec<String> = p.tags.iter().map(|t| t.to_lowercase()).collect();
 
             let mut matched_count = 0;
@@ -472,18 +476,26 @@ impl BlockStore {
 
             for token in &q_tokens {
                 let in_name = name_lower.contains(token);
+                let exact_name_word = name_words.contains(&token.as_str());
                 let in_tags = tags_lower.iter().any(|t| t.contains(token));
+                let exact_tag = tags_lower.iter().any(|t| t == token);
 
                 if in_name || in_tags {
                     matched_count += 1;
                     if in_name {
                         token_score += 10.0;
+                        if exact_name_word {
+                            token_score += 8.0;
+                        }
                         if name_lower == *token {
                             token_score += 15.0;
                         }
                     }
                     if in_tags {
                         token_score += 5.0;
+                        if exact_tag {
+                            token_score += 4.0;
+                        }
                     }
                 }
             }
@@ -498,7 +510,11 @@ impl BlockStore {
             }
         }
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.name.cmp(&b.1.name))
+        });
         scored.into_iter().map(|(_, p)| p).collect()
     }
 

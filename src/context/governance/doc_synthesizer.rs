@@ -114,25 +114,36 @@ impl ArchitectureDocSynthesizer {
 
         // 2. Mermaid Diagram
         if options.include_mermaid {
+            let sample_for = |key_substr: &str, fallback: &str| -> String {
+                layer_files
+                    .iter()
+                    .find(|(k, _)| k.to_ascii_lowercase().contains(key_substr))
+                    .and_then(|(_, files)| files.first())
+                    .map(|f| f.replace('"', "'"))
+                    .unwrap_or_else(|| fallback.to_string())
+            };
+            let pres_label = sample_for("presentation", "UI & Views");
+            let svc_label = sample_for("service", "Services & Controllers");
+            let dom_label = sample_for("domain", "Core Domain Models");
+            let data_label = sample_for("data", "Data & State");
+
             md.push_str("## 🗺️ Architectural Component & Data Flow\n\n");
             md.push_str("```mermaid\nflowchart TD\n");
             md.push_str("    subgraph Presentation[\"🖥️ Presentation / UI Layer\"]\n");
-            md.push_str("        UI[\"TUI Views & Prompts\"]\n");
+            md.push_str(&format!("        UI[\"{}\"]\n", pres_label));
             md.push_str("    end\n");
-            md.push_str("    subgraph Service[\"⚙️ Service & Agent Layer\"]\n");
-            md.push_str("        AgentLoop[\"Agent Loop & Tools\"]\n");
+            md.push_str("    subgraph Service[\"⚙️ Service & Application Layer\"]\n");
+            md.push_str(&format!("        ServiceNode[\"{}\"]\n", svc_label));
             md.push_str("    end\n");
-            md.push_str("    subgraph Domain[\"🏛️ Domain / Context Core\"]\n");
-            md.push_str("        Graph[\"CodeGraph & RepoMap\"]\n");
-            md.push_str("        Invariants[\"Invariant & Smell Linters\"]\n");
+            md.push_str("    subgraph Domain[\"🏛️ Domain / Core Logic\"]\n");
+            md.push_str(&format!("        DomainNode[\"{}\"]\n", dom_label));
             md.push_str("    end\n");
             md.push_str("    subgraph Data[\"💾 Data & Storage Layer\"]\n");
-            md.push_str("        Store[\"Session Store & Index\"]\n");
+            md.push_str(&format!("        Store[\"{}\"]\n", data_label));
             md.push_str("    end\n");
-            md.push_str("    UI --> AgentLoop\n");
-            md.push_str("    AgentLoop --> Graph\n");
-            md.push_str("    AgentLoop --> Invariants\n");
-            md.push_str("    Graph --> Store\n");
+            md.push_str("    UI --> ServiceNode\n");
+            md.push_str("    ServiceNode --> DomainNode\n");
+            md.push_str("    DomainNode --> Store\n");
             md.push_str("```\n\n");
         }
 

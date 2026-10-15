@@ -63,16 +63,15 @@ impl BrowserController {
     ) -> Result<PageSnapshot> {
         validate_browser_url(url)?;
 
-        // Reconcile loopback port with active dev servers in the registry, and normalize localhost to 127.0.0.1
-        let (reconciled_url, reconciliation_notice) = reconcile_loopback_url(url).await;
+        // Reconcile loopback port with active dev servers in the registry and resolve active loopback stack
+        let (mut reconciled_url, reconciliation_notice) = reconcile_loopback_url(url).await;
         if let Some(ref notice) = reconciliation_notice {
             tracing::info!(notice = %notice, "Reconciled loopback target URL");
         }
-        let target_url = reconciled_url.as_str();
 
         // TCP Socket Readiness Barrier: Verify that loopback target port is listening
         // before attempting CDP navigation to eliminate ConnectionRefused (OS 111) and CDP timeouts.
-        if let Ok(parsed) = url::Url::parse(target_url) {
+        if let Ok(mut parsed) = url::Url::parse(&reconciled_url) {
             let is_loopback = matches!(
                 parsed.host_str(),
                 Some("127.0.0.1") | Some("localhost") | Some("0.0.0.0") | Some("::1")
@@ -85,8 +84,15 @@ impl BrowserController {
                         port, port
                     )).into());
                 }
+                if let Some(listening_host) =
+                    crate::dev::ports::resolve_listening_loopback_host(port)
+                {
+                    let _ = parsed.set_host(Some(listening_host));
+                    reconciled_url = parsed.to_string();
+                }
             }
         }
+        let target_url = reconciled_url.as_str();
 
         // Try launching preferred browser engine according to priority chain
         match BrowserManager::get_or_launch(mode, workspace_root).await {
@@ -157,27 +163,30 @@ impl BrowserController {
             .map_err(|e| ToolError::CommandExec(format!("Failed to build HTTP client: {}", e)))?;
 
         let mut response = client.get(target_url).send().await;
-        // On Linux, localhost may resolve to ::1 (IPv6) first while dev servers (Vite, Express) only listen on 127.0.0.1 (IPv4).
-        if response.is_err() && url.contains("localhost") {
-            let alt_url = url.replace("localhost", "127.0.0.1");
+        let is_loopback = target_url.contains("127.0.0.1")
+            || target_url.contains("localhost")
+            || target_url.contains("[::1]");
+        if response.is_err() && is_loopback {
+            let alt_url = if target_url.contains("127.0.0.1") {
+                target_url.replace("127.0.0.1", "[::1]")
+            } else {
+                target_url.replace("localhost", "127.0.0.1")
+            };
             if let Ok(alt_resp) = client.get(&alt_url).send().await {
                 response = Ok(alt_resp);
             }
         }
 
-        // Local development servers (Vite, Next.js) on cold start may take 5-8 seconds to compile initial bundles.
-        // For loopback addresses (127.0.0.1 / localhost), retry up to 3 times with 1.5s delay before failing.
-        let is_loopback = target_url.contains("127.0.0.1") || target_url.contains("localhost");
         let mut loopback_retries = 0;
         while response.is_err() && is_loopback && loopback_retries < 3 {
             loopback_retries += 1;
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-            let check_url = if target_url.contains("localhost") {
-                target_url.replace("localhost", "127.0.0.1")
-            } else {
-                target_url.to_string()
-            };
-            response = client.get(&check_url).send().await;
+            let resolved_url = normalize_loopback_url(target_url);
+            response = client.get(&resolved_url).send().await;
+            if response.is_err() && resolved_url.contains("localhost") {
+                let v6_url = resolved_url.replace("localhost", "[::1]");
+                response = client.get(&v6_url).send().await;
+            }
         }
 
         let response = response.map_err(|e| {
@@ -1589,11 +1598,18 @@ fn strip_html_tags(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Normalizes loopback URLs from `localhost` to `127.0.0.1` to prevent IPv6 ::1 connection aborts
+/// Normalizes loopback URLs by probing which loopback stack (`127.0.0.1` IPv4 vs `localhost` IPv6)
+/// is actively listening on the target port, defaulting to `127.0.0.1` when no socket is open yet.
 pub fn normalize_loopback_url(url: &str) -> String {
     if let Ok(mut parsed) = url::Url::parse(url) {
-        if parsed.host_str() == Some("localhost") {
-            let _ = parsed.set_host(Some("127.0.0.1"));
+        if matches!(
+            parsed.host_str(),
+            Some("localhost") | Some("127.0.0.1") | Some("0.0.0.0") | Some("::1")
+        ) {
+            let port = parsed.port().unwrap_or(80);
+            let host =
+                crate::dev::ports::resolve_listening_loopback_host(port).unwrap_or("127.0.0.1");
+            let _ = parsed.set_host(Some(host));
             return parsed.to_string();
         }
     }
@@ -1625,6 +1641,10 @@ pub async fn reconcile_loopback_url(url: &str) -> (String, Option<String>) {
     // Check if req_port is already associated with one of our active processes
     let matches_active = procs.iter().any(|p| p.ports.contains(&req_port));
     if matches_active {
+        if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(req_port) {
+            let _ = parsed.set_host(Some(host));
+            return (parsed.to_string(), None);
+        }
         return (normalized, None);
     }
 
@@ -1646,6 +1666,9 @@ pub async fn reconcile_loopback_url(url: &str) -> (String, Option<String>) {
             .iter()
             .find(|&&p| crate::dev::ports::is_port_listening(p))
         {
+            if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(active_port) {
+                let _ = parsed.set_host(Some(host));
+            }
             if active_port != req_port {
                 let _ = parsed.set_port(Some(active_port));
                 let new_url = parsed.to_string();

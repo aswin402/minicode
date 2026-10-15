@@ -744,6 +744,7 @@ impl WorkflowRouter {
     }
 
     /// Synthesizes contextual enrichment block according to the detected archetype.
+    #[allow(dead_code)]
     pub async fn enrich_context(
         workspace_root: &Path,
         prompt: &str,
@@ -834,6 +835,153 @@ impl WorkflowRouter {
                 gotcha_block.push_str("</universal_learned_gotchas>");
                 sections.push(gotcha_block);
             }
+        }
+
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
+        }
+    }
+
+    /// Computes active `ToolCategory` set purely from live observable workspace and runtime state
+    /// (without keyword heuristics on the user prompt). Safe to call on every iteration of a turn.
+    pub fn state_driven_tool_categories(
+        workspace_root: &Path,
+    ) -> std::collections::HashSet<crate::tools::category::ToolCategory> {
+        use crate::tools::category::ToolCategory;
+        let mut cats = std::collections::HashSet::new();
+        let (repo_state, code_files, _) = Self::scan_repository_state(workspace_root);
+
+        match repo_state {
+            RepoState::FreshWorkspace | RepoState::DocsOnly => {
+                // Foundation not established yet: expose scaffolding and design warehouse tools
+                cats.insert(ToolCategory::MiniKit);
+                cats.insert(ToolCategory::Blocks);
+            }
+            RepoState::ExistingCodebase => {
+                // Codebase exists: expose code navigation, dev task runner, and browser verification
+                cats.insert(ToolCategory::Codegraph);
+                cats.insert(ToolCategory::Search);
+                cats.insert(ToolCategory::Dev);
+                cats.insert(ToolCategory::Web);
+
+                if Self::has_ui_surface(workspace_root, &code_files) {
+                    cats.insert(ToolCategory::Blocks);
+                }
+            }
+        }
+
+        let (active_task_count, _, _) =
+            crate::dev::get_global_dev_registry().get_telemetry_snapshot();
+        let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
+        if active_task_count > 0 || browser_live {
+            cats.insert(ToolCategory::Dev);
+            cats.insert(ToolCategory::Web);
+        }
+
+        cats
+    }
+
+    /// Checks whether the workspace contains web/UI surface files (HTML, CSS, JS/TS/JSX/TSX, Vue, Svelte, or package.json).
+    fn has_ui_surface(workspace_root: &Path, code_files: &[PathBuf]) -> bool {
+        if workspace_root.join("package.json").is_file()
+            || workspace_root.join("index.html").is_file()
+        {
+            return true;
+        }
+        code_files.iter().any(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "html" | "css" | "scss" | "tsx" | "jsx" | "vue" | "svelte"
+                    )
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// Synthesizes live context enrichment purely from observable workspace and runtime state
+    /// plus data-store retrieval (BlockStore, VaultStore, Core Docs).
+    /// Designed to be re-evaluated across iterations within a turn as tools mutate state.
+    pub async fn enrich_state_driven_context(
+        workspace_root: &Path,
+        prompt: &str,
+    ) -> Option<String> {
+        let dev_reg = crate::dev::get_global_dev_registry();
+        let (active_task_count, _, _) = dev_reg.get_telemetry_snapshot();
+        let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
+        let has_live_runtime = active_task_count > 0 || browser_live;
+
+        let mut sections: Vec<String> = Vec::new();
+
+        // 1. Live Repository State & Orchestrator Guidance
+        let (repo_state, code_files, doc_files) = Self::scan_repository_state(workspace_root);
+        sections.push(Self::enrich_repository_state(
+            workspace_root,
+            repo_state,
+            &code_files,
+            &doc_files,
+        ));
+        sections.push(Self::enrich_orchestrator_guidance(
+            workspace_root,
+            repo_state,
+        ));
+
+        // 2. When foundation is not yet established, always show available MiniKit starter stacks
+        if matches!(repo_state, RepoState::FreshWorkspace | RepoState::DocsOnly) {
+            if let Some(scaffolding) = Self::enrich_minikit_scaffolding(workspace_root, prompt) {
+                sections.push(scaffolding);
+            }
+        }
+
+        // 3. When workspace is fresh/docs-only or has a UI surface, retrieve matching palettes & components from BlockStore
+        if matches!(repo_state, RepoState::FreshWorkspace | RepoState::DocsOnly)
+            || Self::has_ui_surface(workspace_root, &code_files)
+        {
+            if let Some(ui_block) = Self::enrich_ui_design(workspace_root, prompt) {
+                sections.push(ui_block);
+            }
+        }
+
+        // 4. Live Runtime Services (Dev servers, timers, browser)
+        if has_live_runtime {
+            if let Some(runtime_block) = Self::enrich_runtime_dev().await {
+                sections.push(runtime_block);
+            }
+        }
+
+        // 5. Core Documentation Specifications (minikit_docs/core/, docs/)
+        if let Some(docs_block) = Self::enrich_core_documentation(workspace_root, prompt) {
+            sections.push(docs_block);
+        }
+
+        // 6. Hermes Progressive Skills & Learned Gotchas from VaultStore
+        if let Some(skills_block) = Self::enrich_hermes_skills(workspace_root, prompt) {
+            sections.push(skills_block);
+        }
+
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let lower = prompt.to_ascii_lowercase();
+        let relevant_gotchas = store.find_relevant_gotchas(&lower);
+        if !relevant_gotchas.is_empty() {
+            let mut gotcha_block = String::from("<universal_learned_gotchas>\n");
+            gotcha_block.push_str(
+                "  Known Pitfalls & Invariants (Learned from previous sessions across this machine):\n",
+            );
+            for g in relevant_gotchas.iter().take(3) {
+                gotcha_block.push_str(&format!(
+                    "  {}\n",
+                    g.format_prompt_block().replace('\n', "\n  ")
+                ));
+            }
+            gotcha_block.push_str(
+                "  Directive: Heed these hard-won lessons to prevent repeating previous compiler and runtime errors.\n",
+            );
+            gotcha_block.push_str("</universal_learned_gotchas>");
+            sections.push(gotcha_block);
         }
 
         if sections.is_empty() {
@@ -1052,14 +1200,16 @@ impl WorkflowRouter {
             .find(|m| workspace_root.join(m).is_file())
     }
 
-    fn enrich_ui_design(_workspace_root: &Path, prompt: &str) -> Option<String> {
+    fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,
             Err(e) => e.into_inner(),
         };
 
-        let lower = prompt.to_ascii_lowercase();
+        let decisions_text =
+            crate::agent::decisions::read_for_prompt(workspace_root).unwrap_or_default();
+        let lower = format!("{} {}", decisions_text, prompt).to_ascii_lowercase();
 
         // Extract meaningful candidate tokens from the prompt (length >= 3, skipping common noise/action words)
         let stop_words: std::collections::HashSet<&'static str> = [
@@ -1230,6 +1380,7 @@ impl WorkflowRouter {
         Some(out)
     }
 
+    #[allow(dead_code)]
     fn enrich_code_exploration(prompt: &str) -> Option<String> {
         let mut symbols = Vec::new();
 
@@ -1377,6 +1528,7 @@ impl WorkflowRouter {
         Some(out)
     }
 
+    #[allow(dead_code)]
     fn enrich_multiphase_engineering(workspace_root: &Path, _prompt: &str) -> Option<String> {
         let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
         let docs_name = docs_dir
@@ -1406,6 +1558,7 @@ impl WorkflowRouter {
         Some(out)
     }
 
+    #[allow(dead_code)]
     fn enrich_vault_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store = crate::vault::store::VaultStore::new(workspace_root);
         let all_skills = store.list_all_skills();
@@ -1985,5 +2138,49 @@ mod tests {
         // Static methodology lives in the system prompt, not in per-turn context.
         assert!(!text.contains("<minipower_autonomous_engineering_rules>"));
         assert!(text.contains("<orchestrator_dynamic_guidance>"));
+    }
+
+    #[tokio::test]
+    async fn test_state_driven_transition_across_iterations() {
+        use crate::tools::category::ToolCategory;
+        let temp = tempfile::tempdir().unwrap();
+
+        // Iteration 1: Fresh workspace
+        let cats1 = WorkflowRouter::state_driven_tool_categories(temp.path());
+        assert!(cats1.contains(&ToolCategory::MiniKit));
+        assert!(cats1.contains(&ToolCategory::Blocks));
+        let ctx1 = WorkflowRouter::enrich_state_driven_context(
+            temp.path(),
+            "Build a showcase page for minicode",
+        )
+        .await
+        .unwrap();
+        assert!(ctx1.contains("Foundation: NOT ESTABLISHED"));
+        assert!(ctx1.contains("<minikit_scaffolding_guidance>"));
+        assert!(ctx1.contains("<recommended_miniblocks>"));
+
+        // Iteration 2: After scaffolding creates package.json and src/App.tsx
+        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(
+            temp.path().join("src").join("App.tsx"),
+            "export default function App() {}",
+        )
+        .unwrap();
+
+        let cats2 = WorkflowRouter::state_driven_tool_categories(temp.path());
+        assert!(cats2.contains(&ToolCategory::Dev));
+        assert!(cats2.contains(&ToolCategory::Web));
+        assert!(cats2.contains(&ToolCategory::Blocks));
+        assert!(cats2.contains(&ToolCategory::Codegraph));
+
+        let ctx2 = WorkflowRouter::enrich_state_driven_context(
+            temp.path(),
+            "Build a showcase page for minicode",
+        )
+        .await
+        .unwrap();
+        assert!(ctx2.contains("Foundation: ESTABLISHED (`package.json`)"));
+        assert!(!ctx2.contains("Foundation: NOT ESTABLISHED"));
     }
 }

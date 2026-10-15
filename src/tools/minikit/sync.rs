@@ -264,20 +264,46 @@ impl MiniKitSyncEngine {
             }
         }
 
+        let workspace_root = docs_dir.parent().unwrap_or(docs_dir);
+        let decisions_summary =
+            crate::agent::decisions::read_for_prompt(workspace_root).unwrap_or_default();
+        let decisions_section = if decisions_summary.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n## Recorded User Decisions\n{}\n",
+                decisions_summary.trim()
+            )
+        };
+        let detected_arch = Self::detect_architecture(workspace_root);
+        let mut arch_structure_lines = Vec::new();
+        if let Some(obj) = detected_arch.as_object() {
+            for (role, path_val) in obj {
+                if let Some(p) = path_val.as_str() {
+                    arch_structure_lines.push(format!("- **{}**: `{}`", role, p));
+                }
+            }
+        }
+        if arch_structure_lines.is_empty() {
+            arch_structure_lines
+                .push("- `src/`: Core application source modules and components.".to_string());
+        }
+        let arch_structure_block = arch_structure_lines.join("\n");
+
         // 1. coreidea.md (Core Project Philosophy & High-Level Vision)
         let coreidea_path = core_dir.join("coreidea.md");
         if !coreidea_path.exists() {
             let coreidea = format!(
                 "# Core Philosophy & High-Level Vision 💡\n\n\
                 ## Core Purpose\n\
-                *Project: `{}` — built with `{}`.*\n\n\
+                *Project: `{}` — built with `{}`.*\n{}\n\
                 ## Value Proposition & Tenets\n\
-                - Deterministic, fast, and resilient developer experience.\n\
+                - Deterministic, fast, and resilient user and developer experience.\n\
                 - Rigorous modular architecture with strict separation of concerns.\n\
                 - Zero unverified assumptions: evidence before assertions.\n\n\
                 ## Non-Goals\n\
                 - Over-engineered complexity or rigid inflexible abstractions.\n",
-                project_name, runtime
+                project_name, runtime, decisions_section
             );
             fs::write(coreidea_path, coreidea).ok();
         }
@@ -288,14 +314,14 @@ impl MiniKitSyncEngine {
             let prd = format!(
                 "# Product Requirements Document (PRD) 🚀\n\n\
                 ## Project Overview\n\
-                *Project: `{}` — built with `{}`.*\n\n\
+                *Project: `{}` — built with `{}`.*\n{}\n\
                 ## Core Objectives & User Stories\n\
                 - [ ] **Objective 1**: Core system functionality.\n\
                 - [ ] **Objective 2**: Fast, intuitive developer and user experience.\n\n\
                 ## Success Metrics & Constraints\n\
                 - Performance: Sub-second response times and minimal latency.\n\
-                - Reliability: Strict error handling with zero unhandled crashes.\n",
-                project_name, runtime
+                - Reliability: Strict error handling with zero unhandled runtime errors.\n",
+                project_name, runtime, decisions_section
             );
             fs::write(&prd_path, &prd).ok();
         }
@@ -313,10 +339,10 @@ impl MiniKitSyncEngine {
                 ## Architectural Principles\n\
                 - Modular layers with clear unidirectional dependency boundaries.\n\
                 - AST symbol indexing and PageRank centrality graph.\n\
-                - Pure-Rust runtime portability.\n\n\
+                - Idiomatic `{}` runtime conventions and portable dependencies.\n\n\
                 ## System Structure\n\
-                - `src/`: Core application logic and modules.\n",
-                project_name
+                {}\n",
+                project_name, runtime, arch_structure_block
             );
             fs::write(arch_path, arch).ok();
         }
@@ -327,12 +353,12 @@ impl MiniKitSyncEngine {
             let spec = format!(
                 "# Technical Specifications & Invariant Rules 📐\n\n\
                 ## Core Engineering Invariants\n\
-                1. **Zero Crash Invariant**: Zero unhandled panics or `.unwrap()` in production paths.\n\
-                2. **Verification Barrier**: Compile checks and tests must pass before completing work.\n\
-                3. **Portability Invariant**: Pure-system dependencies without native build friction.\n\n\
+                1. **Zero Crash Invariant**: Strict error handling and type safety in production paths.\n\
+                2. **Verification Barrier**: Build checks, tests, and runtime verification must pass before completing work.\n\
+                3. **Portability Invariant**: Clean, reproducible dependency management under `{}`.\n\n\
                 ## Technical Interface Contracts\n\
-                - Protocol schemas, CLI arguments, and error representations for `{}`.\n",
-                project_name
+                - Component props, state models, routes, and interface contracts for `{}`.\n",
+                runtime, project_name
             );
             fs::write(spec_path, spec).ok();
         }
@@ -344,10 +370,10 @@ impl MiniKitSyncEngine {
                 "# Architecture & Design Specification 🎨\n\n\
                 ## Architectural Principles\n\
                 - Modular, decoupled components with single responsibility.\n\
-                - Idiomatic `{}` conventions.\n\n\
+                - Idiomatic `{}` conventions.\n{}\n\
                 ## Design System & Interfaces\n\
-                - Visual layout, styles, and command contracts.\n",
-                runtime
+                - Visual layout, design tokens, typography, and interaction contracts.\n",
+                runtime, decisions_section
             );
             fs::write(design_path, design).ok();
         }
@@ -360,10 +386,10 @@ impl MiniKitSyncEngine {
                 ## Technology Stack\n\
                 - **Runtime**: `{}`\n\n\
                 ## Architecture Layout\n\
-                - Code layout, public APIs, and database migrations.\n\n\
+                {}\n\n\
                 ## Milestone Roadmap\n\
                 - Structured phases with verifiable acceptance criteria.\n",
-                runtime
+                runtime, arch_structure_block
             );
             fs::write(impl_path, imp).ok();
         }
@@ -374,7 +400,7 @@ impl MiniKitSyncEngine {
             let content = format!(
                 "# Content & Interface Catalog 📝\n\n\
                 ## Interfaces & Endpoints\n\
-                - User-facing commands, routes, and output schemas for `{}`.\n",
+                - User-facing sections, routes, commands, and schemas for `{}`.\n",
                 project_name
             );
             fs::write(content_path, content).ok();

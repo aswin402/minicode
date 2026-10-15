@@ -1603,7 +1603,7 @@ impl WorkingMemory {
         let mut consumed_modified: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
 
-        for task in &tasks {
+        for (task_idx, task) in tasks.iter().enumerate() {
             if task.status == TaskItemStatus::Completed {
                 continue;
             }
@@ -1654,75 +1654,49 @@ impl WorkingMemory {
                 }
             }
 
-            // Scaffolding intent fallback: If candidate files were not explicitly named in the task title,
-            // but this is a setup/init/scaffold task and manifest/config files were created on disk:
-            if !file_satisfied {
-                let is_setup_task = crate::utils::has_any_word(
-                    primary_head,
-                    &[
-                        "setup",
-                        "scaffold",
-                        "init",
-                        "bootstrap",
-                        "boilerplate",
-                        "foundation",
-                    ],
-                );
-                if is_setup_task {
-                    if !modified_files.is_empty() {
-                        if let Some(m_idx) = modified_files.iter().position(|m| {
-                            m.contains("package.json")
-                                || m.contains("Cargo.toml")
-                                || m.contains("index.html")
-                                || m.contains("vite.config")
-                        }) {
-                            file_satisfied = true;
-                            consumed_modified.insert(m_idx);
-                        }
-                    } else if task.status == TaskItemStatus::InProgress {
-                        let has_foundation_on_disk =
-                            self.workspace_root.join("minikit.json").is_file()
-                                || self.workspace_root.join("package.json").is_file()
-                                || self.workspace_root.join("Cargo.toml").is_file()
-                                || self.workspace_root.join("index.html").is_file();
-                        if has_foundation_on_disk {
-                            file_satisfied = true;
-                        }
+            // Initial foundation task reconciliation: if the initial active step (index 0) does not name
+            // a specific sub-component file and a root project manifest was created/modified, mark it satisfied.
+            if !file_satisfied
+                && candidates.is_empty()
+                && task_idx == 0
+                && task.status == TaskItemStatus::InProgress
+            {
+                if !modified_files.is_empty() {
+                    if let Some(m_idx) = modified_files.iter().position(|m| {
+                        let base = Path::new(m)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(m);
+                        matches!(
+                            base,
+                            "package.json"
+                                | "Cargo.toml"
+                                | "pyproject.toml"
+                                | "go.mod"
+                                | "minikit.json"
+                                | "index.html"
+                        )
+                    }) {
+                        file_satisfied = true;
+                        consumed_modified.insert(m_idx);
                     }
+                } else if crate::agent::orchestrator::WorkflowRouter::project_manifest(
+                    &self.workspace_root,
+                )
+                .is_some()
+                {
+                    file_satisfied = true;
                 }
             }
 
-            // In-file HTML `<section id="...">` / `<nav>` / `<footer>` reconciliation:
+            // In-file HTML `<section id="...">` / `<nav>` / `<footer>` DOM ID reconciliation:
             if !file_satisfied && !html_section_ids.is_empty() {
-                let is_verify_or_setup = crate::utils::has_any_word(
-                    primary_head,
-                    &[
-                        "verify",
-                        "screenshot",
-                        "test",
-                        "launch",
-                        "scaffold",
-                        "setup",
-                        "init",
-                    ],
-                );
-                if !is_verify_or_setup {
-                    let requires_nav = crate::utils::has_any_word(primary_head, &["nav", "navbar"]);
-                    let requires_footer = crate::utils::has_any_word(primary_head, &["footer"]);
-                    if requires_nav && requires_footer {
-                        if html_section_ids.contains("navbar")
-                            && html_section_ids.contains("footer")
-                        {
-                            file_satisfied = true;
-                        }
-                    } else {
-                        let matched_section = html_section_ids
-                            .iter()
-                            .any(|sec_id| Self::stem_token_matches_task(sec_id, primary_head));
-                        if matched_section {
-                            file_satisfied = true;
-                        }
-                    }
+                let matched_ids: Vec<&String> = html_section_ids
+                    .iter()
+                    .filter(|sec_id| Self::stem_token_matches_task(sec_id, primary_head))
+                    .collect();
+                if !matched_ids.is_empty() {
+                    file_satisfied = true;
                 }
             }
 

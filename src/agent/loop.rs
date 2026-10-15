@@ -551,14 +551,14 @@ impl AgentLoop {
             self.cumulative_tokens_used,
         );
 
-        // Autonomous Workflow Routing & Dynamic Pre-Turn Context Enrichment
+        // Autonomous State-Driven Context Enrichment & Workflow Routing
         let workflow_archetype = crate::agent::orchestrator::WorkflowRouter::classify(user_prompt);
-        let workflow_enrichment = crate::agent::orchestrator::WorkflowRouter::enrich_context(
-            &self.workspace_root,
-            user_prompt,
-            workflow_archetype,
-        )
-        .await;
+        let workflow_enrichment =
+            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
+                &self.workspace_root,
+                user_prompt,
+            )
+            .await;
 
         // Auto-initialize living IntentLedger for multi-phase engineering and UI design if not already active
         if self.config.agent.intent.enabled
@@ -640,14 +640,13 @@ impl AgentLoop {
         // Reset stuck detector at start of user turn
         self.stuck_detector.reset();
 
-        // Reconcile any uncompleted tasks whose deliverables already exist on disk
-        let wm = crate::context::working_memory::WorkingMemory::new(&self.workspace_root);
-        let _ = wm.reconcile_workspace_tasks(&[]);
+        // Emit current plan without auto-completing tasks against pre-existing files on disk
         self.emit_current_plan(Some(turn_id), &event_sender);
 
-        let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
-            std::collections::HashSet::new();
-        // Pre-activate tools recommended for the classified workflow archetype
+        let mut active_categories =
+            crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
+                &self.workspace_root,
+            );
         for cat in workflow_archetype.recommended_categories() {
             active_categories.insert(cat);
         }
@@ -725,6 +724,7 @@ impl AgentLoop {
         let mut distinct_files_mutated_in_active_step: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut step_checkpoint_fired_for_active_step: bool = false;
+        let mut state_dirty_for_next_iteration: bool = false;
 
         // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
         let turn_tx_id = if let Ok(None) =
@@ -787,6 +787,83 @@ impl AgentLoop {
             // to prevent context bloat before requesting next LLM completion.
             if iteration > 1 {
                 self.prune_context();
+
+                // Reactive State Projection: if workspace, decisions, plan, or runtime state changed
+                // in the previous iteration, refresh the recency context block and active tool schemas
+                // so the model never operates on stale Iteration-0 state.
+                if state_dirty_for_next_iteration {
+                    state_dirty_for_next_iteration = false;
+                    let live_enrichment =
+                        crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
+                            &self.workspace_root,
+                            user_prompt,
+                        )
+                        .await;
+                    let live_working_set: Vec<String> =
+                        self.active_working_set.iter().cloned().collect();
+                    let live_recency = PromptBuilder::build_recency_context(
+                        &self.workspace_root,
+                        if anchor_block.is_empty() {
+                            None
+                        } else {
+                            Some(&anchor_block)
+                        },
+                        &live_working_set,
+                        git_status.as_ref(),
+                        Some(&context_budget),
+                        if self.config.agent.intent.enabled {
+                            self.intent_ledger.as_ref()
+                        } else {
+                            None
+                        },
+                        live_enrichment.as_deref(),
+                    );
+                    let mut refreshed_prompt = if live_recency.trim().is_empty() {
+                        format!("<user_request>\n{}\n</user_request>", user_prompt.trim())
+                    } else {
+                        format!(
+                            "{}\n\n<user_request>\n{}\n</user_request>",
+                            live_recency.trim(),
+                            user_prompt.trim()
+                        )
+                    };
+                    if !peer_messages_block.is_empty() {
+                        refreshed_prompt =
+                            format!("{}\n\n{}", peer_messages_block.trim(), refreshed_prompt);
+                    }
+                    if let Some(turn_user_msg) = self.messages.iter_mut().rev().find(|m| {
+                        m.role == crate::agent::types::Role::User
+                            && m.content.contains("<user_request>")
+                    }) {
+                        turn_user_msg.content = refreshed_prompt;
+                    }
+
+                    let state_cats =
+                        crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
+                            &self.workspace_root,
+                        );
+                    for cat in state_cats {
+                        active_categories.insert(cat);
+                    }
+                    tools = crate::tools::category::assemble_active_tools_with_mcp(
+                        self.config.agent.tool_mode,
+                        user_prompt,
+                        &active_categories,
+                        &mcp_tools_by_server,
+                        &active_mcp_servers,
+                    );
+                    if self.config.agent.compact_tool_schemas {
+                        tools =
+                            crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(
+                                &tools,
+                            );
+                    }
+                    tools.sort_by(|a, b| a.name.cmp(&b.name));
+                    crate::agent::foundation_gate::augment_schemas(
+                        &mut tools,
+                        &self.workspace_root,
+                    );
+                }
             }
             let mut retry_count = 0;
 
@@ -1603,6 +1680,7 @@ impl AgentLoop {
                                         display_output: String::new(),
                                         duration_ms: 0,
                                     });
+                                    state_dirty_for_next_iteration = true;
                                     continue;
                                 }
 
@@ -1689,6 +1767,7 @@ impl AgentLoop {
                                     display_output: String::new(),
                                     duration_ms: 0,
                                 });
+                                state_dirty_for_next_iteration = true;
                                 continue;
                             }
 
@@ -2105,14 +2184,21 @@ impl AgentLoop {
                                     step_checkpoint_fired_for_active_step = false;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                 }
+                                state_dirty_for_next_iteration = true;
                             }
 
                             if tool_result.success
+                                && (tool_call.name == "create_plan"
+                                    || tool_call.name == "power_plan")
+                            {
+                                distinct_files_mutated_in_active_step.clear();
+                                step_checkpoint_fired_for_active_step = false;
+                                self.emit_current_plan(Some(turn_id), &event_sender);
+                                state_dirty_for_next_iteration = true;
+                            } else if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
-                                    || tool_call.name == "block_insert"
-                                    || tool_call.name == "create_plan"
-                                    || tool_call.name == "power_plan")
+                                    || tool_call.name == "block_insert")
                             {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
@@ -2130,6 +2216,20 @@ impl AgentLoop {
                                     options.system_instruction = Some(refreshed);
                                     tracing::info!("Dynamic system instruction refreshed following stack scaffolding");
                                 }
+                                state_dirty_for_next_iteration = true;
+                            } else if tool_result.success
+                                && matches!(
+                                    tool_call.name.as_str(),
+                                    "ask_user"
+                                        | "update_progress"
+                                        | "archive_plan"
+                                        | "minitask"
+                                        | "browser_navigate"
+                                        | "browser_close"
+                                        | "exec_cmd"
+                                )
+                            {
+                                state_dirty_for_next_iteration = true;
                             }
 
                             // Append tool result message for LLM context with smart observation pruning (JSON + Logs)

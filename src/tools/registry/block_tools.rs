@@ -836,6 +836,29 @@ pub async fn dispatch(
                         tokens_code
                     ));
                 }
+
+                // Handoff to component discovery in the same MiniBlocks warehouse
+                let comp_filter = BlockSearchFilter {
+                    query: if query.trim().is_empty() {
+                        None
+                    } else {
+                        Some(query.to_string())
+                    },
+                    limit: 4,
+                    ..Default::default()
+                };
+                let matching_comps = store.search_components(&comp_filter);
+                if !matching_comps.is_empty() {
+                    out.push_str("Matching UI components in MiniBlocks warehouse (call `block_search(query=\"...\", include_code=true)` or `block_get(id=\"...\")` to inspect source):\n");
+                    for c in matching_comps {
+                        out.push_str(&format!(
+                            "- `{}` (ID: `{}`, {}, {:?}): {}\n",
+                            c.name, c.id, c.category, c.framework, c.description
+                        ));
+                    }
+                } else {
+                    out.push_str("Next step: query UI components in MiniBlocks with `block_search(query=\"hero\", include_code=true)` (categories: `navbar`, `hero`, `card`, `pricing`, `form`, `table`, `modal`, `footer`).\n");
+                }
                 Ok(out)
             }
             .await,
