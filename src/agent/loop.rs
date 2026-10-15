@@ -541,8 +541,7 @@ impl AgentLoop {
             self.cumulative_tokens_used,
         );
 
-        // Autonomous State-Driven Context Enrichment & Workflow Routing
-        let workflow_archetype = crate::agent::orchestrator::WorkflowRouter::classify(user_prompt);
+        // Autonomous State-Driven Context Enrichment
         let workflow_enrichment =
             crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
                 &self.workspace_root,
@@ -550,14 +549,10 @@ impl AgentLoop {
             )
             .await;
 
-        // Auto-initialize living IntentLedger for multi-phase engineering and UI design if not already active
+        // Auto-initialize living IntentLedger for non-slash prompts if not already active
         if self.config.agent.intent.enabled
             && self.intent_ledger.is_none()
-            && matches!(
-                workflow_archetype,
-                crate::agent::orchestrator::WorkflowArchetype::MultiPhaseEngineering
-                    | crate::agent::orchestrator::WorkflowArchetype::UiDesign
-            )
+            && !user_prompt.trim().starts_with('/')
         {
             self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
                 user_prompt,
@@ -635,9 +630,6 @@ impl AgentLoop {
             crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
                 &self.workspace_root,
             );
-        for cat in workflow_archetype.recommended_categories() {
-            active_categories.insert(cat);
-        }
 
         let mut active_mcp_servers: std::collections::HashSet<String> =
             std::collections::HashSet::new();

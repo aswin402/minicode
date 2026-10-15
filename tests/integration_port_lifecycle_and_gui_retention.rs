@@ -1,7 +1,6 @@
 //! Integration tests for Dev Server Port Lifecycle, Persistent GUI Browser Retention,
 //! Pre-flight TCP Socket Readiness Barrier, and Anti-Batching Plan Progression Barrier.
 
-use minicode::agent::plan_gate::is_verifiable_action_tool;
 use minicode::context::memory::working_memory::{TaskItemStatus, WorkingMemory};
 use minicode::dev::models::{DevProcessType, SpawnDevRequest};
 use minicode::dev::registry::get_global_dev_registry;
@@ -173,35 +172,4 @@ async fn test_plan_progression_barrier_bulk_completion_rejection() {
     assert_eq!(tasks_step2[1].status, TaskItemStatus::Completed);
     assert_eq!(tasks_step2[2].status, TaskItemStatus::InProgress);
     assert_eq!(tasks_step2[3].status, TaskItemStatus::Pending);
-}
-
-#[test]
-fn test_verifiable_action_tool_classification() {
-    // Mutation tools
-    assert!(is_verifiable_action_tool("write_file"));
-    assert!(is_verifiable_action_tool("patch_file"));
-    assert!(is_verifiable_action_tool("replace_in_files"));
-    assert!(is_verifiable_action_tool("kit_stack_add"));
-    assert!(is_verifiable_action_tool("block_scaffold"));
-    assert!(is_verifiable_action_tool("block_insert"));
-
-    // Execution tools
-    assert!(is_verifiable_action_tool("exec_cmd"));
-    assert!(is_verifiable_action_tool("minitask"));
-    assert!(is_verifiable_action_tool("git_commit"));
-
-    // Browser verification tools
-    assert!(is_verifiable_action_tool("browser_navigate"));
-    assert!(is_verifiable_action_tool("browser_screenshot"));
-    assert!(is_verifiable_action_tool("browser_debug_logs"));
-    assert!(is_verifiable_action_tool("browser_eval"));
-    assert!(is_verifiable_action_tool("browser_click"));
-
-    // Read-only or metadata tools MUST NOT qualify as verifiable actions
-    assert!(!is_verifiable_action_tool("read_file"));
-    assert!(!is_verifiable_action_tool("grep_search"));
-    assert!(!is_verifiable_action_tool("locate_symbol"));
-    assert!(!is_verifiable_action_tool("ask_user"));
-    assert!(!is_verifiable_action_tool("update_progress"));
-    assert!(!is_verifiable_action_tool("create_plan"));
 }

@@ -13,6 +13,7 @@ pub enum ScriptSource {
     Cargo,
     Deno,
     PyProject,
+    StaticWeb,
 }
 
 impl fmt::Display for ScriptSource {
@@ -24,6 +25,7 @@ impl fmt::Display for ScriptSource {
             Self::Cargo => write!(f, "Cargo.toml"),
             Self::Deno => write!(f, "deno.json"),
             Self::PyProject => write!(f, "pyproject.toml"),
+            Self::StaticWeb => write!(f, "index.html"),
         }
     }
 }
@@ -46,7 +48,7 @@ pub struct WorkspaceScript {
 pub struct WorkspaceScriptDiscovery;
 
 impl WorkspaceScriptDiscovery {
-    /// Discovers all runnable scripts across the workspace (justfile, package.json, Makefile, Cargo.toml, deno.json).
+    /// Discovers all runnable scripts across the workspace (justfile, package.json, Makefile, Cargo.toml, deno.json, pyproject.toml, index.html).
     pub fn discover(workspace_root: &Path) -> Vec<WorkspaceScript> {
         let mut scripts = Vec::new();
 
@@ -67,6 +69,11 @@ impl WorkspaceScriptDiscovery {
 
         // 6. Python pyproject.toml / requirements.txt
         Self::scan_python(workspace_root, &mut scripts);
+
+        // 7. Static HTML workspace fallback (when index.html exists and no other runner defines dev/serve)
+        if scripts.is_empty() {
+            Self::scan_static_web(workspace_root, &mut scripts);
+        }
 
         scripts
     }
@@ -422,6 +429,26 @@ impl WorkspaceScriptDiscovery {
                 source: ScriptSource::PyProject,
                 is_server: true,
                 description: Some("FastAPI development server with live reload".to_string()),
+            });
+        }
+    }
+
+    fn scan_static_web(workspace_root: &Path, scripts: &mut Vec<WorkspaceScript>) {
+        if !workspace_root.join("index.html").is_file() {
+            return;
+        }
+        let cmd = if which::which("python3").is_ok() {
+            "python3 -m http.server 8000".to_string()
+        } else {
+            "npx --yes serve -l 3000 .".to_string()
+        };
+        for name in ["dev", "serve"] {
+            scripts.push(WorkspaceScript {
+                name: name.to_string(),
+                command: cmd.clone(),
+                source: ScriptSource::StaticWeb,
+                is_server: true,
+                description: Some("Static HTML/CSS/JS local HTTP server".to_string()),
             });
         }
     }

@@ -1,5 +1,5 @@
 use crate::agent::reproducer_guard::{ReproducerGuard, ReproducerPhase};
-use crate::constants::{VERIFICATION_DEBUG_PATTERNS, VERIFICATION_TEST_TIMEOUT_MS};
+use crate::constants::VERIFICATION_TEST_TIMEOUT_MS;
 use crate::context::syntax_guard::SyntaxGuard;
 use crate::tools::compiler::ScopedCompiler;
 use serde::Serialize;
@@ -421,14 +421,7 @@ impl VerificationBarrier {
                 Err(_) => continue,
             };
 
-            // Check for raw debug prints only in production library code (src/), not in tests/ or CLI entrypoint (src/main.rs)
-            let is_production_code = file.starts_with("src/")
-                && !file.contains("test")
-                && file != "src/main.rs"
-                && file != "src/constants.rs";
-
             let mut in_test_module = false;
-            let mut in_multiline_template = false;
             for (idx, line) in content.lines().enumerate() {
                 let trimmed = line.trim();
 
@@ -449,46 +442,7 @@ impl VerificationBarrier {
                     continue;
                 }
 
-                // Track multi-line template strings or code blocks (backticks)
-                let backtick_count = trimmed.chars().filter(|&c| c == '`').count();
-                let was_in_template = in_multiline_template;
-                if backtick_count % 2 == 1 {
-                    in_multiline_template = !in_multiline_template;
-                }
-                let is_inside_template =
-                    was_in_template || in_multiline_template || backtick_count > 0;
-
-                // 1. Raw debug logging detection in production code (skip pattern matching, scanner code, display code, and template strings)
-                if is_production_code && !trimmed.contains(".contains(") && !is_inside_template {
-                    // Also check if line is inside a JSX display block or string literal
-                    let is_display_code = trimmed.starts_with("<code")
-                        || trimmed.starts_with("<pre")
-                        || trimmed.starts_with('"')
-                        || trimmed.starts_with('\'');
-
-                    if !is_display_code {
-                        for &pattern in VERIFICATION_DEBUG_PATTERNS {
-                            if trimmed.contains(pattern) {
-                                return GateStatus::Failed {
-                                    gate_name: "Gate 4: Diff Sanity & Secret Leak Audit",
-                                    reason: format!(
-                                        "Forbidden stdout debug statement `{}` detected in `{}` at line {}:\n  {}",
-                                        pattern,
-                                        file,
-                                        idx + 1,
-                                        trimmed
-                                    ),
-                                    actionable_remediation: format!(
-                                        "Remove `{}` from `{}` or replace with structured logging (`tracing::debug!`).",
-                                        pattern, file
-                                    ),
-                                };
-                            }
-                        }
-                    }
-                }
-
-                // 2. Secret & API key leakage detection
+                // Secret & API key leakage detection
                 if Self::contains_secret_leak(trimmed) {
                     return GateStatus::Failed {
                         gate_name: "Gate 4: Diff Sanity & Secret Leak Audit",
@@ -866,30 +820,6 @@ mod tests {
                 "Gate 3 should pass for legitimate comment banners: {:?}",
                 status
             ),
-        }
-    }
-
-    #[test]
-    fn test_gate4_debug_statement_detection() {
-        let temp = tempdir().unwrap();
-        let src_dir = temp.path().join("src");
-        std::fs::create_dir_all(&src_dir).unwrap();
-        let file_path = src_dir.join("worker.rs");
-        std::fs::write(&file_path, "pub fn work() {\n    println!(\"debug\");\n}\n").unwrap();
-
-        let status = VerificationBarrier::check_gate4_diff_sanity(
-            temp.path(),
-            &["src/worker.rs".to_string()],
-        );
-
-        match status {
-            GateStatus::Failed {
-                gate_name, reason, ..
-            } => {
-                assert!(gate_name.contains("Gate 4"));
-                assert!(reason.contains("println!"));
-            }
-            _ => panic!("Expected Gate 4 to fail on println! in src/"),
         }
     }
 

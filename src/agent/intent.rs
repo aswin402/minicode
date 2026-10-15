@@ -232,203 +232,6 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
         });
     }
 
-    // 2. Natural Language Intent Pattern Heuristics (0.80 - 0.95 Confidence)
-
-    // Stack Scaffolding
-    if (lower.contains("scaffold")
-        && (lower.contains("stack")
-            || lower.contains("app")
-            || lower.contains("project")
-            || lower.contains("template")))
-        || lower.contains("onpkg stack")
-        || ((lower.starts_with("create ")
-            || lower.starts_with("bootstrap ")
-            || lower.starts_with("setup "))
-            && (lower.contains("stack")
-                || lower.contains("nextjs")
-                || lower.contains("react")
-                || lower.contains("vite")
-                || lower.contains("fastapi")
-                || lower.contains("flutter")
-                || lower.contains("hono")))
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::StackScaffold,
-            confidence: clamp_confidence(0.90),
-            query: trimmed.to_string(),
-            suggested_command: Some("/stack".to_string()),
-        });
-    }
-
-    // Milestone Planning
-    if (lower.starts_with("plan ")
-        || lower.starts_with("create a plan")
-        || lower.starts_with("make a plan")
-        || lower.starts_with("break down")
-        || lower.starts_with("design plan"))
-        || lower.contains("implementation plan")
-        || lower.contains("todo.md plan")
-        || (lower.contains("plan for ") || lower.contains("plan the "))
-    {
-        let query = extract_planning_query(trimmed);
-        return Some(IntentMatch {
-            intent: AgentIntent::MilestonePlan,
-            confidence: clamp_confidence(0.88),
-            query,
-            suggested_command: Some("/plan".to_string()),
-        });
-    }
-
-    // Autonomous Goal Execution
-    if (lower.contains("autonomously")
-        || lower.contains("autonomous mode")
-        || lower.contains("goal mode"))
-        || lower.starts_with("execute goal")
-        || lower.starts_with("run goal")
-        || (lower.starts_with("complete all")
-            && (lower.contains("tasks") || lower.contains("todo") || lower.contains("checklist")))
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::AutonomousGoal,
-            confidence: clamp_confidence(0.92),
-            query: trimmed.to_string(),
-            suggested_command: Some("/goal".to_string()),
-        });
-    }
-
-    // Code Review
-    if (lower.starts_with("review ")
-        || lower.contains("code review")
-        || lower.contains("review my changes")
-        || lower.contains("review the diff")
-        || lower.contains("review staged")
-        || lower.contains("adversarial review"))
-        && !lower.contains("plan")
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::CodeReview,
-            confidence: clamp_confidence(0.89),
-            query: trimmed.to_string(),
-            suggested_command: Some("/review".to_string()),
-        });
-    }
-
-    // Git Diff Inspection
-    if lower == "show diff"
-        || lower == "view diff"
-        || lower == "show git diff"
-        || lower == "inspect diff"
-        || lower == "what did i change"
-        || lower == "what files changed"
-        || lower == "show uncommitted changes"
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::GitDiff,
-            confidence: clamp_confidence(0.90),
-            query: String::new(),
-            suggested_command: Some("/diff".to_string()),
-        });
-    }
-
-    // CodeGraph Surgical Exploration
-    if lower.starts_with("explore ")
-        || lower.contains("code explore")
-        || lower.contains("call graph")
-        || lower.contains("call hierarchy")
-        || lower.contains("blast radius")
-        || lower.contains("explore symbol")
-        || lower.contains("who calls")
-        || lower.contains("what calls")
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::CodeExplore,
-            confidence: clamp_confidence(0.91),
-            query: trimmed.to_string(),
-            suggested_command: Some("/explore".to_string()),
-        });
-    }
-
-    // Session History & Previous Transcripts
-    if ((lower.contains("past session")
-        || lower.contains("previous session")
-        || lower.contains("session history")
-        || lower.contains("chat history"))
-        && (lower.contains("show")
-            || lower.contains("view")
-            || lower.contains("list")
-            || lower.contains("browse")
-            || lower.contains("open")))
-        || lower.starts_with("resume session")
-        || lower.starts_with("resume previous")
-        || lower.starts_with("resume past")
-        || lower == "resume"
-        || lower == "continue session"
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::SessionHistory,
-            confidence: clamp_confidence(0.90),
-            query: String::new(),
-            suggested_command: Some("/resume".to_string()),
-        });
-    }
-
-    // Undo / Rollback
-    if lower.starts_with("undo")
-        || lower.starts_with("revert ")
-        || lower.contains("revert changes")
-        || lower.contains("revert last turn")
-        || lower.starts_with("rollback")
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::UndoRollback,
-            confidence: clamp_confidence(0.92),
-            query: trimmed.to_string(),
-            suggested_command: Some("/undo".to_string()),
-        });
-    }
-
-    // Repo Map
-    if lower == "show repo map"
-        || lower == "render repo map"
-        || lower == "show code graph"
-        || lower == "ast map"
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::RepoMap,
-            confidence: clamp_confidence(0.95),
-            query: String::new(),
-            suggested_command: Some("/map".to_string()),
-        });
-    }
-
-    // Context Compaction
-    if lower == "compact context"
-        || lower == "compress context"
-        || lower == "prune context"
-        || lower == "compact tokens"
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::ContextCompact,
-            confidence: clamp_confidence(0.95),
-            query: String::new(),
-            suggested_command: Some("/compact".to_string()),
-        });
-    }
-
-    // Command Catalog / Help
-    if lower == "show commands"
-        || lower == "list commands"
-        || lower == "what are the slash commands"
-        || lower == "help menu"
-    {
-        return Some(IntentMatch {
-            intent: AgentIntent::CommandCatalog,
-            confidence: clamp_confidence(0.90),
-            query: String::new(),
-            suggested_command: Some("/commands".to_string()),
-        });
-    }
-
     None
 }
 
@@ -437,36 +240,6 @@ pub fn match_intent(input: &str) -> Option<IntentMatch> {
 #[inline]
 fn clamp_confidence(val: f64) -> f32 {
     (val.clamp(0.0_f64, 1.0_f64)) as f32
-}
-
-/// Helper to strip common conversational prefixes from planning queries
-fn extract_planning_query(input: &str) -> String {
-    let prefixes = [
-        "plan the following implementation:",
-        "plan the implementation for",
-        "plan the implementation of",
-        "create an implementation plan for",
-        "create a plan for",
-        "make an implementation plan for",
-        "make a plan for",
-        "break down",
-        "design plan for",
-        "design plan",
-        "plan for",
-        "plan the",
-        "plan a",
-        "plan",
-    ];
-
-    let lower = input.to_lowercase();
-    for prefix in &prefixes {
-        if lower.starts_with(prefix) {
-            let rest = &input[prefix.len()..];
-            return rest.trim_start_matches(':').trim().to_string();
-        }
-    }
-
-    input.trim().to_string()
 }
 
 /// Determines if a user prompt or matched intent represents a CRUD, code-editing,
@@ -831,30 +604,13 @@ mod tests {
     }
 
     #[test]
-    fn test_natural_language_intent_matching() {
-        let m1 = match_intent("scaffold a nextjs stack with onpkg").unwrap();
-        assert_eq!(m1.intent, AgentIntent::StackScaffold);
-        assert!(m1.confidence >= 0.85);
-
-        let m2 = match_intent("create a plan for OAuth2 migration").unwrap();
-        assert_eq!(m2.intent, AgentIntent::MilestonePlan);
-        assert_eq!(m2.query, "OAuth2 migration");
-
-        let m3 = match_intent("execute goal to fix all tests").unwrap();
-        assert_eq!(m3.intent, AgentIntent::AutonomousGoal);
-
-        let m4 = match_intent("review my changes on git diff").unwrap();
-        assert_eq!(m4.intent, AgentIntent::CodeReview);
-
-        let m5 = match_intent("show past sessions").unwrap();
-        assert_eq!(m5.intent, AgentIntent::SessionHistory);
-
-        let m6 = match_intent("show commands").unwrap();
-        assert_eq!(m6.intent, AgentIntent::CommandCatalog);
-    }
-
-    #[test]
-    fn test_general_query_returns_none() {
+    fn test_non_slash_prompts_return_none() {
+        assert!(match_intent("scaffold a nextjs stack with onpkg").is_none());
+        assert!(match_intent("create a plan for OAuth2 migration").is_none());
+        assert!(match_intent("execute goal to fix all tests").is_none());
+        assert!(match_intent("review my changes on git diff").is_none());
+        assert!(match_intent("show past sessions").is_none());
+        assert!(match_intent("show commands").is_none());
         assert!(match_intent("how do I implement quicksort in Rust?").is_none());
         assert!(match_intent("what is the time complexity of B-trees?").is_none());
     }

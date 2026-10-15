@@ -1,6 +1,6 @@
-//! Integration test suite for MiniTask Dynamic Scheduling and Natural Intent Telemetry.
+//! Integration test suite for MiniTask Dynamic Scheduling and State-Driven Telemetry.
 
-use minicode::agent::orchestrator::{WorkflowArchetype, WorkflowRouter};
+use minicode::agent::orchestrator::WorkflowRouter;
 use minicode::dev::get_global_dev_registry;
 use minicode::dev::models::{DevProcessStatus, DevProcessType, ScheduleRequest};
 use minicode::tools::registry::dev_tools::dispatch;
@@ -103,39 +103,13 @@ async fn test_minitask_schedule_one_shot_timer() {
 }
 
 #[tokio::test]
-async fn test_minitask_natural_intent_inspection_telemetry() {
+async fn test_minitask_state_driven_inspection_telemetry() {
     let _guard = TEST_MUTEX.lock().await;
     let temp = tempdir().expect("tempdir");
     let registry = get_global_dev_registry();
     let _ = registry.kill_all().await;
 
-    // 1. Verify natural language prompt classifications
-    assert_eq!(
-        WorkflowRouter::classify("what's happening with the background tasks?"),
-        WorkflowArchetype::RuntimeDev
-    );
-    assert_eq!(
-        WorkflowRouter::classify("whats happening"),
-        WorkflowArchetype::RuntimeDev
-    );
-    assert_eq!(
-        WorkflowRouter::classify("what is running"),
-        WorkflowArchetype::RuntimeDev
-    );
-    assert_eq!(
-        WorkflowRouter::classify("status of tasks"),
-        WorkflowArchetype::RuntimeDev
-    );
-    assert_eq!(
-        WorkflowRouter::classify("is the server running?"),
-        WorkflowArchetype::RuntimeDev
-    );
-    assert_eq!(
-        WorkflowRouter::classify("how are background processes doing"),
-        WorkflowArchetype::RuntimeDev
-    );
-
-    // 2. Start a mock server
+    // 1. Start a mock server
     let start_args = json!({
         "action": "start",
         "command": "echo 'Telemetry service active'; sleep 30",
@@ -144,7 +118,7 @@ async fn test_minitask_natural_intent_inspection_telemetry() {
     });
     let _ = dispatch("minitask", &start_args, temp.path()).await;
 
-    // 3. Register a scheduled watcher
+    // 2. Register a scheduled watcher
     let req = ScheduleRequest {
         command: "echo 'Health OK'".to_string(),
         name: Some("health-watch".to_string()),
@@ -155,11 +129,10 @@ async fn test_minitask_natural_intent_inspection_telemetry() {
     };
     let _ = registry.schedule(temp.path(), req).await;
 
-    // 4. Enrich context for "whats happening"
-    let enrichment = WorkflowRouter::enrich_context(
+    // 3. Enrich context via live state (no archetype classification required)
+    let enrichment = WorkflowRouter::enrich_state_driven_context(
         temp.path(),
         "what is happening with the background services?",
-        WorkflowArchetype::RuntimeDev,
     )
     .await
     .expect("enrichment must be generated");
@@ -170,18 +143,14 @@ async fn test_minitask_natural_intent_inspection_telemetry() {
     assert!(enrichment.contains("Schedule: Every 30s"));
     assert!(enrichment.contains("Status & Inspection Invariant:"));
 
-    // 5. Clean up
+    // 4. Clean up
     let kill_args = json!({ "action": "kill_all" });
     let _ = dispatch("minitask", &kill_args, temp.path()).await;
 
-    // 6. Enrich context when 0 processes are active
-    let empty_enrichment = WorkflowRouter::enrich_context(
-        temp.path(),
-        "whats happening",
-        WorkflowArchetype::RuntimeDev,
-    )
-    .await
-    .expect("empty enrichment must be generated");
+    // 5. Inspect runtime dev block when 0 processes are active
+    let empty_enrichment = WorkflowRouter::enrich_runtime_dev()
+        .await
+        .expect("empty runtime dev block must be generated");
 
     assert!(empty_enrichment.contains("None currently active"));
     assert!(empty_enrichment.contains("Directive: When the user asks what is happening"));
