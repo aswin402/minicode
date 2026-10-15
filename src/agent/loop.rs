@@ -1741,6 +1741,9 @@ impl AgentLoop {
                             if tool_result.success
                                 && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
                             {
+                                let _ = std::fs::remove_file(
+                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
+                                );
                                 if let Some(path_str) =
                                     tool_call.arguments.get("path").and_then(|p| p.as_str())
                                 {
@@ -1792,6 +1795,9 @@ impl AgentLoop {
                                     || tool_call.name == "block_scaffold"
                                     || tool_call.name == "block_insert")
                             {
+                                let _ = std::fs::remove_file(
+                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
+                                );
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
                                 );
@@ -1804,7 +1810,21 @@ impl AgentLoop {
                                 if tool_call.name == "kit_stack_add" {
                                     let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
                                     options.system_instruction = Some(refreshed);
-                                    tracing::info!("Dynamic system instruction refreshed following stack scaffolding");
+                                    for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(&self.workspace_root) {
+                                        active_categories.insert(cat);
+                                    }
+                                    tools = crate::tools::category::assemble_active_tools_with_mcp(
+                                        self.config.agent.tool_mode,
+                                        user_prompt,
+                                        &active_categories,
+                                        &mcp_tools_by_server,
+                                        &active_mcp_servers,
+                                    );
+                                    if self.config.agent.compact_tool_schemas {
+                                        tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
+                                    }
+                                    tools.sort_by(|a, b| a.name.cmp(&b.name));
+                                    tracing::info!("Dynamic system instruction and state-driven tool categories refreshed following stack scaffolding");
                                 }
                             }
 
@@ -1832,7 +1852,7 @@ impl AgentLoop {
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan completed (100%)!]",
+                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan completed (100%)! Next Step: Run `power_verify` (and optionally `power_review`), then call `archive_plan` to finalize.]",
                                                 summary.total_tasks
                                             ));
                                         }

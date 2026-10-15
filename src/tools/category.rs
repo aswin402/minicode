@@ -224,9 +224,13 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 4. Memory baseline (create_plan, update_progress)
+    // 4. Memory baseline (create_plan, read_plan, update_progress, archive_plan)
     for s in registry::context_tools::get_schemas() {
-        if s.name == "create_plan" || s.name == "update_progress" {
+        if s.name == "create_plan"
+            || s.name == "read_plan"
+            || s.name == "update_progress"
+            || s.name == "archive_plan"
+        {
             core.push(s);
         }
     }
@@ -414,7 +418,7 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 13);
+        assert!(core.len() >= 8 && core.len() <= 15);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
@@ -424,7 +428,9 @@ mod tests {
         assert!(names.contains(&"grep_search"));
         assert!(names.contains(&"locate_symbol"));
         assert!(names.contains(&"create_plan"));
+        assert!(names.contains(&"read_plan"));
         assert!(names.contains(&"update_progress"));
+        assert!(names.contains(&"archive_plan"));
         assert!(names.contains(&"ask_user"));
         assert!(names.contains(&"activate_tools"));
     }

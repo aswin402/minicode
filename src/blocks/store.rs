@@ -169,8 +169,10 @@ impl BlockStore {
             return exact_matches;
         }
 
-        // Fallback 1: If query was provided and framework/tags yielded 0 results, relax framework and tags
-        if filter.query.is_some() && (filter.framework.is_some() || filter.tags.is_some()) {
+        // Fallback 1: If query or category was provided and framework/tags yielded 0 results, relax framework and tags
+        if (filter.query.is_some() || filter.category.is_some())
+            && (filter.framework.is_some() || filter.tags.is_some())
+        {
             let mut relaxed = filter.clone();
             relaxed.framework = None;
             relaxed.tags = None;

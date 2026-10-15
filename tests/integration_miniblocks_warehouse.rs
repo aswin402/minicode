@@ -491,10 +491,10 @@ fn test_e2e_minikit_sync_generates_miniblocks_skill() {
 
     MiniKitSyncEngine::ensure_workflow_docs(&docs_dir, "e2e_project", "rust");
 
-    let skill_file = docs_dir.join("skills").join("miniblocks.md");
+    let skill_file = docs_dir.join("packages").join("miniblocks.md");
     assert!(
         skill_file.exists(),
-        "skills/miniblocks.md must be generated"
+        "packages/miniblocks.md must be generated"
     );
 
     let content = fs::read_to_string(&skill_file).unwrap();

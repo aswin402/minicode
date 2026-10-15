@@ -367,24 +367,33 @@ impl WorkflowRouter {
 
         match repo_state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
-                // Expose scaffolding, UI design warehouse, dev task runner, and browser verification upfront
+                // Expose scaffolding, UI design warehouse, methodology/verification, dev task runner, and browser verification upfront
                 // so the entire workflow can execute smoothly within a turn without schema churn.
                 cats.insert(ToolCategory::MiniKit);
                 cats.insert(ToolCategory::Blocks);
+                cats.insert(ToolCategory::MiniPower);
                 cats.insert(ToolCategory::Dev);
                 cats.insert(ToolCategory::Web);
             }
             RepoState::ExistingCodebase => {
-                // Codebase exists: expose code navigation, dev task runner, and browser verification
+                // Codebase exists: expose code navigation, methodology/verification, dev task runner, and browser verification
                 cats.insert(ToolCategory::Codegraph);
                 cats.insert(ToolCategory::Search);
+                cats.insert(ToolCategory::MiniPower);
                 cats.insert(ToolCategory::Dev);
                 cats.insert(ToolCategory::Web);
 
                 if Self::has_ui_surface(workspace_root, &code_files) {
                     cats.insert(ToolCategory::Blocks);
                 }
+                if crate::tools::minikit::resolve_manifest_path(workspace_root).is_some() {
+                    cats.insert(ToolCategory::MiniKit);
+                }
             }
+        }
+
+        if workspace_root.join(".git").exists() {
+            cats.insert(ToolCategory::Git);
         }
 
         let (active_task_count, _, _) =
@@ -658,11 +667,11 @@ impl WorkflowRouter {
                 out.push_str("  2. When the tech stack/framework or visual direction is not explicitly named by the user and not yet recorded in `.minicode/decisions.md`, make `ask_user` your very first tool call (before `block_search`, `create_plan`, or `write_file`) so the user chooses the foundation (batch 1-3 questions with 2-4 options each, recommended option first). You can also call `ask_user` in real time mid-execution whenever you need additional user data, credentials, or clarifications.\n");
                 out.push_str("  3. Only skip `ask_user` if the user's prompt already explicitly names the stack/framework and design direction, or if `.minicode/decisions.md` already records them.\n");
                 out.push_str("  End-to-End Subsystem Workflow:\n");
-                out.push_str("  4. Once foundation decisions are settled, scaffold the project into the workspace root using `kit_stack_add` (`kit_stack_list` shows stacks; e.g. `react-vite-gsap`, `static-website`, `next-template`, `hono-api`) before writing custom application files.\n");
-                out.push_str("  5. Create a structured execution plan with `create_plan` (4-8 verifiable steps), and advance each step with `update_progress` as you finish it.\n");
-                out.push_str("  6. For UI work, query `block_palettes` for design tokens and `block_search` / `block_get` for pre-built components before writing CSS or markup.\n");
-                out.push_str("  7. Larger projects: record specs in `minikit_docs/core/` (prd.md, design.md, architecture.md) if they help.\n");
-                out.push_str("  8. Verify by launching the app (`minitask` with `action: \"start\"`) and inspecting the live result (`browser_navigate`, `browser_screenshot`, tests).\n");
+                out.push_str("  4. For open-ended design discovery or spec authoring in `minikit_docs/core/spec.md`, you can also use `power_brainstorm` alongside `ask_user`.\n");
+                out.push_str("  5. Once foundation decisions are settled, scaffold the project into the workspace root using `kit_stack_add` (`kit_stack_list` shows stacks; e.g. `react-vite-gsap`, `static-website`, `next-template`, `hono-api`) before writing custom application files.\n");
+                out.push_str("  6. Create a structured execution plan with `create_plan` (4-8 verifiable steps), or use `power_plan(topic=..., steps=[...])` to decompose a complex active `[>]` milestone into tactical sub-steps and record architectural notes in `minikit_docs/core/implementation.md`. Advance each step with `update_progress` as you finish it.\n");
+                out.push_str("  7. For UI work, query `block_palettes` / `block_gradients` for design tokens and `block_search(include_code=true)` / `block_scaffold` / `block_insert` / `block_import` for pre-built components before writing CSS or markup from scratch.\n");
+                out.push_str("  8. Verify by launching the app (`minitask` with `action: \"start\"`), inspecting the live result (`browser_navigate`, `browser_screenshot`), and running `power_verify` (4-Gate Verification Barrier) / `power_review` before calling `archive_plan`.\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -672,11 +681,11 @@ impl WorkflowRouter {
                     ));
                 }
                 out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code.\n");
-                out.push_str("  2. Real-Time User Inquiry (`ask_user`): you may call `ask_user` at ANY point during your work (before editing or mid-task when you hit a fork or need user data, credentials, API keys, product/design preferences, or architectural clarifications). Answers are persisted in `.minicode/decisions.md`.\n");
+                out.push_str("  2. Real-Time User Inquiry (`ask_user`) & Design (`power_brainstorm`): you may call `ask_user` at ANY point during your work (before editing or mid-task when you hit a fork or need user data, credentials, API keys, product/design preferences, or architectural clarifications). Answers are persisted in `.minicode/decisions.md`. For open-ended architecture specs, use `power_brainstorm`.\n");
                 out.push_str("  3. Respect existing patterns, styling and conventions; make surgical changes.\n");
-                out.push_str("  4. Multi-step work: `create_plan`, then `update_progress` as steps finish.\n");
-                out.push_str("  5. Dependencies: use the project's package manager via `exec_cmd`. UI components & tokens: `block_search` and `block_palettes`.\n");
-                out.push_str("  6. Verify changes with `minitask` / `exec_cmd` and `browser_navigate` for UI changes.\n");
+                out.push_str("  4. Planning & Sub-Plans: use `create_plan` for multi-step work, `power_plan(topic=..., steps=[...])` to break a complex active `[>]` task into tactical sub-steps, and `update_progress` as each step finishes. For isolated Git worktree execution of an independent sub-task, use `power_worktree_task`.\n");
+                out.push_str("  5. Dependencies & UI Warehouse: use the project's package manager via `exec_cmd`. For UI components & design tokens, use `block_palettes`, `block_gradients`, `block_search(include_code=true)`, `block_scaffold`, `block_insert`, and `block_import`.\n");
+                out.push_str("  6. Verification & Review: verify changes with `power_verify` (4-Gate Verification Barrier), `power_review` (diff audit), `minitask` / `exec_cmd`, and `browser_navigate` for UI changes before `archive_plan`.\n");
             }
         }
         out.push_str("</orchestrator_dynamic_guidance>");
@@ -713,173 +722,97 @@ impl WorkflowRouter {
             .find(|m| workspace_root.join(m).is_file())
     }
 
-    fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
+    /// Injects pure workspace-state-driven MiniBlocks UI warehouse context without
+    /// prompt keyword splitting or stop-word heuristics.
+    fn enrich_ui_design(workspace_root: &Path, _prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,
             Err(e) => e.into_inner(),
         };
 
-        let decisions_text =
-            crate::agent::decisions::read_for_prompt(workspace_root).unwrap_or_default();
-        let lower = format!("{} {}", decisions_text, prompt).to_ascii_lowercase();
-
-        // Extract meaningful candidate tokens from the prompt (length >= 3, skipping common noise/action words)
-        let stop_words: std::collections::HashSet<&'static str> = [
-            "the",
-            "and",
-            "for",
-            "with",
-            "from",
-            "create",
-            "make",
-            "build",
-            "style",
-            "page",
-            "modern",
-            "responsive",
-            "using",
-            "into",
-            "this",
-            "that",
-            "user",
-            "app",
-            "application",
-            "mode",
-            "dark",
-            "light",
-            "give",
-            "detailed",
-            "plan",
-        ]
-        .into_iter()
-        .collect();
-
-        let prompt_tokens: Vec<&str> = lower
-            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .map(|s| s.trim())
-            .filter(|s| s.len() >= 3 && !stop_words.contains(s))
-            .collect();
-
-        // Query components for the most salient tokens or overall prompt
-        let mut components = Vec::new();
-        let mut matched_queries = Vec::new();
-
-        for token in &prompt_tokens {
-            let filter = crate::blocks::BlockSearchFilter {
-                query: Some((*token).to_string()),
-                limit: 3,
-                ..Default::default()
-            };
-            let results = store.search_components(&filter);
-            if !results.is_empty() {
-                matched_queries.push(*token);
-                for r in results {
-                    if !components.iter().any(
-                        |existing: &crate::blocks::store::BlockSearchResult| existing.id == r.id,
-                    ) {
-                        components.push(r);
-                    }
-                    if components.len() >= 4 {
-                        break;
-                    }
-                }
-            }
-            if components.len() >= 4 {
-                break;
-            }
-        }
-
-        // Fallback: If no direct token matched, provide standard layout archetypes (hero, features, navbar, footer)
-        if components.is_empty() {
-            for archetype in &["hero", "features", "navbar", "footer", "stats"] {
-                let filter = crate::blocks::BlockSearchFilter {
-                    query: Some((*archetype).to_string()),
-                    limit: 1,
-                    ..Default::default()
-                };
-                for r in store.search_components(&filter) {
-                    if !components.iter().any(
-                        |existing: &crate::blocks::store::BlockSearchResult| existing.id == r.id,
-                    ) {
-                        components.push(r);
-                    }
-                    if components.len() >= 3 {
-                        break;
-                    }
-                }
-                if components.len() >= 3 {
-                    break;
-                }
-            }
-        }
-
-        // Palette retrieval: query the palette store with the prompt's own salient
-        // tokens (same retrieval used for components above) rather than a fixed
-        // list of theme words. Palettes are suggestions; the model decides.
-        let mut palettes = Vec::new();
-        for token in &prompt_tokens {
-            for p in store.search_palettes(token) {
-                if !palettes
-                    .iter()
-                    .any(|existing: &&crate::blocks::BlockPalette| existing.name == p.name)
-                {
-                    palettes.push(p);
-                }
-            }
-            if palettes.len() >= 2 {
-                break;
-            }
-        }
-
-        // Fallback: If no specific palette matched tokens, provide popular defaults
-        if palettes.is_empty() {
-            palettes.extend(store.list_palettes().into_iter().take(2));
-        }
+        let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_root);
+        let stats = store.stats();
 
         let mut out = String::from("<recommended_miniblocks>\n");
         if Self::project_manifest(workspace_root).is_none()
             && crate::agent::decisions::read_for_prompt(workspace_root).is_none()
         {
             out.push_str(
-                "  Important: Foundation is NOT established yet. These warehouse previews do NOT choose a stack or theme — if the user did not explicitly name the tech stack and visual direction, call `ask_user` FIRST before `create_plan` or `kit_stack_add`.\n",
+                "  Important: Foundation is NOT established yet. If the user did not explicitly name the tech stack and visual direction, call `ask_user` FIRST before `create_plan`, `kit_stack_add`, or `block_search`.\n",
             );
         }
-        out.push_str(
-            "  MiniBlocks warehouse matches for this request (retrieved, not mandatory):\n",
-        );
 
-        if !components.is_empty() {
-            out.push_str("  Components:\n");
-            for c in components.iter().take(3) {
-                out.push_str(&format!(
-                    "     • `{}` ({}, {:?}): {}\n",
-                    c.name, c.category, c.framework, c.description
-                ));
+        out.push_str(&format!(
+            "  {}\n",
+            stack_info.format_prompt_directive().replace('\n', "\n  ")
+        ));
+        out.push_str(&format!(
+            "  Warehouse Inventory: {} components, {} color palettes, {} CSS gradients, {} page templates.\n",
+            stats.total_components, stats.total_palettes, stats.total_gradients, stats.total_templates
+        ));
+
+        if let Some(fw) = stack_info.framework {
+            let fw_count = stats.framework_counts.get(&fw).copied().unwrap_or(0);
+            out.push_str(&format!(
+                "  Active Framework Filter (`{}`): {} native components ready (plus cross-framework fallback).\n",
+                fw, fw_count
+            ));
+
+            // Surface representative components for the detected workspace framework across core layout categories
+            let sample_categories = [
+                crate::blocks::BlockCategory::Navbar,
+                crate::blocks::BlockCategory::Hero,
+                crate::blocks::BlockCategory::Feature,
+                crate::blocks::BlockCategory::Card,
+                crate::blocks::BlockCategory::Pricing,
+                crate::blocks::BlockCategory::Footer,
+            ];
+            let mut samples = Vec::new();
+            for cat in sample_categories {
+                let filter = crate::blocks::BlockSearchFilter {
+                    category: Some(cat),
+                    framework: Some(fw),
+                    limit: 1,
+                    ..Default::default()
+                };
+                if let Some(first) = store.search_components(&filter).into_iter().next() {
+                    samples.push(first);
+                }
+                if samples.len() >= 4 {
+                    break;
+                }
             }
-            if matched_queries.len() > 1 {
-                out.push_str(&format!(
-                    "     Other matched terms: {}. Query them with `block_search`.\n",
-                    matched_queries[1..].join(", ")
-                ));
+
+            if !samples.is_empty() {
+                out.push_str("  Sample Warehouse Components for this Stack:\n");
+                for c in &samples {
+                    out.push_str(&format!(
+                        "     • `{}` (category: {}, framework: {}): {}\n",
+                        c.name, c.category, c.framework, c.description
+                    ));
+                }
             }
-            out.push_str("     Use `block_get` for source, or `block_insert` / `block_scaffold` to place them.\n");
-        } else {
-            out.push_str("  Components: none matched directly; try `block_search` with a section name (hero, navbar, pricing, footer).\n");
         }
 
+        let palettes: Vec<_> = store.list_palettes().into_iter().take(2).collect();
         if !palettes.is_empty() {
-            out.push_str("  Palettes:\n");
-            for p in palettes.iter().take(2) {
+            out.push_str(
+                "  Sample Design Token Palettes (browse all with `block_palettes(query=...)`):\n",
+            );
+            for p in palettes {
                 out.push_str(&format!(
                     "     • `{}`: --bg: {}; --surface: {}; --accent: {}; --text: {};\n",
                     p.name, p.colors[0], p.colors[1], p.colors[2], p.colors[3]
                 ));
             }
-        } else {
-            out.push_str("  Palettes: none matched directly; browse with `block_palettes`.\n");
         }
 
+        out.push_str("  MiniBlocks Tool Workflow:\n");
+        out.push_str("     1. Design Tokens: call `block_palettes(query=..., format=\"css\"|\"tailwind\")` and `block_gradients(query=...)` before writing root theme styles.\n");
+        out.push_str("     2. Component Discovery: call `block_search(query=..., category=..., include_code=true)` (auto-detects workspace framework) before writing UI sections from scratch, or `block_get(id=...)` for full component details.\n");
+        out.push_str("     3. Component Placement & Wiring: call `block_scaffold(component_name=..., category=..., palette=..., wire_to=...)` to generate a themed component and wire its import, `block_insert(component_id=..., target_file=...)` to inject code, or `block_import(component_name=..., consumer_file=..., wire=true)`.\n");
+        out.push_str("     4. Warehouse Curation: use `block_save`, `block_update`, `block_delete`, and `block_stats` when saving or managing reusable components.\n");
         out.push_str("</recommended_miniblocks>");
         Some(out)
     }
@@ -1284,6 +1217,7 @@ mod tests {
         let cats1 = WorkflowRouter::state_driven_tool_categories(temp.path());
         assert!(cats1.contains(&ToolCategory::MiniKit));
         assert!(cats1.contains(&ToolCategory::Blocks));
+        assert!(cats1.contains(&ToolCategory::MiniPower));
         let ctx1 = WorkflowRouter::enrich_state_driven_context(
             temp.path(),
             "Build a showcase page for minicode",
@@ -1307,6 +1241,7 @@ mod tests {
         assert!(cats2.contains(&ToolCategory::Dev));
         assert!(cats2.contains(&ToolCategory::Web));
         assert!(cats2.contains(&ToolCategory::Blocks));
+        assert!(cats2.contains(&ToolCategory::MiniPower));
         assert!(cats2.contains(&ToolCategory::Codegraph));
 
         let ctx2 = WorkflowRouter::enrich_state_driven_context(

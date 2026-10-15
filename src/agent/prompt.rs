@@ -622,7 +622,21 @@ impl PromptBuilder {
                 };
                 recency.push_str(&format!("      • {} {}\n", badge, task.title));
             }
-            recency.push_str("    INVARIANT: Focus strictly on executing the current step ([>]). Once completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Never batch progress updates!\n");
+            if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
+                let verify_passed =
+                    std::fs::read_to_string(workspace_dir.join(".minicode/plan/last_verify.json"))
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+                        .unwrap_or(false);
+                if verify_passed {
+                    recency.push_str("    STATUS: All steps [x] and `power_verify` PASSED. Call `archive_plan` (and optionally `power_review`) to finalize.\n");
+                } else {
+                    recency.push_str("    STATUS: All steps [x] completed! Run `power_verify` (4-Gate Verification Barrier) and optionally `power_review`, then call `archive_plan`.\n");
+                }
+            } else {
+                recency.push_str("    INVARIANT: Focus strictly on executing the current step ([>]). If the current step is multi-part, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`. Once completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Never batch progress updates!\n");
+            }
             recency.push_str("  </minipower_active_plan>\n");
         } else {
             let resolved_todo = crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");

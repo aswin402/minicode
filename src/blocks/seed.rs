@@ -141,7 +141,40 @@ pub fn detect_project_framework(project_root: &Path) -> Option<BlockFramework> {
         }
     }
 
-    // 3. Root config files fallback:
+    // 3. Inspect minikit.json / onpkg.json if present
+    for manifest_name in &["minikit.json", "minicode.json", "onpkg.json"] {
+        let manifest_path = project_root.join(manifest_name);
+        if manifest_path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(stack) = json.get("stack").and_then(|s| s.as_str()) {
+                        let s_lower = stack.to_ascii_lowercase();
+                        if s_lower.contains("shadcn") {
+                            return Some(BlockFramework::Shadcn);
+                        }
+                        if s_lower.contains("react")
+                            || s_lower.contains("next")
+                            || s_lower == "mern"
+                            || s_lower == "pern"
+                        {
+                            return Some(BlockFramework::React);
+                        }
+                        if s_lower.contains("svelte") {
+                            return Some(BlockFramework::Svelte);
+                        }
+                        if s_lower.contains("tailwind") {
+                            return Some(BlockFramework::Tailwind);
+                        }
+                        if s_lower.contains("static") || s_lower.contains("html") {
+                            return Some(BlockFramework::Css);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Root config files fallback:
     // Svelte config
     if project_root.join("svelte.config.js").is_file()
         || project_root.join("svelte.config.ts").is_file()
@@ -242,6 +275,27 @@ impl ProjectStackInfo {
                         k == "sass" || k == "scss" || k.contains("sass") || k.contains("scss")
                     }) {
                         has_scss = true;
+                    }
+                }
+            }
+        }
+
+        // Check minikit.json / onpkg.json for tailwind packages or active_skills
+        for manifest_name in &["minikit.json", "minicode.json", "onpkg.json"] {
+            let manifest_path = project_root.join(manifest_name);
+            if manifest_path.is_file() {
+                if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        for key in &["packages", "dev_packages", "active_skills"] {
+                            if let Some(arr) = json.get(*key).and_then(|v| v.as_array()) {
+                                if arr.iter().filter_map(|v| v.as_str()).any(|s| {
+                                    let lower = s.to_ascii_lowercase();
+                                    lower == "tailwind" || lower.contains("tailwindcss")
+                                }) {
+                                    has_tailwind = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -541,5 +595,16 @@ mod tests {
         let html_directive = html_info.format_prompt_directive();
         assert!(html_directive.contains("Standard Web (HTML/CSS)"));
         assert!(html_directive.contains("framework=\"html\" or framework=\"css\""));
+
+        // 4. minikit.json manifest detection
+        let temp_kit = tempdir().unwrap();
+        std::fs::write(
+            temp_kit.path().join("minikit.json"),
+            r#"{"name":"demo","stack":"react-vite","packages":["lucide-react"],"dev_packages":["tailwindcss"]}"#,
+        )
+        .unwrap();
+        let kit_info = ProjectStackInfo::detect(temp_kit.path());
+        assert_eq!(kit_info.framework, Some(BlockFramework::React));
+        assert!(kit_info.has_tailwind);
     }
 }

@@ -271,6 +271,7 @@ pub async fn dispatch(
             let milestones = param::opt_string_array(args, "milestones")
                 .or_else(|| param::opt_string_array(args, "roadmap"));
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+            let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_verify.json"));
             wm.init_two_tier_plan(title, &steps, architecture, milestones.as_deref())?;
             let assumptions = param::opt_string_array(args, "assumptions").unwrap_or_default();
             if let Err(e) =
@@ -283,7 +284,7 @@ pub async fn dispatch(
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
             Ok(format!(
-                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now.",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.)",
                 title,
                 steps.len(),
                 first_step
@@ -314,14 +315,28 @@ pub async fn dispatch(
                 if let Some(summary) = wm.read_active_plan_summary() {
                     if let Some(ref next_active) = summary.active_task {
                         format!(
-                            "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now. Do not batch progress updates!",
+                            "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now (or decompose it via `power_plan` if multi-part). Do not batch progress updates!",
                             step, status, summary.completed_tasks, summary.total_tasks, next_active
                         )
                     } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
-                        format!(
-                            "🎉 All {} tasks in active plan completed (100%)!",
-                            summary.total_tasks
+                        let verify_passed = std::fs::read_to_string(
+                            workspace_root.join(".minicode/plan/last_verify.json"),
                         )
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+                        .unwrap_or(false);
+                        if verify_passed {
+                            format!(
+                                "🎉 All {} tasks in active plan completed (100%) and `power_verify` passed!\n► Next Step: Call `archive_plan` (and optionally `power_review`) before presenting your final summary.",
+                                summary.total_tasks
+                            )
+                        } else {
+                            format!(
+                                "🎉 All {} tasks in active plan completed (100%)!\n► Next Step: Run `power_verify` (4-Gate Pre-Completion Verification Barrier) and optionally `power_review`, then call `archive_plan` to finalize.",
+                                summary.total_tasks
+                            )
+                        }
                     } else {
                         format!("✔ Updated step '{}' status to '{}'", step, status)
                     }

@@ -18,13 +18,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         // the system prompt); its dispatch handler remains for compatibility.
         ToolSchema {
             name: "power_brainstorm".to_string(),
-            description: "Start the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Returns the procedure, which drives `ask_user`: clarify goals and constraints in batched rounds, offer 2-3 approaches with a recommendation, write the agreed spec to the project docs, get approval, then `create_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
+            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state (`minikit_docs/core/`, `.minicode/decisions.md`), optionally saves a design specification (`spec`) to `minikit_docs/core/spec.md`, and guides `ask_user` (for open decisions) -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "topic": {
                         "type": "string",
                         "description": "The feature, product or change to design"
+                    },
+                    "spec": {
+                        "type": "string",
+                        "description": "Optional agreed design specification or architecture summary to persist to `minikit_docs/core/spec.md`."
+                    },
+                    "open_questions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of unresolved design questions to clarify via `ask_user`."
                     }
                 },
                 "required": ["topic"]
@@ -32,7 +41,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_plan".to_string(),
-            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md`. While these tactical sub-steps are active, the inline TUI widget focuses exclusively on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
+            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md` (or initialize a full two-tier plan if no plan exists yet). While tactical sub-steps are active, the inline TUI widget focuses on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -55,7 +64,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_review".to_string(),
-            description: "Run an adversarial multi-agent code review on current workspace changes across Stage 1 (Spec Compliance: acceptance criteria met) and Stage 2 (Code Quality: zero unwraps/panics, security, error handling, performance).".to_string(),
+            description: "Run an adversarial multi-agent code review on current workspace changes across Stage 1 (Spec Compliance: acceptance criteria met) and Stage 2 (Code Quality: zero unwraps/panics, security, error handling, performance). Call after completing a major feature or before `archive_plan`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -68,7 +77,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_verify".to_string(),
-            description: "Run the 4-Gate Pre-Completion Verification Barrier programmatically: Gate 1 (AST Syntax & Compiler Integrity), Gate 2 (Reproducer & Regression Test Suite), Gate 3 (Structural Integrity & Git Merge Conflicts), Gate 4 (Diff Sanity & Secret Leaks). Guarantees exit code 0 before completing tasks.".to_string(),
+            description: "Run the 4-Gate Pre-Completion Verification Barrier programmatically: Gate 1 (AST Syntax & Compiler Integrity), Gate 2 (Reproducer & Regression Test Suite), Gate 3 (Structural Integrity & Git Merge Conflicts), Gate 4 (Diff Sanity & Secret Leaks). Records verification status in `.minicode/plan/last_verify.json`. Call when all plan steps are completed before `archive_plan`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -116,7 +125,52 @@ pub async fn dispatch(
                         name: "power_brainstorm".to_string(),
                         reason: "Missing required argument 'topic'".to_string(),
                     })?;
-                let prompt = MiniPowerEngine::format_brainstorm_prompt(workspace_root, topic);
+                let mut prompt = MiniPowerEngine::format_brainstorm_prompt(workspace_root, topic);
+
+                if let Some(spec_text) = opt_str(args, "spec") {
+                    if !spec_text.trim().is_empty() {
+                        let spec_file =
+                            crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
+                        if let Some(parent) = spec_file.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let entry = format!(
+                            "\n\n## Brainstorm Specification: {}\n\n{}\n",
+                            topic,
+                            spec_text.trim()
+                        );
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&spec_file)
+                            .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
+                        prompt.push_str(&format!(
+                            "\n\n✔ Persisted design specification for \"{}\" to `{}`.",
+                            topic,
+                            spec_file.display()
+                        ));
+                    }
+                }
+
+                let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
+                let has_decisions =
+                    crate::agent::decisions::read_for_prompt(workspace_root).is_some();
+                if !open_questions.is_empty() {
+                    prompt.push_str(&format!(
+                        "\n\n► Next Step: Call `ask_user` to resolve the {} open design question(s) ({}), then call `create_plan` (or `power_plan`) to begin execution.",
+                        open_questions.len(),
+                        open_questions.join("; ")
+                    ));
+                } else if !has_decisions {
+                    prompt.push_str(
+                        "\n\n► Next Step: If high-impact architectural or stack choices remain open, call `ask_user` to settle `.minicode/decisions.md`. Otherwise, call `create_plan` (or `power_plan`) to structure the implementation steps.",
+                    );
+                } else {
+                    prompt.push_str(
+                        "\n\n► Next Step: User decisions are recorded in `.minicode/decisions.md`. Call `create_plan` to initialize the milestone roadmap, or `power_plan(topic=..., steps=[...])` to decompose an active task into tactical sub-steps.",
+                    );
+                }
+
                 Ok(prompt)
             }
             .await,
@@ -136,7 +190,15 @@ pub async fn dispatch(
 
                 if !steps.is_empty() {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-                    wm.init_tactical_subplan(topic, &steps)?;
+                    let _ = std::fs::remove_file(
+                        workspace_root.join(".minicode/plan/last_verify.json"),
+                    );
+                    let has_existing_roadmap = wm.read_active_plan_summary().is_some();
+                    if has_existing_roadmap {
+                        wm.init_tactical_subplan(topic, &steps)?;
+                    } else {
+                        wm.init_two_tier_plan(topic, &steps, None, None)?;
+                    }
                     let first_step = steps
                         .first()
                         .map(|s| {
@@ -144,11 +206,15 @@ pub async fn dispatch(
                         })
                         .unwrap_or_default();
                     plan.push_str(&format!(
-                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress`.",
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")`.",
                         steps.len(),
                         topic,
                         first_step
                     ));
+                } else {
+                    plan.push_str(
+                        "\n\n► Tip: Pass `steps: [\"1. ...\", \"2. ...\"]` to `power_plan` to register tactical sub-steps in `.minicode/plan/task_plan.md`, or call `create_plan` for top-level milestones.",
+                    );
                 }
 
                 if save_to_docs {
@@ -189,7 +255,23 @@ pub async fn dispatch(
                 let staged_only =
                     opt_bool(args, "staged_only", false) || opt_bool(args, "staged", false);
                 let report = GitReviewer::review_workspace(workspace_root, staged_only).await?;
-                Ok(GitReviewer::format_report(&report))
+                let mut formatted = GitReviewer::format_report(&report);
+                let actionable_count = report
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity == "HIGH" || f.severity == "MEDIUM")
+                    .count();
+                if actionable_count > 0 {
+                    formatted.push_str(&format!(
+                        "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above, then re-run `power_verify` to confirm all 4 gates pass.\n",
+                        actionable_count
+                    ));
+                } else {
+                    formatted.push_str(
+                        "\n► Next Step: Code review passed with 0 HIGH/MEDIUM findings! If `power_verify` has passed and all plan tasks are `[x]`, call `archive_plan` to finalize.\n",
+                    );
+                }
+                Ok(formatted)
             }
             .await,
         ),
@@ -223,7 +305,29 @@ pub async fn dispatch(
                 };
 
                 let report = VerificationBarrier::verify(workspace_root, &files).await;
-                Ok(report.format_report())
+                let verify_dir = workspace_root.join(".minicode/plan");
+                let _ = std::fs::create_dir_all(&verify_dir);
+                let verify_state = json!({
+                    "passed": report.all_passed,
+                    "files_checked": files.len(),
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                let _ = std::fs::write(
+                    verify_dir.join("last_verify.json"),
+                    serde_json::to_string_pretty(&verify_state).unwrap_or_default(),
+                );
+
+                let mut out = report.format_report();
+                if report.all_passed {
+                    out.push_str(
+                        "\n► Next Step: All 4 Verification Gates PASSED (`last_verify.json` recorded). Optionally run `power_review` to audit diff quality, or call `archive_plan` if all plan steps are complete.\n",
+                    );
+                } else {
+                    out.push_str(
+                        "\n► Next Step: Fix the verification failure(s) reported above, then re-run `power_verify` until all 4 gates pass.\n",
+                    );
+                }
+                Ok(out)
             }
             .await,
         ),
@@ -292,7 +396,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let res = dispatch(
             "power_brainstorm",
-            &json!({"topic": "Distributed Cache"}),
+            &json!({
+                "topic": "Distributed Cache",
+                "spec": "Use a 2-tier LRU + Redis write-through cache.",
+                "open_questions": ["Eviction policy TTL?", "Max memory budget?"]
+            }),
             temp.path(),
         )
         .await;
@@ -300,5 +408,34 @@ mod tests {
         let output = res.unwrap().unwrap();
         assert!(output.contains("Distributed Cache"));
         assert!(output.contains("Socratic Brainstorming"));
+        assert!(output.contains("Persisted design specification"));
+        assert!(output.contains("resolve the 2 open design question(s)"));
+        let spec_file = crate::tools::minikit::resolve_doc_path(temp.path(), "spec.md");
+        let spec_disk = std::fs::read_to_string(spec_file).unwrap();
+        assert!(spec_disk.contains("Use a 2-tier LRU + Redis write-through cache."));
+    }
+
+    #[tokio::test]
+    async fn test_power_plan_and_verify_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan_res = dispatch(
+            "power_plan",
+            &json!({
+                "topic": "Hero Section",
+                "steps": ["1. Search miniblocks hero", "2. Scaffold hero component"]
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(plan_res.contains("Activated 2 tactical sub-steps"));
+
+        let verify_res = dispatch("power_verify", &json!({"files": []}), temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(verify_res.contains("last_verify.json"));
+        assert!(temp.path().join(".minicode/plan/last_verify.json").exists());
     }
 }
