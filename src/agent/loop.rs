@@ -1187,6 +1187,8 @@ impl AgentLoop {
 
                 let stages =
                     crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls.clone());
+                let files_mutated_before_iteration = distinct_files_mutated_in_active_step.len();
+                let mut iteration_step_checkpoint_triggered = false;
 
                 for stage in stages {
                     // Check cancellation before each stage execution
@@ -1438,11 +1440,14 @@ impl AgentLoop {
                                     let norm_path =
                                         path.trim().trim_start_matches("./").to_string();
                                     // === Forward Active-Step Drift Checkpoint ===
-                                    // If >= 2 distinct files have already been mutated during the current
-                                    // active step without plan advancement, checkpoint before mutating a 3rd.
-                                    if !distinct_files_mutated_in_active_step.contains(&norm_path)
-                                        && distinct_files_mutated_in_active_step.len() >= 2
-                                        && !step_checkpoint_fired_for_active_step
+                                    // If >= 2 distinct files were already mutated in prior iterations of the
+                                    // current active step without plan advancement, checkpoint before mutating
+                                    // additional files in a new iteration (holding the iteration's batch atomically).
+                                    if iteration_step_checkpoint_triggered
+                                        || (!distinct_files_mutated_in_active_step
+                                            .contains(&norm_path)
+                                            && files_mutated_before_iteration >= 2
+                                            && !step_checkpoint_fired_for_active_step)
                                     {
                                         let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                             &self.workspace_root,
@@ -1453,6 +1458,7 @@ impl AgentLoop {
                                             {
                                                 if let Some(active_title) = summary.active_task {
                                                     step_checkpoint_fired_for_active_step = true;
+                                                    iteration_step_checkpoint_triggered = true;
                                                     let mut files_so_far: Vec<&str> =
                                                         distinct_files_mutated_in_active_step
                                                             .iter()

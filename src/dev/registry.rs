@@ -953,7 +953,10 @@ impl MiniDevRegistry {
                 ports.last().copied()
             }
         };
-        let url = primary_port.map(|p| format!("http://127.0.0.1:{}", p));
+        let url = primary_port.map(|p| {
+            let host = crate::dev::ports::resolve_listening_loopback_host(p).unwrap_or("localhost");
+            format!("http://{}:{}", host, p)
+        });
         let restart_count = handle.restart_stats.read().await.restart_count;
         let port_resolution = handle.port_resolution.read().await.clone();
 

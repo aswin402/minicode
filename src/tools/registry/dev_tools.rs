@@ -17,229 +17,71 @@ use std::time::Duration;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: "minitask".to_string(),
-        description: "Unified Task & Process Vault (minitask). Supervises and tracks all long-running development servers, web applications, background workers, subagents, scripts, scheduled tasks, and browser sessions. Provides full lifecycle CRUD (start, scripts, schedule, list, status, logs, stop, kill, restart, resources, kill_all), automatic port discovery, process group isolation, OOM/runaway watchdogs, and clean teardown. Process Lifecycle Invariant: Dev servers (frontend, backend, docker, APIs) MUST remain running across turns so the user can interact with and view their application. Never call action='stop' or action='kill' on dev servers at the end of a turn unless the user explicitly asks to stop them. Ephemeral verification engines (headless browsers, audit scanners) should be closed when automated verification is finished. Universal script support: pass script='<name>' (e.g. script='dev') to run targets from justfile, package.json, Makefile, Cargo.toml without hardcoding command strings.".to_string(),
+        description: "Unified Task & Process Vault (minitask). Supervises long-running development servers, web apps, background workers, and scheduled tasks. When to use: Call minitask(action='start', script='dev') to launch and supervise the workspace dev server before running browser_navigate or browser_screenshot. Process Lifecycle Invariant: Dev servers MUST remain running across turns — never call action='stop' or action='kill' on dev servers unless explicitly requested.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "start", "scripts", "targets", "schedule", "list", "ps", "status", "logs", "stop", "kill", "restart",
-                        "resources", "kill_all", "stop_all", "screenshot", "workers", "swarms",
-                        "probe_port", "check_port", "audit", "qa_audit", "inspect", "inspect_dom",
-                        "batch", "browser_batch", "mock_route", "browser_status", "browser_debug",
-                        "browser_close", "emulate", "browser_emulate", "save_state", "browser_save_state",
-                        "restore_state", "browser_restore_state", "pdf", "browser_pdf",
-                        "check_injection", "browser_check_injection", "scan_hidden",
-                        "hover", "browser_hover", "select_option", "browser_select_option",
-                        "scroll_horizontal", "browser_scroll_horizontal",
-                        "badges", "browser_badges", "tabs", "browser_tabs",
-                        "metrics", "browser_metrics", "aura", "browser_aura", "glow"
+                        "start", "scripts", "targets", "schedule", "list", "ps", "status", "logs",
+                        "stop", "kill", "restart", "resources", "kill_all", "stop_all",
+                        "probe_port", "check_port", "workers", "swarms", "screenshot", "audit"
                     ],
-                    "description": "Lifecycle action to perform: 'start' (launch process or script target), 'scripts'/'targets' (discover all runnable script targets from justfile, package.json, Makefile, Cargo.toml), 'schedule' (register interval task, watcher, or one-shot timer), 'list'/'status'/'ps' (inspect active processes and schedules), 'logs' (tail output), 'stop'/'kill' (gracefully terminate process), 'restart' (cycle process), 'resources' (CPU & memory telemetry), 'kill_all'/'stop_all' (terminate all active processes and browser engines), 'screenshot' (capture visual PNG of running server or URL), 'workers' (list active autonomous subagents and delegated tasks), 'swarms' (list active multi-agent swarms and swarm workers), 'probe_port' (inspect if a port is in use and find conflicting PID/fallback port), 'audit'/'qa_audit' (run automated in-page QA audit on running server or URL), 'inspect'/'inspect_dom' (deep DOM grounding & Shadow DOM inspection), 'batch'/'browser_batch' (execute multi-step browser actions pipeline), 'mock_route' (intercept/mock API routes over CDP), 'browser_status'/'browser_debug' (browser diagnostics bundle), 'browser_close' (terminate active browser session), 'emulate'/'browser_emulate' (set viewport/device presets and network throttling), 'save_state'/'browser_save_state' (save cookies/localStorage to profile), 'restore_state'/'browser_restore_state' (restore cookies/localStorage from profile), 'pdf'/'browser_pdf' (export page to PDF report), 'check_injection'/'browser_check_injection' (scan DOM for hidden text and prompt injections), 'hover'/'browser_hover' (hover over element), 'select_option'/'browser_select_option' (select dropdown option), 'scroll_horizontal'/'browser_scroll_horizontal' (scroll horizontally), 'badges'/'browser_badges' (toggle numbered badges), 'tabs'/'browser_tabs' (multi-tab management), 'metrics'/'browser_metrics' (page and scroll metrics), 'aura'/'browser_aura'/'glow' (toggle Alibaba-style luminous corner glow aura, cursor, and status pill)"
+                    "description": "Lifecycle action: 'start' (launch dev server or script target; auto-discovers 'dev' script from package.json/justfile/Cargo.toml if script/command omitted), 'scripts' (discover runnable targets), 'list'/'status' (inspect active processes and ports), 'logs' (tail output), 'stop'/'kill' (terminate process), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
                 },
                 "script": {
                     "type": "string",
-                    "description": "Target script name to run from the workspace (e.g. 'dev', 'start', 'build', 'serve', 'test'). Automatically resolved from justfile, package.json, Makefile, Cargo.toml without needing to hardcode package manager or command strings."
+                    "description": "Target script name to run from package.json, justfile, Makefile, or Cargo.toml (e.g. 'dev', 'start', 'serve'). Optional for action='start' (defaults to workspace dev server)."
                 },
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run (e.g. 'bun run dev', 'cargo run', 'python app.py', or command for 'schedule'). Optional for 'start' if 'script' is provided or if workspace has a standard dev server script."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Task instructions, prompt, or command alias for 'schedule'"
+                    "description": "Explicit shell command to run (e.g. 'bun run dev', 'cargo run'). Optional if 'script' is used."
                 },
                 "name": {
                     "type": "string",
-                    "description": "Optional human-readable label for the process or scheduled task (e.g. 'frontend-vite', 'health-check', 'auth-service')"
+                    "description": "Human-readable label for the process (e.g. 'frontend-dev')"
                 },
                 "process_type": {
                     "type": "string",
-                    "enum": ["frontend", "backend", "docker", "script", "browser", "worker", "subagent", "cron", "timer", "swarm"],
-                    "description": "Category of process (default: 'frontend', can be 'frontend', 'backend', 'docker', 'script', 'browser', 'worker', 'subagent', 'cron', 'timer', 'swarm')"
-                },
-                "interval_seconds": {
-                    "type": "integer",
-                    "description": "Interval in seconds between periodic executions for 'schedule' (default: 60)"
-                },
-                "duration_seconds": {
-                    "type": "integer",
-                    "description": "Delay in seconds before firing a one-shot timer for 'schedule'"
-                },
-                "cron": {
-                    "type": "string",
-                    "description": "Cron expression or description for recurring scheduled tasks"
-                },
-                "cron_expression": {
-                    "type": "string",
-                    "description": "Cron expression alias for 'cron'"
-                },
-                "max_iterations": {
-                    "type": "integer",
-                    "description": "Maximum number of iterations before automatically terminating a scheduled task (unlimited if omitted)"
+                    "enum": ["frontend", "backend", "docker", "script", "worker", "cron", "timer"],
+                    "description": "Category of process (default: 'frontend')"
                 },
                 "id": {
                     "type": "string",
-                    "description": "Process ID (required for 'status', 'logs', 'stop', 'kill', 'restart', or target for 'screenshot')"
-                },
-                "task_id": {
-                    "type": "string",
-                    "description": "Process/Task ID alias for 'id' (accepted for 'status', 'logs', 'stop', 'kill', 'restart')"
-                },
-                "process_id": {
-                    "type": "string",
-                    "description": "Process ID alias for 'id'"
+                    "description": "Process ID (for 'status', 'logs', 'stop', 'kill', 'restart')"
                 },
                 "port": {
                     "type": "integer",
-                    "description": "Target port number to probe (required for 'probe_port'/'check_port')"
-                },
-                "port_policy": {
-                    "type": "string",
-                    "enum": ["fallback", "error", "kill", "ignore"],
-                    "description": "Port conflict strategy: 'fallback' (auto-assign next available port and inject PORT=...), 'error' (fail immediately), 'kill' (terminate conflicting process), 'ignore' (proceed anyway). Default: 'fallback'"
-                },
-                "restart_policy": {
-                    "type": "string",
-                    "enum": ["never", "on_failure", "always"],
-                    "description": "Auto-restart watchdog supervision: 'never' (default), 'on_failure' (restart if exit code is non-zero), 'always' (restart on any exit)"
-                },
-                "auto_restart": {
-                    "type": "boolean",
-                    "description": "Convenience toggle for auto-restart on failure with 3 retries (default: false)"
-                },
-                "max_retries": {
-                    "type": "integer",
-                    "description": "Maximum number of watchdog restart attempts (default: 3)"
-                },
-                "backoff_ms": {
-                    "type": "integer",
-                    "description": "Base backoff in milliseconds between watchdog restarts (default: 1000)"
+                    "description": "Target port number (for 'probe_port' or expected dev server port)"
                 },
                 "url": {
                     "type": "string",
-                    "description": "Target URL to capture, audit, or inspect for 'screenshot', 'audit', 'inspect' (optional, defaults to primary URL of running process)"
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Target file path relative to workspace to save screenshot PNG (optional, defaults to .minicode/screenshots/...)"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["headless", "gui"],
-                    "description": "Browser execution mode for browser actions ('headless' or 'gui', default: 'headless')"
-                },
-                "actions": {
-                    "type": "array",
-                    "description": "Ordered array of browser action objects to execute sequentially for 'batch'/'browser_batch' (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"fill\", \"ref\": \"@v1:e2\", \"text\": \"alice\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}])",
-                    "items": {
-                        "type": "object"
-                    }
-                },
-                "pattern": {
-                    "type": "string",
-                    "description": "URL pattern or wildcard to intercept for 'mock_route' (e.g. '*/api/*', 'https://api.example.com/*')"
-                },
-                "status": {
-                    "type": "integer",
-                    "description": "Mocked HTTP status code for 'mock_route' (e.g. 200, 401, 404, 500). Default: 200"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Mocked HTTP response body string for 'mock_route' (usually JSON)"
-                },
-                "content_type": {
-                    "type": "string",
-                    "description": "Response Content-Type header for 'mock_route' (default: 'application/json')"
-                },
-                "clear": {
-                    "type": "boolean",
-                    "description": "Clear all active mock routes if true (used by 'mock_route')"
+                    "description": "Target URL for 'screenshot' or 'audit' (optional, defaults to running server URL)"
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "Subdirectory relative to workspace root in which to run the command"
-                },
-                "env": {
-                    "type": "object",
-                    "description": "Optional environment variables key-value map to inject into the process"
-                },
-                "port_hint": {
-                    "type": "integer",
-                    "description": "Optional expected localhost port (e.g. 3000, 5173, 8080) for expedited health verification"
+                    "description": "Subdirectory relative to workspace root"
                 },
                 "tail": {
                     "type": "integer",
-                    "description": "Number of recent log lines to return (default: 50, used by 'logs')"
+                    "description": "Number of recent log lines to return for 'logs' (default: 50)"
                 },
                 "filter": {
                     "type": "string",
-                    "description": "Optional substring filter to apply when querying process logs"
+                    "description": "Optional substring filter for 'logs'"
                 },
-                "viewport": {
-                    "type": "string",
-                    "enum": ["mobile", "mobile_large", "iphone", "tablet", "ipad", "desktop", "desktop_wide", "reset"],
-                    "description": "Device viewport preset for 'emulate'/'browser_emulate'"
-                },
-                "network": {
-                    "type": "string",
-                    "enum": ["offline", "slow_3g", "fast_3g", "cable", "wifi", "reset"],
-                    "description": "Network throttling condition preset for 'emulate'/'browser_emulate'"
-                },
-                "profile": {
-                    "type": "string",
-                    "description": "Named session state profile identifier for 'save_state'/'restore_state' (e.g. 'auth_user')"
-                },
-                "landscape": {
-                    "type": "boolean",
-                    "description": "Paper orientation for 'pdf' (true for landscape, false for portrait, default: false)"
-                },
-                "print_background": {
-                    "type": "boolean",
-                    "description": "Print background graphics and colors for 'pdf' (default: true)"
-                },
-                "custom_width": {
+                "interval_seconds": {
                     "type": "integer",
-                    "description": "Custom viewport width in pixels for 'emulate'"
+                    "description": "Interval in seconds for 'schedule' (default: 60)"
                 },
-                "custom_height": {
+                "duration_seconds": {
                     "type": "integer",
-                    "description": "Custom viewport height in pixels for 'emulate'"
+                    "description": "One-shot timer delay in seconds for 'schedule'"
                 },
-                "ref": {
+                "cron": {
                     "type": "string",
-                    "description": "ARIA element reference (e.g. '@v1:e2') or target selector for 'hover' or 'select_option'"
-                },
-                "selector": {
-                    "type": "string",
-                    "description": "CSS selector for element interaction, container scrolling, or inspection"
-                },
-                "option": {
-                    "type": "string",
-                    "description": "Dropdown option text or value to choose for 'select_option'"
-                },
-                "direction": {
-                    "type": "string",
-                    "enum": ["left", "right", "up", "down"],
-                    "description": "Scroll direction for 'scroll_horizontal' ('left' or 'right')"
-                },
-                "distance": {
-                    "type": "integer",
-                    "description": "Number of pixels to scroll horizontally (default: 500)"
-                },
-                "subaction": {
-                    "type": "string",
-                    "enum": ["list", "create", "new", "switch", "close"],
-                    "description": "Subaction for 'tabs' ('list', 'create', 'switch', 'close')"
-                },
-                "target_id": {
-                    "type": "string",
-                    "description": "Target/Tab ID for browser tab operations ('switch', 'close')"
-                },
-                "enable": {
-                    "type": "boolean",
-                    "description": "Toggle high-contrast numbered visual badges on or off for 'badges' (default: true)"
+                    "description": "Cron expression for 'schedule'"
                 }
             },
             "required": ["action"]
@@ -266,7 +108,12 @@ pub async fn dispatch(
     }
 
     Some(async move {
-        let action = require_str(args, "action", "minitask")?;
+        let raw_action = require_str(args, "action", "minitask")?;
+        let action = raw_action
+            .split("</parameter>")
+            .next()
+            .unwrap_or(raw_action)
+            .trim();
         let registry = get_global_dev_registry();
 
         match action {

@@ -57,14 +57,14 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: Obscura -> Chrome -> Firefox.
+/// Priority chain for headless automation: Chrome -> Obscura -> Firefox.
 ///
-/// Obscura is the primary engine for headless automation, offering fast, lightweight
-/// operation without requiring external browser installations. Seamlessly falls back to
-/// Chrome and Firefox when needed.
+/// Chrome is preferred for headless automation so modern ESM/bundler apps (Vite, React,
+/// Tailwind v4, WebGL/GSAP) execute module scripts and render full CSS in screenshots.
+/// Seamlessly falls back to Obscura and Firefox when Chrome is unavailable.
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
-    BrowserEngine::Obscura,
     BrowserEngine::Chrome,
+    BrowserEngine::Obscura,
     BrowserEngine::Firefox,
 ];
 
@@ -128,8 +128,8 @@ mod tests {
 
     #[test]
     fn test_priority_chains() {
-        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
-        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Obscura);
         assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
 
         assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);

@@ -597,7 +597,7 @@ impl Default for GitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSettingsConfig {
-    /// Ordered engine priority list for headless automation (default: ["obscura", "chrome", "firefox"])
+    /// Ordered engine priority list for headless automation (default: ["chrome", "obscura", "firefox"])
     #[serde(default = "default_headless_priority")]
     pub headless_priority: Vec<String>,
 
@@ -612,8 +612,8 @@ pub struct BrowserSettingsConfig {
 
 fn default_headless_priority() -> Vec<String> {
     vec![
-        "obscura".to_string(),
         "chrome".to_string(),
+        "obscura".to_string(),
         "firefox".to_string(),
     ]
 }

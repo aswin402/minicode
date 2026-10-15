@@ -283,14 +283,18 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
         if let Some(ref url) = updated.url {
             output.push_str(&format!("• Primary URL: {}\n", url));
         } else if !updated.ports.is_empty() {
+            let p = updated.ports[0];
+            let host = crate::dev::ports::resolve_listening_loopback_host(p).unwrap_or("localhost");
             output.push_str(&format!(
-                "• Active Ports: {:?}\n• URL: http://127.0.0.1:{}\n",
-                updated.ports, updated.ports[0]
+                "• Active Ports: {:?}\n• URL: http://{}:{}\n",
+                updated.ports, host, p
             ));
         } else if let Some(hint) = port_hint {
+            let host =
+                crate::dev::ports::resolve_listening_loopback_host(hint).unwrap_or("localhost");
             output.push_str(&format!(
-                "• Expected Port: {}\n• URL: http://127.0.0.1:{}\n",
-                hint, hint
+                "• Expected Port: {}\n• URL: http://{}:{}\n",
+                hint, host, hint
             ));
         }
 

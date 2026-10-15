@@ -2,10 +2,10 @@ use crate::agent::provider::ToolSchema;
 use serde_json::Value;
 
 /// Default maximum character length for a tool's top-level description.
-pub const DEFAULT_MAX_TOOL_DESC_CHARS: usize = 180;
+pub const DEFAULT_MAX_TOOL_DESC_CHARS: usize = 450;
 
 /// Default maximum character length for an individual parameter's description.
-pub const DEFAULT_MAX_PROP_DESC_CHARS: usize = 120;
+pub const DEFAULT_MAX_PROP_DESC_CHARS: usize = 200;
 
 /// High-efficiency tool schema minification engine.
 ///
@@ -43,7 +43,7 @@ impl ToolSchemaCompactor {
             .collect()
     }
 
-    /// Condenses a description string to its primary sentence or first `max_chars`.
+    /// Condenses a description string to all complete sentences that fit within `max_chars`.
     #[must_use]
     pub fn condense_description(desc: &str, max_chars: usize) -> String {
         let trimmed = desc.trim();
@@ -51,21 +51,21 @@ impl ToolSchemaCompactor {
             return trimmed.to_string();
         }
 
-        // 1. Try to find first sentence boundary (. followed by whitespace or end)
-        if let Some(dot_idx) = trimmed.find(". ") {
-            let candidate = &trimmed[..=dot_idx];
-            if candidate.len() <= max_chars {
-                return candidate.to_string();
-            }
-        } else if let Some(dot_idx) = trimmed.find(".\n") {
-            let candidate = &trimmed[..=dot_idx];
-            if candidate.len() <= max_chars {
-                return candidate.trim().to_string();
-            }
+        let slice = crate::utils::strings::truncate_chars(trimmed, max_chars);
+
+        // 1. Try to find the last complete sentence boundary within `max_chars`
+        let last_dot_space = slice.rfind(". ");
+        let last_dot_newline = slice.rfind(".\n");
+        if let Some(dot_idx) = match (last_dot_space, last_dot_newline) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        } {
+            return slice[..=dot_idx].trim().to_string();
         }
 
         // 2. Otherwise truncate at word boundary before max_chars
-        let slice = crate::utils::strings::truncate_chars(trimmed, max_chars);
         if let Some(last_space) = slice.rfind(' ') {
             if last_space > max_chars / 2 {
                 return format!("{}...", &slice[..last_space]);

@@ -294,10 +294,18 @@ impl BrowserManager {
                     BrowserMode::Headless => &cfg.browser.headless_priority,
                     BrowserMode::Gui => &cfg.browser.gui_priority,
                 };
-                let parsed: Vec<BrowserEngine> = configured_names
+                let mut parsed: Vec<BrowserEngine> = configured_names
                     .iter()
                     .filter_map(|n| parse_engine_name(n))
                     .collect();
+                // Upgrade legacy default ["obscura", "chrome", "firefox"] in saved user configs
+                // so Chrome is preferred for full ESM/CSS rendering when both are listed.
+                if parsed.first() == Some(&BrowserEngine::Obscura)
+                    && parsed.contains(&BrowserEngine::Chrome)
+                {
+                    parsed.retain(|&e| e != BrowserEngine::Chrome);
+                    parsed.insert(0, BrowserEngine::Chrome);
+                }
                 if parsed.is_empty() {
                     default_priority.to_vec()
                 } else {
