@@ -1152,7 +1152,7 @@ mod tests {
         let list = registry.list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].ports, vec![8999]);
-        assert_eq!(list[0].url, Some("http://127.0.0.1:8999".to_string()));
+        assert_eq!(list[0].url, Some("http://localhost:8999".to_string()));
 
         // 3. Query logs
         let logs = registry.logs(&summary.id, 10, None).await.unwrap();

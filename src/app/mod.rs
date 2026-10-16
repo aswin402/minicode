@@ -120,7 +120,11 @@ impl<'a> App<'a> {
         // Auto-hydrate active roadmap & milestone plan from WorkingMemory if present on disk
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let (initial_active_task, initial_active_plan) = match wm.read_active_plan_summary() {
-            Some(summary) if !summary.tasks.is_empty() => {
+            Some(summary)
+                if !summary.tasks.is_empty()
+                    && (summary.total_tasks == 0
+                        || summary.completed_tasks < summary.total_tasks) =>
+            {
                 let live_tasks = map_working_memory_tasks(&summary.tasks);
                 (
                     summary.active_task.clone(),
@@ -264,7 +268,7 @@ impl<'a> App<'a> {
                     ..
                 } => {
                     self.active_task = active_task.clone();
-                    if tasks.is_empty() {
+                    if tasks.is_empty() || (*total_tasks > 0 && *completed_tasks >= *total_tasks) {
                         self.active_plan = None;
                     } else {
                         let live_tasks = map_working_memory_tasks(tasks);
@@ -426,9 +430,7 @@ impl<'a> App<'a> {
                     let input_height = self.input_dock.required_height();
                     let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
                         !p.tasks.is_empty()
-                            && (self.is_working
-                                || p.total_tasks == 0
-                                || p.completed_tasks < p.total_tasks)
+                            && (p.total_tasks == 0 || p.completed_tasks < p.total_tasks)
                     });
                     let todo_height = if show_bottom_todo {
                         crate::ui::todo_widget::todo_widget_required_height(
@@ -807,7 +809,9 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.active_task = active_task.clone();
-                                if tasks.is_empty() {
+                                if tasks.is_empty()
+                                    || (total_tasks > 0 && completed_tasks >= total_tasks)
+                                {
                                     self.active_plan = None;
                                 } else {
                                     let live_tasks = map_working_memory_tasks(&tasks);

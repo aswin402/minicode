@@ -25,43 +25,160 @@ pub struct ReviewReport {
 pub struct GitReviewer;
 
 impl GitReviewer {
-    /// Audits uncommitted or staged changes in the workspace and produces a markdown review scorecard.
+    /// Discovers workspace source files for verification and review when `.git` is absent
+    /// or has no uncommitted diff (checking active transaction snapshots first, then walking source directories).
+    pub fn discover_workspace_source_files(workspace_root: &Path) -> Vec<String> {
+        if let Ok(Some(active_tx)) =
+            crate::session::transaction::TransactionManager::get_active(workspace_root)
+        {
+            let mut tx_files: Vec<String> = active_tx
+                .files
+                .iter()
+                .map(|f| f.relative_path.clone())
+                .filter(|rel| workspace_root.join(rel).is_file())
+                .collect();
+            tx_files.sort();
+            tx_files.dedup();
+            if !tx_files.is_empty() {
+                return tx_files;
+            }
+        }
+
+        let mut discovered = Vec::new();
+        let walker = ignore::WalkBuilder::new(workspace_root)
+            .max_depth(Some(5))
+            .hidden(true)
+            .git_ignore(true)
+            .build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(workspace_root) else {
+                continue;
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.is_empty()
+                || rel_str.starts_with("node_modules/")
+                || rel_str.starts_with("target/")
+                || rel_str.starts_with("dist/")
+                || rel_str.starts_with("build/")
+                || rel_str.starts_with(".next/")
+                || rel_str.starts_with(".minicode/")
+                || rel_str.starts_with("minikit_docs/")
+                || rel_str.starts_with("onpkg_docs/")
+                || rel_str.starts_with("screenshots/")
+                || rel_str.starts_with(".git/")
+            {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                ext.as_str(),
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
+                    | "css"
+                    | "html"
+                    | "py"
+                    | "go"
+                    | "vue"
+                    | "svelte"
+                    | "dart"
+            ) {
+                discovered.push(rel_str);
+            }
+        }
+        discovered.sort();
+        discovered.dedup();
+        discovered
+    }
+
+    /// Audits uncommitted or staged changes in the workspace (or workspace source files in non-git workspaces)
+    /// and produces a markdown review scorecard.
     pub async fn review_workspace(
         workspace_root: &Path,
         staged_only: bool,
     ) -> Result<ReviewReport> {
         let git = GitService::new(workspace_root.to_path_buf());
-        if !git.is_git_repo().await {
-            return Ok(ReviewReport {
-                total_score: 100,
-                files_audited: 0,
-                findings: vec![],
-                summary: "ℹ Workspace is not a git repository.".to_string(),
-            });
-        }
+        let (diff_text, target_files) = if git.is_git_repo().await {
+            let diff_text = git.diff(staged_only, None).await?;
+            let status = git.get_status().await?;
 
-        let diff_text = git.diff(staged_only, None).await?;
-        let status = git.get_status().await?;
+            let target_files = if staged_only {
+                status.staged
+            } else {
+                let mut all = status.staged;
+                all.extend(status.unstaged);
+                all.sort();
+                all.dedup();
+                all
+            };
 
-        let target_files = if staged_only {
-            status.staged
+            if target_files.is_empty() && diff_text.trim().is_empty() {
+                if staged_only {
+                    return Ok(ReviewReport {
+                        total_score: 100,
+                        files_audited: 0,
+                        findings: vec![],
+                        summary: "✔ Working tree is completely clean — zero staged diffs to audit."
+                            .to_string(),
+                    });
+                }
+                let fallback_files = Self::discover_workspace_source_files(workspace_root);
+                if fallback_files.is_empty() {
+                    return Ok(ReviewReport {
+                        total_score: 100,
+                        files_audited: 0,
+                        findings: vec![],
+                        summary:
+                            "✔ Working tree is completely clean — zero uncommitted diffs to audit."
+                                .to_string(),
+                    });
+                }
+                let mut synth_diff = String::new();
+                for rel in &fallback_files {
+                    if let Ok(content) = std::fs::read_to_string(workspace_root.join(rel)) {
+                        synth_diff.push_str(&format!("+++ b/{}\n", rel));
+                        for line in content.lines() {
+                            synth_diff.push_str(&format!("+{}\n", line));
+                        }
+                    }
+                }
+                (synth_diff, fallback_files)
+            } else {
+                (diff_text, target_files)
+            }
         } else {
-            let mut all = status.staged;
-            all.extend(status.unstaged);
-            all.sort();
-            all.dedup();
-            all
+            let fallback_files = Self::discover_workspace_source_files(workspace_root);
+            if fallback_files.is_empty() {
+                return Ok(ReviewReport {
+                    total_score: 100,
+                    files_audited: 0,
+                    findings: vec![],
+                    summary: "ℹ Workspace is not a git repository.".to_string(),
+                });
+            }
+            let mut synth_diff = String::new();
+            for rel in &fallback_files {
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(rel)) {
+                    synth_diff.push_str(&format!("+++ b/{}\n", rel));
+                    for line in content.lines() {
+                        synth_diff.push_str(&format!("+{}\n", line));
+                    }
+                }
+            }
+            (synth_diff, fallback_files)
         };
-
-        if target_files.is_empty() && diff_text.trim().is_empty() {
-            return Ok(ReviewReport {
-                total_score: 100,
-                files_audited: 0,
-                findings: vec![],
-                summary: "✔ Working tree is completely clean — zero uncommitted diffs to audit."
-                    .to_string(),
-            });
-        }
 
         let mut findings = Vec::new();
         let mut score = 100_u32;

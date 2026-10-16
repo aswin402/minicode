@@ -56,9 +56,13 @@ pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem>
 }
 
 /// Calculates the exact required row height for the inline todo widget.
+/// Automatically returns 0 once all tasks in the plan are completed so the TUI stays clean
+/// (completed roadmaps remain accessible via `/todo`).
 pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidgetStyle) -> u16 {
     match plan {
-        Some(p) if !p.tasks.is_empty() => {
+        Some(p)
+            if !p.tasks.is_empty() && (p.total_tasks == 0 || p.completed_tasks < p.total_tasks) =>
+        {
             let tasks = filter_inline_tasks(&p.tasks);
             let total_count: u16 = tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
             match style {
@@ -79,7 +83,7 @@ pub fn render_todo_widget<'a>(
     width: u16,
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
-    if plan.tasks.is_empty() {
+    if plan.tasks.is_empty() || (plan.total_tasks > 0 && plan.completed_tasks >= plan.total_tasks) {
         return Vec::new();
     }
 

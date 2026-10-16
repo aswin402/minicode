@@ -618,27 +618,27 @@ export default defineConfig([
 @import "tailwindcss";
 
 @theme {
-  --color-background: oklch(var(--background));
-  --color-foreground: oklch(var(--foreground));
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
 
-  --color-primary: oklch(var(--primary));
-  --color-primary-foreground: oklch(var(--primary-foreground));
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
 
-  --color-secondary: oklch(var(--secondary));
-  --color-secondary-foreground: oklch(var(--secondary-foreground));
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
 
-  --color-muted: oklch(var(--muted));
-  --color-muted-foreground: oklch(var(--muted-foreground));
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
 
-  --color-accent: oklch(var(--accent));
-  --color-accent-foreground: oklch(var(--accent-foreground));
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
 
-  --color-destructive: oklch(var(--destructive));
-  --color-destructive-foreground: oklch(var(--destructive-foreground));
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
 
-  --color-border: oklch(var(--border));
-  --color-input: oklch(var(--input));
-  --color-ring: oklch(var(--ring));
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
   --radius-lg: 0.5rem;
   --radius-md: calc(0.5rem - 2px);
@@ -650,40 +650,40 @@ export default defineConfig([
 
 @layer base {
   :root {
-    --background: 1 0 0;
-    --foreground: 0.141 0.005 285.823;
-    --primary: 0.59 0.201 273.444;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.949 0.029 303.081;
-    --secondary-foreground: 0.21 0.006 285.885;
-    --muted: 0.963 0.023 308.198;
-    --muted-foreground: 0.472 0.002 286.339;
-    --accent: 0.949 0.029 303.081;
-    --accent-foreground: 0.211 0.006 285.885;
-    --destructive: 0.637 0.208 25.331;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.92 0.02 285; /* Adjusted for better visibility */
-    --input: 0.92 0.02 285;
-    --ring: 0.59 0.201 273.444;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.141 0.005 285.823);
+    --primary: oklch(0.59 0.201 273.444);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.949 0.029 303.081);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.963 0.023 308.198);
+    --muted-foreground: oklch(0.472 0.002 286.339);
+    --accent: oklch(0.949 0.029 303.081);
+    --accent-foreground: oklch(0.211 0.006 285.885);
+    --destructive: oklch(0.637 0.208 25.331);
+    --destructive-foreground: oklch(0.985 0 0);
+    --border: oklch(0.92 0.02 285);
+    --input: oklch(0.92 0.02 285);
+    --ring: oklch(0.59 0.201 273.444);
     --radius: 0.5rem;
   }
 
   .dark {
-    --background: 0.141 0.005 285.823;
-    --foreground: 0.985 0 0;
-    --primary: 0.665 0.179 278.961;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.202 0.107 263.462;
-    --secondary-foreground: 0.985 0 0;
-    --muted: 0.167 0.112 264.144;
-    --muted-foreground: 0.673 0 0;
-    --accent: 0.202 0.107 263.462;
-    --accent-foreground: 0.985 0 0;
-    --destructive: 0.396 0.133 25.723;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.25 0.05 264; /* Adjusted for dark mode */
-    --input: 0.25 0.05 264;
-    --ring: 0.665 0.179 278.961;
+    --background: oklch(0.141 0.005 285.823);
+    --foreground: oklch(0.985 0 0);
+    --primary: oklch(0.665 0.179 278.961);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.202 0.107 263.462);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.167 0.112 264.144);
+    --muted-foreground: oklch(0.673 0 0);
+    --accent: oklch(0.202 0.107 263.462);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.396 0.133 25.723);
+    --destructive-foreground: oklch(0.985 0 0);
+    --border: oklch(0.25 0.05 264);
+    --input: oklch(0.25 0.05 264);
+    --ring: oklch(0.665 0.179 278.961);
   }
 }
 
@@ -2105,28 +2105,28 @@ export default defineConfig([
                 content: r###"@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Geist:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
-@theme {
-  --color-background: oklch(var(--background));
-  --color-foreground: oklch(var(--foreground));
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
 
-  --color-primary: oklch(var(--primary));
-  --color-primary-foreground: oklch(var(--primary-foreground));
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
 
-  --color-secondary: oklch(var(--secondary));
-  --color-secondary-foreground: oklch(var(--secondary-foreground));
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
 
-  --color-muted: oklch(var(--muted));
-  --color-muted-foreground: oklch(var(--muted-foreground));
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
 
-  --color-accent: oklch(var(--accent));
-  --color-accent-foreground: oklch(var(--accent-foreground));
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
 
-  --color-destructive: oklch(var(--destructive));
-  --color-destructive-foreground: oklch(var(--destructive-foreground));
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
 
-  --color-border: oklch(var(--border));
-  --color-input: oklch(var(--input));
-  --color-ring: oklch(var(--ring));
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
   --radius-lg: 0.5rem;
   --radius-md: calc(0.5rem - 2px);
@@ -2138,40 +2138,40 @@ export default defineConfig([
 
 @layer base {
   :root {
-    --background: 1 0 0;
-    --foreground: 0.141 0.005 285.823;
-    --primary: 0.59 0.201 273.444;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.949 0.029 303.081;
-    --secondary-foreground: 0.21 0.006 285.885;
-    --muted: 0.963 0.023 308.198;
-    --muted-foreground: 0.472 0.002 286.339;
-    --accent: 0.949 0.029 303.081;
-    --accent-foreground: 0.211 0.006 285.885;
-    --destructive: 0.637 0.208 25.331;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.92 0.02 285; /* Adjusted for better visibility */
-    --input: 0.92 0.02 285;
-    --ring: 0.59 0.201 273.444;
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.141 0.005 285.823);
+    --primary: oklch(0.59 0.201 273.444);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.949 0.029 303.081);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.963 0.023 308.198);
+    --muted-foreground: oklch(0.472 0.002 286.339);
+    --accent: oklch(0.949 0.029 303.081);
+    --accent-foreground: oklch(0.211 0.006 285.885);
+    --destructive: oklch(0.637 0.208 25.331);
+    --destructive-foreground: oklch(0.985 0 0);
+    --border: oklch(0.92 0.02 285);
+    --input: oklch(0.92 0.02 285);
+    --ring: oklch(0.59 0.201 273.444);
     --radius: 0.5rem;
   }
 
   .dark {
-    --background: 0.141 0.005 285.823;
-    --foreground: 0.985 0 0;
-    --primary: 0.665 0.179 278.961;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.202 0.107 263.462;
-    --secondary-foreground: 0.985 0 0;
-    --muted: 0.167 0.112 264.144;
-    --muted-foreground: 0.673 0 0;
-    --accent: 0.202 0.107 263.462;
-    --accent-foreground: 0.985 0 0;
-    --destructive: 0.396 0.133 25.723;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.25 0.05 264; /* Adjusted for dark mode */
-    --input: 0.25 0.05 264;
-    --ring: 0.665 0.179 278.961;
+    --background: oklch(0.141 0.005 285.823);
+    --foreground: oklch(0.985 0 0);
+    --primary: oklch(0.665 0.179 278.961);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.202 0.107 263.462);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.167 0.112 264.144);
+    --muted-foreground: oklch(0.673 0 0);
+    --accent: oklch(0.202 0.107 263.462);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.396 0.133 25.723);
+    --destructive-foreground: oklch(0.985 0 0);
+    --border: oklch(0.25 0.05 264);
+    --input: oklch(0.25 0.05 264);
+    --ring: oklch(0.665 0.179 278.961);
   }
 }
 
@@ -4665,108 +4665,9 @@ export const useUser = (userId: string) => {
 
 @custom-variant dark (&:is(.dark *));
 
-@theme {
-  --color-background: oklch(var(--background));
-  --color-foreground: oklch(var(--foreground));
-
-  --color-primary: oklch(var(--primary));
-  --color-primary-foreground: oklch(var(--primary-foreground));
-
-  --color-secondary: oklch(var(--secondary));
-  --color-secondary-foreground: oklch(var(--secondary-foreground));
-
-  --color-muted: oklch(var(--muted));
-  --color-muted-foreground: oklch(var(--muted-foreground));
-
-  --color-accent: oklch(var(--accent));
-  --color-accent-foreground: oklch(var(--accent-foreground));
-
-  --color-destructive: oklch(var(--destructive));
-  --color-destructive-foreground: oklch(var(--destructive-foreground));
-
-  --color-border: oklch(var(--border));
-  --color-input: oklch(var(--input));
-  --color-ring: oklch(var(--ring));
-
-  --radius-lg: 0.5rem;
-  --radius-md: calc(0.5rem - 2px);
-  --radius-sm: calc(0.5rem - 4px);
-
-  --font-heading: 'Manrope', sans-serif;
-  --font-body: 'Geist', sans-serif;
-}
-
-@layer base {
-  :root {
-    --background: 1 0 0;
-    --foreground: 0.141 0.005 285.823;
-    --primary: 0.59 0.201 273.444;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.949 0.029 303.081;
-    --secondary-foreground: 0.21 0.006 285.885;
-    --muted: 0.963 0.023 308.198;
-    --muted-foreground: 0.472 0.002 286.339;
-    --accent: 0.949 0.029 303.081;
-    --accent-foreground: 0.211 0.006 285.885;
-    --destructive: 0.637 0.208 25.331;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.92 0.02 285; /* Adjusted for better visibility */
-    --input: 0.92 0.02 285;
-    --ring: 0.59 0.201 273.444;
-    --radius: 0.5rem;
-  }
-
-  .dark {
-    --background: 0.141 0.005 285.823;
-    --foreground: 0.985 0 0;
-    --primary: 0.665 0.179 278.961;
-    --primary-foreground: 1 0 0;
-    --secondary: 0.202 0.107 263.462;
-    --secondary-foreground: 0.985 0 0;
-    --muted: 0.167 0.112 264.144;
-    --muted-foreground: 0.673 0 0;
-    --accent: 0.202 0.107 263.462;
-    --accent-foreground: 0.985 0 0;
-    --destructive: 0.396 0.133 25.723;
-    --destructive-foreground: 0.985 0 0;
-    --border: 0.25 0.05 264; /* Adjusted for dark mode */
-    --input: 0.25 0.05 264;
-    --ring: 0.665 0.179 278.961;
-  }
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
-  button:not(:disabled), [role="button"]:not(:disabled) {
-    cursor: pointer;
-  }
-  html {
-    @apply font-sans;
-  }
-}
-
-@layer base {
-  * {
-    @apply border-border;
-  }
-  body {
-    @apply bg-background text-foreground font-body;
-  }
-  h1, h2, h3, h4, h5, h6 {
-    @apply font-heading font-bold;
-  }
-  [id] {
-    scroll-margin-top: 5rem;
-  }
-  .reveal, .animate-reveal, [data-animate] {
-    opacity: 1;
-  }
-}
-
 @theme inline {
-  --font-heading: var(--font-sans);
+  --font-heading: 'Manrope', var(--font-sans), sans-serif;
+  --font-body: 'Geist', var(--font-sans), sans-serif;
   --font-sans: 'Inter Variable', sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -4785,6 +4686,7 @@ export const useUser = (userId: string) => {
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -4806,6 +4708,30 @@ export const useUser = (userId: string) => {
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-body;
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading font-bold;
+  }
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+  .reveal, .animate-reveal, [data-animate] {
+    opacity: 1;
+  }
 }
 
 :root {

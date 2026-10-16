@@ -288,7 +288,7 @@ pub async fn dispatch(
                     Some(fl) if !fl.is_empty() => fl,
                     _ => {
                         let git = GitService::new(workspace_root.to_path_buf());
-                        if git.is_git_repo().await {
+                        let git_files = if git.is_git_repo().await {
                             if let Ok(st) = git.get_status().await {
                                 let mut all = st.staged;
                                 all.extend(st.unstaged);
@@ -300,6 +300,11 @@ pub async fn dispatch(
                             }
                         } else {
                             vec![]
+                        };
+                        if git_files.is_empty() {
+                            GitReviewer::discover_workspace_source_files(workspace_root)
+                        } else {
+                            git_files
                         }
                     }
                 };

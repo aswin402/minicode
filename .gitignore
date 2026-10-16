@@ -31,3 +31,5 @@ test_playground/
 
 # Eval harness outputs
 scripts/eval/results/
+
+.crush/

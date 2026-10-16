@@ -724,7 +724,7 @@ impl WorkflowRouter {
 
     /// Injects pure workspace-state-driven MiniBlocks UI warehouse context without
     /// prompt keyword splitting or stop-word heuristics.
-    fn enrich_ui_design(workspace_root: &Path, _prompt: &str) -> Option<String> {
+    pub fn enrich_ui_design(workspace_root: &Path, _prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,

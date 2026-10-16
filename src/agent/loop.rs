@@ -1738,6 +1738,7 @@ impl AgentLoop {
                             event_sender.send(res_event)?;
 
                             let mut total_reconciled = 0;
+                            let mut plan_emitted = false;
                             if tool_result.success
                                 && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
                             {
@@ -1779,9 +1780,11 @@ impl AgentLoop {
                                     if reconciled > 0 {
                                         total_reconciled += reconciled;
                                         self.emit_current_plan(Some(turn_id), &event_sender);
+                                        plan_emitted = true;
                                     }
                                 } else if tool_call.name == "write_file" {
                                     self.emit_current_plan(Some(turn_id), &event_sender);
+                                    plan_emitted = true;
                                 }
                             }
 
@@ -1790,6 +1793,7 @@ impl AgentLoop {
                                     || tool_call.name == "power_plan")
                             {
                                 self.emit_current_plan(Some(turn_id), &event_sender);
+                                plan_emitted = true;
                             } else if tool_result.success
                                 && (tool_call.name == "kit_stack_add"
                                     || tool_call.name == "block_scaffold"
@@ -1805,6 +1809,7 @@ impl AgentLoop {
                                 if auto_reconciled_extra > 0 {
                                     total_reconciled += auto_reconciled_extra;
                                     self.emit_current_plan(Some(turn_id), &event_sender);
+                                    plan_emitted = true;
                                 }
 
                                 if tool_call.name == "kit_stack_add" {
@@ -1835,24 +1840,48 @@ impl AgentLoop {
                                     &tool_result.output,
                                 );
 
+                            // If kit_stack_add just scaffolded a UI workspace, immediately surface the framework-matched MiniBlocks catalog
+                            if tool_result.success && tool_call.name == "kit_stack_add" {
+                                if let Some(ui_enrichment) =
+                                    crate::agent::orchestrator::WorkflowRouter::enrich_ui_design(
+                                        &self.workspace_root,
+                                        "",
+                                    )
+                                {
+                                    output_for_llm.push_str("\n\n");
+                                    output_for_llm.push_str(&ui_enrichment);
+                                }
+                            }
+
                             // Dynamic Step Grounding & Progress Invariant Injection:
                             // Remind the agent of its active step so it executes atomically and never batches at the end
                             if tool_call.name != "update_progress" {
                                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                                     &self.workspace_root,
                                 );
+                                let has_ui_framework =
+                                    crate::blocks::seed::ProjectStackInfo::detect(
+                                        &self.workspace_root,
+                                    )
+                                    .framework
+                                    .is_some();
+                                let miniblocks_hint = if has_ui_framework {
+                                    " Use `block_search` / `block_scaffold` / `block_palettes` from MiniBlocks for UI components or theme tokens where applicable."
+                                } else {
+                                    ""
+                                };
                                 if total_reconciled > 0 {
                                     if let Some(summary) = wm.read_active_plan_summary() {
                                         if let Some(ref next_active) = summary.active_task {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: Step deliverable verified on disk. Progress: {}/{} tasks completed. Next Active Step: [>] \"{}\". Focus ONLY on this step now.]",
-                                                summary.completed_tasks, summary.total_tasks, next_active
+                                                "\n\n[Plan Auto-Advancement: Previous step deliverable verified on disk and ALREADY marked [x] completed (do NOT call `update_progress` for the completed step). Progress: {}/{} tasks completed. Next Active Step is now [>] \"{}\". Focus ONLY on this step now.{}]",
+                                                summary.completed_tasks, summary.total_tasks, next_active, miniblocks_hint
                                             ));
                                         } else if summary.completed_tasks == summary.total_tasks
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan completed (100%)! Next Step: Run `power_verify` (and optionally `power_review`), then call `archive_plan` to finalize.]",
+                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan are ALREADY marked [x] completed (100%)! Do NOT call `update_progress`. Next Step: Run `power_verify` (and optionally `power_review`), then call `archive_plan` to finalize.]",
                                                 summary.total_tasks
                                             ));
                                         }
@@ -1860,10 +1889,11 @@ impl AgentLoop {
                                 } else if let Some(summary) = wm.read_active_plan_summary() {
                                     if let Some(ref active) = summary.active_task {
                                         output_for_llm.push_str(&format!(
-                                            "\n\n[Active MiniPower Step: [>] \"{}\" (Step {}/{}). If this step is completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Do not batch progress updates at the end!]",
+                                            "\n\n[Active MiniPower Step: [>] \"{}\" (Step {}/{}). If this step is completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Do not batch progress updates at the end!{}]",
                                             active,
                                             summary.completed_tasks.saturating_add(1),
-                                            summary.total_tasks
+                                            summary.total_tasks,
+                                            miniblocks_hint
                                         ));
                                     }
                                 }
@@ -1897,7 +1927,8 @@ impl AgentLoop {
                                 }
                             }
 
-                            if tool_result.success
+                            if !plan_emitted
+                                && tool_result.success
                                 && (tool_call.name.contains("plan")
                                     || tool_call.name == "update_progress"
                                     || tool_call.arguments.to_string().contains("todo.md"))

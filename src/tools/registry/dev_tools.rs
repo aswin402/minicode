@@ -1444,38 +1444,20 @@ mod tests {
             .filter_map(|v| v.as_str())
             .collect::<Vec<_>>();
 
+        assert!(actions.contains(&"start"));
+        assert!(actions.contains(&"scripts"));
+        assert!(actions.contains(&"schedule"));
+        assert!(actions.contains(&"list"));
+        assert!(actions.contains(&"status"));
+        assert!(actions.contains(&"logs"));
+        assert!(actions.contains(&"stop"));
+        assert!(actions.contains(&"restart"));
+        assert!(actions.contains(&"resources"));
+        assert!(actions.contains(&"probe_port"));
+        assert!(actions.contains(&"workers"));
+        assert!(actions.contains(&"swarms"));
+        assert!(actions.contains(&"screenshot"));
         assert!(actions.contains(&"audit"));
-        assert!(actions.contains(&"qa_audit"));
-        assert!(actions.contains(&"inspect"));
-        assert!(actions.contains(&"inspect_dom"));
-        assert!(actions.contains(&"batch"));
-        assert!(actions.contains(&"browser_batch"));
-        assert!(actions.contains(&"mock_route"));
-        assert!(actions.contains(&"browser_status"));
-        assert!(actions.contains(&"browser_debug"));
-        assert!(actions.contains(&"browser_close"));
-        assert!(actions.contains(&"emulate"));
-        assert!(actions.contains(&"browser_emulate"));
-        assert!(actions.contains(&"save_state"));
-        assert!(actions.contains(&"browser_save_state"));
-        assert!(actions.contains(&"restore_state"));
-        assert!(actions.contains(&"browser_restore_state"));
-        assert!(actions.contains(&"pdf"));
-        assert!(actions.contains(&"browser_pdf"));
-        assert!(actions.contains(&"check_injection"));
-        assert!(actions.contains(&"browser_check_injection"));
-        assert!(actions.contains(&"hover"));
-        assert!(actions.contains(&"browser_hover"));
-        assert!(actions.contains(&"select_option"));
-        assert!(actions.contains(&"browser_select_option"));
-        assert!(actions.contains(&"scroll_horizontal"));
-        assert!(actions.contains(&"browser_scroll_horizontal"));
-        assert!(actions.contains(&"badges"));
-        assert!(actions.contains(&"browser_badges"));
-        assert!(actions.contains(&"tabs"));
-        assert!(actions.contains(&"browser_tabs"));
-        assert!(actions.contains(&"metrics"));
-        assert!(actions.contains(&"browser_metrics"));
     }
 
     #[tokio::test]

@@ -525,13 +525,15 @@ impl WorkingMemory {
         tasks
     }
 
-    /// Parses roadmap milestones and their tasks from canonical `todo.md`.
+    /// Parses roadmap milestones and their tasks from canonical `todo.md`
+    /// (falling back to `task_plan.md` or the latest archived plan in `.minicode/plan/archive/`).
     pub fn read_roadmap_milestones(&self) -> Vec<MilestonePhase> {
         let content = match self
             .read_roadmap_todo()
             .ok()
             .flatten()
             .or_else(|| self.read_task_plan().ok().flatten())
+            .or_else(|| self.read_latest_archived_plan())
         {
             Some(c) => c,
             None => return Vec::new(),
@@ -777,6 +779,26 @@ impl WorkingMemory {
         false
     }
 
+    /// Reads the task plan section of the most recent archived plan in `.minicode/plan/archive/` if any exists.
+    pub fn read_latest_archived_plan(&self) -> Option<String> {
+        let dir = self.archive_dir();
+        let entries = fs::read_dir(&dir).ok()?;
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        files.sort();
+        let latest = files.last()?;
+        let raw = fs::read_to_string(latest).ok()?;
+        let plan_section = raw.split("\n---\n").next().unwrap_or(&raw).trim();
+        if plan_section.is_empty() {
+            None
+        } else {
+            Some(plan_section.to_string())
+        }
+    }
+
     /// Reconciles any uncompleted plan step titles in `task_plan.md` and `todo.md` if they
     /// mention a different MiniKit stack identifier than the `chosen_stack` actually scaffolded.
     pub fn reconcile_stack_choice(&self, chosen_stack: &str) {
@@ -784,7 +806,8 @@ impl WorkingMemory {
         if chosen.is_empty() {
             return;
         }
-        let all_stacks: Vec<String> =
+        let chosen_lower = chosen.to_ascii_lowercase();
+        let mut all_stacks: Vec<String> =
             crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(None)
                 .into_iter()
                 .map(|s| s.name)
@@ -793,6 +816,8 @@ impl WorkingMemory {
         if all_stacks.is_empty() {
             return;
         }
+        // Sort longest stack names first so "react-vite" never matches inside "react-vite-gsap"
+        all_stacks.sort_by(|a, b| b.len().cmp(&a.len()));
 
         for path in [self.task_plan_path(), self.canonical_todo_path()] {
             let Ok(content) = fs::read_to_string(&path) else {
@@ -802,11 +827,26 @@ impl WorkingMemory {
             let mut new_lines = Vec::with_capacity(content.lines().count());
             for line in content.lines() {
                 let mut updated = line.to_string();
-                if line.contains("[ ]") || line.contains("[>]") {
+                if (line.contains("[ ]") || line.contains("[>]"))
+                    && !updated.to_ascii_lowercase().contains(&chosen_lower)
+                {
                     for other_stack in &all_stacks {
-                        if updated.contains(other_stack.as_str()) {
-                            updated = updated.replace(other_stack.as_str(), chosen);
-                            changed = true;
+                        if let Some(pos) = updated.find(other_stack.as_str()) {
+                            let before_ok = pos == 0
+                                || !updated[..pos].chars().next_back().is_some_and(|c| {
+                                    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+                                });
+                            let end = pos + other_stack.len();
+                            let after_ok = end >= updated.len()
+                                || !updated[end..].chars().next().is_some_and(|c| {
+                                    c.is_ascii_alphanumeric() || c == '-' || c == '_'
+                                });
+                            if before_ok && after_ok {
+                                updated =
+                                    format!("{}{}{}", &updated[..pos], chosen, &updated[end..]);
+                                changed = true;
+                                break;
+                            }
                         }
                     }
                 }

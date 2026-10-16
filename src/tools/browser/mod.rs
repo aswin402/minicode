@@ -605,19 +605,34 @@ impl BrowserController {
                 const styleTags = document.querySelectorAll('style').length;
                 const bodyComputed = (window.getComputedStyle && document.body) ? window.getComputedStyle(document.body) : null;
                 const htmlComputed = (window.getComputedStyle && document.documentElement) ? window.getComputedStyle(document.documentElement) : null;
-                const rootEl = document.querySelector('#root, main, body > div');
+                const rootEl = document.querySelector('#root > div, #app > div, main, #root, body > div');
                 const rootComputed = (window.getComputedStyle && rootEl) ? window.getComputedStyle(rootEl) : null;
                 const fontFamily = bodyComputed ? bodyComputed.fontFamily : "";
                 const isTransparent = (c) => !c || c === "rgba(0, 0, 0, 0)" || c === "transparent";
-                let bgColor = bodyComputed ? bodyComputed.backgroundColor : "";
-                if (isTransparent(bgColor) && rootComputed && !isTransparent(rootComputed.backgroundColor)) {
-                    bgColor = rootComputed.backgroundColor;
-                } else if (isTransparent(bgColor) && htmlComputed && !isTransparent(htmlComputed.backgroundColor)) {
-                    bgColor = htmlComputed.backgroundColor;
-                }
                 const h1 = document.querySelector('h1, h2');
                 const h1Computed = (window.getComputedStyle && h1) ? window.getComputedStyle(h1) : null;
                 const headingColor = h1Computed ? h1Computed.color : (bodyComputed ? bodyComputed.color : "");
+                let bgColor = "";
+                if (window.getComputedStyle && h1) {
+                    let anc = h1;
+                    while (anc && anc !== document) {
+                        const cs = window.getComputedStyle(anc);
+                        if (cs && !isTransparent(cs.backgroundColor)) {
+                            bgColor = cs.backgroundColor;
+                            break;
+                        }
+                        anc = anc.parentElement;
+                    }
+                }
+                if (isTransparent(bgColor) && bodyComputed && !isTransparent(bodyComputed.backgroundColor)) {
+                    bgColor = bodyComputed.backgroundColor;
+                }
+                if (isTransparent(bgColor) && rootComputed && !isTransparent(rootComputed.backgroundColor)) {
+                    bgColor = rootComputed.backgroundColor;
+                }
+                if (isTransparent(bgColor) && htmlComputed && !isTransparent(htmlComputed.backgroundColor)) {
+                    bgColor = htmlComputed.backgroundColor;
+                }
                 const parseRgb = (str) => {
                     if (!str || isTransparent(str)) return [255, 255, 255];
                     const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);

@@ -1,4 +1,5 @@
 use std::io::Write;
+#[cfg(not(test))]
 use std::process::{Command, Stdio};
 
 /// Copies text to the system clipboard using native desktop utilities with OSC 52 fallback.
@@ -7,9 +8,10 @@ use std::process::{Command, Stdio};
 /// On Windows: tries `powershell -command Set-Clipboard`.
 /// Always also sends the terminal OSC 52 sequence so remote SSH / tmux sessions work.
 pub fn copy_to_clipboard(text: &str) -> bool {
+    #[allow(unused_mut)]
     let mut native_copied = false;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(test)))]
     {
         // 1. Try wl-copy first if on Wayland
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {

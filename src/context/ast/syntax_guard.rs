@@ -149,7 +149,97 @@ impl SyntaxGuard {
     ///   2. The proposed content parses cleanly without syntax errors.
     ///   3. The original content already contained syntax errors (allows repairing broken files).
     /// - Returns `Err(diagnostic)` if the original file was syntactically valid but the proposed
-    ///   content introduces syntax errors (broken braces, unclosed quotes, incomplete statements).
+    /// Checks CSS files for fatal semantic errors:
+    /// 1. Double-wrapped color functions (`oklch(var(--foo))` / `hsl(var(--foo))` / `rgb(var(--foo))`)
+    ///    when `--foo` is defined in the same stylesheet with a complete color value (`oklch(...)`, `hsl(...)`, `rgb(...)`, `#...`).
+    ///    This evaluates to `oklch(oklch(...))` at runtime, causing all colors/backgrounds to collapse to transparent!
+    /// 2. `@apply border-border` in Tailwind v4 stylesheets when neither `--color-border` nor `--border` is defined.
+    pub fn check_css_semantic_barrier(path: &Path, content: &str) -> Result<(), String> {
+        static VAR_DEF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(--[a-zA-Z0-9_-]+)\s*:\s*([^;\}]+)")
+                .expect("valid css var def regex")
+        });
+        static WRAPPED_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(oklch|hsl|rgb|rgba|hsla)\(\s*var\(\s*(--[a-zA-Z0-9_-]+)\s*\)")
+                .expect("valid wrapped css var regex")
+        });
+
+        let mut complete_color_vars = std::collections::HashMap::new();
+        let mut all_defined_vars = std::collections::HashSet::new();
+
+        for cap in VAR_DEF_RE.captures_iter(content) {
+            if let (Some(var_match), Some(val_match)) = (cap.get(1), cap.get(2)) {
+                let var_name = var_match.as_str().trim();
+                let val = val_match.as_str().trim();
+                all_defined_vars.insert(var_name.to_string());
+                let lower = val.to_ascii_lowercase();
+                if lower.starts_with("oklch(")
+                    || lower.starts_with("hsl(")
+                    || lower.starts_with("hsla(")
+                    || lower.starts_with("rgb(")
+                    || lower.starts_with("rgba(")
+                    || lower.starts_with('#')
+                {
+                    complete_color_vars.insert(var_name.to_string(), val.to_string());
+                }
+            }
+        }
+
+        let mut double_wrapped = Vec::new();
+        for cap in WRAPPED_VAR_RE.captures_iter(content) {
+            if let (Some(fn_match), Some(var_match)) = (cap.get(1), cap.get(2)) {
+                let fn_name = fn_match.as_str();
+                let var_name = var_match.as_str();
+                if let Some(def_val) = complete_color_vars.get(var_name) {
+                    let entry = format!(
+                        "`{fn_name}(var({var_name}))` where `{var_name}: {def_val}` -> evaluates to invalid `{fn_name}({def_val})`"
+                    );
+                    if !double_wrapped.contains(&entry) {
+                        double_wrapped.push(entry);
+                    }
+                }
+            }
+        }
+
+        if !double_wrapped.is_empty() {
+            let file_display = path.display();
+            let issues = double_wrapped.join("\n  - ");
+            return Err(format!(
+                "[CSS Semantic Barrier Rejected]:\n\
+                 The proposed edit to '{file_display}' contains double-wrapped CSS color function variable(s):\n\
+                   - {issues}\n\
+                 Wrapping `var(--token)` inside `oklch(...)` / `hsl(...)` / `rgb(...)` when `--token` already holds a complete color value produces invalid CSS at runtime (causing backgrounds and text colors to silently fail and render transparent/white).\n\
+                 CRITICAL: The proposed edit was REJECTED and file contents on disk were preserved untouched.\n\
+                 Guidance:\n\
+                 - In `@theme` or `@theme inline`, reference the CSS variable directly WITHOUT wrapping: `--color-background: var(--background);`\n\
+                 - Keep `:root` / `.dark` variables as complete color values: `--background: oklch(0.14 0.01 260);`"
+            ));
+        }
+
+        let is_tailwind_v4 = content.contains("@import \"tailwindcss\"")
+            || content.contains("@import 'tailwindcss'")
+            || content.contains("@theme");
+        if is_tailwind_v4
+            && content.contains("@apply")
+            && content.contains("border-border")
+            && !all_defined_vars.contains("--color-border")
+            && !all_defined_vars.contains("--border")
+        {
+            let file_display = path.display();
+            return Err(format!(
+                "[CSS Semantic Barrier Rejected]:\n\
+                 The proposed edit to '{file_display}' uses `@apply border-border` in a Tailwind v4 stylesheet without defining `--color-border` in `@theme` (or `--border`).\n\
+                 This causes Vite/Tailwind CSS builds to crash with: `Cannot apply unknown utility class: border-border`.\n\
+                 CRITICAL: The proposed edit was REJECTED and file contents on disk were preserved untouched.\n\
+                 Guidance:\n\
+                 - Either define `--color-border: var(--border);` inside `@theme inline` (and `--border: oklch(...);` in `:root`),\n\
+                 - Or remove `@apply border-border;` / replace it with standard border token utilities that you have defined in `@theme`."
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn check_syntax_barrier(
         path: &Path,
         original_content: &str,
@@ -161,7 +251,7 @@ impl SyntaxGuard {
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        // 0. Pre-write Semantic Barrier: Check for removed brand icons from 'lucide-react'
+        // 0. Pre-write Semantic Barrier: Check for removed brand icons from 'lucide-react' or broken CSS variables
         if ext == "ts"
             || ext == "tsx"
             || ext == "js"
@@ -193,6 +283,8 @@ impl SyntaxGuard {
                     ));
                 }
             }
+        } else if ext == "css" {
+            Self::check_css_semantic_barrier(path, new_content)?;
         }
 
         let lang = match Self::language_for_path(path) {
@@ -385,5 +477,41 @@ mod tests {
         assert!(msg.contains("[AST Import Barrier Rejected]"));
         assert!(msg.contains("GitHubAction"));
         assert!(msg.contains("TwitterIcon"));
+    }
+
+    #[test]
+    fn test_css_double_wrapped_oklch_rejected() {
+        let path = PathBuf::from("src/index.css");
+        let orig = "";
+        let new = "@import \"tailwindcss\";\n@theme {\n  --color-background: oklch(var(--bg-base));\n}\n:root {\n  --bg-base: oklch(0.05 0 0);\n}\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
+        assert!(msg.contains("oklch(var(--bg-base))"));
+    }
+
+    #[test]
+    fn test_css_missing_border_border_rejected() {
+        let path = PathBuf::from("src/index.css");
+        let orig = "";
+        let new = "@import \"tailwindcss\";\n@theme {\n  --color-background: var(--bg-base);\n}\n@layer base {\n  * {\n    @apply border-border;\n  }\n}\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
+        assert!(msg.contains("border-border"));
+    }
+
+    #[test]
+    fn test_css_clean_tailwind_v4_passes() {
+        let path = PathBuf::from("src/index.css");
+        let orig = "";
+        let new = "@import \"tailwindcss\";\n@theme inline {\n  --color-background: var(--background);\n  --color-border: var(--border);\n}\n:root {\n  --background: oklch(0.05 0 0);\n  --border: oklch(0.2 0 0);\n}\n@layer base {\n  * {\n    @apply border-border;\n  }\n}\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(res.is_ok());
     }
 }
