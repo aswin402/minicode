@@ -729,6 +729,7 @@ impl AgentLoop {
         };
         let mut iteration = 0;
         let mut heal_attempts = 0;
+        let mut plan_continuation_nudges: usize = 0;
         let mut was_cancelled = false;
         let mut circuit_tripped = false;
         let mut hit_iteration_limit = false;
@@ -930,14 +931,25 @@ impl AgentLoop {
 
                     if let Some(err) = stream_error {
                         let err_msg = err.to_string().to_lowercase();
-                        let is_benign_eof = err_msg.contains("stream ended")
+                        let is_benign_eof = (err_msg.contains("stream ended")
                             || err_msg.contains("connection reset")
                             || err_msg.contains("broken pipe")
                             || err_msg.contains("unexpected eof")
                             || err_msg.contains("connection closed")
                             || err_msg.contains("error decoding response body")
                             || err_msg.contains("incomplete message")
-                            || err_msg.contains("channel closed");
+                            || err_msg.contains("channel closed"))
+                            && !err_msg.contains("incomplete tool call");
+
+                        let visible_text =
+                            crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                        let has_unfinished_plan =
+                            crate::context::memory::working_memory::WorkingMemory::new(
+                                &self.workspace_root,
+                            )
+                            .read_active_plan_summary()
+                            .map(|s| s.total_tasks > 0 && s.completed_tasks < s.total_tasks)
+                            .unwrap_or(false);
 
                         if !pending_tool_calls.is_empty() {
                             tracing::info!(
@@ -945,10 +957,13 @@ impl AgentLoop {
                                 pending_tool_calls.len(),
                                 err_msg
                             );
-                        } else if is_benign_eof && !iteration_text.trim().is_empty() {
+                        } else if is_benign_eof
+                            && !visible_text.trim().is_empty()
+                            && !has_unfinished_plan
+                        {
                             tracing::info!(
-                                "Tolerating trailing stream closure after receiving response ({} chars): {}",
-                                iteration_text.len(),
+                                "Tolerating trailing stream closure after receiving response ({} visible chars): {}",
+                                visible_text.len(),
                                 err_msg
                             );
                         } else if retry_count < max_retries {
@@ -2256,8 +2271,7 @@ impl AgentLoop {
                     }
                 }
 
-                // No more tool calls and workspace compiles cleanly; assistant finished turn
-                // Reconcile any tasks whose deliverables are complete on disk so UI never lingers
+                // No more tool calls and workspace compiles cleanly; reconcile deliverables first
                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                     &self.workspace_root,
                 );
@@ -2265,6 +2279,49 @@ impl AgentLoop {
                 self.emit_current_plan(Some(turn_id), &event_sender);
 
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
+
+                // If an active plan still has unfinished steps and the model stopped mid-plan
+                // (e.g., after a narration-only message like "Let me build all three in parallel"),
+                // nudge it to continue executing the active step instead of stranding the user.
+                let any_cancelled_tool = turn_tool_results
+                    .iter()
+                    .any(|r| r.output.contains("cancelled") || r.output.contains("rejected by user"));
+                if !was_cancelled
+                    && !circuit_tripped
+                    && !any_cancelled_tool
+                    && plan_continuation_nudges < 2
+                    && (!turn_tool_calls.is_empty() || !clean_text.trim().is_empty())
+                {
+                    if let Some(plan_summary) = wm.read_active_plan_summary() {
+                        if plan_summary.total_tasks > 0
+                            && plan_summary.completed_tasks < plan_summary.total_tasks
+                        {
+                            plan_continuation_nudges += 1;
+                            let next_step = plan_summary
+                                .active_task
+                                .unwrap_or_else(|| "the next incomplete step".to_string());
+                            tracing::info!(
+                                completed = plan_summary.completed_tasks,
+                                total = plan_summary.total_tasks,
+                                nudge = plan_continuation_nudges,
+                                "Active plan has incomplete tasks ({}/{}) with no tool calls in this iteration; nudging continuation",
+                                plan_summary.completed_tasks,
+                                plan_summary.total_tasks
+                            );
+                            if !clean_text.trim().is_empty() {
+                                self.messages.push(Message::assistant(clean_text));
+                            }
+                            self.messages.push(Message::user(format!(
+                                "[System: Active plan is {}/{} complete. Continue executing `{}` now by invoking the required tool calls, or call `update_progress` / `archive_plan` if all tasks are already finished.]",
+                                plan_summary.completed_tasks,
+                                plan_summary.total_tasks,
+                                next_step
+                            )));
+                            continue;
+                        }
+                    }
+                }
+
                 self.messages.push(Message::assistant(clean_text));
                 break;
             }
@@ -3434,4 +3491,83 @@ mod inquiry_tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    struct ThinkOnlyDropThenSuccessProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for ThinkOnlyDropThenSuccessProvider {
+        fn name(&self) -> &str {
+            "think-only-drop-provider"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            let call_idx = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call_idx == 0 {
+                // Attempt 0: Stream drops right after <think> block before tool call arrives
+                let s = async_stream::stream! {
+                    yield Ok(StreamChunk::Delta("<think>Planning next component...</think>".to_string()));
+                    yield Err(crate::error::ProviderError::StreamDecode(
+                        "SSE stream transport error: error decoding response body".to_string(),
+                    ).into());
+                };
+                return Ok(Box::pin(s));
+            }
+            if call_idx == 1 {
+                // Attempt 1 (retry): Emits the tool call cleanly
+                let s = async_stream::stream! {
+                    yield Ok(StreamChunk::Delta("Searching workspace files.\n".to_string()));
+                    yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                        id: "call_retry_ok".to_string(),
+                        name: "file_search".to_string(),
+                        arguments: serde_json::json!({ "pattern": "*" }),
+                    }));
+                    yield Ok(StreamChunk::Done);
+                };
+                return Ok(Box::pin(s));
+            }
+            let s = async_stream::stream! {
+                yield Ok(StreamChunk::Delta("Done.".to_string()));
+                yield Ok(StreamChunk::Done);
+            };
+            Ok(Box::pin(s))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_closure_after_think_only_retries_instead_of_exiting() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_think_drop_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let config = Config::default();
+        let provider = Box::new(ThinkOnlyDropThenSuccessProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let turn = agent_loop
+            .execute_turn("continue", tx, None)
+            .await
+            .expect("turn should retry after think-only stream drop and succeed");
+
+        assert_eq!(
+            turn.tool_results.len(),
+            1,
+            "Expected retry to execute the tool call instead of prematurely ending turn"
+        );
+        assert_eq!(turn.tool_results[0].tool_name, "file_search");
+        assert!(turn.tool_results[0].success);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+

@@ -596,6 +596,7 @@ impl Provider for AnthropicProvider {
                         // If tool calls were already completely accumulated before the stream broke,
                         // drain them first so AgentLoop has a chance to execute them
                         let mut parsed_any_tool_calls = false;
+                        let mut had_incomplete_tool_calls = false;
                         for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&args_str) {
                                 yield Ok(StreamChunk::ToolCallChunk(ToolCall {
@@ -604,6 +605,8 @@ impl Provider for AnthropicProvider {
                                     arguments: val,
                                 }));
                                 parsed_any_tool_calls = true;
+                            } else {
+                                had_incomplete_tool_calls = true;
                             }
                         }
 
@@ -615,19 +618,26 @@ impl Provider for AnthropicProvider {
                             break;
                         }
 
+                        let suffix = if had_incomplete_tool_calls {
+                            " (incomplete tool call truncated mid-stream)"
+                        } else {
+                            ""
+                        };
+
                         let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
                             if te.is_timeout() {
                                 ProviderError::Network(format!(
-                                    "Anthropic SSE stream read timeout (no data received for {}s)",
-                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                                    "Anthropic SSE stream read timeout (no data received for {}s){}",
+                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+                                    suffix
                                 ))
                             } else if te.is_connect() {
-                                ProviderError::Network(format!("Anthropic SSE stream connection error: {}", te))
+                                ProviderError::Network(format!("Anthropic SSE stream connection error: {}{}", te, suffix))
                             } else {
-                                ProviderError::StreamDecode(format!("Anthropic SSE stream transport error: {}", te))
+                                ProviderError::StreamDecode(format!("Anthropic SSE stream transport error: {}{}", te, suffix))
                             }
                         } else {
-                            ProviderError::StreamDecode(format!("Anthropic SSE stream error: {}", err_str))
+                            ProviderError::StreamDecode(format!("Anthropic SSE stream error: {}{}", err_str, suffix))
                         };
 
                         yield Err(classified_err.into());
