@@ -677,6 +677,20 @@ impl BrowserController {
                 const isDefaultSerif = (fLower.includes("times") || /(^|[\s,])serif([\s,]|$)/i.test(fLower)) && !fLower.includes("sans-serif");
                 const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
                 const semanticSections = document.querySelectorAll('section, main, article, nav, header, footer').length;
+                const allSections = Array.from(document.querySelectorAll('section'));
+                const hiddenSections = allSections.filter(s => {
+                    if (!window.getComputedStyle) return false;
+                    const cs = window.getComputedStyle(s);
+                    return cs && cs.display !== 'none' && parseFloat(cs.opacity) === 0;
+                }).length;
+                const visibleNavs = Array.from(document.querySelectorAll('nav')).filter(n => {
+                    if (!window.getComputedStyle) return true;
+                    const cs = window.getComputedStyle(n);
+                    if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return false;
+                    const r = n.getBoundingClientRect();
+                    return r.width > 100 && r.height > 20 && r.top >= -10 && r.top < 80;
+                });
+                const overlappingTopNavs = visibleNavs.length > 1;
                 return JSON.stringify({
                     title,
                     hasHead,
@@ -690,7 +704,10 @@ impl BrowserController {
                     contrastRatio,
                     isDefaultSerif,
                     bodyTextLen,
-                    semanticSections
+                    semanticSections,
+                    hiddenSections,
+                    totalSectionTags: allSections.length,
+                    overlappingTopNavs
                 });
             } catch(e) {
                 return JSON.stringify({ error: e.toString() });
@@ -739,6 +756,18 @@ impl BrowserController {
                     .get("semanticSections")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let hidden_sections = probe
+                    .get("hiddenSections")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let total_section_tags = probe
+                    .get("totalSectionTags")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let overlapping_top_navs = probe
+                    .get("overlappingTopNavs")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                 if !has_head || !has_body {
@@ -748,6 +777,15 @@ impl BrowserController {
                     health_notes.push("⚠ UNSTYLED PAGE ALERT: 0 active stylesheets found! The page is rendering raw unstyled HTML. Check if `<link rel=\"stylesheet\">` is missing in index.html.".to_string());
                 } else if is_default_serif {
                     health_notes.push(format!("⚠ UNSTYLED FONT WARNING: Page body is displaying default browser serif font ('{}'). Check if your CSS stylesheet was loaded.", font_family));
+                }
+                if overlapping_top_navs {
+                    health_notes.push("⚠ DUPLICATE NAVBAR OVERLAP DEFECT: Multiple visible `<nav>` bars are rendering at the top of the page! If `src/layouts/RootLayout.tsx` renders `<Navbar />`, remove the duplicate navbar or update `RootLayout.tsx`.".to_string());
+                }
+                if hidden_sections > 0 {
+                    health_notes.push(format!(
+                        "⚠ INVISIBLE SECTIONS WARNING: {} of {} `<section>` elements have computed `opacity: 0` and are invisible! Avoid locking sections at `opacity: 0` in scroll-reveal animations without immediate fallback.",
+                        hidden_sections, total_section_tags
+                    ));
                 }
                 if let Some(ratio) = contrast_ratio {
                     if ratio < 2.0 {

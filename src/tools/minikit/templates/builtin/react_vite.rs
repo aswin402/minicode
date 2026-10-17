@@ -1471,9 +1471,12 @@ import { ThemeProvider } from '@/components/ThemeProvider';
 export function RootLayout() {
   return (
     <ThemeProvider>
-      <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
-        <Navbar />
-        <main className="pt-16">
+      <div data-template-shell className="min-h-screen bg-background text-foreground transition-colors duration-300">
+        <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+        <div data-template-navbar>
+          <Navbar />
+        </div>
+        <main data-template-outlet className="pt-16">
           <Outlet />
         </main>
       </div>
@@ -2959,9 +2962,12 @@ import { ThemeProvider } from '@/components/ThemeProvider';
 export function RootLayout() {
   return (
     <ThemeProvider>
-      <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
-        <Navbar />
-        <main className="pt-16">
+      <div data-template-shell className="min-h-screen bg-background text-foreground transition-colors duration-300">
+        <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+        <div data-template-navbar>
+          <Navbar />
+        </div>
+        <main data-template-outlet className="pt-16">
           <Outlet />
         </main>
       </div>
@@ -4835,12 +4841,17 @@ export function RootLayout() {
 
   return (
     <ThemeProvider>
-      <div className="min-h-screen flex flex-col bg-background text-foreground transition-colors duration-300">
-        <Navbar />
-        <main className="pt-16 flex-grow">
+      <div data-template-shell className="min-h-screen flex flex-col bg-background text-foreground transition-colors duration-300">
+        <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar], [data-template-shell]:has([data-template-outlet] footer) > [data-template-footer] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+        <div data-template-navbar>
+          <Navbar />
+        </div>
+        <main data-template-outlet className="pt-16 flex-grow">
           <Outlet />
         </main>
-        <Footer />
+        <div data-template-footer>
+          <Footer />
+        </div>
       </div>
     </ThemeProvider>
   );
@@ -5223,22 +5234,19 @@ export function HomePage() {
         '-=0.5'
       );
 
-      // 2. ScrollTrigger Scroll Reveal for Cards Grid
-      gsap.fromTo('.feature-card-wrapper',
-        { opacity: 0, y: 50 },
-        {
-          opacity: 1,
-          y: 0,
-          duration: 0.8,
-          stagger: 0.18,
-          ease: 'power2.out',
-          scrollTrigger: {
-            trigger: '.features-section',
-            start: 'top 85%',
-            toggleActions: 'play none none none',
-          }
-        }
-      );
+      // 2. ScrollTrigger Scroll Reveal for Cards Grid (keep opacity: 1 so below-the-fold sections remain visible in headless screenshots)
+      gsap.from('.feature-card-wrapper', {
+        y: 32,
+        duration: 0.8,
+        stagger: 0.14,
+        ease: 'power2.out',
+        clearProps: 'transform',
+        scrollTrigger: {
+          trigger: '.features-section',
+          start: 'top 85%',
+          toggleActions: 'play none none none',
+        },
+      });
     }, containerRef);
 
     return () => ctx.revert();
@@ -5247,7 +5255,10 @@ export function HomePage() {
   return (
     <div ref={containerRef} className="relative min-h-[calc(100vh-4rem)] flex flex-col justify-between overflow-hidden bg-background text-foreground">
       {/* Decorative ambient glowing background */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] bg-primary/10 rounded-full blur-[140px] pointer-events-none" />
+      <div
+        className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] rounded-full pointer-events-none"
+        style={{ background: 'radial-gradient(circle, oklch(0.6 0.2 260 / 0.14) 0%, transparent 70%)' }}
+      />
 
       {/* Main Hero Container */}
       <section id="center" className="flex-1 flex flex-col items-center justify-center p-8 max-w-4xl mx-auto w-full text-center relative z-10 pt-16 scroll-mt-20">
