@@ -632,9 +632,7 @@ impl MarkdownRenderer {
                     }
                 }
             } else {
-                for w in &mut col_widths {
-                    *w = fair_share;
-                }
+                col_widths.fill(fair_share);
             }
 
             // Final pass: clamp any excess due to rounding

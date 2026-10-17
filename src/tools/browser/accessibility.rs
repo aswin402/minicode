@@ -82,15 +82,37 @@ impl AccessibilityManager {
                 if let Some(id_attr) = extract_attribute(tag_content, "id") {
                     attrs.insert("id".to_string(), id_attr);
                 }
+                if let Some(aria_label) = extract_attribute(tag_content, "aria-label") {
+                    attrs.insert("aria-label".to_string(), aria_label);
+                }
+                if let Some(title_attr) = extract_attribute(tag_content, "title") {
+                    attrs.insert("title".to_string(), title_attr);
+                }
 
                 let display_name = if !clean_name.is_empty() {
                     clean_name
-                } else if let Some(placeholder) = attrs.get("placeholder") {
-                    placeholder.clone()
-                } else if let Some(name) = attrs.get("name") {
-                    name.clone()
-                } else if let Some(id) = attrs.get("id") {
-                    id.clone()
+                } else if let Some(aria_label) =
+                    attrs.get("aria-label").filter(|s| !s.trim().is_empty())
+                {
+                    aria_label.trim().to_string()
+                } else if let Some(title) = attrs.get("title").filter(|s| !s.trim().is_empty()) {
+                    title.trim().to_string()
+                } else if let Some(alt) =
+                    extract_attribute(tag_content, "alt").filter(|s| !s.trim().is_empty())
+                {
+                    alt.trim().to_string()
+                } else if let Some(placeholder) =
+                    attrs.get("placeholder").filter(|s| !s.trim().is_empty())
+                {
+                    placeholder.trim().to_string()
+                } else if let Some(value) =
+                    extract_attribute(tag_content, "value").filter(|s| !s.trim().is_empty())
+                {
+                    value.trim().to_string()
+                } else if let Some(name) = attrs.get("name").filter(|s| !s.trim().is_empty()) {
+                    name.trim().to_string()
+                } else if let Some(id) = attrs.get("id").filter(|s| !s.trim().is_empty()) {
+                    id.trim().to_string()
                 } else {
                     format!("Unnamed {}", default_role)
                 };
@@ -246,10 +268,44 @@ fn extract_attribute(tag_str: &str, attr_name: &str) -> Option<String> {
     None
 }
 
+fn strip_non_text_blocks(s: &str) -> String {
+    let mut current = s.to_string();
+    for tag in ["script", "style", "svg", "noscript"] {
+        let open_pat = format!("<{}", tag);
+        let close_pat = format!("</{}>", tag);
+        loop {
+            let lower = current.to_ascii_lowercase();
+            let Some(start) = lower.find(&open_pat) else {
+                break;
+            };
+            // Verify the character after `<tag` is whitespace, `>`, or `/`
+            let after_idx = start + open_pat.len();
+            let valid_tag = lower
+                .as_bytes()
+                .get(after_idx)
+                .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/');
+            if !valid_tag {
+                // Replace the `<` with space temporarily so we don't infinite loop on e.g. `<scripture>`
+                current.replace_range(start..start + 1, " ");
+                continue;
+            }
+            if let Some(end_rel) = lower[after_idx..].find(&close_pat) {
+                let end = after_idx + end_rel + close_pat.len();
+                current.replace_range(start..end, " ");
+            } else {
+                current.replace_range(start.., " ");
+                break;
+            }
+        }
+    }
+    current
+}
+
 fn strip_tags(s: &str) -> String {
+    let cleaned = strip_non_text_blocks(s);
     let mut out = String::new();
     let mut in_tag = false;
-    for c in s.chars() {
+    for c in cleaned.chars() {
         if c == '<' {
             in_tag = true;
         } else if c == '>' {
@@ -274,13 +330,16 @@ mod tests {
             <div>
                 <button type="submit">Submit Form</button>
                 <input type="text" name="username" placeholder="Enter username" />
+                <a href="https://github.com" aria-label="GitHub"><svg><title>Internal SVG Title</title></svg></a>
             </div>
         "#;
 
         let elements = mgr.update_from_html(html);
-        assert_eq!(elements.len(), 2);
+        assert_eq!(elements.len(), 3);
         assert_eq!(elements[0].ref_id, "@v1:e1");
         assert_eq!(elements[1].ref_id, "@v1:e2");
+        assert_eq!(elements[2].ref_id, "@v1:e3");
+        assert_eq!(elements[2].name, "GitHub");
 
         // Resolve exact ref
         let el = mgr.resolve_ref("@v1:e1").unwrap();

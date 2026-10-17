@@ -1595,13 +1595,40 @@ fn extract_interactive_elements(html: &str) -> Vec<AriaElement> {
             if let Some(placeholder) = extract_attr(tag_content, "placeholder") {
                 attrs.insert("placeholder".to_string(), placeholder);
             }
+            if let Some(id_attr) = extract_attr(tag_content, "id") {
+                attrs.insert("id".to_string(), id_attr);
+            }
+            if let Some(aria_label) = extract_attr(tag_content, "aria-label") {
+                attrs.insert("aria-label".to_string(), aria_label);
+            }
+            if let Some(title_attr) = extract_attr(tag_content, "title") {
+                attrs.insert("title".to_string(), title_attr);
+            }
 
             let display_name = if !clean_name.is_empty() {
                 clean_name
-            } else if let Some(placeholder) = attrs.get("placeholder") {
-                placeholder.clone()
-            } else if let Some(name) = attrs.get("name") {
-                name.clone()
+            } else if let Some(aria_label) =
+                attrs.get("aria-label").filter(|s| !s.trim().is_empty())
+            {
+                aria_label.trim().to_string()
+            } else if let Some(title) = attrs.get("title").filter(|s| !s.trim().is_empty()) {
+                title.trim().to_string()
+            } else if let Some(alt) =
+                extract_attr(tag_content, "alt").filter(|s| !s.trim().is_empty())
+            {
+                alt.trim().to_string()
+            } else if let Some(placeholder) =
+                attrs.get("placeholder").filter(|s| !s.trim().is_empty())
+            {
+                placeholder.trim().to_string()
+            } else if let Some(value) =
+                extract_attr(tag_content, "value").filter(|s| !s.trim().is_empty())
+            {
+                value.trim().to_string()
+            } else if let Some(name) = attrs.get("name").filter(|s| !s.trim().is_empty()) {
+                name.trim().to_string()
+            } else if let Some(id) = attrs.get("id").filter(|s| !s.trim().is_empty()) {
+                id.trim().to_string()
             } else {
                 format!("Unnamed {}", default_role)
             };
@@ -1636,10 +1663,43 @@ fn extract_attr(tag_str: &str, attr_name: &str) -> Option<String> {
     None
 }
 
+fn strip_non_text_elements(s: &str, extra_tags: &[&str]) -> String {
+    let mut current = s.to_string();
+    let base_tags = ["script", "style", "svg", "noscript"];
+    for &tag in base_tags.iter().chain(extra_tags.iter()) {
+        let open_pat = format!("<{}", tag);
+        let close_pat = format!("</{}>", tag);
+        loop {
+            let lower = current.to_ascii_lowercase();
+            let Some(start) = lower.find(&open_pat) else {
+                break;
+            };
+            let after_idx = start + open_pat.len();
+            let valid_tag = lower
+                .as_bytes()
+                .get(after_idx)
+                .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/');
+            if !valid_tag {
+                current.replace_range(start..start + 1, " ");
+                continue;
+            }
+            if let Some(end_rel) = lower[after_idx..].find(&close_pat) {
+                let end = after_idx + end_rel + close_pat.len();
+                current.replace_range(start..end, " ");
+            } else {
+                current.replace_range(start.., " ");
+                break;
+            }
+        }
+    }
+    current
+}
+
 fn strip_html_tags(s: &str) -> String {
+    let cleaned = strip_non_text_elements(s, &[]);
     let mut out = String::new();
     let mut in_tag = false;
-    for c in s.chars() {
+    for c in cleaned.chars() {
         if c == '<' {
             in_tag = true;
         } else if c == '>' {
@@ -1752,7 +1812,8 @@ pub async fn wait_for_port_ready(port: u16, max_wait: std::time::Duration) -> bo
 }
 
 fn extract_readable_text(html: &str) -> String {
-    let raw_text = strip_html_tags(html);
+    let body_scoped = strip_non_text_elements(html, &["head"]);
+    let raw_text = strip_html_tags(&body_scoped);
     raw_text
         .lines()
         .map(|l| l.trim())
@@ -1770,8 +1831,13 @@ mod tests {
         let sample_html = r#"
             <!DOCTYPE html>
             <html>
-            <head><title>Dashboard - Minicode</title></head>
+            <head>
+                <title>Dashboard - Minicode</title>
+                <script type="module">import { injectIntoGlobalHook } from "/@react-refresh";</script>
+                <style>.hidden { display: none; }</style>
+            </head>
             <body>
+                <script>window.__SECRET_TOKEN = "do_not_include";</script>
                 <h1>Welcome to Minicode</h1>
                 <p>Fast AI coding assistant.</p>
                 <form action="/login" method="post">
@@ -1780,6 +1846,7 @@ mod tests {
                     <button type="submit">Log In</button>
                 </form>
                 <a href="/docs">Documentation</a>
+                <a href="https://github.com" aria-label="GitHub"><svg><path d="M0 0"/></svg></a>
             </body>
             </html>
         "#;
@@ -1788,11 +1855,17 @@ mod tests {
             BrowserController::parse_html_to_aria_snapshot("http://localhost:3000", sample_html);
         assert_eq!(snapshot.title, "Dashboard - Minicode");
         assert!(!snapshot.interactive_elements.is_empty());
+        assert!(!snapshot.text_summary.contains("injectIntoGlobalHook"));
+        assert!(!snapshot.text_summary.contains("__SECRET_TOKEN"));
+        assert!(!snapshot.text_summary.contains("display: none"));
+        assert!(snapshot.text_summary.contains("Welcome to Minicode"));
 
         let report = BrowserController::format_snapshot_report(&snapshot);
         assert!(report.contains("@v1:e1"));
         assert!(report.contains("Log In"));
         assert!(report.contains("Documentation"));
+        assert!(report.contains("\"GitHub\""));
+        assert!(!report.contains("Unnamed Link"));
     }
 
     #[test]

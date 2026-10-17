@@ -2283,9 +2283,9 @@ impl AgentLoop {
                 // If an active plan still has unfinished steps and the model stopped mid-plan
                 // (e.g., after a narration-only message like "Let me build all three in parallel"),
                 // nudge it to continue executing the active step instead of stranding the user.
-                let any_cancelled_tool = turn_tool_results
-                    .iter()
-                    .any(|r| r.output.contains("cancelled") || r.output.contains("rejected by user"));
+                let any_cancelled_tool = turn_tool_results.iter().any(|r| {
+                    r.output.contains("cancelled") || r.output.contains("rejected by user")
+                });
                 if !was_cancelled
                     && !circuit_tripped
                     && !any_cancelled_tool
@@ -3570,4 +3570,3 @@ mod inquiry_tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

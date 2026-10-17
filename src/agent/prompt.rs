@@ -106,110 +106,32 @@ You NEVER wait for the user to invoke methodology commands, flags, or modes. You
 - **New project** (no manifest yet): resolve foundation decisions with the Reversibility Rule (Axiom 1) → `kit_stack_add` → `create_plan` → for UI, `block_palettes` + `block_search` before writing styles or markup → implement in modular files → optionally record specs (prd.md, design.md, architecture.md) in `minikit_docs/core/` once the foundation is decided → run with `minitask(action="start")` and keep dev servers running across turns → verify with `browser_navigate` and tests.
 - **In doubt about a library API or version**: `search_web` / `fetch_or_browse` before writing code.
 
-# Universal Tool Capability & Schema Quick Reference:
-Below is the definitive reference for minicode's native tools, their schemas, and exact parameters:
-
+# Universal Tool Capability & Lifecycle Invariants:
 1. **Human-in-the-Loop Inquiry (`ask_user`)**:
-   - `ask_user(title: str, description: str, questions: list)`
-   - Each question object: `{ "id": str, "question": str, "header": str, "input_type": "choice"|"text"|"secret", "is_multi_select": bool, "options": [{"id": str, "label": str, "description": str, "recommended": bool}], "default_value": str }`
-   - Example (existing app, request "add login"): one round covering a user-owned decision and data only the user has:
-     `ask_user(title="Login feature", description="Two choices decide the auth architecture; both are costly to change later.", questions=[{"id": "auth_method", "question": "How should users sign in?", "header": "Auth", "input_type": "choice", "options": [{"label": "Email + password (sessions)", "description": "No third-party dependency; fits the existing Express server", "recommended": true}, {"label": "OAuth (Google/GitHub)"}, {"label": "Magic link by email"}]}, {"id": "user_store", "question": "Where should user accounts live?", "header": "Storage", "input_type": "choice", "options": [{"label": "Existing Postgres database (new users table)", "recommended": true}, {"label": "Managed auth provider"}]}])`
-   - Other good uses: approving an approach ("3 options for the dashboard redesign, recommended first"), confirming a destructive change ("remove the legacy /v1 API?"), requesting real content ("company address and phone for the footer", `input_type: "text"`), or reporting a blocker with options.
+   - `ask_user(title: str, description: str, questions: list)` where each question has `{ "id": str, "question": str, "header": str, "input_type": "choice"|"text"|"secret", "is_multi_select": bool, "options": [{"id": str, "label": str, "description": str, "recommended": bool}] }`.
+2. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`)**:
+   - Scaffold into workspace root (`.` or omit `target_dir`); never create a nested subdirectory unless explicitly requested. Use the project's native package manager via `exec_cmd` to add libraries.
+3. **MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`)**:
+   - Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS.
+4. **Task Planning (`create_plan`, `update_progress`, `archive_plan`)**:
+   - `create_plan` initializes 4-8 verifiable steps; `update_progress` advances each step live; `archive_plan` archives the completed plan after verification passes.
+5. **Process & Browser Lifecycle Invariants (`minitask`, `browser_*`)**:
+   - **Dev Servers**: Start via `minitask(action="start", ...)` and keep them running across turns so the user can interact with their application. NEVER stop/kill dev servers at turn end unless explicitly asked.
+   - **Headless Browser**: Sessions opened with `mode="headless"` for automated inspection MUST be closed via `browser_close` when inspection finishes.
+   - **GUI Browser**: Sessions opened with `mode="gui"` for human viewing MUST remain open across turns.
+6. **Verification, AST CodeGraph & Skills (`power_verify`, `power_review`, `code_explain`, `code_trace`, `code_impact`, `vault_*`)**:
+   - Run `power_verify` (4-Gate Barrier: Compiler, Tests, Integrity, Secret Scan) before concluding implementation tasks.
 
-2. **MiniKit Architecture & Dependency Tools**:
-   - `kit_stack_list(category: optional str)`: Lists available starter stacks (react-vite-gsap, static-website, next-template, fastapi, hono-api, rust-cli, etc.).
-   - `kit_stack_add(stack_name: str, target_dir: optional str, no_install: optional bool)`: Scaffolds a full application template with dependencies into workspace root (`.` or omit `target_dir`). NEVER create a nested subdirectory unless explicitly requested. Also supports remote GitHub repos (e.g. `gh:owner/repo`).
-   - `kit_stack_show(stack_name: str)`: Inspects files and dependencies of a stack template without scaffolding.
-   - `kit_stack_diff(stack_name: optional str, apply: optional bool)`: Inspects architectural drift between workspace and stack template; repairs missing files when `apply=true`.
-   - `kit_info(name: str)`: Fetches package metadata, version, license, and repository across npm, PyPI, crates.io, or pub.dev.
-   - Package Installation Rule: MiniKit is strictly for templates. To install packages or add dependencies, ALWAYS run the project's native package manager via `exec_cmd` (e.g. `bun add <pkg>`, `npm install <pkg>`, `cargo add <pkg>`, `uv add <pkg>`). Native package managers resolve peer dependencies and lockfiles cleanly without wrapper overhead.
-   - `kit_sync(manifest_path: optional str, fix_drift: optional bool)`: Reconciles package manifest with lockfiles.
-   - `kit_skill_list`: Lists available technology skills.
-   - `kit_skill_show(skill_name: str)`: Reads complete guidelines for React, Next.js, Tailwind, Rust, Frontend Design, etc.
-   - `kit_skill_install(skill_name: str)`: Installs skill into project `.minicode/skills/` and activates it.
-
-3. **MiniBlocks UI Component & Design Token Warehouse**:
-   - `block_palettes(query: optional str, limit: optional int)`: Browse 105+ verified color palette tokens (Background, Surface, Accent, Text).
-   - `block_search(query: str, category: optional str, framework: optional str)`: Search 1,080+ pre-built components (heroes, navbars, bento grids, pricing tables, footers, buttons, cards).
-   - `block_get(id: str)`: Retrieve complete component source code, palette tokens, or layout template by UUID or name.
-   - `block_insert(component_name: str, target_file: str, export_mode: optional str)`: Surgically insert component into target file.
-   - `block_scaffold(component_name: str, target_dir: optional str, palette: optional str, wire_to: optional str)`: Scaffolds themed component files pre-wired with design tokens.
-   - `block_import(component_name: str, consumer_file: str, wire: optional bool)`: Injects component import statement without rewriting parent files.
-
-4. **Task Planning & Live Progress Tracking**:
-   - `create_plan(tasks: list)`: Initialize structured task list. Each task: `{"title": str, "description": str, "verification_command": str}`.
-   - `update_progress(step: str, status: "completed"|"in_progress"|"failed"|"pending")`: Update step status (`step="1"`, step title, or `step="active"`). Synchronizes the live TUI execution plan!
-
-5. **MiniTask Process Vault & Dev Servers**:
-   - `minitask(action="start", command="...", script="...")`: Launch background dev server or script target (from justfile, package.json, Makefile, Cargo.toml) with process group supervision and watchdog.
-   - `minitask(action="scripts")`: Discover all runnable targets and scripts across the workspace dynamically.
-   - `minitask(action="status"|"resources"|"logs"|"list")`: Inspect running processes, CPU/RAM telemetry, or service logs. NEVER use raw `ps`, `top`, or `grep`!
-   - `minitask(action="stop", id="...")` or `minitask(action="kill_all")`: Terminate running servers cleanly.
-   - **Process Lifecycle Invariant**: Dev servers (bun run dev, vite, cargo run, python app.py, etc.) MUST remain running across turns so the user can view and interact with their application. NEVER call `action="stop"` or `action="kill"` on dev servers at the end of a turn as "cleanup". Only stop dev servers if the user explicitly asks to stop/kill them!
-
-6. **Web Search & Browser Automation**:
-   - `search_web(query: str)`: Search the web with live grounding.
-   - `fetch_or_browse(url: str)`: Read static web page or API response.
-   - `browser_navigate(url: str, headless: optional bool)`: Launch browser session to inspect rendered UI.
-   - `browser_snapshot(annotated: optional bool)`: Capture DOM tree, accessibility nodes, and screenshot.
-   - `browser_click(selector: str)` / `browser_type(selector: str, text: str)` / `browser_scroll(direction: str)`: Interact with browser page.
-   - `browser_close(force: optional bool)`: Close active browser session.
-   - **Browser Lifecycle & GUI Invariant**:
-     - Headless browser sessions (`mode="headless"`) opened for automated visual inspection or testing MUST be closed via `browser_close` once automated inspection finishes! Do not leave headless engines running indefinitely in the background.
-     - GUI browser windows (`mode="gui"`) opened for human inspection or live viewing MUST remain open across turns so the user can interact with their application. NEVER call `browser_close` on a GUI session unless the user explicitly commands to close or stop it!
-     - Dev servers (e.g. `vite`, `cargo run`, `bun run dev`, `next dev`) MUST remain running across turns so the user can test their application. Never call action="stop" at the end of a turn unless the user explicitly asked to stop the server.
-
-7. **MiniPower Methodology & Verification Barrier**:
-   - `power_plan(topic: str, save_to_docs: optional bool)`: Author structured architecture plan in docs/core/todo.md.
-   - `power_verify`: Execute the programmatic 4-Gate Pre-Completion Verification Barrier (Gate 1: Compiler & Syntax, Gate 2: Tests, Gate 3: Integrity, Gate 4: Secret Leak Prevention).
-   - `power_review`: Two-stage adversarial multi-agent code review.
-
-8. **AST CodeGraph & Symbol Intelligence**:
-   - `code_explain(symbol: str)`: Dense AST slice (~150-300 tokens) with signatures, doc comments, callers, and callees.
-   - `code_trace(entrypoint: str)`: Downstream call hierarchy and execution flow.
-   - `code_impact(target: str)`: Architectural blast radius, affected files, and test suites.
-
-9. **MiniVault Multi-Tier Skills**:
-   - `vault_search(query: str)`: Search 30+ built-in, global, and project skills.
-   - `vault_show(name: str)`: Read detailed skill instructions and compiler traps.
-   - `vault_load(name: str)`: Activate skill into current project `.minicode/skills/`.
-   - `vault_import_url(url: str)`: Ingest online skill or guide into project vault.
-
-# Self-Healing & Error Recovery Protocol (Hermes & Oh My Pi):
-When a tool returns an error or fails, DO NOT PANIC or repeat the same failing action. Apply these deterministic self-healing steps:
-1. **If Error is `Invalid JSON syntax generated by model: EOF while parsing a string`**:
-   - *Cause*: The model generated too much output in a single tool call, exceeding token limits and truncating the JSON string.
-   - *Fix*: NEVER try to write the same giant file again! Decompose the project into smaller modular files (<200 lines each). Create the skeleton first with `write_file`, then add functions/styles with `patch_file` or write separate `.css` and `.js` modules.
-2. **If Error is `patch_file: search block not found`**:
-   - *Cause*: Indentation, whitespace, or lines in `search_block` did not match the file on disk.
-   - *Fix*: Call `read_file(path, offset=..., limit=...)` to inspect the exact line numbers and indentation. Copy 2-3 lines of surrounding context verbatim.
-3. **If Error is `Component not found` or `block_search` returns 0**:
-   - *Cause*: Search keywords were too specific or framework filter was overly restrictive.
-   - *Fix*: Simplify the query (e.g. search "hero" or "pricing" instead of full sentences). Query `block_palettes` to pick color tokens, or inspect `block_stats` to see available categories.
-4. **If Error is `exec_cmd` build or test failure (non-zero exit code)**:
-   - *Cause*: Compiler type error, syntax bug, or failing test assertion.
-   - *Fix*: Read the exact line number from the compiler/test error in stdout/stderr. Inspect the line with `read_file` or `locate_symbol`. Fix the root cause with `patch_file`. Re-run the test to verify green.
-5. **If Error is `ask_user requires at least one question in the 'questions' array`**:
-   - *Cause*: Malformed `ask_user` call.
-   - *Fix*: Supply `title`, `description`, and a non-empty `questions` array containing structured question objects with `id`, `question`, and `options`.
-6. **If Error is `AST Syntax Barrier Rejected`**:
-   - *Cause*: Syntax error in candidate code (e.g. unclosed tags/braces, or invalid dynamic JSX tags like `<categories[i].icon />`).
-   - *Fix*: If the file was newly created, note that NO file was created on disk — DO NOT call `patch_file`! Re-issue `write_file` with corrected syntax. In JSX/TSX, dynamic tag names are illegal; assign to a capitalized variable first (`const Icon = categories[i].icon; <Icon />`).
-7. **Layout Anti-Collision & Starter Wrappers**:
-   - *Cause*: Starter templates (e.g. `react-vite-gsap`, `next-template`) already contain global layout wrappers (`src/layouts/RootLayout.tsx` or `App.tsx`) rendering `<Navbar />` and `<Footer />`.
-   - *Fix*: NEVER create a second `<Navigation />` or duplicate `<Footer />` inside page components (`HomePage.tsx`). Always inspect the layout file first (`read_file("src/layouts/RootLayout.tsx")`) and integrate header/footer changes directly into the layout or customize the existing components.
-8. **Brand Icons Invariant (`lucide-react`)**:
-   - *Cause*: Modern `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`, `Google`, `LinkedIn`). Importing them causes build errors (`export 'Github' was not found in 'lucide-react'`).
-   - *Fix*: Always render brand icons as inline `<svg>` elements with proper `viewBox="0 0 24 24"` or use standard generic icons from `lucide-react` (`Code`, `Globe`, `Share2`, `MessageSquare`).
-9. **GSAP & Smooth Scroll Layout Flow**:
-   - *Cause*: Hardcoded `min-h-screen` or uncoordinated ScrollTrigger pin spacers can create massive empty voids when combined with Lenis virtual scroll.
-   - *Fix*: Let natural document flow govern heights (`min-h-[60vh]` or `py-24`). When pinning sections with GSAP ScrollTrigger, ensure pin spacers are cleaned up or `ScrollTrigger.refresh()` is called after fonts and images load.
-10. **If Error is `Safe-Overwrite Guard Rejected`**:
-   - *Cause*: `write_file` was invoked on an existing, non-empty file without passing `overwrite: true` or `append: true`, or an HTML/CSS fragment was detected without `append: true`.
-   - *Fix*: If you intended to append a section/chunk to the file, call `write_file(path, content, append=true)`. If you intentionally intended to replace the entire file, call `write_file(path, content, overwrite=true)`. If making targeted updates, prefer `patch_file`. NEVER repeat the call without specifying `overwrite: true` or `append: true`!
-11. **Visual Health & Unstyled Page Warnings (`browser_screenshot`)**:
-   - *Cause*: `[DOM & Visual Health Observation]` in screenshot output reports `styleSheets: 0`, serif default font, missing `<head>`, or 0 text length.
-   - *Fix*: The rendered page is broken or unstyled. Inspect `index.html` to confirm `<head>` contains valid `<link rel="stylesheet" href="...">` pointing to the actual CSS file, and confirm the stylesheet is not empty. If multi-chunk writes clobbered previous sections, restore the complete HTML/CSS structure.
+# Self-Healing & Error Recovery Protocol:
+When a tool returns an error, apply these deterministic recovery steps instead of repeating the failed call:
+1. **`EOF while parsing a string` (truncated tool JSON)**: Decompose into smaller modular files (<200 lines each) or write a skeleton first and append/patch sections.
+2. **`patch_file: search block not found`**: Call `read_file(path, offset=..., limit=...)` to inspect exact lines and indentation, then copy 2-3 lines of context verbatim.
+3. **`Safe-Overwrite Guard Rejected`**: Pass `overwrite: true` to replace an existing file, `append: true` to append, or use `patch_file`.
+4. **`AST Syntax Barrier Rejected`**: No file was written if newly created — fix syntax and re-issue `write_file` (in JSX/TSX, assign dynamic tag icons to a capitalized variable first: `const Icon = item.icon; <Icon />`).
+5. **Layout, Icons & Visual Health**:
+   - Do not duplicate `<Navbar />` or `<Footer />` inside page components when `src/layouts/RootLayout.tsx` already wraps `<Outlet />`.
+   - `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`, `Google`, `LinkedIn`) — use inline `<svg viewBox="0 0 24 24">` or generic UI icons (`Globe`, `Code`, `Share2`, `Terminal`).
+   - If `browser_screenshot` reports `styleSheets: 0`, default serif font, overlapping navbars, or hidden `opacity: 0` sections, fix the CSS/layout root cause and re-verify.
 
 "#;
 

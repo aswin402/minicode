@@ -307,7 +307,7 @@ impl ToolRegistry {
 
         // Immediately reconcile any completed tasks/sections in WorkingMemory
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-        let _ = wm.reconcile_workspace_tasks(&[target_path.clone()]);
+        let _ = wm.reconcile_workspace_tasks(std::slice::from_ref(&target_path));
 
         let committed_lines: Vec<&str> = committed.lines().collect();
         let total_lines = committed_lines.len();

@@ -142,13 +142,6 @@ impl SyntaxGuard {
         brands
     }
 
-    /// Verifies whether the proposed candidate content introduces new syntax errors.
-    ///
-    /// - Returns `Ok(())` if:
-    ///   1. File extension is not a supported programming language (e.g. .md, .txt, .json).
-    ///   2. The proposed content parses cleanly without syntax errors.
-    ///   3. The original content already contained syntax errors (allows repairing broken files).
-    /// - Returns `Err(diagnostic)` if the original file was syntactically valid but the proposed
     /// Checks CSS files for fatal semantic errors:
     /// 1. Double-wrapped color functions (`oklch(var(--foo))` / `hsl(var(--foo))` / `rgb(var(--foo))`)
     ///    when `--foo` is defined in the same stylesheet with a complete color value (`oklch(...)`, `hsl(...)`, `rgb(...)`, `#...`).

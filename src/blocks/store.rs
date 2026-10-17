@@ -161,12 +161,58 @@ impl BlockStore {
     }
 
     /// Searches components using inverted indices and multi-token fuzzy/substring scoring.
-    /// If strict framework/tag filtering returns 0 matches for a query, automatically relaxes
-    /// filters so relevant components across frameworks are discovered rather than returning empty.
+    /// If strict framework/tag filtering returns 0 matches (or very few matches for section queries),
+    /// automatically supplements with compatible frameworks (e.g. Tailwind <-> React, Css <- Tailwind)
+    /// so relevant section components are always discovered.
     pub fn search_components(&self, filter: &BlockSearchFilter) -> Vec<BlockSearchResult> {
-        let exact_matches = self.search_components_exact(filter);
-        if !exact_matches.is_empty() {
-            return exact_matches;
+        let mut results = self.search_components_exact(filter);
+        let desired_min = filter.limit.clamp(1, 3);
+
+        // Supplement with compatible secondary frameworks when exact framework matches are sparse (< 3)
+        // and the caller did not specify strict tags.
+        if results.len() < desired_min
+            && filter.tags.is_none()
+            && (filter.query.is_some() || filter.category.is_some())
+        {
+            let compatible_frameworks: &[crate::blocks::models::BlockFramework] =
+                match filter.framework {
+                    Some(crate::blocks::models::BlockFramework::React) => &[
+                        crate::blocks::models::BlockFramework::Tailwind,
+                        crate::blocks::models::BlockFramework::Shadcn,
+                    ],
+                    Some(crate::blocks::models::BlockFramework::Shadcn) => &[
+                        crate::blocks::models::BlockFramework::React,
+                        crate::blocks::models::BlockFramework::Tailwind,
+                    ],
+                    Some(crate::blocks::models::BlockFramework::Tailwind) => &[
+                        crate::blocks::models::BlockFramework::React,
+                        crate::blocks::models::BlockFramework::Css,
+                    ],
+                    Some(crate::blocks::models::BlockFramework::Css) => {
+                        &[crate::blocks::models::BlockFramework::Tailwind]
+                    }
+                    _ => &[],
+                };
+
+            for &compat_fw in compatible_frameworks {
+                if results.len() >= filter.limit.max(1) {
+                    break;
+                }
+                let mut compat_filter = filter.clone();
+                compat_filter.framework = Some(compat_fw);
+                for item in self.search_components_exact(&compat_filter) {
+                    if !results.iter().any(|r| r.id == item.id) {
+                        results.push(item);
+                        if results.len() >= filter.limit.max(1) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !results.is_empty() {
+            return results;
         }
 
         // Fallback 1: If query or category was provided and framework/tags yielded 0 results, relax framework and tags

@@ -730,6 +730,12 @@ impl MiniKitScaffolder {
 
         let files_count = stack.files.len();
 
+        let project_name = dest_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("app")
+            .to_string();
+
         // 1. Write all template files
         for f in &stack.files {
             // Remap any legacy onpkg_docs/ path to minikit_docs/ so onpkg_docs is never created
@@ -775,7 +781,30 @@ impl MiniKitScaffolder {
                     source: e,
                 })?;
             } else {
-                fs::write(&file_path, &f.content).map_err(|e| ToolError::FileOp {
+                let content_to_write = if clean_rel_path.ends_with("index.html")
+                    && f.content.contains("<title>minikit ")
+                {
+                    if let (Some(t_start), Some(t_end)) = (
+                        f.content.find("<title>minikit "),
+                        f.content.find("</title>"),
+                    ) {
+                        if t_start < t_end {
+                            format!(
+                                "{}<title>{}</title>{}",
+                                &f.content[..t_start],
+                                project_name,
+                                &f.content[t_end + "</title>".len()..]
+                            )
+                        } else {
+                            f.content.clone()
+                        }
+                    } else {
+                        f.content.clone()
+                    }
+                } else {
+                    f.content.clone()
+                };
+                fs::write(&file_path, &content_to_write).map_err(|e| ToolError::FileOp {
                     path: file_path.display().to_string(),
                     source: e,
                 })?;
@@ -783,11 +812,6 @@ impl MiniKitScaffolder {
         }
 
         // 2. Generate minikit.json manifest
-        let project_name = dest_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("app")
-            .to_string();
 
         // 2. Dynamically resolve matching skills from the catalog using stack files & package dependencies
         let stack_file_paths: Vec<String> = stack.files.iter().map(|f| f.path.clone()).collect();
