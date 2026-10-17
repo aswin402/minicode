@@ -3,7 +3,6 @@ use crate::tools::minikit::stacks::{builtin::builtin_stacks, Stack};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
 
@@ -896,7 +895,7 @@ impl MiniKitScaffolder {
         // 5. Post-scaffold install hooks
         let mut install_msg = String::new();
         if !no_install {
-            install_msg = Self::run_package_installer(&stack.runtime, &dest_dir);
+            install_msg = Self::run_package_installer(&stack.runtime, &dest_dir).await;
         }
 
         let has_starter_layout = stack.files.iter().any(|f| {
@@ -998,35 +997,33 @@ impl MiniKitScaffolder {
         ))
     }
 
-    /// Automatically runs the best package installer for the runtime.
-    pub fn run_package_installer(runtime: &str, dest_dir: &Path) -> String {
+    /// Automatically runs the best package installer for the runtime asynchronously with a timeout.
+    pub async fn run_package_installer(runtime: &str, dest_dir: &Path) -> String {
         let (cmd, args) = match runtime {
-            "bun" => ("bun", vec!["install"]),
+            "bun" => ("bun", vec!["install", "--no-progress"]),
             "uv" => ("uv", vec!["sync"]),
             "cargo" => ("cargo", vec!["check"]),
             "flutter" => ("flutter", vec!["pub", "get"]),
-            "npm" => ("npm", vec!["install"]),
+            "npm" => ("npm", vec!["install", "--no-audit", "--no-fund"]),
             "pnpm" => ("pnpm", vec!["install"]),
             "yarn" => ("yarn", vec!["install"]),
             _ => return "\nℹ Skipped auto-install (unknown runtime)".to_string(),
         };
 
-        let mut command = Command::new(cmd);
-        command.args(&args).current_dir(dest_dir);
-        #[cfg(unix)]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            command.pre_exec(|| {
-                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                Ok(())
-            });
-        }
+        let mut command = tokio::process::Command::new(cmd);
+        command
+            .args(&args)
+            .current_dir(dest_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
 
-        match command.output() {
-            Ok(output) if output.status.success() => {
+        match tokio::time::timeout(std::time::Duration::from_secs(60), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => {
                 format!("• Package install: ✔ `{}` completed successfully.", cmd)
             }
-            Ok(output) => {
+            Ok(Ok(output)) => {
                 let err = String::from_utf8_lossy(&output.stderr);
                 format!(
                     "• Package install: ⚠ `{} {}` exited with error: {}",
@@ -1035,12 +1032,20 @@ impl MiniKitScaffolder {
                     err.lines().next().unwrap_or("failed")
                 )
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 format!(
                     "• Package install: ℹ `{}` CLI not found on system. Run `{} {}` manually.",
                     cmd,
                     cmd,
                     args.join(" ")
+                )
+            }
+            Err(_) => {
+                format!(
+                    "• Package install: ⚠ `{} {}` timed out after 60s. Run `{}` manually if needed.",
+                    cmd,
+                    args.join(" "),
+                    cmd
                 )
             }
         }

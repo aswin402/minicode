@@ -196,17 +196,17 @@ impl PkgRegistry {
         };
 
         if !cmd.is_empty() {
-            let mut std_cmd = std::process::Command::new(cmd);
-            std_cmd.args(&args).current_dir(workspace_root);
-            #[cfg(unix)]
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                std_cmd.pre_exec(|| {
-                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-                    Ok(())
-                });
-            }
-            if let Ok(out) = std_cmd.output() {
+            let mut async_cmd = tokio::process::Command::new(cmd);
+            async_cmd
+                .args(&args)
+                .current_dir(workspace_root)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            if let Ok(Ok(out)) =
+                tokio::time::timeout(std::time::Duration::from_secs(60), async_cmd.output()).await
+            {
                 if out.status.success() {
                     installer_succeeded = true;
                 }

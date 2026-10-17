@@ -847,7 +847,8 @@ impl MiniKitRemoteManager {
             install_msg = super::scaffolder::MiniKitScaffolder::run_package_installer(
                 package_manager,
                 &dest_dir,
-            );
+            )
+            .await;
         }
 
         let ref_info = spec.git_ref.as_deref().unwrap_or("default");
