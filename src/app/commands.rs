@@ -1663,7 +1663,50 @@ impl<'a> App<'a> {
                 &self.config.ui.animation,
                 &self.config.ui.todo_style,
                 &self.config.ui.swarm_style,
+                &self.config.ui.toast_style,
             );
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt == "/toast-style" || prompt.starts_with("/toast-style ") {
+            let arg = prompt.strip_prefix("/toast-style").unwrap_or("").trim();
+            if arg.is_empty() {
+                let options_desc = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
+                    .iter()
+                    .map(|o| format!("  • {} - {}", o.id, o.name))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.timeline.add_status(format!(
+                    "Current toast notification style: '{}'\nAvailable styles:\n{}",
+                    self.config.ui.toast_style, options_desc
+                ));
+            } else {
+                let lower = arg.to_lowercase();
+                if let Some(opt) = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_lowercase().contains(&lower))
+                {
+                    self.config.ui.toast_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.timeline.add_status(format!(
+                        "✔ Toast notification style switched to '{}' ({}) and saved to config",
+                        opt.name, opt.id
+                    ));
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Toast Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("toast_style_preview".to_string()),
+                    );
+                } else {
+                    self.timeline.add_status(format!(
+                        "⚠️ Unknown toast style '{}'. Available: rail, opencode, rounded, pill, hud",
+                        arg
+                    ));
+                }
+            }
             return Ok(CommandAction::Continue);
         }
 

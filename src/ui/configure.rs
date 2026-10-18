@@ -719,6 +719,7 @@ fn merge_toml_values(target: &mut toml::Value, source: &toml::Value) {
                         | ("animation", Some("dual_pillars"))
                         | ("todo_style", Some("tree"))
                         | ("swarm_style", Some("stylish"))
+                        | ("toast_style", Some("rail"))
                         | ("default", Some(""))
                         | ("model", Some(""))
                 );

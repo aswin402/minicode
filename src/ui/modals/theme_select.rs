@@ -149,20 +149,84 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
     },
 ];
 
+#[derive(Debug, Clone)]
+pub struct ToastStyleOption {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub preview: &'static [&'static str],
+}
+
+pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
+    ToastStyleOption {
+        id: "rail",
+        name: "Dual Accent Rail + TTL Hairline (Default)",
+        description: "Elevated surface with vertical accent rails (▍…▕) and live bottom TTL drain bar",
+        preview: &[
+            "▍ ✔ Subagent Completed               27s ▕",
+            "▍   \"Security Auditor\" finished          ▕",
+            "▍━━━━━━━━━━━━━━━━━━━━━━──────────────────▕",
+        ],
+    },
+    ToastStyleOption {
+        id: "opencode",
+        name: "OpenCode Minimal Split-Bar",
+        description: "Thick left & right vertical accent bars (┃…┃) with breathing room and zero horizontal borders",
+        preview: &[
+            "┃                                        ┃",
+            "┃  ✔ Subagent Completed              27s ┃",
+            "┃    \"Security Auditor\" finished         ┃",
+            "┃                                        ┃",
+        ],
+    },
+    ToastStyleOption {
+        id: "rounded",
+        name: "Neo-Nordic Floating Card",
+        description: "Rounded box (╭─╮…╰─╯) with embedded header title and bottom border TTL countdown meter",
+        preview: &[
+            "╭─ ✔ Subagent Completed ───────── [27s] ─╮",
+            "│  \"Security Auditor\" finished           │",
+            "╰━━━━━━━━━━━━━━━━━━━━━━──────────────────╯",
+        ],
+    },
+    ToastStyleOption {
+        id: "pill",
+        name: "Ultra-Compact Single-Line Pill",
+        description: "Zero vertical footprint (1 row): floating capsule (▐ … ▌) for maximum code visibility",
+        preview: &[
+            "▐ ✔ Subagent Completed · \"Security Auditor\" finished   [27s] ▌",
+        ],
+    },
+    ToastStyleOption {
+        id: "hud",
+        name: "Cyber Double-Frame Telemetry Callout",
+        description: "High-contrast double-frame HUD card (╔═╗) with segmented block drain meter (▰▱)",
+        preview: &[
+            "╔═ ✔ SUBAGENT COMPLETED ═════════ [27s] ═╗",
+            "╟────────────────────────────────────────╢",
+            "║  \"Security Auditor\" finished           ║",
+            "╚═ ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱ ═══════════════════╝",
+        ],
+    },
+];
+
 pub struct ThemeSelectContext<'a> {
     pub themes: &'a [ThemeInfo],
     pub animations: &'a [crate::ui::animation::AnimationOption],
     pub todo_styles: &'a [TodoStyleOption],
     pub swarm_styles: &'a [SwarmStyleOption],
+    pub toast_styles: &'a [ToastStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
     pub todo_style_selected_index: usize,
     pub swarm_style_selected_index: usize,
+    pub toast_style_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
     pub active_todo_style: &'a str,
     pub active_swarm_style: &'a str,
+    pub active_toast_style: &'a str,
 }
 
 pub fn render_theme_select(
@@ -176,15 +240,18 @@ pub fn render_theme_select(
         animations,
         todo_styles,
         swarm_styles,
+        toast_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
         todo_style_selected_index,
         swarm_style_selected_index,
+        toast_style_selected_index,
         active_theme_id,
         active_animation_id,
         active_todo_style,
         active_swarm_style,
+        active_toast_style,
     } = *ctx;
 
     let popup_area = centered_rect(THEME_SELECT_WIDTH_PCT, THEME_SELECT_HEIGHT_PCT, area);
@@ -220,11 +287,12 @@ pub fn render_theme_select(
         ])
         .split(inner_area);
 
-    // 1. Tab header bar: [ 1. Themes ]   •   [ 2. Animations ]   •   [ 3. Todo Styles ]   •   [ 4. Swarm Styles ]
+    // 1. Tab header bar: [ 1. Themes ] • [ 2. Animations ] • [ 3. Todo Styles ] • [ 4. Swarm Styles ] • [ 5. Toast Styles ]
     let is_themes_tab = active_tab == crate::ui::modals::ThemeModalTab::Themes;
     let is_anim_tab = active_tab == crate::ui::modals::ThemeModalTab::Animations;
     let is_todo_tab = active_tab == crate::ui::modals::ThemeModalTab::TodoStyles;
     let is_swarm_tab = active_tab == crate::ui::modals::ThemeModalTab::SwarmStyles;
+    let is_toast_tab = active_tab == crate::ui::modals::ThemeModalTab::ToastStyles;
 
     let tab1_style = if is_themes_tab {
         Style::default()
@@ -262,45 +330,63 @@ pub fn render_theme_select(
         Style::default().fg(theme.text_primary)
     };
 
+    let tab5_style = if is_toast_tab {
+        Style::default()
+            .fg(theme.bg_primary)
+            .bg(theme.brand_accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text_primary)
+    };
+
     let tab_line = Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         Span::styled(
             if is_themes_tab {
-                " [ 1. Themes (Tab) ] "
+                " [ 1. Themes ] "
             } else {
                 " [ 1. Themes ] "
             },
             tab1_style,
         ),
-        Span::raw("   "),
+        Span::raw("  "),
         Span::styled(
             if is_anim_tab {
-                " [ 2. Animations (Tab) ] "
+                " [ 2. Animations ] "
             } else {
                 " [ 2. Animations ] "
             },
             tab2_style,
         ),
-        Span::raw("   "),
+        Span::raw("  "),
         Span::styled(
             if is_todo_tab {
-                " [ 3. Todo Styles (Tab) ] "
+                " [ 3. Todo Styles ] "
             } else {
                 " [ 3. Todo Styles ] "
             },
             tab3_style,
         ),
-        Span::raw("   "),
+        Span::raw("  "),
         Span::styled(
             if is_swarm_tab {
-                " [ 4. Swarm Styles (Tab) ] "
+                " [ 4. Swarm Styles ] "
             } else {
                 " [ 4. Swarm Styles ] "
             },
             tab4_style,
         ),
-        Span::raw("    "),
-        Span::styled("Tab/1/2/3/4 to switch", Style::default().fg(theme.muted)),
+        Span::raw("  "),
+        Span::styled(
+            if is_toast_tab {
+                " [ 5. Toast Styles ] "
+            } else {
+                " [ 5. Toast Styles ] "
+            },
+            tab5_style,
+        ),
+        Span::raw("   "),
+        Span::styled("Tab/1-5", Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(tab_line), chunks[0]);
 
@@ -561,6 +647,66 @@ pub fn render_theme_select(
                 lines.push(Line::from(""));
             }
         }
+        crate::ui::modals::ThemeModalTab::ToastStyles => {
+            for (idx, opt) in toast_styles.iter().enumerate() {
+                let is_selected = idx == toast_style_selected_index;
+                let is_active = opt.id == active_toast_style;
+
+                let cursor = if is_selected { "  ❯ " } else { "    " };
+                let title_style = if is_selected {
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text_primary)
+                };
+
+                let mut header_spans = vec![
+                    Span::styled(
+                        cursor,
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
+                    Span::styled(format!("{:<40}", opt.name), title_style),
+                ];
+
+                if is_active {
+                    header_spans.push(Span::styled(
+                        " [Active ✔]",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+
+                lines.push(Line::from(header_spans));
+
+                let desc_style = if is_selected {
+                    Style::default().fg(theme.text_primary)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("        ", Style::default()),
+                    Span::styled(opt.description, desc_style),
+                ]));
+
+                // Live preview of the selected toast style
+                if is_selected {
+                    lines.push(Line::from(""));
+                    for preview_line in opt.preview {
+                        lines.push(Line::from(vec![
+                            Span::raw("        "),
+                            Span::styled(*preview_line, Style::default().fg(theme.info)),
+                        ]));
+                    }
+                }
+
+                lines.push(Line::from(""));
+            }
+        }
     }
 
     let items_p = Paragraph::new(lines);
@@ -569,7 +715,7 @@ pub fn render_theme_select(
     // 3. Footer Key Hints
     let footer_line = Line::from(vec![
         Span::styled(
-            "  [Tab/1/2/3/4] ",
+            "  [Tab/1-5] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -617,33 +763,52 @@ mod tests {
     }
 
     #[test]
-    fn test_render_theme_select_swarm_styles_tab() {
-        let backend = TestBackend::new(100, 30);
+    fn test_toast_style_options_completeness() {
+        assert_eq!(TOAST_STYLE_OPTIONS.len(), 5);
+        let ids: Vec<&str> = TOAST_STYLE_OPTIONS.iter().map(|s| s.id).collect();
+        assert!(ids.contains(&"rail"));
+        assert!(ids.contains(&"opencode"));
+        assert!(ids.contains(&"rounded"));
+        assert!(ids.contains(&"pill"));
+        assert!(ids.contains(&"hud"));
+    }
+
+    #[test]
+    fn test_render_theme_select_swarm_and_toast_styles_tabs() {
+        let backend = TestBackend::new(110, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let theme = Theme::default();
         let themes = Theme::list_themes();
         let animations = crate::ui::animation::ANIMATION_OPTIONS.to_vec();
 
-        let ctx = ThemeSelectContext {
-            themes: &themes,
-            animations: &animations,
-            todo_styles: TODO_STYLE_OPTIONS,
-            swarm_styles: SWARM_STYLE_OPTIONS,
-            active_tab: crate::ui::modals::ThemeModalTab::SwarmStyles,
-            theme_selected_index: 0,
-            animation_selected_index: 0,
-            todo_style_selected_index: 0,
-            swarm_style_selected_index: 0,
-            active_theme_id: "auto",
-            active_animation_id: "dual_pillars",
-            active_todo_style: "tree",
-            active_swarm_style: "stylish",
-        };
+        for tab in [
+            crate::ui::modals::ThemeModalTab::SwarmStyles,
+            crate::ui::modals::ThemeModalTab::ToastStyles,
+        ] {
+            let ctx = ThemeSelectContext {
+                themes: &themes,
+                animations: &animations,
+                todo_styles: TODO_STYLE_OPTIONS,
+                swarm_styles: SWARM_STYLE_OPTIONS,
+                toast_styles: TOAST_STYLE_OPTIONS,
+                active_tab: tab,
+                theme_selected_index: 0,
+                animation_selected_index: 0,
+                todo_style_selected_index: 0,
+                swarm_style_selected_index: 0,
+                toast_style_selected_index: 0,
+                active_theme_id: "auto",
+                active_animation_id: "dual_pillars",
+                active_todo_style: "tree",
+                active_swarm_style: "stylish",
+                active_toast_style: "rail",
+            };
 
-        terminal
-            .draw(|f| {
-                render_theme_select(f, f.area(), &theme, &ctx);
-            })
-            .unwrap();
+            terminal
+                .draw(|f| {
+                    render_theme_select(f, f.area(), &theme, &ctx);
+                })
+                .unwrap();
+        }
     }
 }

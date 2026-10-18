@@ -598,7 +598,12 @@ impl<'a> App<'a> {
                 }
 
                 // Render Floating TUI Toast Notifications at top-right of viewport
-                self.toasts.render(frame, frame.area(), &self.theme);
+                self.toasts.render_with_style(
+                    frame,
+                    frame.area(),
+                    &self.theme,
+                    self.config.ui.toast_style_enum(),
+                );
             })?;
 
             tokio::select! {

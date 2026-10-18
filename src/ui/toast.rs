@@ -536,23 +536,40 @@ impl ToastManager {
         (out, w)
     }
 
-    /// Renders all active toasts anchored at the top-right of `area`.
+    /// Renders all active toasts anchored at the top-right of `area` using the default `Rail` style.
+    #[allow(dead_code)]
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.render_with_style(frame, area, theme, crate::config::ToastStyle::Rail);
+    }
+
+    /// Renders all active toasts anchored at the top-right of `area` using the configured `ToastStyle`.
+    pub fn render_with_style(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        style: crate::config::ToastStyle,
+    ) {
         let now = Instant::now();
         self.prune_expired(now);
-        if self.items.is_empty() || area.width < 24 || area.height < 6 {
+        if self.items.is_empty() || area.width < 24 || area.height < 4 {
             return;
         }
 
         // Dynamic viewport-proportional width constraints (zero fixed magic dimensions)
         let right_margin: u16 = (area.width / 60).clamp(1, 3);
         let top_margin: u16 = 1;
-        let min_card_w = (area.width / 4)
-            .max(28)
+        let min_card_w = (area.width / 3)
+            .max(34)
             .min(area.width.saturating_sub(right_margin + 1)) as usize;
-        let max_card_w = ((area.width as usize * 38) / 100)
-            .max(min_card_w)
-            .min(area.width.saturating_sub(right_margin + 1) as usize);
+        let max_card_w = match style {
+            crate::config::ToastStyle::Pill => ((area.width as usize * 58) / 100)
+                .max(min_card_w)
+                .min(area.width.saturating_sub(right_margin + 1) as usize),
+            _ => ((area.width as usize * 48) / 100)
+                .max(min_card_w)
+                .min(area.width.saturating_sub(right_margin + 1) as usize),
+        };
 
         let mut cursor_y = area.y.saturating_add(top_margin);
 
@@ -567,18 +584,41 @@ impl ToastManager {
                 UnicodeWidthStr::width(badge_text) + 2
             };
 
-            let header_natural_w = 4 + UnicodeWidthStr::width(item.title.as_str()) + badge_w + 2;
-            let msg_natural_w = 4 + UnicodeWidthStr::width(item.message.as_str()) + 2;
+            let side_pad = match style {
+                crate::config::ToastStyle::OpenCode
+                | crate::config::ToastStyle::Rounded
+                | crate::config::ToastStyle::Hud => 6,
+                _ => 4,
+            };
+            let header_natural_w =
+                side_pad + UnicodeWidthStr::width(item.title.as_str()) + badge_w + 6;
+            let msg_natural_w = match style {
+                crate::config::ToastStyle::Pill => {
+                    side_pad
+                        + UnicodeWidthStr::width(item.title.as_str())
+                        + UnicodeWidthStr::width(item.message.as_str())
+                        + badge_w
+                        + 9
+                }
+                _ => side_pad + UnicodeWidthStr::width(item.message.as_str()) + 2,
+            };
             let card_w = header_natural_w
                 .max(msg_natural_w)
                 .clamp(min_card_w, max_card_w);
 
-            // Inner text budget excluding left `▍ ` (2 cells) and right ` ▕` (2 cells)
             let inner_w = card_w.saturating_sub(4);
-            let wrapped_msg = Self::wrap_text(&item.message, inner_w, 2);
+            let wrapped_msg = Self::wrap_text(&item.message, card_w.saturating_sub(side_pad), 2);
 
-            // Card height: 1 top padding/header + N message lines + 1 bottom TTL bar
-            let card_h = (2 + wrapped_msg.len()) as u16;
+            let card_h: u16 = match style {
+                crate::config::ToastStyle::Pill => 1,
+                crate::config::ToastStyle::OpenCode | crate::config::ToastStyle::Hud => {
+                    (3 + wrapped_msg.len()) as u16
+                }
+                crate::config::ToastStyle::Rail | crate::config::ToastStyle::Rounded => {
+                    (2 + wrapped_msg.len()) as u16
+                }
+            };
+
             if cursor_y.saturating_add(card_h) > area.y.saturating_add(area.height) {
                 break;
             }
@@ -594,6 +634,7 @@ impl ToastManager {
             };
 
             let rail_style = Style::default().fg(accent).bg(theme.bg_elevated);
+            let border_style = Style::default().fg(theme.border).bg(theme.bg_elevated);
             let bg_style = Style::default().bg(theme.bg_elevated);
             let title_style = Style::default()
                 .fg(theme.text_primary)
@@ -605,58 +646,259 @@ impl ToastManager {
                 .add_modifier(Modifier::BOLD);
             let badge_style = Style::default().fg(accent).bg(theme.bg_elevated);
             let msg_style = Style::default().fg(theme.muted).bg(theme.bg_elevated);
-
-            // Row 1: `▍ ✔ Title                       badge ▕`
-            let glyph_prefix = format!("{glyph} ");
-            let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
-            let title_max_w = inner_w.saturating_sub(glyph_prefix_w + badge_w);
-            let (fitted_title, fitted_title_w) = Self::fit_width(&item.title, title_max_w);
-            let used_header_w = glyph_prefix_w + fitted_title_w + badge_w;
-            let spacer_w = inner_w.saturating_sub(used_header_w);
-
-            let mut header_spans = vec![
-                Span::styled("▍ ", rail_style),
-                Span::styled(glyph_prefix, glyph_style),
-                Span::styled(fitted_title, title_style),
-                Span::styled(" ".repeat(spacer_w), bg_style),
-            ];
-            if !badge_text.is_empty() {
-                header_spans.push(Span::styled(format!("  {badge_text}"), badge_style));
-            }
-            header_spans.push(Span::styled(" ▕", rail_style));
+            let ratio = item.remaining_ratio(now);
 
             let mut lines = Vec::with_capacity(card_h as usize);
-            lines.push(Line::from(header_spans));
 
-            // Row 2..N: `▍   Message line                    ▕`
-            for msg_line in &wrapped_msg {
-                let (fitted_msg, fitted_w) = Self::fit_width(msg_line, inner_w);
-                let pad_w = inner_w.saturating_sub(fitted_w);
-                lines.push(Line::from(vec![
-                    Span::styled("▍ ", rail_style),
-                    Span::styled(fitted_msg, msg_style),
-                    Span::styled(" ".repeat(pad_w), bg_style),
-                    Span::styled(" ▕", rail_style),
-                ]));
+            match style {
+                crate::config::ToastStyle::Rail => {
+                    // Row 1: `▍ ✔ Title                       badge ▕`
+                    let glyph_prefix = format!("{glyph} ");
+                    let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
+                    let title_max_w = inner_w.saturating_sub(glyph_prefix_w + badge_w);
+                    let (fitted_title, fitted_title_w) = Self::fit_width(&item.title, title_max_w);
+                    let used_header_w = glyph_prefix_w + fitted_title_w + badge_w;
+                    let spacer_w = inner_w.saturating_sub(used_header_w);
+
+                    let mut header_spans = vec![
+                        Span::styled("▍ ", rail_style),
+                        Span::styled(glyph_prefix, glyph_style),
+                        Span::styled(fitted_title, title_style),
+                        Span::styled(" ".repeat(spacer_w), bg_style),
+                    ];
+                    if !badge_text.is_empty() {
+                        header_spans.push(Span::styled(format!("  {badge_text}"), badge_style));
+                    }
+                    header_spans.push(Span::styled(" ▕", rail_style));
+                    lines.push(Line::from(header_spans));
+
+                    // Row 2..N: `▍   Message line                    ▕`
+                    for msg_line in &wrapped_msg {
+                        let (fitted_msg, fitted_w) = Self::fit_width(msg_line, inner_w);
+                        let pad_w = inner_w.saturating_sub(fitted_w);
+                        lines.push(Line::from(vec![
+                            Span::styled("▍ ", rail_style),
+                            Span::styled(fitted_msg, msg_style),
+                            Span::styled(" ".repeat(pad_w), bg_style),
+                            Span::styled(" ▕", rail_style),
+                        ]));
+                    }
+
+                    // Bottom Row: Live TTL progress hairline (`▍ ━━━━━━━━────── ▕`)
+                    let active_cells = (((inner_w as f64) * ratio).round() as usize).min(inner_w);
+                    let drained_cells = inner_w.saturating_sub(active_cells);
+                    lines.push(Line::from(vec![
+                        Span::styled("▍ ", rail_style),
+                        Span::styled("━".repeat(active_cells), rail_style),
+                        Span::styled("─".repeat(drained_cells), border_style),
+                        Span::styled(" ▕", rail_style),
+                    ]));
+                }
+                crate::config::ToastStyle::OpenCode => {
+                    // OpenCode Minimal Split-Bar: vertical `┃` bars with top/bottom breathing rows
+                    let pad_inner = card_w.saturating_sub(2);
+                    lines.push(Line::from(vec![
+                        Span::styled("┃", rail_style),
+                        Span::styled(" ".repeat(pad_inner), bg_style),
+                        Span::styled("┃", rail_style),
+                    ]));
+
+                    let oc_inner_w = card_w.saturating_sub(6);
+                    let glyph_prefix = format!("{glyph} ");
+                    let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
+                    let title_max_w = oc_inner_w.saturating_sub(glyph_prefix_w + badge_w);
+                    let (fitted_title, fitted_title_w) = Self::fit_width(&item.title, title_max_w);
+                    let used_header_w = glyph_prefix_w + fitted_title_w + badge_w;
+                    let spacer_w = oc_inner_w.saturating_sub(used_header_w);
+
+                    let mut header_spans = vec![
+                        Span::styled("┃  ", rail_style),
+                        Span::styled(glyph_prefix, glyph_style),
+                        Span::styled(fitted_title, title_style),
+                        Span::styled(" ".repeat(spacer_w), bg_style),
+                    ];
+                    if !badge_text.is_empty() {
+                        header_spans.push(Span::styled(format!("  {badge_text}"), badge_style));
+                    }
+                    header_spans.push(Span::styled("  ┃", rail_style));
+                    lines.push(Line::from(header_spans));
+
+                    for msg_line in &wrapped_msg {
+                        let msg_budget = oc_inner_w.saturating_sub(2);
+                        let (fitted_msg, fitted_w) = Self::fit_width(msg_line, msg_budget);
+                        let pad_w = msg_budget.saturating_sub(fitted_w);
+                        lines.push(Line::from(vec![
+                            Span::styled("┃    ", rail_style),
+                            Span::styled(fitted_msg, msg_style),
+                            Span::styled(" ".repeat(pad_w), bg_style),
+                            Span::styled("  ┃", rail_style),
+                        ]));
+                    }
+
+                    lines.push(Line::from(vec![
+                        Span::styled("┃", rail_style),
+                        Span::styled(" ".repeat(pad_inner), bg_style),
+                        Span::styled("┃", rail_style),
+                    ]));
+                }
+                crate::config::ToastStyle::Rounded => {
+                    // Neo-Nordic Floating Card: `╭─ ✔ Title ──── [badge] ─╮` ... `╰━━━━━━────╯`
+                    let top_inner = card_w.saturating_sub(6);
+                    let glyph_prefix = format!("{glyph} ");
+                    let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
+                    let badge_bracket = if badge_text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{badge_text}]")
+                    };
+                    let badge_bw = UnicodeWidthStr::width(badge_bracket.as_str());
+                    let title_max_w = top_inner.saturating_sub(glyph_prefix_w + badge_bw + 1);
+                    let (fitted_title, fitted_title_w) = Self::fit_width(&item.title, title_max_w);
+                    let dash_w =
+                        top_inner.saturating_sub(glyph_prefix_w + fitted_title_w + badge_bw + 1);
+
+                    let mut top_spans = vec![
+                        Span::styled("╭─ ", rail_style),
+                        Span::styled(glyph_prefix, glyph_style),
+                        Span::styled(fitted_title, title_style),
+                        Span::styled(format!(" {}", "─".repeat(dash_w)), border_style),
+                    ];
+                    if !badge_bracket.is_empty() {
+                        top_spans.push(Span::styled(badge_bracket, badge_style));
+                    }
+                    top_spans.push(Span::styled(" ─╮", rail_style));
+                    lines.push(Line::from(top_spans));
+
+                    for msg_line in &wrapped_msg {
+                        let (fitted_msg, fitted_w) = Self::fit_width(msg_line, inner_w);
+                        let pad_w = inner_w.saturating_sub(fitted_w);
+                        lines.push(Line::from(vec![
+                            Span::styled("│ ", rail_style),
+                            Span::styled(fitted_msg, msg_style),
+                            Span::styled(" ".repeat(pad_w), bg_style),
+                            Span::styled(" │", rail_style),
+                        ]));
+                    }
+
+                    let bar_w = card_w.saturating_sub(2);
+                    let active_cells = (((bar_w as f64) * ratio).round() as usize).min(bar_w);
+                    let drained_cells = bar_w.saturating_sub(active_cells);
+                    lines.push(Line::from(vec![
+                        Span::styled("╰", rail_style),
+                        Span::styled("━".repeat(active_cells), rail_style),
+                        Span::styled("─".repeat(drained_cells), border_style),
+                        Span::styled("╯", rail_style),
+                    ]));
+                }
+                crate::config::ToastStyle::Pill => {
+                    // Ultra-Compact Single-Line Pill: `▐ ✔ Title · Message   [badge] ▌`
+                    let glyph_prefix = format!("{glyph} ");
+                    let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
+                    let badge_bracket = if badge_text.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{badge_text}]")
+                    };
+                    let badge_bw = UnicodeWidthStr::width(badge_bracket.as_str());
+                    let content_budget = inner_w.saturating_sub(glyph_prefix_w + badge_bw);
+                    let (fitted_title, fitted_title_w) =
+                        Self::fit_width(&item.title, content_budget);
+
+                    let mut pill_spans = vec![
+                        Span::styled("▐ ", rail_style),
+                        Span::styled(glyph_prefix, glyph_style),
+                        Span::styled(fitted_title, title_style),
+                    ];
+
+                    let mut used_w = fitted_title_w;
+                    if !item.message.is_empty() && content_budget > fitted_title_w + 4 {
+                        let sep = " · ";
+                        let sep_w = 3;
+                        let msg_budget = content_budget.saturating_sub(fitted_title_w + sep_w);
+                        let (fitted_msg, fitted_msg_w) = Self::fit_width(&item.message, msg_budget);
+                        pill_spans.push(Span::styled(sep, border_style));
+                        pill_spans.push(Span::styled(fitted_msg, msg_style));
+                        used_w += sep_w + fitted_msg_w;
+                    }
+
+                    let spacer_w = content_budget.saturating_sub(used_w);
+                    pill_spans.push(Span::styled(" ".repeat(spacer_w), bg_style));
+                    if !badge_bracket.is_empty() {
+                        pill_spans.push(Span::styled(badge_bracket, badge_style));
+                    }
+                    pill_spans.push(Span::styled(" ▌", rail_style));
+                    lines.push(Line::from(pill_spans));
+                }
+                crate::config::ToastStyle::Hud => {
+                    // Cyber Double-Frame Telemetry Callout: `╔═ ✔ TITLE ══ [badge] ═╗`
+                    let top_inner = card_w.saturating_sub(6);
+                    let glyph_prefix = format!("{glyph} ");
+                    let glyph_prefix_w = UnicodeWidthStr::width(glyph_prefix.as_str());
+                    let badge_bracket = if badge_text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{badge_text}]")
+                    };
+                    let badge_bw = UnicodeWidthStr::width(badge_bracket.as_str());
+                    let upper_title = item.title.to_uppercase();
+                    let title_max_w = top_inner.saturating_sub(glyph_prefix_w + badge_bw + 1);
+                    let (fitted_title, fitted_title_w) = Self::fit_width(&upper_title, title_max_w);
+                    let eq_w =
+                        top_inner.saturating_sub(glyph_prefix_w + fitted_title_w + badge_bw + 1);
+
+                    let mut top_spans = vec![
+                        Span::styled("╔═ ", rail_style),
+                        Span::styled(glyph_prefix, glyph_style),
+                        Span::styled(fitted_title, title_style),
+                        Span::styled(format!(" {}", "═".repeat(eq_w)), rail_style),
+                    ];
+                    if !badge_bracket.is_empty() {
+                        top_spans.push(Span::styled(badge_bracket, badge_style));
+                    }
+                    top_spans.push(Span::styled(" ═╗", rail_style));
+                    lines.push(Line::from(top_spans));
+
+                    // Divider: `╟────────────────────╢`
+                    lines.push(Line::from(vec![
+                        Span::styled("╟", rail_style),
+                        Span::styled("─".repeat(card_w.saturating_sub(2)), border_style),
+                        Span::styled("╢", rail_style),
+                    ]));
+
+                    for msg_line in &wrapped_msg {
+                        let (fitted_msg, fitted_w) = Self::fit_width(msg_line, inner_w);
+                        let pad_w = inner_w.saturating_sub(fitted_w);
+                        lines.push(Line::from(vec![
+                            Span::styled("║ ", rail_style),
+                            Span::styled(fitted_msg, msg_style),
+                            Span::styled(" ".repeat(pad_w), bg_style),
+                            Span::styled(" ║", rail_style),
+                        ]));
+                    }
+
+                    // Bottom segmented meter: `╚═ ▰▰▰▰▰▰▱▱▱▱ ═════════╝`
+                    let bot_inner = card_w.saturating_sub(6);
+                    let meter_w = bot_inner.min(18);
+                    let active_blocks = (((meter_w as f64) * ratio).round() as usize).min(meter_w);
+                    let drained_blocks = meter_w.saturating_sub(active_blocks);
+                    let trail_eq_w = bot_inner.saturating_sub(meter_w + 1);
+
+                    lines.push(Line::from(vec![
+                        Span::styled("╚═ ", rail_style),
+                        Span::styled("▰".repeat(active_blocks), rail_style),
+                        Span::styled("▱".repeat(drained_blocks), border_style),
+                        Span::styled(
+                            if bot_inner > meter_w {
+                                format!(" {}", "═".repeat(trail_eq_w))
+                            } else {
+                                String::new()
+                            },
+                            rail_style,
+                        ),
+                        Span::styled(" ═╝", rail_style),
+                    ]));
+                }
             }
-
-            // Bottom Row: Live TTL progress hairline (`▍ ━━━━━━━━────── ▕`)
-            let ratio = item.remaining_ratio(now);
-            let active_cells = ((inner_w as f64) * ratio).round() as usize;
-            let active_cells = active_cells.min(inner_w);
-            let drained_cells = inner_w.saturating_sub(active_cells);
-            lines.push(Line::from(vec![
-                Span::styled("▍ ", rail_style),
-                Span::styled(
-                    "━".repeat(active_cells),
-                    Style::default().fg(accent).bg(theme.bg_elevated),
-                ),
-                Span::styled(
-                    "─".repeat(drained_cells),
-                    Style::default().fg(theme.border).bg(theme.bg_elevated),
-                ),
-                Span::styled(" ▕", rail_style),
-            ]));
 
             frame.render_widget(Clear, card_rect);
             let paragraph = Paragraph::new(lines).block(Block::default().style(bg_style));
@@ -670,10 +912,11 @@ impl ToastManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ToastStyle;
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
-    fn test_toast_deduplication_and_rendering() {
+    fn test_toast_deduplication_and_rendering_all_styles() {
         let mut mgr = ToastManager::new();
         mgr.push(
             ToastKind::Task,
@@ -695,24 +938,35 @@ mod tests {
         assert_eq!(mgr.items[0].badge.as_deref(), Some("2/16 · 12%"));
 
         let theme = Theme::aura_dark();
-        let backend = TestBackend::new(100, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                mgr.render(frame, frame.area(), &theme);
-            })
-            .unwrap();
+        for style in [
+            ToastStyle::Rail,
+            ToastStyle::OpenCode,
+            ToastStyle::Rounded,
+            ToastStyle::Pill,
+            ToastStyle::Hud,
+        ] {
+            let backend = TestBackend::new(100, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    mgr.render_with_style(frame, frame.area(), &theme, style);
+                })
+                .unwrap();
 
-        let buf = terminal.backend().buffer();
-        let mut rendered_text = String::new();
-        for y in 0..24 {
-            for x in 0..100 {
-                rendered_text.push_str(buf[(x, y)].symbol());
+            let buf = terminal.backend().buffer();
+            let mut rendered_text = String::new();
+            for y in 0..24 {
+                for x in 0..100 {
+                    rendered_text.push_str(buf[(x, y)].symbol());
+                }
+                rendered_text.push('\n');
             }
-            rendered_text.push('\n');
+            if style == ToastStyle::Hud {
+                assert!(rendered_text.contains("PLAN STEP COMPLETED"));
+            } else {
+                assert!(rendered_text.contains("Plan Step Completed"));
+            }
+            assert!(rendered_text.contains("2/16 · 12%"));
         }
-        assert!(rendered_text.contains("Plan Step Completed"));
-        assert!(rendered_text.contains("2/16 · 12%"));
-        assert!(rendered_text.contains("Next: \"Navbar.tsx\""));
     }
 }

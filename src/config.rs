@@ -405,6 +405,48 @@ impl SwarmDashboardStyle {
     }
 }
 
+/// Visual layout aesthetic for floating TUI Toast notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastStyle {
+    /// Dual Accent Rail + Bottom Live TTL Hairline (Default)
+    #[default]
+    Rail,
+    /// OpenCode Minimal Split-Bar (Vertical left/right bars with breathing room, zero horizontal borders)
+    OpenCode,
+    /// Neo-Nordic Floating Card (Rounded box with embedded title header and bottom TTL border)
+    Rounded,
+    /// Ultra-Compact Single-Line Pill (1-row high-contrast capsule)
+    Pill,
+    /// Cyber Double-Frame Telemetry Callout (Double-line HUD frame with segmented block drain meter)
+    Hud,
+}
+
+#[allow(dead_code)]
+impl ToastStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rail => "rail",
+            Self::OpenCode => "opencode",
+            Self::Rounded => "rounded",
+            Self::Pill => "pill",
+            Self::Hud => "hud",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "opencode" | "open" | "split" => Self::OpenCode,
+            "rounded" | "card" | "nordic" => Self::Rounded,
+            "pill" | "compact" | "capsule" => Self::Pill,
+            "hud" | "cyber" | "glass" | "double" => Self::Hud,
+            _ => Self::Rail,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -418,6 +460,9 @@ pub struct UiConfig {
 
     #[serde(default = "default_swarm_style")]
     pub swarm_style: String,
+
+    #[serde(default = "default_toast_style")]
+    pub toast_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -443,6 +488,11 @@ impl UiConfig {
     pub fn swarm_style_enum(&self) -> SwarmDashboardStyle {
         SwarmDashboardStyle::from_str_loose(&self.swarm_style)
     }
+
+    #[must_use]
+    pub fn toast_style_enum(&self) -> ToastStyle {
+        ToastStyle::from_str_loose(&self.toast_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -452,6 +502,7 @@ impl Default for UiConfig {
             animation: default_animation(),
             todo_style: default_todo_style(),
             swarm_style: default_swarm_style(),
+            toast_style: default_toast_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -473,6 +524,10 @@ fn default_swarm_style() -> String {
 
 fn default_todo_style() -> String {
     "tree".to_string()
+}
+
+fn default_toast_style() -> String {
+    "rail".to_string()
 }
 
 fn default_max_width() -> usize {
@@ -718,6 +773,7 @@ pub struct RawUiConfig {
     pub animation: Option<String>,
     pub todo_style: Option<String>,
     pub swarm_style: Option<String>,
+    pub toast_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
 }
@@ -1025,6 +1081,9 @@ impl Config {
         }
         if let Some(swarm_style) = other.ui.swarm_style {
             self.ui.swarm_style = swarm_style;
+        }
+        if let Some(toast_style) = other.ui.toast_style {
+            self.ui.toast_style = toast_style;
         }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;

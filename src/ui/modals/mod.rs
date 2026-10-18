@@ -42,6 +42,7 @@ pub enum ThemeModalTab {
     Animations,
     TodoStyles,
     SwarmStyles,
+    ToastStyles,
 }
 
 #[derive(Debug, Clone)]
@@ -77,10 +78,12 @@ pub enum ModalState {
         animation_selected_index: usize,
         todo_style_selected_index: usize,
         swarm_style_selected_index: usize,
+        toast_style_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
         active_todo_style: String,
         active_swarm_style: String,
+        active_toast_style: String,
     },
     SessionBrowser {
         sessions: Vec<crate::session::store::SessionMetadata>,
@@ -423,6 +426,7 @@ impl ModalState {
         active_animation_id: &str,
         active_todo_style: &str,
         active_swarm_style: &str,
+        active_toast_style: &str,
     ) -> Self {
         let themes = crate::ui::theme::Theme::list_themes();
         let theme_selected_index = themes
@@ -442,6 +446,10 @@ impl ModalState {
             .iter()
             .position(|s| s.id == active_swarm_style)
             .unwrap_or(0);
+        let toast_style_selected_index = theme_select::TOAST_STYLE_OPTIONS
+            .iter()
+            .position(|s| s.id == active_toast_style)
+            .unwrap_or(0);
         ModalState::ThemeSelect {
             themes,
             animations,
@@ -450,10 +458,12 @@ impl ModalState {
             animation_selected_index,
             todo_style_selected_index,
             swarm_style_selected_index,
+            toast_style_selected_index,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
             active_todo_style: active_todo_style.to_string(),
             active_swarm_style: active_swarm_style.to_string(),
+            active_toast_style: active_toast_style.to_string(),
         }
     }
 
@@ -817,25 +827,30 @@ impl ModalState {
                 animation_selected_index,
                 todo_style_selected_index,
                 swarm_style_selected_index,
+                toast_style_selected_index,
                 active_theme_id,
                 active_animation_id,
                 active_todo_style,
                 active_swarm_style,
+                active_toast_style,
             } => {
                 let ctx = theme_select::ThemeSelectContext {
                     themes,
                     animations,
                     todo_styles: theme_select::TODO_STYLE_OPTIONS,
                     swarm_styles: theme_select::SWARM_STYLE_OPTIONS,
+                    toast_styles: theme_select::TOAST_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
                     todo_style_selected_index: *todo_style_selected_index,
                     swarm_style_selected_index: *swarm_style_selected_index,
+                    toast_style_selected_index: *toast_style_selected_index,
                     active_theme_id,
                     active_animation_id,
                     active_todo_style,
                     active_swarm_style,
+                    active_toast_style,
                 };
                 theme_select::render_theme_select(frame, area, theme, &ctx);
             }

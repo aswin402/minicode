@@ -399,10 +399,12 @@ impl<'a> App<'a> {
                 ref mut animation_selected_index,
                 ref mut todo_style_selected_index,
                 ref mut swarm_style_selected_index,
+                ref mut toast_style_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
                 ref mut active_todo_style,
                 ref mut active_swarm_style,
+                ref mut active_toast_style,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
@@ -419,6 +421,9 @@ impl<'a> App<'a> {
                             crate::ui::modals::ThemeModalTab::SwarmStyles
                         }
                         crate::ui::modals::ThemeModalTab::SwarmStyles => {
+                            crate::ui::modals::ThemeModalTab::ToastStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::ToastStyles => {
                             crate::ui::modals::ThemeModalTab::Themes
                         }
                     };
@@ -426,7 +431,7 @@ impl<'a> App<'a> {
                 KeyCode::BackTab | KeyCode::Left => {
                     *active_tab = match *active_tab {
                         crate::ui::modals::ThemeModalTab::Themes => {
-                            crate::ui::modals::ThemeModalTab::SwarmStyles
+                            crate::ui::modals::ThemeModalTab::ToastStyles
                         }
                         crate::ui::modals::ThemeModalTab::Animations => {
                             crate::ui::modals::ThemeModalTab::Themes
@@ -436,6 +441,9 @@ impl<'a> App<'a> {
                         }
                         crate::ui::modals::ThemeModalTab::SwarmStyles => {
                             crate::ui::modals::ThemeModalTab::TodoStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::ToastStyles => {
+                            crate::ui::modals::ThemeModalTab::SwarmStyles
                         }
                     };
                 }
@@ -451,6 +459,9 @@ impl<'a> App<'a> {
                 KeyCode::Char('4') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::SwarmStyles;
                 }
+                KeyCode::Char('5') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::ToastStyles;
+                }
                 KeyCode::Up => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
@@ -463,6 +474,9 @@ impl<'a> App<'a> {
                     }
                     crate::ui::modals::ThemeModalTab::SwarmStyles => {
                         *swarm_style_selected_index = swarm_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ToastStyles => {
+                        *toast_style_selected_index = toast_style_selected_index.saturating_sub(1);
                     }
                 },
                 KeyCode::Down => match *active_tab {
@@ -486,6 +500,12 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS.len();
                         if *swarm_style_selected_index + 1 < total {
                             *swarm_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ToastStyles => {
+                        let total = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS.len();
+                        if *toast_style_selected_index + 1 < total {
+                            *toast_style_selected_index += 1;
                         }
                     }
                 },
@@ -611,6 +631,43 @@ impl<'a> App<'a> {
                                     "✔ Swarm flight deck style switched to '{}' ({}) and saved to config",
                                     chosen_name, chosen.id
                                 ));
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ToastStyles => {
+                            let options = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS;
+                            if !options.is_empty() && *toast_style_selected_index < options.len() {
+                                let chosen = &options[*toast_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.toast_style = chosen_id.clone();
+                                *active_toast_style = chosen_id.clone();
+
+                                // Persist to configuration file (workspace and global)
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save toast style setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save toast style setting to global config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.timeline.add_status(format!(
+                                    "✔ Toast notification style switched to '{}' ({}) and saved to config",
+                                    chosen_name, chosen.id
+                                ));
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Toast Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("toast_style_preview".to_string()),
+                                );
                             }
                         }
                     }
@@ -957,6 +1014,7 @@ impl<'a> App<'a> {
                                     &self.config.ui.animation,
                                     &self.config.ui.todo_style,
                                     &self.config.ui.swarm_style,
+                                    &self.config.ui.toast_style,
                                 );
                             }
                             "/explore" => {
