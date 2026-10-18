@@ -523,6 +523,16 @@ impl PromptBuilder {
             recency.push_str("  </user_decisions>\n");
         }
 
+        // 9c. Factual Session Tool & Skill Telemetry (from structured session JSONL log)
+        // Ensures the agent has 100% accurate ground-truth provenance of tools and skills
+        // actually executed in the session even after context compaction.
+        if let Some(telemetry) = Self::read_session_tool_telemetry(workspace_dir) {
+            recency.push_str("  <session_tool_telemetry>\n");
+            recency.push_str("    Executed tools in this session (ground-truth provenance — cite ONLY these when asked which tools or skills were used; never claim uninvoked tools):\n    ");
+            recency.push_str(&telemetry);
+            recency.push_str("\n  </session_tool_telemetry>\n");
+        }
+
         // 10. Active MiniPower Plan & Pending Tasks (prioritizes active task plan, falls back to roadmap)
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_dir);
         if let Some(summary) = wm.read_active_plan_summary() {
@@ -632,6 +642,66 @@ impl PromptBuilder {
 
         recency.push_str("</workspace_context>");
         recency
+    }
+
+    /// Reads the latest structured session JSONL log in `.minicode/sessions/` and aggregates
+    /// the ordered set of tools and skills actually executed during the session.
+    fn read_session_tool_telemetry(workspace_dir: &Path) -> Option<String> {
+        let sessions_dir = workspace_dir.join(".minicode/sessions");
+        let entries = std::fs::read_dir(&sessions_dir).ok()?;
+        let latest_jsonl = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("jsonl"))
+            .max_by_key(|p| {
+                p.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            })?;
+
+        let content = std::fs::read_to_string(&latest_jsonl).ok()?;
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for line in content.lines() {
+            let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if val.get("event").and_then(|e| e.as_str()) != Some("tool_call") {
+                continue;
+            }
+            let Some(tool) = val.get("tool").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            let args = val.get("args");
+            let label = match tool {
+                "skill_load" => args
+                    .and_then(|a| a.get("name"))
+                    .and_then(|s| s.as_str())
+                    .map(|name| format!("skill_load[{name}]"))
+                    .unwrap_or_else(|| "skill_load".to_string()),
+                "kit_stack_add" => args
+                    .and_then(|a| a.get("stack"))
+                    .and_then(|s| s.as_str())
+                    .map(|stack| format!("kit_stack_add[{stack}]"))
+                    .unwrap_or_else(|| "kit_stack_add".to_string()),
+                _ => tool.to_string(),
+            };
+            if let Some(entry) = counts.iter_mut().find(|(k, _)| *k == label) {
+                entry.1 += 1;
+            } else {
+                counts.push((label, 1));
+            }
+        }
+
+        if counts.is_empty() {
+            return None;
+        }
+
+        let summary = counts
+            .into_iter()
+            .map(|(k, count)| format!("{k} ({count}x)"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(summary)
     }
 
     /// Assembles system prompt with optional custom instructions.

@@ -586,7 +586,7 @@ impl CdpClient {
         self.console_log.lock().await.clone()
     }
 
-    /// Enables standard DevTools domains
+    /// Enables standard DevTools domains and initializes a standard 1440x900 desktop viewport
     pub async fn enable_core_domains(&self) -> Result<()> {
         let _ = self.send_command("Page.enable", json!({})).await;
         let _ = self
@@ -596,6 +596,17 @@ impl CdpClient {
         let _ = self.send_command("DOM.enable", json!({})).await;
         let _ = self.send_command("Network.enable", json!({})).await;
         let _ = self.send_command("Log.enable", json!({})).await;
+        let _ = self
+            .send_command(
+                "Emulation.setDeviceMetricsOverride",
+                json!({
+                    "width": 1440,
+                    "height": 900,
+                    "deviceScaleFactor": 1.0,
+                    "mobile": false
+                }),
+            )
+            .await;
         Ok(())
     }
 

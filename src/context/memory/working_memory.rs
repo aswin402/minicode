@@ -1312,9 +1312,10 @@ impl WorkingMemory {
             }
         }
 
-        let is_any_modified = outcome_plan == UpdateFileOutcome::Modified
-            || outcome_todo == UpdateFileOutcome::Modified
-            || intent_outcome == UpdateFileOutcome::Modified;
+        let is_plan_or_todo_modified = outcome_plan == UpdateFileOutcome::Modified
+            || outcome_todo == UpdateFileOutcome::Modified;
+        let is_any_modified =
+            is_plan_or_todo_modified || intent_outcome == UpdateFileOutcome::Modified;
 
         let is_any_already = outcome_plan == UpdateFileOutcome::AlreadyInStatus
             || outcome_todo == UpdateFileOutcome::AlreadyInStatus
@@ -1351,8 +1352,8 @@ impl WorkingMemory {
                 ))
                 .into());
             }
-        } else if is_any_modified {
-            // Only append to progress.md if an actual status modification took place (idempotent progress tracking)
+        } else if is_plan_or_todo_modified {
+            // Only append to progress.md if a task plan or roadmap file was modified (idempotent progress tracking)
             let resolved_title = {
                 let tasks = self.read_parsed_tasks();
                 if let Some(idx) = target_index {
@@ -1384,13 +1385,19 @@ impl WorkingMemory {
                         .unwrap_or_else(|| Self::sanitize_step_title(step))
                 }
             };
-            let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
-            let entry = format!("\n- [{}] **{}**: {}\n", timestamp, status, resolved_title);
-            let _ = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.progress_path())
-                .and_then(|mut f| f.write_all(entry.as_bytes()));
+            let dedup_suffix = format!("**{}**: {}", status, resolved_title);
+            let already_logged = fs::read_to_string(self.progress_path())
+                .map(|existing| existing.lines().any(|line| line.ends_with(&dedup_suffix)))
+                .unwrap_or(false);
+            if !already_logged {
+                let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+                let entry = format!("\n- [{}] {}\n", timestamp, dedup_suffix);
+                let _ = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.progress_path())
+                    .and_then(|mut f| f.write_all(entry.as_bytes()));
+            }
         }
 
         // When a tactical sub-plan in task_plan.md finishes all its steps, advance the active task in canonical todo.md!

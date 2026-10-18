@@ -588,6 +588,26 @@ impl BrowserController {
                 )
                 .await;
         }
+        // Settle any scroll-reveal elements currently intersecting the viewport so back-to-back
+        // scroll + screenshot calls capture fully settled content instead of mid-transition opacity.
+        let _ = engine
+            .cdp
+            .evaluate_js(
+                r#"(() => {
+                    const vh = window.innerHeight || 900;
+                    const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal]');
+                    for (const el of candidates) {
+                        const r = el.getBoundingClientRect();
+                        if (r.top < vh && r.bottom > 0) {
+                            el.classList.add('visible', 'is-visible', 'revealed');
+                            el.style.transitionDelay = '0s';
+                            el.style.transitionDuration = '0s';
+                        }
+                    }
+                    return true;
+                })()"#,
+            )
+            .await;
         let png_bytes = engine.cdp.take_screenshot().await?;
 
         let target_path = Self::resolve_screenshot_path(workspace_root, custom_path);
@@ -643,12 +663,6 @@ impl BrowserController {
                 }
                 const parseRgb = (str) => {
                     if (!str || isTransparent(str)) return [255, 255, 255];
-                    const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-                    if (m) {
-                        const a = m[4] !== undefined ? parseFloat(m[4]) : 1;
-                        if (a === 0) return [255, 255, 255];
-                        return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
-                    }
                     try {
                         const cv = document.createElement('canvas');
                         cv.width = 1;
@@ -682,7 +696,8 @@ impl BrowserController {
                     contrastRatio = Number(((l1 + 0.05) / (l2 + 0.05)).toFixed(2));
                 }
                 const fLower = fontFamily.toLowerCase();
-                const isDefaultSerif = (fLower.includes("times") || /(^|[\s,])serif([\s,]|$)/i.test(fLower)) && !fLower.includes("sans-serif");
+                const fTokens = fLower.split(',').map(s => s.trim().split('"').join('').split("'").join(''));
+                const isDefaultSerif = (fLower.includes("times") || fTokens.includes("serif")) && !fLower.includes("sans-serif");
                 const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
                 const semanticSections = document.querySelectorAll('section, main, article, nav, header, footer').length;
                 const allSections = Array.from(document.querySelectorAll('section'));
@@ -700,6 +715,8 @@ impl BrowserController {
                 });
                 const overlappingTopNavs = visibleNavs.length > 1;
                 let inlineLinkCollisions = 0;
+                let collapsedSpacingUtilities = 0;
+                let fixedHeaderClipped = false;
                 if (window.getComputedStyle) {
                     const interactiveEls = Array.from(document.querySelectorAll('a, button'));
                     for (let i = 0; i < interactiveEls.length; i++) {
@@ -713,6 +730,45 @@ impl BrowserController {
                             const rB = next.getBoundingClientRect();
                             if (rA.width > 4 && rB.width > 4 && Math.abs(rA.top - rB.top) < 6 && Math.abs(rB.left - rA.right) < 3) {
                                 inlineLinkCollisions++;
+                            }
+                        }
+                    }
+                    const padPrefixes = ['p-', 'px-', 'py-', 'pt-', 'pb-', 'pl-', 'pr-'];
+                    const classEls = document.querySelectorAll('[class]');
+                    for (let i = 0; i < classEls.length && i < 250; i++) {
+                        const el = classEls[i];
+                        const clsList = el.classList ? Array.from(el.classList) : [];
+                        const hasPositivePadClass = clsList.some(c => {
+                            for (const pref of padPrefixes) {
+                                if (c.startsWith(pref)) {
+                                    const num = Number(c.slice(pref.length));
+                                    if (!Number.isNaN(num) && num > 0) return true;
+                                }
+                            }
+                            return false;
+                        });
+                        if (hasPositivePadClass) {
+                            const cs = window.getComputedStyle(el);
+                            if (cs && cs.display !== 'none' &&
+                                parseFloat(cs.paddingTop) === 0 &&
+                                parseFloat(cs.paddingBottom) === 0 &&
+                                parseFloat(cs.paddingLeft) === 0 &&
+                                parseFloat(cs.paddingRight) === 0) {
+                                collapsedSpacingUtilities++;
+                            }
+                        }
+                    }
+                    if ((window.scrollY || 0) <= 5 && visibleNavs.length >= 1) {
+                        const navEl = visibleNavs[0];
+                        const navCs = window.getComputedStyle(navEl);
+                        const navRect = navEl.getBoundingClientRect();
+                        if ((navCs.position === 'fixed' || navCs.position === 'sticky') && navRect.bottom > 30 && navRect.bottom <= 140) {
+                            const firstMainEl = document.querySelector('main h1, section h1, main > section:first-of-type > div > div:first-child');
+                            if (firstMainEl) {
+                                const mRect = firstMainEl.getBoundingClientRect();
+                                if (mRect.height > 0 && mRect.top < navRect.bottom - 4) {
+                                    fixedHeaderClipped = true;
+                                }
                             }
                         }
                     }
@@ -734,7 +790,9 @@ impl BrowserController {
                     hiddenSections,
                     totalSectionTags: allSections.length,
                     overlappingTopNavs,
-                    inlineLinkCollisions
+                    inlineLinkCollisions,
+                    collapsedSpacingUtilities,
+                    fixedHeaderClipped
                 });
             } catch(e) {
                 return JSON.stringify({ error: e.toString() });
@@ -799,6 +857,14 @@ impl BrowserController {
                     .get("inlineLinkCollisions")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let collapsed_spacing_utilities = probe
+                    .get("collapsedSpacingUtilities")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let fixed_header_clipped = probe
+                    .get("fixedHeaderClipped")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                 if !has_head || !has_body {
@@ -808,6 +874,15 @@ impl BrowserController {
                     health_notes.push("⚠ UNSTYLED PAGE ALERT: 0 active stylesheets found! The page is rendering raw unstyled HTML. Check if `<link rel=\"stylesheet\">` is missing in index.html.".to_string());
                 } else if is_default_serif {
                     health_notes.push(format!("⚠ UNSTYLED FONT WARNING: Page body is displaying default browser serif font ('{}'). Check if your CSS stylesheet was loaded.", font_family));
+                }
+                if collapsed_spacing_utilities >= 3 {
+                    health_notes.push(format!(
+                        "⚠ CRITICAL CSS CASCADE DEFECT: {} visible element(s) with Tailwind padding classes (`p-*`, `px-*`, `py-*`, `pt-*`) have computed padding `0px`! An unlayered `* {{ padding: 0; margin: 0; }}` rule in CSS is overriding Tailwind v4's `@layer utilities`. Remove the unlayered `*` reset or wrap it inside `@layer base {{ ... }}`.",
+                        collapsed_spacing_utilities
+                    ));
+                }
+                if fixed_header_clipped {
+                    health_notes.push("⚠ FIXED NAVBAR CLIPPING DEFECT: The top of the Hero section is overlapping underneath the fixed `<nav>` bar! Ensure top padding (`pt-20` / `pt-24`) is active on the hero section and not zeroed out by an unlayered CSS reset.".to_string());
                 }
                 if overlapping_top_navs {
                     health_notes.push("⚠ DUPLICATE NAVBAR OVERLAP DEFECT: Multiple visible `<nav>` bars are rendering at the top of the page! If `src/layouts/RootLayout.tsx` renders `<Navbar />`, remove the duplicate navbar or update `RootLayout.tsx`.".to_string());

@@ -142,55 +142,237 @@ impl SyntaxGuard {
         brands
     }
 
-    /// Checks CSS files for fatal semantic errors:
+    /// Strips `/* ... */` comments from CSS while preserving quoted string literals.
+    fn strip_css_comments(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        let mut in_quote: Option<char> = None;
+
+        while let Some(ch) = chars.next() {
+            if let Some(q) = in_quote {
+                out.push(ch);
+                if ch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                } else if ch == q {
+                    in_quote = None;
+                }
+                continue;
+            }
+
+            if ch == '"' || ch == '\'' {
+                in_quote = Some(ch);
+                out.push(ch);
+                continue;
+            }
+
+            if ch == '/' && chars.peek() == Some(&'*') {
+                let _ = chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            out.push(ch);
+        }
+        out
+    }
+
+    /// Pure lexical CSS brace-stack state machine that detects unlayered universal box-model
+    /// resets (`* { margin: 0; padding: 0; }`) outside of `@layer`.
+    /// In Tailwind CSS v4, utilities live in `@layer utilities`; any unlayered `*` reset
+    /// overrides every `@layer utilities` padding/margin class across the entire application.
+    fn find_unlayered_universal_box_reset(clean_css: &str) -> Option<String> {
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        enum CssBlock {
+            Layer,
+            AtRule,
+            StyleRule { selector: String, in_layer: bool },
+        }
+
+        const BOX_SPACING_PROPS: &[&str] = &[
+            "margin",
+            "margin-top",
+            "margin-right",
+            "margin-bottom",
+            "margin-left",
+            "margin-inline",
+            "margin-block",
+            "padding",
+            "padding-top",
+            "padding-right",
+            "padding-bottom",
+            "padding-left",
+            "padding-inline",
+            "padding-block",
+        ];
+
+        const ZERO_VALUES: &[&str] = &["0", "0px", "0rem", "0em", "0%"];
+
+        let mut stack: Vec<CssBlock> = Vec::new();
+        let mut buf = String::new();
+        let mut chars = clean_css.chars().peekable();
+        let mut in_quote: Option<char> = None;
+
+        while let Some(ch) = chars.next() {
+            if let Some(q) = in_quote {
+                buf.push(ch);
+                if ch == '\\' {
+                    if let Some(escaped) = chars.next() {
+                        buf.push(escaped);
+                    }
+                } else if ch == q {
+                    in_quote = None;
+                }
+                continue;
+            }
+
+            match ch {
+                '"' | '\'' => {
+                    in_quote = Some(ch);
+                    buf.push(ch);
+                }
+                '{' => {
+                    let header = buf.trim().to_string();
+                    buf.clear();
+                    if let Some(rest) = header.strip_prefix('@') {
+                        let kw = rest
+                            .split(|c: char| c.is_whitespace() || c == '(')
+                            .next()
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if kw == "layer" {
+                            stack.push(CssBlock::Layer);
+                        } else {
+                            stack.push(CssBlock::AtRule);
+                        }
+                    } else {
+                        let in_layer = stack.iter().any(|b| *b == CssBlock::Layer);
+                        stack.push(CssBlock::StyleRule {
+                            selector: header,
+                            in_layer,
+                        });
+                    }
+                }
+                '}' => {
+                    let body = std::mem::take(&mut buf);
+                    if let Some(CssBlock::StyleRule { selector, in_layer }) = stack.pop() {
+                        if !in_layer {
+                            let targets_universal = selector.split(',').any(|part| {
+                                matches!(
+                                    part.trim(),
+                                    "*" | "*::before" | "*::after" | "*:before" | "*:after"
+                                )
+                            });
+                            if targets_universal {
+                                for decl in body.split(';') {
+                                    if let Some((prop_raw, val_raw)) = decl.split_once(':') {
+                                        let prop = prop_raw.trim().to_ascii_lowercase();
+                                        let val = val_raw.trim().to_ascii_lowercase();
+                                        let resets_to_zero = val
+                                            .split_whitespace()
+                                            .any(|tok| ZERO_VALUES.contains(&tok));
+                                        if BOX_SPACING_PROPS.contains(&prop.as_str())
+                                            && resets_to_zero
+                                        {
+                                            let compact_sel = selector
+                                                .split_whitespace()
+                                                .collect::<Vec<_>>()
+                                                .join(" ");
+                                            return Some(format!(
+                                                "{compact_sel} {{ {prop}: {}; }}",
+                                                val_raw.trim()
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ';' => {
+                    let inside_style_rule = stack
+                        .last()
+                        .is_some_and(|b| matches!(b, CssBlock::StyleRule { .. }));
+                    if inside_style_rule {
+                        buf.push(';');
+                    } else {
+                        buf.clear();
+                    }
+                }
+                _ => {
+                    buf.push(ch);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Checks CSS files for fatal semantic errors using lexical & cascade-layer analysis:
     /// 1. Double-wrapped color functions (`oklch(var(--foo))` / `hsl(var(--foo))` / `rgb(var(--foo))`)
     ///    when `--foo` is defined in the same stylesheet with a complete color value (`oklch(...)`, `hsl(...)`, `rgb(...)`, `#...`).
     ///    This evaluates to `oklch(oklch(...))` at runtime, causing all colors/backgrounds to collapse to transparent!
     /// 2. `@apply border-border` in Tailwind v4 stylesheets when neither `--color-border` nor `--border` is defined.
+    /// 3. Unlayered universal box-model reset (`* { margin: 0; padding: 0; }`) in Tailwind v4 (`@import "tailwindcss"`),
+    ///    which overrides all `@layer utilities` spacing classes (`px-*`, `py-*`, `pt-*`, `mx-auto`, `p-*`).
     pub fn check_css_semantic_barrier(path: &Path, content: &str) -> Result<(), String> {
-        static VAR_DEF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"(--[a-zA-Z0-9_-]+)\s*:\s*([^;\}]+)")
-                .expect("valid css var def regex")
-        });
-        static WRAPPED_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"(oklch|hsl|rgb|rgba|hsla)\(\s*var\(\s*(--[a-zA-Z0-9_-]+)\s*\)")
-                .expect("valid wrapped css var regex")
-        });
+        let clean_css = Self::strip_css_comments(content);
 
         let mut complete_color_vars = std::collections::HashMap::new();
         let mut all_defined_vars = std::collections::HashSet::new();
 
-        for cap in VAR_DEF_RE.captures_iter(content) {
-            if let (Some(var_match), Some(val_match)) = (cap.get(1), cap.get(2)) {
-                let var_name = var_match.as_str().trim();
-                let val = val_match.as_str().trim();
-                all_defined_vars.insert(var_name.to_string());
-                let lower = val.to_ascii_lowercase();
-                if lower.starts_with("oklch(")
-                    || lower.starts_with("hsl(")
-                    || lower.starts_with("hsla(")
-                    || lower.starts_with("rgb(")
-                    || lower.starts_with("rgba(")
-                    || lower.starts_with('#')
+        for segment in clean_css.split(['{', '}', ';']) {
+            let trimmed = segment.trim();
+            if let Some((lhs, rhs)) = trimmed.split_once(':') {
+                let var_name = lhs.trim();
+                let val = rhs.trim();
+                if var_name.starts_with("--")
+                    && var_name.len() > 2
+                    && var_name[2..]
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    && !val.is_empty()
                 {
-                    complete_color_vars.insert(var_name.to_string(), val.to_string());
+                    all_defined_vars.insert(var_name.to_string());
+                    let lower = val.to_ascii_lowercase();
+                    if lower.starts_with("oklch(")
+                        || lower.starts_with("hsl(")
+                        || lower.starts_with("hsla(")
+                        || lower.starts_with("rgb(")
+                        || lower.starts_with("rgba(")
+                        || lower.starts_with('#')
+                    {
+                        complete_color_vars.insert(var_name.to_string(), val.to_string());
+                    }
                 }
             }
         }
 
         let mut double_wrapped = Vec::new();
-        for cap in WRAPPED_VAR_RE.captures_iter(content) {
-            if let (Some(fn_match), Some(var_match)) = (cap.get(1), cap.get(2)) {
-                let fn_name = fn_match.as_str();
-                let var_name = var_match.as_str();
-                if let Some(def_val) = complete_color_vars.get(var_name) {
-                    let entry = format!(
-                        "`{fn_name}(var({var_name}))` where `{var_name}: {def_val}` -> evaluates to invalid `{fn_name}({def_val})`"
-                    );
-                    if !double_wrapped.contains(&entry) {
-                        double_wrapped.push(entry);
+        for fn_name in ["oklch", "hsla", "hsl", "rgba", "rgb"] {
+            let pat = format!("{fn_name}(");
+            let mut search_slice = clean_css.as_str();
+            while let Some(pos) = search_slice.find(&pat) {
+                let after_fn = &search_slice[pos + pat.len()..];
+                let after_fn_trimmed = after_fn.trim_start();
+                if let Some(after_var) = after_fn_trimmed.strip_prefix("var(") {
+                    let var_arg = after_var.split([')', ',']).next().unwrap_or("").trim();
+                    if let Some(def_val) = complete_color_vars.get(var_arg) {
+                        let entry = format!(
+                            "`{fn_name}(var({var_arg}))` where `{var_arg}: {def_val}` -> evaluates to invalid `{fn_name}({def_val})`"
+                        );
+                        if !double_wrapped.contains(&entry) {
+                            double_wrapped.push(entry);
+                        }
                     }
                 }
+                search_slice = after_fn;
             }
         }
 
@@ -209,12 +391,12 @@ impl SyntaxGuard {
             ));
         }
 
-        let is_tailwind_v4 = content.contains("@import \"tailwindcss\"")
-            || content.contains("@import 'tailwindcss'")
-            || content.contains("@theme");
+        let is_tailwind_v4 = clean_css.contains("@import \"tailwindcss\"")
+            || clean_css.contains("@import 'tailwindcss'")
+            || clean_css.contains("@theme");
         if is_tailwind_v4
-            && content.contains("@apply")
-            && content.contains("border-border")
+            && clean_css.contains("@apply")
+            && clean_css.contains("border-border")
             && !all_defined_vars.contains("--color-border")
             && !all_defined_vars.contains("--border")
         {
@@ -228,6 +410,22 @@ impl SyntaxGuard {
                  - Either define `--color-border: var(--border);` inside `@theme inline` (and `--border: oklch(...);` in `:root`),\n\
                  - Or remove `@apply border-border;` / replace it with standard border token utilities that you have defined in `@theme`."
             ));
+        }
+
+        if is_tailwind_v4 {
+            if let Some(offending_rule) = Self::find_unlayered_universal_box_reset(&clean_css) {
+                let file_display = path.display();
+                return Err(format!(
+                    "[CSS Semantic Barrier Rejected]:\n\
+                     The proposed edit to '{file_display}' contains an UNLAYERED universal box-model spacing reset (`{offending_rule}`) in a Tailwind CSS v4 stylesheet.\n\
+                     In Tailwind CSS v4 (`@import \"tailwindcss\"`), all spacing utilities (`px-*`, `py-*`, `pt-*`, `p-*`, `m-*`, `mx-auto`) are generated inside `@layer utilities`.\n\
+                     Per CSS Cascade Layers specification, unlayered rules ALWAYS override `@layer utilities` regardless of specificity — meaning `{offending_rule}` forces every Tailwind padding and margin utility across the entire app to `0px` (collapsing container centering, card padding, button padding, and fixed-navbar top offsets)!\n\
+                     CRITICAL: The proposed edit was REJECTED and file contents on disk were preserved untouched.\n\
+                     Guidance:\n\
+                     - Either REMOVE the manual `* {{ margin: 0; padding: 0; }}` reset completely (Tailwind v4 Preflight already includes `@layer base {{ *, ::after, ::before {{ box-sizing: border-box; margin: 0; padding: 0; }} }}`),\n\
+                     - Or wrap your base reset rules inside `@layer base {{ *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }} }}` so `@layer utilities` can override them."
+                ));
+            }
         }
 
         Ok(())
@@ -506,5 +704,21 @@ mod tests {
 
         let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_tailwind_v4_unlayered_universal_reset_rejected_and_layered_passes() {
+        let path = PathBuf::from("src/index.css");
+        let orig = "";
+        let unlayered = "@import \"tailwindcss\";\n:root {\n  --bg-primary: #06090f;\n}\n*, *::before, *::after {\n  box-sizing: border-box;\n  margin: 0;\n  padding: 0;\n}\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, unlayered);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
+        assert!(msg.contains("UNLAYERED universal box-model spacing reset"));
+
+        let layered = "@import \"tailwindcss\";\n:root {\n  --bg-primary: #06090f;\n}\n@layer base {\n  *, *::before, *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n  }\n}\n";
+        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, layered).is_ok());
     }
 }

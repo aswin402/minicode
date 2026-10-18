@@ -417,6 +417,7 @@ user_pref("remote.active-protocols", 3);
                 BrowserMode::Headless => {
                     vec![
                         "--headless=new".to_string(),
+                        "--window-size=1440,900".to_string(),
                         format!("--remote-debugging-port={}", port_str),
                         format!("--user-data-dir={}", profile_str),
                         "--disable-gpu".to_string(),
@@ -428,6 +429,7 @@ user_pref("remote.active-protocols", 3);
                 }
                 BrowserMode::Gui => {
                     vec![
+                        "--window-size=1440,900".to_string(),
                         format!("--remote-debugging-port={}", port_str),
                         format!("--user-data-dir={}", profile_str),
                         "--disable-gpu".to_string(),
