@@ -14,6 +14,7 @@ pub mod setup;
 pub mod status;
 pub mod subagent_drawer;
 pub mod theme;
+pub mod toast;
 pub mod todo_widget;
 pub mod view;
 pub mod welcome;
@@ -42,5 +43,7 @@ pub use status::{StatusContext, StatusWidgets};
 #[allow(unused_imports)]
 pub use subagent_drawer::SubagentDrawer;
 pub use theme::Theme;
+#[allow(unused_imports)]
+pub use toast::{ToastItem, ToastKind, ToastManager};
 pub use view::{TimelineContext, TimelineView};
 pub use welcome::{render_welcome_screen, WelcomeContext};

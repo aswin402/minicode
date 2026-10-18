@@ -75,6 +75,8 @@ pub struct App<'a> {
     pub session_skipped_drift: bool,
     pub active_task: Option<String>,
     pub active_plan: Option<crate::ui::view::LivePlanBlock>,
+    pub toasts: crate::ui::ToastManager,
+    last_bg_task_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +142,9 @@ impl<'a> App<'a> {
             _ => (None, None),
         };
 
+        let (initial_bg_tasks, _, _) =
+            crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
@@ -168,12 +173,41 @@ impl<'a> App<'a> {
             session_skipped_drift: false,
             active_task: initial_active_task,
             active_plan: initial_active_plan,
+            toasts: crate::ui::ToastManager::new(),
+            last_bg_task_count: initial_bg_tasks,
         }
     }
 
-    /// Adds a status banner notification directly to the timeline
+    /// Adds a status banner notification directly to the timeline and triggers a floating toast
     pub fn add_timeline_status(&mut self, message: impl Into<String>) {
-        self.timeline.add_status(message.into());
+        let msg = message.into();
+        let trimmed = msg.trim();
+        let kind = if trimmed.starts_with('✕') || trimmed.starts_with('✗') {
+            crate::ui::ToastKind::Error
+        } else if trimmed.starts_with('⚠') || trimmed.starts_with('⏸') {
+            crate::ui::ToastKind::Warning
+        } else if trimmed.starts_with('✔') || trimmed.starts_with('✨') {
+            crate::ui::ToastKind::Success
+        } else {
+            crate::ui::ToastKind::Info
+        };
+        let clean_body = trimmed
+            .trim_start_matches(['✔', '✕', '✗', '⚠', '⚙', '✨', 'ℹ', '⏸', '⏹', '⊘'])
+            .trim();
+        let title = match kind {
+            crate::ui::ToastKind::Error => "Operation Failed",
+            crate::ui::ToastKind::Warning => "System Warning",
+            crate::ui::ToastKind::Success => "Action Completed",
+            _ => "System Update",
+        };
+        self.toasts.push(
+            kind,
+            title,
+            clean_body,
+            None,
+            Some("status_banner".to_string()),
+        );
+        self.timeline.add_status(msg);
     }
 
     /// Hydrates past session events into the timeline view
@@ -562,12 +596,38 @@ impl<'a> App<'a> {
                     self.subagent_drawer
                         .render(frame, frame.area(), &self.theme);
                 }
+
+                // Render Floating TUI Toast Notifications at top-right of viewport
+                self.toasts.render(frame, frame.area(), &self.theme);
             })?;
 
             tokio::select! {
-                    // UI frame tick (smooth timer animation during execution)
+                    // UI frame tick (smooth timer animation & background task state monitoring)
                     _ = ticker.tick() => {
-                        // Triggers loop draw iteration
+                        let (active_bg, rss_mb, _) =
+                            crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+                        if active_bg != self.last_bg_task_count {
+                            if active_bg > self.last_bg_task_count {
+                                let added = active_bg - self.last_bg_task_count;
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Task,
+                                    "Background Task Active",
+                                    format!("{added} background process(es) spawned ({active_bg} running)."),
+                                    Some(format!("{rss_mb:.0}MB")),
+                                    Some("bg_task_lifecycle".to_string()),
+                                );
+                            } else {
+                                let finished = self.last_bg_task_count - active_bg;
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Background Task Completed",
+                                    format!("{finished} background task(s) finished ({active_bg} active)."),
+                                    Some(format!("{active_bg} active")),
+                                    Some("bg_task_lifecycle".to_string()),
+                                );
+                            }
+                            self.last_bg_task_count = active_bg;
+                        }
                     }
 
                     // Handle Agent streaming events from background actor
@@ -591,6 +651,9 @@ impl<'a> App<'a> {
                             }
                             continue;
                         }
+
+                        let turn_elapsed = self.work_start.map(|s| s.elapsed());
+                        self.toasts.ingest_agent_event(&agent_event, turn_elapsed);
 
                         match agent_event {
                             AgentEvent::TurnStart { context_tokens, .. } => {
@@ -904,7 +967,7 @@ impl<'a> App<'a> {
                                             let trimmed = selected_text.trim();
                                             if !trimmed.is_empty() {
                                                 let preview = crate::utils::truncate_ellipsis(trimmed, 28);
-                                                self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                                self.add_timeline_status(format!("✔ Copied to clipboard: \"{}\"", preview));
                                             }
                                         }
                                     }
@@ -922,7 +985,7 @@ impl<'a> App<'a> {
                                                     && crate::ui::clipboard::copy_to_clipboard(trimmed)
                                                 {
                                                     let preview = crate::utils::truncate_ellipsis(trimmed, 28);
-                                                    self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                                    self.add_timeline_status(format!("✔ Copied to clipboard: \"{}\"", preview));
                                                 }
                                             }
                                         }
@@ -961,7 +1024,7 @@ impl<'a> App<'a> {
                                             self.modal = ModalState::new_git_diff(diff_files, false);
                                         }
                                         Err(e) => {
-                                            self.timeline.add_status(format!("✗ Failed to load git diff: {}", e));
+                                            self.add_timeline_status(format!("✗ Failed to load git diff: {}", e));
                                         }
                                     }
                                     continue;
@@ -982,7 +1045,7 @@ impl<'a> App<'a> {
                                             self.modal = ModalState::new_session_browser(sessions, initial_summary);
                                         }
                                         Err(e) => {
-                                            self.timeline.add_status(format!("✗ Failed to load session history: {}", e));
+                                            self.add_timeline_status(format!("✗ Failed to load session history: {}", e));
                                         }
                                     }
                                     continue;
@@ -992,7 +1055,7 @@ impl<'a> App<'a> {
                                 if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     self.timeline = crate::ui::TimelineView::new();
                                     let _ = control_tx.send(AgentCommand::NewSession);
-                                    self.timeline.add_status("✨ Started a new session".to_string());
+                                    self.add_timeline_status("✨ Started a new session".to_string());
                                     continue;
                                 }
 
@@ -1011,14 +1074,14 @@ impl<'a> App<'a> {
                                 // Ctrl+R triggers code review
                                 if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
                                     self.timeline.add_user_message("/review".to_string());
-                                    self.timeline.add_status("🛡️ Running multi-agent adversarial code review...".to_string());
+                                    self.add_timeline_status("🛡️ Running multi-agent adversarial code review...".to_string());
                                     match crate::git::GitReviewer::review_workspace(&self.workspace_root, false).await {
                                         Ok(report) => {
                                             let formatted = crate::git::GitReviewer::format_report(&report);
                                             self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
                                         }
                                         Err(e) => {
-                                            self.timeline.add_status(format!("✗ Code review error: {}", e));
+                                            self.add_timeline_status(format!("✗ Code review error: {}", e));
                                         }
                                     }
                                     continue;
@@ -1064,15 +1127,15 @@ impl<'a> App<'a> {
                                             let ok = crate::ui::clipboard::copy_to_clipboard(trimmed);
                                             if ok {
                                                 let preview = crate::utils::truncate_ellipsis(trimmed, 28);
-                                                self.timeline.add_status(format!("✔ Copied to clipboard: \"{}\"", preview));
+                                                self.add_timeline_status(format!("✔ Copied to clipboard: \"{}\"", preview));
                                             } else {
-                                                self.timeline.add_status("✗ Failed to copy to clipboard".to_string());
+                                                self.add_timeline_status("✗ Failed to copy to clipboard".to_string());
                                             }
                                         } else {
-                                            self.timeline.add_status("ℹ Nothing to copy yet".to_string());
+                                            self.add_timeline_status("ℹ Nothing to copy yet".to_string());
                                         }
                                     } else {
-                                        self.timeline.add_status("ℹ Nothing to copy yet".to_string());
+                                        self.add_timeline_status("ℹ Nothing to copy yet".to_string());
                                     }
                                     continue;
                                 }
@@ -1213,14 +1276,14 @@ impl<'a> App<'a> {
                                                 let workers = p.snapshot_subagents();
                                                 if let Some(target) = workers.get(self.subagent_drawer.selected_index) {
                                                     let _ = p.kill_subagent(&target.id).await;
-                                                    self.timeline.add_status(format!("⊘ Terminated subagent worker `{}`", target.id));
+                                                    self.add_timeline_status(format!("⊘ Terminated subagent worker `{}`", target.id));
                                                 }
                                             }
                                         }
                                         KeyCode::Char('a') => {
                                             if let Some(p) = pool {
                                                 p.kill_all().await;
-                                                self.timeline.add_status("⊘ Terminated all running subagent workers".to_string());
+                                                self.add_timeline_status("⊘ Terminated all running subagent workers".to_string());
                                             }
                                         }
                                         _ => {}
@@ -1241,7 +1304,7 @@ impl<'a> App<'a> {
                                         self.current_activity = None;
                                         self.work_start = None;
                                         self.timeline.finalize_pending_thoughts(None);
-                                        self.timeline.add_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
+                                        self.add_timeline_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
                                     } else {
@@ -1250,7 +1313,7 @@ impl<'a> App<'a> {
                                             let ok = crate::ui::clipboard::copy_to_clipboard(&selected);
                                             if ok {
                                                 let preview = crate::utils::truncate_ellipsis(selected.trim(), 28);
-                                                self.timeline.add_status(format!("✔ Copied selection to clipboard: \"{}\"", preview));
+                                                self.add_timeline_status(format!("✔ Copied selection to clipboard: \"{}\"", preview));
                                             }
                                             continue;
                                         }
@@ -1261,7 +1324,7 @@ impl<'a> App<'a> {
                                             let ok = crate::ui::clipboard::copy_to_clipboard(input_text.trim());
                                             if ok {
                                                 let preview = crate::utils::truncate_ellipsis(input_text.trim(), 28);
-                                                self.timeline.add_status(format!("✔ Copied input to clipboard: \"{}\"", preview));
+                                                self.add_timeline_status(format!("✔ Copied input to clipboard: \"{}\"", preview));
                                             }
                                             continue;
                                         }
