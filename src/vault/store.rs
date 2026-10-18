@@ -1571,13 +1571,19 @@ impl VaultStore {
         active_files: &[P],
         exclude_skills: &[String],
     ) -> Option<String> {
-        let exclude_set: std::collections::HashSet<String> =
+        let mut exclude_set: std::collections::HashSet<String> =
             exclude_skills.iter().map(|s| s.to_lowercase()).collect();
+
+        // Exclude baseline workspace/stack skills that are already injected into the static system prompt
+        for baseline_skill in self.match_skills_for_context::<&str>(None, None, &[]) {
+            exclude_set.insert(baseline_skill.name.to_lowercase());
+        }
 
         let matched = self.match_skills_for_context(prompt, session_objective, active_files);
         let new_skills: Vec<_> = matched
             .into_iter()
             .filter(|s| !exclude_set.contains(&s.name.to_lowercase()))
+            .take(3)
             .collect();
 
         if new_skills.is_empty() {

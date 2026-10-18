@@ -942,22 +942,12 @@ impl WorkingMemory {
             return Self::build_plan_summary(phase_label, &milestone.tasks);
         }
 
-        // 3. Fallback to task_plan_tasks if all are completed
+        // 3. Fallback to task_plan_tasks if task_plan.md is still active on disk and all steps just finished
         if !task_plan_tasks.is_empty() {
             let title = self
                 .read_task_plan_title()
                 .unwrap_or_else(|| "Plan".to_string());
             return Self::build_plan_summary(title, &task_plan_tasks);
-        }
-
-        // 4. Fallback to last milestone if all milestones are completed
-        if let Some(milestone) = milestones.last() {
-            let phase_label = if milestone.id == milestone.title {
-                milestone.id.clone()
-            } else {
-                format!("{}: {}", milestone.id, milestone.title)
-            };
-            return Self::build_plan_summary(phase_label, &milestone.tasks);
         }
 
         None
@@ -1500,8 +1490,8 @@ impl WorkingMemory {
         candidates
     }
 
-    /// Splits a file path's stem on CamelCase, PascalCase, snake_case, and kebab-case boundaries
-    /// into lowercase tokens of length >= 3 (e.g. `src/components/FeaturesBento.tsx` -> `["features", "bento"]`).
+    /// Splits a file path's stem on CamelCase, PascalCase, Acronym+PascalCase, snake_case, and kebab-case
+    /// boundaries into lowercase tokens of length >= 3 (e.g. `CTASection.tsx` -> `["cta"]`, `FeaturesBento.tsx` -> `["features", "bento"]`).
     fn split_identifier_stem_tokens(file_path: &str) -> Vec<String> {
         let Some(stem) = Path::new(file_path).file_stem().and_then(|s| s.to_str()) else {
             return Vec::new();
@@ -1521,6 +1511,16 @@ impl WorkingMemory {
                 if prev_lower_or_digit && ch.is_ascii_uppercase() && current.len() >= 3 {
                     tokens.push(current.to_ascii_lowercase());
                     current.clear();
+                } else if !prev_lower_or_digit
+                    && ch.is_ascii_lowercase()
+                    && current.len() >= 4
+                    && current.chars().all(|c| c.is_ascii_uppercase())
+                {
+                    let split_at = current.len() - 1;
+                    let acronym = &current[..split_at];
+                    let next_start = current[split_at..].to_string();
+                    tokens.push(acronym.to_ascii_lowercase());
+                    current = next_start;
                 }
                 current.push(ch);
                 prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
@@ -1547,8 +1547,26 @@ impl WorkingMemory {
         tokens
     }
 
+    /// Reduces an English identifier word to its root stem by stripping common derivational/inflectional suffixes.
+    fn morphological_root(word: &str) -> &str {
+        const SUFFIXES: &[&str] = &[
+            "ization", "ational", "fulness", "ousness", "iveness", "tecture", "section", "ateness",
+            "ability", "ibility", "arison", "action", "ication", "ition", "ation", "ments", "ment",
+            "ances", "ence", "ance", "ities", "ity", "ings", "ing", "ions", "ion", "ures", "ure",
+            "ives", "ive", "ally", "ical", "als", "al", "ers", "er", "ors", "or", "ies", "es",
+            "ed", "ly", "s",
+        ];
+        for suffix in SUFFIXES {
+            if word.len() >= suffix.len() + 4 && word.ends_with(suffix) {
+                return &word[..word.len() - suffix.len()];
+            }
+        }
+        word
+    }
+
     /// Returns whether a stem token `s` matches any alphanumeric word `w` in `task_lower`.
     fn stem_token_matches_task(s: &str, task_lower: &str) -> bool {
+        let s_root = Self::morphological_root(s);
         task_lower
             .split(|c: char| !c.is_ascii_alphanumeric())
             .filter(|w| w.len() >= 3)
@@ -1556,9 +1574,13 @@ impl WorkingMemory {
                 if (w == "section" || w == "sections") && s != "section" && s != "sections" {
                     return false;
                 }
+                let w_root = Self::morphological_root(w);
                 w == s
+                    || (w_root.len() >= 4 && w_root == s_root)
                     || (w.len() >= 4 && s.len() >= 4 && (w.starts_with(s) || s.starts_with(w)))
-                    || (w.len() >= 6 && s.len() >= 6 && w[..5] == s[..5])
+                    || (w_root.len() >= 5
+                        && s_root.len() >= 5
+                        && (w_root.starts_with(s_root) || s_root.starts_with(w_root)))
                     || (s == "navbar" && w.starts_with("navig"))
                     || (w == "navbar" && s.starts_with("navig"))
             })
@@ -1792,7 +1814,37 @@ impl WorkingMemory {
                     if matched_count == 0 {
                         continue;
                     }
-                    // Specificity (IDF) check: count how many uncompleted tasks have >= matched_count
+                    let head_matched_count = stem_tokens
+                        .iter()
+                        .filter(|tok| Self::stem_token_matches_task(tok, primary_head))
+                        .count();
+
+                    // Specificity (IDF) check: count how many uncompleted tasks match in primary_head vs full text
+                    let head_competing_tasks = if head_matched_count > 0 {
+                        tasks
+                            .iter()
+                            .filter(|other| {
+                                other.status != TaskItemStatus::Completed && {
+                                    let other_lower = other.title.to_ascii_lowercase();
+                                    let other_head = other_lower
+                                        .split([':', '—'])
+                                        .next()
+                                        .unwrap_or(&other_lower)
+                                        .trim();
+                                    let c = stem_tokens
+                                        .iter()
+                                        .filter(|tok| {
+                                            Self::stem_token_matches_task(tok, other_head)
+                                        })
+                                        .count();
+                                    c >= head_matched_count
+                                }
+                            })
+                            .count()
+                    } else {
+                        usize::MAX
+                    };
+
                     let competing_tasks = tasks
                         .iter()
                         .filter(|other| {
@@ -1818,7 +1870,8 @@ impl WorkingMemory {
                             }
                         })
                         .count();
-                    let is_specific_match = competing_tasks == 1
+                    let is_specific_match = head_competing_tasks == 1
+                        || competing_tasks == 1
                         || (competing_tasks <= 2 && task.status == TaskItemStatus::InProgress);
                     if is_specific_match {
                         file_satisfied = true;
@@ -1992,12 +2045,11 @@ impl WorkingMemory {
 
     /// Renders active working memory as a unified, senior-engineer prompt block.
     pub fn to_prompt_block(&self) -> String {
-        let has_plan = self.has_active_plan()
-            || self
-                .read_roadmap_todo()
-                .map(|o| o.is_some())
-                .unwrap_or(false);
-        if !has_plan && self.read_notes().is_none() {
+        let tasks = self.read_parsed_tasks();
+        let has_incomplete_tasks = tasks.iter().any(|t| t.status != TaskItemStatus::Completed);
+        let has_plan = self.has_active_plan() || has_incomplete_tasks;
+        let notes = self.read_notes();
+        if !has_plan && notes.is_none() {
             return String::new();
         }
 
@@ -2005,7 +2057,7 @@ impl WorkingMemory {
         block.push_str("<working_memory>\n");
 
         let impl_path = self.canonical_implementation_path();
-        if impl_path.exists() {
+        if has_plan && impl_path.exists() {
             let rel = impl_path
                 .strip_prefix(&self.workspace_root)
                 .unwrap_or(&impl_path);
@@ -2015,8 +2067,7 @@ impl WorkingMemory {
             ));
         }
 
-        let tasks = self.read_parsed_tasks();
-        if !tasks.is_empty() {
+        if has_plan && !tasks.is_empty() {
             let completed: Vec<&TaskItem> = tasks
                 .iter()
                 .filter(|t| t.status == TaskItemStatus::Completed)
@@ -2848,6 +2899,47 @@ mod tests {
         assert_eq!(summary.completed_tasks, 1);
         assert_eq!(summary.in_progress_tasks, 1);
         assert_eq!(summary.pending_tasks, 2);
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_minitest69_stem_morphology_acronym_and_archive_suppression() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_minitest69_sync_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Architecture pipeline: Build multi-layer execution diagram".to_string(),
+            "Security & Sandbox section: Build secure isolation cards".to_string(),
+            "Final CTA & Footer: Build call-to-action banner and archive plan".to_string(),
+        ];
+        wm.init_plan("Minicode Landing", &steps).unwrap();
+
+        // 1. ArchitectureSection.tsx must NOT collide with "archive" in task 3
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/ArchitectureSection.tsx".to_string()]),
+            1
+        );
+        // 2. SecuritySection.tsx must match "Security" / "secure" in task 2 via morphological root ("secur")
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/SecuritySection.tsx".to_string()]),
+            1
+        );
+        // 3. CTASection.tsx must split uppercase acronym boundary ("CTASection" -> ["cta"]) and match task 3
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/CTASection.tsx".to_string()]),
+            1
+        );
+
+        // 4. Archive plan -> read_active_plan_summary() must return None and to_prompt_block() must omit <live_execution_plan>
+        wm.archive_plan().unwrap();
+        assert!(wm.read_active_plan_summary().is_none());
+        let prompt_block = wm.to_prompt_block();
+        assert!(!prompt_block.contains("<live_execution_plan>"));
 
         fs::remove_dir_all(temp_dir).ok();
     }

@@ -491,8 +491,10 @@ impl AgentLoop {
                 "Applied semantic micro-compaction to conversation history"
             );
         }
-        let compaction_metrics = self.prune_context();
-        let message_index = self.messages.len();
+        crate::context::auto_compact::AutoCompactor::strip_older_workspace_context(
+            &mut self.messages,
+        );
+        let mut compaction_metrics = self.prune_context();
 
         // 2. Build Tri-Zone context:
         // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
@@ -593,6 +595,10 @@ impl AgentLoop {
         }
 
         self.messages.push(Message::user(prompt_with_context));
+        if compaction_metrics.is_none() {
+            compaction_metrics = self.prune_context();
+        }
+        let message_index = self.messages.len().saturating_sub(1);
 
         if let Some(metrics) = compaction_metrics {
             let compact_event = AgentEvent::ContextCompacted {
@@ -831,6 +837,31 @@ impl AgentLoop {
                                 cumulative_completion_tokens = completions_before;
                                 continue;
                             }
+                            let err_event = AgentEvent::Error {
+                                turn_id: Some(turn_id),
+                                code: "provider_error".to_string(),
+                                message: e.to_string(),
+                                retrying: false,
+                                retry_after_ms: None,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &err_event);
+                            let _ = event_sender.send(err_event);
+                            let end_event = AgentEvent::TurnEnd {
+                                turn_id,
+                                status: "error".to_string(),
+                                total_tokens_used: last_prompt_tokens
+                                    .saturating_add(cumulative_completion_tokens),
+                                files_modified: turn_files_modified.clone(),
+                                cached_prompt_tokens: last_cached_prompt_tokens,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &end_event);
+                            let _ = event_sender.send(end_event);
+                            let _ =
+                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
                             return Err(e);
                         }
                     };
@@ -1002,6 +1033,31 @@ impl AgentLoop {
                             cumulative_completion_tokens = completions_before;
                             continue;
                         } else {
+                            let err_event = AgentEvent::Error {
+                                turn_id: Some(turn_id),
+                                code: "provider_error".to_string(),
+                                message: err.to_string(),
+                                retrying: false,
+                                retry_after_ms: None,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &err_event);
+                            let _ = event_sender.send(err_event);
+                            let end_event = AgentEvent::TurnEnd {
+                                turn_id,
+                                status: "error".to_string(),
+                                total_tokens_used: last_prompt_tokens
+                                    .saturating_add(cumulative_completion_tokens),
+                                files_modified: turn_files_modified.clone(),
+                                cached_prompt_tokens: last_cached_prompt_tokens,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &end_event);
+                            let _ = event_sender.send(end_event);
+                            let _ =
+                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
                             return Err(err);
                         }
                     }
@@ -1077,6 +1133,31 @@ impl AgentLoop {
                                 cumulative_completion_tokens = completions_before;
                                 continue;
                             }
+                            let err_event = AgentEvent::Error {
+                                turn_id: Some(turn_id),
+                                code: "provider_error".to_string(),
+                                message: e.to_string(),
+                                retrying: false,
+                                retry_after_ms: None,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &err_event);
+                            let _ = event_sender.send(err_event);
+                            let end_event = AgentEvent::TurnEnd {
+                                turn_id,
+                                status: "error".to_string(),
+                                total_tokens_used: last_prompt_tokens
+                                    .saturating_add(cumulative_completion_tokens),
+                                files_modified: turn_files_modified.clone(),
+                                cached_prompt_tokens: last_cached_prompt_tokens,
+                            };
+                            let _ = self
+                                .session_store
+                                .append_event(&self.session_id, &end_event);
+                            let _ = event_sender.send(end_event);
+                            let _ =
+                                crate::tools::browser::BrowserManager::shutdown_live_engine().await;
                             return Err(e);
                         }
                     }
@@ -2450,6 +2531,8 @@ impl AgentLoop {
                 "Turn completed with prompt cache hits"
             );
         }
+
+        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
 
         let end_event = AgentEvent::TurnEnd {
             turn_id,

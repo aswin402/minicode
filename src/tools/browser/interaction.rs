@@ -40,8 +40,18 @@ pub enum BatchStep {
         selector: Option<String>,
         option_text: String,
     },
+    #[serde(alias = "scroll_y")]
     Scroll {
-        direction: String,
+        #[serde(default)]
+        direction: Option<String>,
+        #[serde(default, alias = "pixels")]
+        y: Option<i32>,
+    },
+    ScrollTo {
+        #[serde(default, alias = "pixels")]
+        y: Option<i32>,
+        #[serde(default)]
+        selector: Option<String>,
     },
     ScrollHorizontal {
         direction: String,
@@ -66,7 +76,9 @@ pub enum BatchStep {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    #[serde(alias = "wait", alias = "delay")]
     WaitDelay {
+        #[serde(alias = "wait_ms", alias = "timeout_ms", alias = "duration_ms")]
         ms: u64,
     },
     EvaluateJs {
@@ -698,11 +710,53 @@ impl BrowserInteractor {
                         )
                     }
                 }
-                BatchStep::Scroll { direction } => {
+                BatchStep::Scroll { direction, y } => {
                     let action = "scroll";
-                    let detail = format!("Scrolled {}", direction);
-                    let scroll_js = Self::build_scroll_js(direction);
-                    (action, detail, cdp.evaluate_js(scroll_js).await.map(|_| ()))
+                    if let Some(target_y) = y {
+                        let detail = format!("Scrolled to y={}", target_y);
+                        let scroll_js = format!(
+                            "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled_to_{}'; }})()",
+                            target_y, target_y
+                        );
+                        (
+                            action,
+                            detail,
+                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
+                        )
+                    } else {
+                        let dir = direction.as_deref().unwrap_or("down");
+                        let detail = format!("Scrolled {}", dir);
+                        let scroll_js = Self::build_scroll_js(dir);
+                        (action, detail, cdp.evaluate_js(scroll_js).await.map(|_| ()))
+                    }
+                }
+                BatchStep::ScrollTo { y, selector } => {
+                    let action = "scroll_to";
+                    if let Some(sel) = selector {
+                        let detail = format!("Scrolled to selector '{}'", sel);
+                        let payload = json!({ "selector": sel });
+                        let scroll_js = format!(
+                            "(() => {{ const p = {}; const el = document.querySelector(p.selector); if (!el) return 'Error: selector not found'; el.scrollIntoView({{ behavior: 'instant', block: 'start' }}); return 'scrolled_to_selector'; }})()",
+                            payload
+                        );
+                        (
+                            action,
+                            detail,
+                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
+                        )
+                    } else {
+                        let target_y = y.unwrap_or(0);
+                        let detail = format!("Scrolled to y={}", target_y);
+                        let scroll_js = format!(
+                            "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled_to_{}'; }})()",
+                            target_y, target_y
+                        );
+                        (
+                            action,
+                            detail,
+                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
+                        )
+                    }
                 }
                 BatchStep::ScrollHorizontal {
                     direction,
@@ -1429,7 +1483,9 @@ mod tests {
 
         let json_selector = r##"[
             {"action": "fill", "selector": "#email", "text": "bob@example.com"},
-            {"action": "click", "selector": "#submit"}
+            {"action": "click", "selector": "#submit"},
+            {"action": "scroll_to", "y": 900},
+            {"action": "wait", "wait_ms": 400}
         ]"##;
         let selector_steps: Vec<BatchStep> =
             serde_json::from_str(json_selector).expect("Valid selector batch steps");
@@ -1448,6 +1504,14 @@ mod tests {
                 selector: Some("#submit".to_string())
             }
         );
+        assert_eq!(
+            selector_steps[2],
+            BatchStep::ScrollTo {
+                y: Some(900),
+                selector: None
+            }
+        );
+        assert_eq!(selector_steps[3], BatchStep::WaitDelay { ms: 400 });
     }
 
     #[test]

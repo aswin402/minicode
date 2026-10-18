@@ -447,14 +447,45 @@ impl AutoCompactor {
         }
     }
 
+    /// Strips stale `<workspace_context>...</workspace_context>` blocks from older user turns,
+    /// preserving the live workspace telemetry and dynamic skill activations only on the most
+    /// recent user message.
+    pub fn strip_older_workspace_context(messages: &mut [Message]) {
+        let mut user_seen = 0usize;
+        for msg in messages.iter_mut().rev() {
+            if msg.role == Role::User {
+                if user_seen < 1 {
+                    user_seen += 1;
+                } else {
+                    while let Some(start) = msg.content.find("<workspace_context>") {
+                        if let Some(rel_end) = msg.content[start..].find("</workspace_context>") {
+                            let end = start + rel_end + "</workspace_context>".len();
+                            let before = msg.content[..start].trim_end();
+                            let after = msg.content[end..].trim_start();
+                            msg.content = match (before.is_empty(), after.is_empty()) {
+                                (true, true) => String::new(),
+                                (true, false) => after.to_string(),
+                                (false, true) => before.to_string(),
+                                (false, false) => format!("{}\n\n{}", before, after),
+                            };
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Main compaction entrypoint: applies progressive 4-tier compaction if message history grows large.
     pub fn compact(
         &mut self,
         messages: &mut Vec<Message>,
         current_turn: usize,
     ) -> Option<CompactionMetrics> {
-        // Strip older reasoning blocks to eliminate O(N^2) thought bloat across multi-turn sessions
+        // Strip older reasoning blocks and stale workspace snapshots across multi-turn sessions
         Self::strip_older_reasoning(messages);
+        Self::strip_older_workspace_context(messages);
 
         let initial_tokens = self.compressor.count_messages_tokens(messages);
         let limit = self.model_token_limit();
@@ -478,18 +509,11 @@ impl AutoCompactor {
         };
         let mut cutoff = messages.len().saturating_sub(preserve_count.max(1));
 
-        // Snap cutoff backward to guarantee orphan-safe interaction boundaries:
-        // 1. A recent slice must never begin with Role::Tool
-        // 2. An assistant message with tool calls must never be separated from its tool results
-        while cutoff > 0 {
-            if messages[cutoff].role == Role::Tool
-                || (messages[cutoff].role == Role::Assistant
-                    && messages[cutoff].tool_calls.is_some())
-            {
-                cutoff -= 1;
-            } else {
-                break;
-            }
+        // Snap cutoff backward across Role::Tool messages so the preserved recent slice
+        // begins at the Role::Assistant message that issued those tool calls (or a Role::User message),
+        // never separating tool results from their originating assistant tool_calls.
+        while cutoff > 0 && messages[cutoff].role == Role::Tool {
+            cutoff -= 1;
         }
 
         if cutoff == 0 {
@@ -726,5 +750,23 @@ mod tests {
         let m = metrics.unwrap();
         assert_eq!(m.tier, 1);
         assert!(m.tokens_after < m.tokens_before);
+    }
+
+    #[test]
+    fn test_strip_older_workspace_context_and_tool_call_compaction() {
+        let mut msgs = vec![
+            Message::user("<workspace_context>\nOld bulky context 1\n</workspace_context>\n\n<user_request>\nFirst prompt\n</user_request>"),
+            Message::assistant("Done turn 1"),
+            Message::user("<workspace_context>\nNew live context 2\n</workspace_context>\n\n<user_request>\nSecond prompt\n</user_request>"),
+        ];
+
+        AutoCompactor::strip_older_workspace_context(&mut msgs);
+        assert_eq!(
+            msgs[0].content,
+            "<user_request>\nFirst prompt\n</user_request>"
+        );
+        assert!(msgs[2]
+            .content
+            .contains("<workspace_context>\nNew live context 2\n</workspace_context>"));
     }
 }

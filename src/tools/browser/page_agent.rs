@@ -414,7 +414,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
         // Updates simulator state: updates pill message, glides cursor, triggers ripple, activates rail wave & equalizer
         updateSimulatorState: function(actionText, targetX, targetY, isClick, themeColor) {
-            this.injectSimulatorAura(actionText, themeColor);
+            if (!document.getElementById('minicode-simulator-container')) return;
 
             var txtEl = document.getElementById('minicode-pill-text');
             if (txtEl && actionText) txtEl.innerText = actionText;

@@ -580,6 +580,14 @@ impl BrowserController {
         custom_path: Option<&str>,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if mode == BrowserMode::Headless {
+            let _ = engine
+                .cdp
+                .evaluate_js(
+                    "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.remove(); return true; })()",
+                )
+                .await;
+        }
         let png_bytes = engine.cdp.take_screenshot().await?;
 
         let target_path = Self::resolve_screenshot_path(workspace_root, custom_path);
@@ -691,6 +699,24 @@ impl BrowserController {
                     return r.width > 100 && r.height > 20 && r.top >= -10 && r.top < 80;
                 });
                 const overlappingTopNavs = visibleNavs.length > 1;
+                let inlineLinkCollisions = 0;
+                if (window.getComputedStyle) {
+                    const interactiveEls = Array.from(document.querySelectorAll('a, button'));
+                    for (let i = 0; i < interactiveEls.length; i++) {
+                        const a = interactiveEls[i];
+                        const next = a.nextElementSibling;
+                        if (!next || (next.tagName !== 'A' && next.tagName !== 'BUTTON')) continue;
+                        const csA = window.getComputedStyle(a);
+                        const csB = window.getComputedStyle(next);
+                        if (csA.display === 'inline' && csB.display === 'inline') {
+                            const rA = a.getBoundingClientRect();
+                            const rB = next.getBoundingClientRect();
+                            if (rA.width > 4 && rB.width > 4 && Math.abs(rA.top - rB.top) < 6 && Math.abs(rB.left - rA.right) < 3) {
+                                inlineLinkCollisions++;
+                            }
+                        }
+                    }
+                }
                 return JSON.stringify({
                     title,
                     hasHead,
@@ -707,7 +733,8 @@ impl BrowserController {
                     semanticSections,
                     hiddenSections,
                     totalSectionTags: allSections.length,
-                    overlappingTopNavs
+                    overlappingTopNavs,
+                    inlineLinkCollisions
                 });
             } catch(e) {
                 return JSON.stringify({ error: e.toString() });
@@ -768,6 +795,10 @@ impl BrowserController {
                     .get("overlappingTopNavs")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let inline_link_collisions = probe
+                    .get("inlineLinkCollisions")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                 if !has_head || !has_body {
@@ -780,6 +811,12 @@ impl BrowserController {
                 }
                 if overlapping_top_navs {
                     health_notes.push("⚠ DUPLICATE NAVBAR OVERLAP DEFECT: Multiple visible `<nav>` bars are rendering at the top of the page! If `src/layouts/RootLayout.tsx` renders `<Navbar />`, remove the duplicate navbar or update `RootLayout.tsx`.".to_string());
+                }
+                if inline_link_collisions > 0 {
+                    health_notes.push(format!(
+                        "⚠ INLINE LINK COLLISION WARNING: {} adjacent `<a>`/`<button>` sibling pair(s) have `display: inline` with zero horizontal separation and are running together on the same line! Add `block`, `inline-block`, or flex container spacing (`flex flex-col gap-2` or `flex gap-4`).",
+                        inline_link_collisions
+                    ));
                 }
                 if hidden_sections > 0 {
                     health_notes.push(format!(
