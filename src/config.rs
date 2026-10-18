@@ -409,17 +409,25 @@ impl SwarmDashboardStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToastStyle {
-    /// Dual Accent Rail + Bottom Live TTL Hairline (Default)
+    /// OpenCode Split-Bar: vertical `┃` left/right accent bars with breathing room, zero horizontal borders (Default)
     #[default]
-    Rail,
-    /// OpenCode Minimal Split-Bar (Vertical left/right bars with breathing room, zero horizontal borders)
     OpenCode,
-    /// Neo-Nordic Floating Card (Rounded box with embedded title header and bottom TTL border)
+    /// Clean Rounded Card: `╭───╮` / `│ … │` / `╰───╯`
     Rounded,
-    /// Ultra-Compact Single-Line Pill (1-row high-contrast capsule)
-    Pill,
-    /// Cyber Double-Frame Telemetry Callout (Double-line HUD frame with segmented block drain meter)
-    Hud,
+    /// Spacious Rounded Card: `╭───╮` with top/bottom breathing rows inside `│ … │` and `╰───╯`
+    RoundedPadded,
+    /// Square Corner-Bracket Frame: `┌─ … ─┐` / `│ … │` / `└─ … ─┘`
+    Bracket,
+    /// Minimal Left Accent Bar: single thick `┃` left spine with open top, right, and bottom
+    LeftBar,
+    /// Asymmetric Half-Top + Left + Full-Bottom Cradle (Rounded corners `╭` / `╰`)
+    CradleRound,
+    /// Asymmetric Half-Top + Left + Full-Bottom Cradle (Square corners `┌` / `└`)
+    CradleSquare,
+    /// Asymmetric Left + Full-Bottom L-Frame (Rounded corner `╰`)
+    LRound,
+    /// Asymmetric Left + Full-Bottom L-Frame (Square corner `└`)
+    LSquare,
 }
 
 #[allow(dead_code)]
@@ -427,22 +435,30 @@ impl ToastStyle {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Rail => "rail",
             Self::OpenCode => "opencode",
             Self::Rounded => "rounded",
-            Self::Pill => "pill",
-            Self::Hud => "hud",
+            Self::RoundedPadded => "rounded_padded",
+            Self::Bracket => "bracket",
+            Self::LeftBar => "left_bar",
+            Self::CradleRound => "cradle_round",
+            Self::CradleSquare => "cradle_square",
+            Self::LRound => "l_round",
+            Self::LSquare => "l_square",
         }
     }
 
     #[must_use]
     pub fn from_str_loose(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
-            "opencode" | "open" | "split" => Self::OpenCode,
             "rounded" | "card" | "nordic" => Self::Rounded,
-            "pill" | "compact" | "capsule" => Self::Pill,
-            "hud" | "cyber" | "glass" | "double" => Self::Hud,
-            _ => Self::Rail,
+            "rounded_padded" | "spacious_rounded" => Self::RoundedPadded,
+            "bracket" | "square" | "corner_bracket" => Self::Bracket,
+            "left_bar" | "left" | "minimal" => Self::LeftBar,
+            "cradle_round" | "cradle" => Self::CradleRound,
+            "cradle_square" => Self::CradleSquare,
+            "l_round" | "l_frame" | "lframe" => Self::LRound,
+            "l_square" => Self::LSquare,
+            _ => Self::OpenCode,
         }
     }
 }
@@ -527,7 +543,7 @@ fn default_todo_style() -> String {
 }
 
 fn default_toast_style() -> String {
-    "rail".to_string()
+    "opencode".to_string()
 }
 
 fn default_max_width() -> usize {

@@ -159,53 +159,102 @@ pub struct ToastStyleOption {
 
 pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
     ToastStyleOption {
-        id: "rail",
-        name: "Dual Accent Rail + TTL Hairline (Default)",
-        description: "Elevated surface with vertical accent rails (▍…▕) and live bottom TTL drain bar",
-        preview: &[
-            "▍ ✔ Subagent Completed               27s ▕",
-            "▍   \"Security Auditor\" finished          ▕",
-            "▍━━━━━━━━━━━━━━━━━━━━━━──────────────────▕",
-        ],
-    },
-    ToastStyleOption {
         id: "opencode",
-        name: "OpenCode Minimal Split-Bar",
+        name: "OpenCode Split-Bar (Default)",
         description: "Thick left & right vertical accent bars (┃…┃) with breathing room and zero horizontal borders",
         preview: &[
-            "┃                                        ┃",
-            "┃  ✔ Subagent Completed              27s ┃",
-            "┃    \"Security Auditor\" finished         ┃",
-            "┃                                        ┃",
+            "┃                                          ┃",
+            "┃  ✔ Subagent Completed                27s ┃",
+            "┃    \"Security Auditor\" finished           ┃",
+            "┃                                          ┃",
         ],
     },
     ToastStyleOption {
         id: "rounded",
-        name: "Neo-Nordic Floating Card",
-        description: "Rounded box (╭─╮…╰─╯) with embedded header title and bottom border TTL countdown meter",
+        name: "Clean Rounded Card",
+        description: "Minimalist rounded border (╭─╮…╰─╯) with crisp typography and zero progress bar clutter",
         preview: &[
-            "╭─ ✔ Subagent Completed ───────── [27s] ─╮",
-            "│  \"Security Auditor\" finished           │",
-            "╰━━━━━━━━━━━━━━━━━━━━━━──────────────────╯",
+            "╭──────────────────────────────────────────╮",
+            "│  ✔ Subagent Completed                27s │",
+            "│    \"Security Auditor\" finished           │",
+            "╰──────────────────────────────────────────╯",
         ],
     },
     ToastStyleOption {
-        id: "pill",
-        name: "Ultra-Compact Single-Line Pill",
-        description: "Zero vertical footprint (1 row): floating capsule (▐ … ▌) for maximum code visibility",
+        id: "rounded_padded",
+        name: "Spacious Rounded Card",
+        description: "Rounded card (╭─╮…╰─╯) with top and bottom breathing rows matching OpenCode's vertical rhythm",
         preview: &[
-            "▐ ✔ Subagent Completed · \"Security Auditor\" finished   [27s] ▌",
+            "╭──────────────────────────────────────────╮",
+            "│                                          │",
+            "│  ✔ Subagent Completed                27s │",
+            "│    \"Security Auditor\" finished           │",
+            "│                                          │",
+            "╰──────────────────────────────────────────╯",
         ],
     },
     ToastStyleOption {
-        id: "hud",
-        name: "Cyber Double-Frame Telemetry Callout",
-        description: "High-contrast double-frame HUD card (╔═╗) with segmented block drain meter (▰▱)",
+        id: "bracket",
+        name: "Square Corner-Bracket Frame",
+        description: "Architectural corner brackets (┌─ … ─┐ / └─ … ─┘) with vertical side rails",
         preview: &[
-            "╔═ ✔ SUBAGENT COMPLETED ═════════ [27s] ═╗",
-            "╟────────────────────────────────────────╢",
-            "║  \"Security Auditor\" finished           ║",
-            "╚═ ▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱ ═══════════════════╝",
+            "┌─                                        ─┐",
+            "│  ✔ Subagent Completed                27s │",
+            "│    \"Security Auditor\" finished           │",
+            "└─                                        ─┘",
+        ],
+    },
+    ToastStyleOption {
+        id: "left_bar",
+        name: "Minimal Left Accent Bar",
+        description: "Ultra-clean single left spine (┃) on an elevated card with open top, right, and bottom",
+        preview: &[
+            "┃                                           ",
+            "┃  ✔ Subagent Completed                27s  ",
+            "┃    \"Security Auditor\" finished            ",
+            "┃                                           ",
+        ],
+    },
+    ToastStyleOption {
+        id: "cradle_round",
+        name: "Asymmetric Half-Top Cradle (Rounded)",
+        description: "Partial top overhang (╭────), full left spine (│), and full bottom baseline (╰────────)",
+        preview: &[
+            "╭──────────────────                         ",
+            "│  ✔ Subagent Completed                27s  ",
+            "│    \"Security Auditor\" finished            ",
+            "╰───────────────────────────────────────────",
+        ],
+    },
+    ToastStyleOption {
+        id: "cradle_square",
+        name: "Asymmetric Half-Top Cradle (Square)",
+        description: "Sharp square partial top overhang (┌────), left spine (│), and full bottom baseline (└────────)",
+        preview: &[
+            "┌──────────────────                         ",
+            "│  ✔ Subagent Completed                27s  ",
+            "│    \"Security Auditor\" finished            ",
+            "└───────────────────────────────────────────",
+        ],
+    },
+    ToastStyleOption {
+        id: "l_round",
+        name: "Asymmetric L-Frame (Rounded)",
+        description: "Open top and right — vertical left spine meeting a full bottom baseline at a rounded corner (╰────)",
+        preview: &[
+            "│  ✔ Subagent Completed                27s  ",
+            "│    \"Security Auditor\" finished            ",
+            "╰───────────────────────────────────────────",
+        ],
+    },
+    ToastStyleOption {
+        id: "l_square",
+        name: "Asymmetric L-Frame (Square)",
+        description: "Open top and right — vertical left spine meeting a full bottom baseline at a sharp corner (└────)",
+        preview: &[
+            "│  ✔ Subagent Completed                27s  ",
+            "│    \"Security Auditor\" finished            ",
+            "└───────────────────────────────────────────",
         ],
     },
 ];
@@ -648,7 +697,16 @@ pub fn render_theme_select(
             }
         }
         crate::ui::modals::ThemeModalTab::ToastStyles => {
-            for (idx, opt) in toast_styles.iter().enumerate() {
+            let toast_max_visible = 5;
+            let scroll_offset =
+                compute_scroll_offset(toast_style_selected_index, toast_max_visible);
+            let visible_toasts = toast_styles
+                .iter()
+                .skip(scroll_offset)
+                .take(toast_max_visible);
+
+            for (idx_rel, opt) in visible_toasts.enumerate() {
+                let idx = scroll_offset + idx_rel;
                 let is_selected = idx == toast_style_selected_index;
                 let is_active = opt.id == active_toast_style;
 
@@ -764,13 +822,17 @@ mod tests {
 
     #[test]
     fn test_toast_style_options_completeness() {
-        assert_eq!(TOAST_STYLE_OPTIONS.len(), 5);
+        assert_eq!(TOAST_STYLE_OPTIONS.len(), 9);
         let ids: Vec<&str> = TOAST_STYLE_OPTIONS.iter().map(|s| s.id).collect();
-        assert!(ids.contains(&"rail"));
         assert!(ids.contains(&"opencode"));
         assert!(ids.contains(&"rounded"));
-        assert!(ids.contains(&"pill"));
-        assert!(ids.contains(&"hud"));
+        assert!(ids.contains(&"rounded_padded"));
+        assert!(ids.contains(&"bracket"));
+        assert!(ids.contains(&"left_bar"));
+        assert!(ids.contains(&"cradle_round"));
+        assert!(ids.contains(&"cradle_square"));
+        assert!(ids.contains(&"l_round"));
+        assert!(ids.contains(&"l_square"));
     }
 
     #[test]
@@ -801,7 +863,7 @@ mod tests {
                 active_animation_id: "dual_pillars",
                 active_todo_style: "tree",
                 active_swarm_style: "stylish",
-                active_toast_style: "rail",
+                active_toast_style: "opencode",
             };
 
             terminal

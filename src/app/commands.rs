@@ -1701,9 +1701,14 @@ impl<'a> App<'a> {
                         Some("toast_style_preview".to_string()),
                     );
                 } else {
+                    let valid_ids = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     self.timeline.add_status(format!(
-                        "⚠️ Unknown toast style '{}'. Available: rail, opencode, rounded, pill, hud",
-                        arg
+                        "⚠️ Unknown toast style '{}'. Available: {}",
+                        arg, valid_ids
                     ));
                 }
             }
