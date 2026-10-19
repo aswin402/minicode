@@ -15,6 +15,7 @@ pub struct SubagentWorker {
     pub config: SubagentConfig,
     pub workspace_root: PathBuf,
     pub cancel_flag: Arc<AtomicBool>,
+    pub swarm_context: Option<(String, String, PathBuf)>,
 }
 
 #[allow(dead_code)]
@@ -33,7 +34,19 @@ impl SubagentWorker {
             config,
             workspace_root: workspace_root.to_path_buf(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            swarm_context: None,
         }
+    }
+
+    /// Attaches Swarm wave coordination context `(swarm_id, task_id, swarm_dir)` for peer messaging.
+    pub fn with_swarm_context(
+        mut self,
+        swarm_id: String,
+        task_id: String,
+        swarm_dir: PathBuf,
+    ) -> Self {
+        self.swarm_context = Some((swarm_id, task_id, swarm_dir));
+        self
     }
 
     /// Generates the specialized system prompt for the `minipub` worker's role, including
@@ -133,6 +146,9 @@ impl SubagentWorker {
             let mut final_summary = String::new();
             let mut success = true;
             let mut step_counter = 0;
+            let mut last_seen_swarm_msg_id: Option<String> = None;
+            let mut seen_global_msg_ids: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
                 &id,
                 role,
@@ -169,6 +185,48 @@ impl SubagentWorker {
                     messages.push(Message::user(format!(
                         "[ORCHESTRATOR LIVE UPDATE / STEER]: {}",
                         steer
+                    )));
+                }
+
+                // Deliver unread peer messages from durable SwarmMessageBus (if running in a swarm wave)
+                if let Some((_, ref task_id, ref swarm_dir)) = self.swarm_context {
+                    if let Ok(bus) = crate::agent::swarm::bus::SwarmMessageBus::new(swarm_dir) {
+                        if let Ok(unread) =
+                            bus.read_unread(task_id, last_seen_swarm_msg_id.as_deref())
+                        {
+                            if !unread.is_empty() {
+                                if let Some(last) = unread.last() {
+                                    last_seen_swarm_msg_id = Some(last.id.clone());
+                                }
+                                let formatted = unread
+                                    .iter()
+                                    .map(|m| m.format_for_prompt())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                messages.push(Message::user(format!(
+                                    "[SWARM PEER MESSAGES]:\n{}",
+                                    formatted
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                // Deliver unread peer messages from the global in-memory worker message bus
+                let global_inbox = crate::agent::subagent::get_global_message_bus().read_inbox(&id);
+                let mut new_global_msgs = Vec::new();
+                for msg in global_inbox {
+                    if seen_global_msg_ids.insert(msg.id.clone()) {
+                        new_global_msgs.push(format!(
+                            "<peer_message id=\"{}\" from=\"{}\" topic=\"{}\">\n{}\n</peer_message>",
+                            msg.id, msg.from_worker_id, msg.topic, msg.payload
+                        ));
+                    }
+                }
+                if !new_global_msgs.is_empty() {
+                    messages.push(Message::user(format!(
+                        "[PEER WORKER MESSAGES]:\n{}",
+                        new_global_msgs.join("\n")
                     )));
                 }
 
@@ -359,6 +417,10 @@ impl SubagentWorker {
                 }
 
                 final_summary = iteration_text.clone();
+                {
+                    let mut info = self.info.write().await;
+                    sync_todos_from_activity(&mut info.todos, &iteration_text, &files_modified);
+                }
 
                 if pending_tool_calls.is_empty() {
                     // Agent concluded with final response
@@ -374,8 +436,44 @@ impl SubagentWorker {
                 // Execute each tool call
                 for tool_call in pending_tool_calls {
                     let tool_name = tool_call.name;
-                    let args = tool_call.arguments;
+                    let mut args = tool_call.arguments;
                     let call_id = tool_call.id.clone();
+
+                    // Inject thread-safe worker & swarm identity into peer messaging tools
+                    if tool_name == "send_worker_message" {
+                        if let Some(obj) = args.as_object_mut() {
+                            if !obj.contains_key("from_worker_id") {
+                                let sender = self
+                                    .swarm_context
+                                    .as_ref()
+                                    .map(|(_, tid, _)| tid.clone())
+                                    .unwrap_or_else(|| id.clone());
+                                obj.insert(
+                                    "from_worker_id".to_string(),
+                                    serde_json::Value::String(sender),
+                                );
+                            }
+                            if let Some((ref s_id, _, ref s_dir)) = self.swarm_context {
+                                obj.insert(
+                                    "_swarm_id".to_string(),
+                                    serde_json::Value::String(s_id.clone()),
+                                );
+                                obj.insert(
+                                    "_swarm_dir".to_string(),
+                                    serde_json::Value::String(s_dir.to_string_lossy().to_string()),
+                                );
+                            }
+                        }
+                    } else if tool_name == "read_worker_messages" {
+                        if let Some(obj) = args.as_object_mut() {
+                            if !obj.contains_key("worker_id") {
+                                obj.insert(
+                                    "worker_id".to_string(),
+                                    serde_json::Value::String(id.clone()),
+                                );
+                            }
+                        }
+                    }
 
                     // Enforce Capability Whitelist
                     if !self.config.tool_whitelist.contains(&tool_name) {
@@ -474,6 +572,11 @@ impl SubagentWorker {
                         info.current_tool = None;
                         info.last_activity_secs = now_unix_secs();
                         info.status_message = Some(format!("Completed `{}`", tool_name));
+                        sync_todos_from_activity(
+                            &mut info.todos,
+                            &tool_res.output,
+                            &files_modified,
+                        );
                     }
 
                     messages.push(Message::tool_result(call_id, tool_name, tool_res.output));
@@ -626,5 +729,53 @@ fn estimate_prompt_tokens(messages: &[Message]) -> usize {
         bpe.encode_with_special_tokens(&prompt_str).len()
     } else {
         prompt_str.len() / 4
+    }
+}
+
+/// Checks off assigned `MiniPub` todo items when the worker explicitly marks `[x]` / `✔`
+/// in its output or modifies a file referenced in the todo description.
+fn sync_todos_from_activity(
+    todos: &mut [super::types::MiniPubTodoItem],
+    text: &str,
+    files_modified: &[String],
+) {
+    if todos.is_empty() {
+        return;
+    }
+    let lower_text = text.to_lowercase();
+    for todo in todos.iter_mut() {
+        if todo.completed {
+            continue;
+        }
+        let id_checked = lower_text.contains(&format!("[x] {}.", todo.id))
+            || lower_text.contains(&format!("[x] #{}", todo.id))
+            || lower_text.contains(&format!("✔ {}.", todo.id));
+        if id_checked {
+            todo.completed = true;
+            continue;
+        }
+
+        let task_lower = todo.task.to_lowercase();
+        let snippet: String = task_lower.chars().take(28).collect();
+        if !snippet.is_empty() {
+            for line in lower_text.lines() {
+                if (line.contains("[x]") || line.contains('✔')) && line.contains(&snippet) {
+                    todo.completed = true;
+                    break;
+                }
+            }
+        }
+        if todo.completed {
+            continue;
+        }
+
+        // Also check if any modified file path is explicitly mentioned in the todo task
+        for modified in files_modified {
+            let mod_clean = modified.trim_start_matches("./");
+            if !mod_clean.is_empty() && todo.task.contains(mod_clean) {
+                todo.completed = true;
+                break;
+            }
+        }
     }
 }

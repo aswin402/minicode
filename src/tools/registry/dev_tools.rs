@@ -28,9 +28,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "stop", "kill", "restart", "resources", "kill_all", "stop_all",
                         "probe_port", "check_port", "workers", "minipubs", "swarms",
                         "spawn_minipub", "create_minipub", "update_minipub", "modify_minipub", "configure",
+                        "await", "wait", "transcript", "drilldown",
                         "screenshot", "audit"
                     ],
-                    "description": "Lifecycle / CRUD action: 'start' (launch dev server or script target), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs' (Read active processes & MiniPub workers), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker's timeout, todos, file_boundaries, token_budget, max_turns, or inject a live steer_prompt, or dynamically adjust Orchestrator stream_idle_timeout_secs / max_parallel), 'stop'/'kill'/'kill_all' (Delete/terminate process or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
+                    "description": "Lifecycle / CRUD action: 'start' (launch dev server or script target), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs'/'transcript' (Read active processes & MiniPub workers), 'await'/'wait' (Wait for one or all MiniPub workers with wait_mode='all'|'any'), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker's timeout, todos, file_boundaries, token_budget, max_turns, or inject a live steer_prompt, or dynamically adjust Orchestrator stream_idle_timeout_secs / max_parallel), 'stop'/'kill'/'kill_all' (Delete/terminate process or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
                 },
                 "script": {
                     "type": "string",
@@ -51,7 +52,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Process or MiniPub worker ID (e.g. 'coder-1', 'scout-2', 'dev-1') for 'status', 'logs', 'update_minipub', 'stop', 'kill', 'restart'"
+                    "description": "Process or MiniPub worker ID (e.g. 'coder-1', 'scout-2', 'dev-1') for 'status', 'logs', 'await', 'transcript', 'update_minipub', 'stop', 'kill', 'restart'"
+                },
+                "ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional list of MiniPub worker IDs to watch when action='await' (if omitted along with 'id', watches all active workers)"
+                },
+                "wait_mode": {
+                    "type": "string",
+                    "enum": ["all", "any", "first", "race"],
+                    "description": "Join policy when action='await': 'all' (default) waits for all watched workers; 'any'/'first'/'race' wakes immediately as soon as the first watched worker finishes"
                 },
                 "role": {
                     "type": "string",
@@ -677,6 +688,77 @@ pub async fn dispatch(
                     "⚡ MiniPub & Orchestrator Runtime Configuration Updated:\n{}",
                     changes.join("\n")
                 ))
+            }
+            "await" | "wait" => {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let mut target_ids: Vec<String> = args
+                    .get("ids")
+                    .or_else(|| args.get("subagent_ids"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(single_id) = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "subagent_id"))
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "target"))
+                {
+                    let trimmed = single_id.trim();
+                    if !trimmed.is_empty() && trimmed != "all" && !target_ids.contains(&trimmed.to_string()) {
+                        target_ids.push(trimmed.to_string());
+                    }
+                }
+                let wait_mode = opt_str(args, "wait_mode").unwrap_or("all");
+                let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                let timeout_secs = opt_u64(args, "timeout_secs")
+                    .or_else(|| opt_u64(args, "duration_seconds"))
+                    .unwrap_or(app_cfg.agent.minipub.inactivity_timeout_secs);
+
+                Ok(pool.await_workers(&target_ids, wait_mode, timeout_secs).await)
+            }
+            "transcript" | "drilldown" => {
+                let id_raw = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "subagent_id"))
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| {
+                        ToolError::invalid_args(
+                            "minitask",
+                            "Action 'transcript' requires 'id' or 'subagent_id'",
+                        )
+                    })?;
+                let id = id_raw.strip_prefix("worker-").unwrap_or(id_raw);
+                let step_index = opt_u64(args, "step_index").map(|n| n as usize);
+                let max_lines = opt_u64(args, "tail").map(|n| n as usize);
+                let filter = opt_str(args, "filter").unwrap_or("summary");
+
+                let store = crate::agent::subagent::transcript::get_global_transcript_store();
+                if let Some(t) = store.get(id, Some(workspace_root)) {
+                    if let Some(step_idx) = step_index {
+                        if let Some(detail) = t.format_step_detail(step_idx, max_lines) {
+                            Ok(detail)
+                        } else {
+                            Ok(format!(
+                                "ℹ Step {} not found in MiniPub `{}` transcript. Total steps recorded: {}.",
+                                step_idx, id, t.steps.len()
+                            ))
+                        }
+                    } else if filter == "errors" || filter == "error" {
+                        Ok(t.format_errors())
+                    } else {
+                        Ok(t.format_overview(Some(50)))
+                    }
+                } else {
+                    Ok(format!(
+                        "ℹ No execution transcript found for MiniPub `{}`. Available: {:?}",
+                        id,
+                        store.list_subagent_ids(Some(workspace_root))
+                    ))
+                }
             }
             "workers" | "minipubs" => {
                 let list = registry.list_workers().await;

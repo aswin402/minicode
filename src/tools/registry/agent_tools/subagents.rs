@@ -222,7 +222,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "subagent_id": {
                         "type": "string",
-                        "description": "Identifier of the target MiniPub subagent (required for 'status', 'kill', 'await', 'transcript'; optional for 'update'/'configure')"
+                        "description": "Identifier of the target MiniPub subagent (required for 'status', 'kill', 'transcript'; optional for 'await' and 'update'/'configure')"
+                    },
+                    "subagent_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of MiniPub worker IDs to watch when action is 'await' (if omitted along with subagent_id, watches all active workers)"
+                    },
+                    "wait_mode": {
+                        "type": "string",
+                        "enum": ["all", "any", "first", "race"],
+                        "description": "Join policy when action is 'await': 'all' (default) waits for all watched workers; 'any'/'first'/'race' wakes immediately as soon as the first watched worker completes or fails"
                     },
                     "step_index": {
                         "type": "integer",
@@ -685,71 +695,31 @@ pub async fn dispatch(
                     }
                 }
                 "await" | "wait" => {
-                    let id = param::require_str(args, "subagent_id", "manage_subagents")?;
+                    let mut target_ids: Vec<String> = args
+                        .get("subagent_ids")
+                        .or_else(|| args.get("ids"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                                .filter(|s| !s.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if let Some(single_id) =
+                        param::opt_str(args, "subagent_id").or_else(|| param::opt_str(args, "id"))
+                    {
+                        let trimmed = single_id.trim();
+                        if !trimmed.is_empty() && trimmed != "all" && !target_ids.contains(&trimmed.to_string()) {
+                            target_ids.push(trimmed.to_string());
+                        }
+                    }
+                    let wait_mode = param::opt_str(args, "wait_mode").unwrap_or("all");
                     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
                     let timeout_secs = param::opt_u64(args, "timeout_secs")
                         .unwrap_or(app_cfg.agent.minipub.inactivity_timeout_secs);
-                    let start = std::time::Instant::now();
-                    let max_dur = std::time::Duration::from_secs(timeout_secs);
 
-                    let mut final_info = None;
-                    while start.elapsed() < max_dur {
-                        if let Some(info) = pool.get_subagent(id).await {
-                            if !matches!(
-                                info.state,
-                                crate::agent::subagent::types::SubagentState::Running
-                                    | crate::agent::subagent::types::SubagentState::Starting
-                                    | crate::agent::subagent::types::SubagentState::WaitingForInput
-                            ) {
-                                final_info = Some(info);
-                                break;
-                            }
-                        } else {
-                            return Ok(format!("ℹ No subagent found with ID '{}'", id));
-                        }
-                        pool.wait_for_change(std::time::Duration::from_millis(250)).await;
-                    }
-
-                    if let Some(info) = final_info {
-                        let scratchpad = crate::agent::subagent::get_global_scratchpad();
-                        let scratchpad_content = scratchpad
-                            .read_entry(&format!("subagent_{}", id))
-                            .or_else(|| scratchpad.read_entry(&format!("subagent/{}", id)))
-                            .map(|e| e.content)
-                            .or(info.final_summary.clone())
-                            .unwrap_or_else(|| "No output report recorded.".to_string());
-
-                        if scratchpad_content.starts_with("### ") {
-                            Ok(scratchpad_content)
-                        } else {
-                            Ok(format!(
-                                "✔ MiniPub Subagent `{}` has finished execution (State: {:?})!\n\
-                                 • **Role**: {}\n\
-                                 • **Turns Executed**: {}\n\
-                                 • **Tokens Used**: {}\n\
-                                 • **Isolation**: {}\n\n\
-                                 ### Findings & Outcome Summary\n\
-                                 {}",
-                                info.id,
-                                info.state,
-                                info.role.badge(),
-                                info.turns_executed,
-                                info.tokens_used,
-                                if info.isolate_worktree { "Git Worktree" } else { "Read-Only / Main" },
-                                scratchpad_content
-                            ))
-                        }
-                    } else {
-                        let current_info = pool.get_subagent(id).await;
-                        let detail = current_info
-                            .as_ref()
-                            .and_then(|i| i.status_message.clone())
-                            .unwrap_or_else(|| "Running".to_string());
-                        Ok(format!(
-                            "⏳ MiniPub Subagent `{}` is still executing after {}s wait window.\n• Current Status: {}\n• Use 'manage_subagents(action=\"await\", subagent_id=\"{}\")' to continue waiting, or press Ctrl+S to monitor live telemetry in the TUI drawer.",
-                            id, timeout_secs, detail, id
-                        ))
-                    }
+                    Ok(pool.await_workers(&target_ids, wait_mode, timeout_secs).await)
                 }
                 "transcript" | "drilldown" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;

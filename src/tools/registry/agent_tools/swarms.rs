@@ -149,14 +149,16 @@ pub async fn dispatch(
     match tool_name {
         "send_worker_message" => Some(
             async {
-                let swarm_dir_env = std::env::var("MINICODE_SWARM_DIR")
-                    .ok()
+                let swarm_dir_env = param::opt_str(args, "_swarm_dir")
+                    .map(|s| s.to_string())
+                    .or_else(|| std::env::var("MINICODE_SWARM_DIR").ok())
                     .filter(|s| !s.trim().is_empty());
                 let swarm_task_env = std::env::var("MINICODE_SWARM_TASK_ID")
                     .ok()
                     .filter(|s| !s.trim().is_empty());
-                let swarm_id_env = std::env::var("MINICODE_SWARM_ID")
-                    .ok()
+                let swarm_id_env = param::opt_str(args, "_swarm_id")
+                    .map(|s| s.to_string())
+                    .or_else(|| std::env::var("MINICODE_SWARM_ID").ok())
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "swarm-standalone".to_string());
 

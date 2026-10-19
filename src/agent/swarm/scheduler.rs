@@ -392,7 +392,6 @@ impl SwarmScheduler {
             "\n\nConstraint: Do NOT modify shared project documentation, task trackers, or scaffolding manifests (e.g. minikit.json, onpkg.json, AGENTS.md, minikit_docs/). Confine all changes strictly to your assigned code and test files to guarantee clean mergeability.",
         );
 
-        let _ = swarm_dir;
         let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
         let role = SubagentRole::from_str_loose(&task.role_title);
         let mut config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
@@ -442,7 +441,8 @@ impl SwarmScheduler {
                 pool.get_or_create_provider().await
             };
 
-        let worker = SubagentWorker::new(agent_id.0.clone(), enriched_prompt, config, &target_dir);
+        let worker = SubagentWorker::new(agent_id.0.clone(), enriched_prompt, config, &target_dir)
+            .with_swarm_context(plan.id.clone(), task.id.clone(), swarm_dir.to_path_buf());
         {
             let mut info_lock = worker.info.write().await;
             info_lock.isolate_worktree = worktree_handle.is_some();

@@ -866,6 +866,214 @@ impl SubagentPool {
         out.push_str("</active_minipub_workers>");
         Some(out)
     }
+
+    /// Waits for one or more `MiniPub` workers to complete.
+    /// - `target_ids`: Specific worker IDs to watch. If empty, watches all currently active workers (or all pool workers if already finished).
+    /// - `wait_mode`: `"any"` / `"first"` / `"race"` wakes as soon as the first watched worker reaches a terminal state; `"all"` (default) waits until all watched workers finish.
+    pub async fn await_workers(
+        &self,
+        target_ids: &[String],
+        wait_mode: &str,
+        timeout_secs: u64,
+    ) -> String {
+        let normalized_ids: Vec<String> = if target_ids.is_empty() {
+            let all = self.list_subagents().await;
+            let active: Vec<String> = all
+                .iter()
+                .filter(|w| w.state.is_active())
+                .map(|w| w.id.clone())
+                .collect();
+            if active.is_empty() {
+                all.into_iter().map(|w| w.id).collect()
+            } else {
+                active
+            }
+        } else {
+            target_ids
+                .iter()
+                .map(|s| {
+                    s.trim()
+                        .strip_prefix("worker-")
+                        .unwrap_or(s.trim())
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+
+        if normalized_ids.is_empty() {
+            return "ℹ No active or completed MiniPub subagents found in the pool.".to_string();
+        }
+
+        // Single-worker fast path preserving existing output format
+        if normalized_ids.len() == 1 {
+            let id = &normalized_ids[0];
+            if self.get_subagent(id).await.is_none() {
+                return format!("ℹ No subagent found with ID '{}'", id);
+            }
+        }
+
+        let is_any_mode = matches!(
+            wait_mode.trim().to_ascii_lowercase().as_str(),
+            "any" | "first" | "race"
+        );
+        let start = std::time::Instant::now();
+        let max_dur = std::time::Duration::from_secs(timeout_secs.max(1));
+
+        loop {
+            let mut watched_infos = Vec::new();
+            for id in &normalized_ids {
+                if let Some(info) = self.get_subagent(id).await {
+                    watched_infos.push(info);
+                }
+            }
+
+            if watched_infos.is_empty() {
+                return format!(
+                    "ℹ No MiniPub subagents found matching IDs: {}",
+                    normalized_ids.join(", ")
+                );
+            }
+
+            let finished_count = watched_infos
+                .iter()
+                .filter(|w| !w.state.is_active())
+                .count();
+            let all_finished = finished_count == watched_infos.len();
+
+            if all_finished || (is_any_mode && finished_count > 0) || start.elapsed() >= max_dur {
+                break;
+            }
+
+            self.wait_for_change(std::time::Duration::from_millis(200))
+                .await;
+        }
+
+        let mut watched_infos = Vec::new();
+        for id in &normalized_ids {
+            if let Some(info) = self.get_subagent(id).await {
+                watched_infos.push(info);
+            }
+        }
+
+        let scratchpad = crate::agent::subagent::get_global_scratchpad();
+
+        if watched_infos.len() == 1 {
+            let info = &watched_infos[0];
+            if !info.state.is_active() {
+                let scratchpad_content = scratchpad
+                    .read_entry(&format!("subagent_{}", info.id))
+                    .or_else(|| scratchpad.read_entry(&format!("subagent/{}", info.id)))
+                    .or_else(|| scratchpad.read_entry(&format!("minipub/{}", info.id)))
+                    .map(|e| e.content)
+                    .or_else(|| info.final_summary.clone())
+                    .unwrap_or_else(|| "No output report recorded.".to_string());
+
+                if scratchpad_content.starts_with("### ") {
+                    return scratchpad_content;
+                }
+                return format!(
+                    "✔ MiniPub Subagent `{}` has finished execution (State: {:?})!\n\
+                     • **Role**: {}\n\
+                     • **Turns Executed**: {}\n\
+                     • **Tokens Used**: {}\n\
+                     • **Isolation**: {}\n\n\
+                     ### Findings & Outcome Summary\n\
+                     {}",
+                    info.id,
+                    info.state,
+                    info.role.badge(),
+                    info.turns_executed,
+                    info.tokens_used,
+                    if info.isolate_worktree {
+                        "Git Worktree"
+                    } else {
+                        "Read-Only / Main"
+                    },
+                    scratchpad_content
+                );
+            } else {
+                let detail = info
+                    .status_message
+                    .clone()
+                    .unwrap_or_else(|| "Running".to_string());
+                return format!(
+                    "⏳ MiniPub Subagent `{}` is still executing after {}s wait window.\n• Current Status: {}\n• Use `minitask(action=\"await\", id=\"{}\")` or `manage_subagents(action=\"await\", subagent_id=\"{}\")` to continue waiting.",
+                    info.id, timeout_secs, detail, info.id, info.id
+                );
+            }
+        }
+
+        // Multi-worker summary (wait_mode="any" or "all")
+        let finished: Vec<&SubagentInfo> = watched_infos
+            .iter()
+            .filter(|w| !w.state.is_active())
+            .collect();
+        let active: Vec<&SubagentInfo> = watched_infos
+            .iter()
+            .filter(|w| w.state.is_active())
+            .collect();
+
+        let mut out = format!(
+            "### MiniPub Await Summary (`wait_mode={}`, Completed: {}/{}, Still Active: {})\n\n",
+            if is_any_mode { "any" } else { "all" },
+            finished.len(),
+            watched_infos.len(),
+            active.len()
+        );
+
+        for info in &finished {
+            let done_todos = info.todos.iter().filter(|t| t.completed).count();
+            let todo_str = if info.todos.is_empty() {
+                String::new()
+            } else {
+                format!(" | Todos: {}/{}", done_todos, info.todos.len())
+            };
+            out.push_str(&format!(
+                "#### ✔ `{}` ({}) — {:?} (Turns: {}, Tokens: {}{})\n",
+                info.id,
+                info.role.badge(),
+                info.state,
+                info.turns_executed,
+                info.tokens_used,
+                todo_str
+            ));
+            let report = scratchpad
+                .read_entry(&format!("subagent_{}", info.id))
+                .or_else(|| scratchpad.read_entry(&format!("subagent/{}", info.id)))
+                .or_else(|| scratchpad.read_entry(&format!("minipub/{}", info.id)))
+                .map(|e| e.content)
+                .or_else(|| info.final_summary.clone())
+                .unwrap_or_else(|| "No output report recorded.".to_string());
+            out.push_str(&report);
+            out.push_str("\n\n");
+        }
+
+        if !active.is_empty() {
+            out.push_str("#### ⏳ Still Running MiniPub Workers:\n");
+            for info in &active {
+                let done_todos = info.todos.iter().filter(|t| t.completed).count();
+                let todo_str = if info.todos.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | Todos: {}/{}", done_todos, info.todos.len())
+                };
+                out.push_str(&format!(
+                    "• `{}` ({}) — {:?} | Turns: {}/{} | Tokens: {}/{}{}\n",
+                    info.id,
+                    info.role.badge(),
+                    info.state,
+                    info.turns_executed,
+                    info.max_turns,
+                    info.tokens_used,
+                    info.token_budget,
+                    todo_str
+                ));
+            }
+        }
+
+        out
+    }
 }
 
 #[cfg(test)]
@@ -1090,5 +1298,44 @@ mod tests {
         assert_eq!(updated.file_boundaries, vec!["src/feature.rs".to_string()]);
 
         let _ = pool.kill_subagent(&id).await;
+    }
+
+    #[tokio::test]
+    async fn test_await_workers_any_and_all() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pool = SubagentPool::new(temp_dir.path());
+        let mock = Arc::new(MockProvider::new("mock", "mock-model"));
+        mock.push_response(&["Checked off:\n- [x] 1. First task done"], vec![]);
+        mock.push_response(&["Checked off:\n- [x] 1. Second task done"], vec![]);
+
+        let cfg1 = SubagentConfig::for_role(SubagentRole::Scout)
+            .with_todos(vec!["First task done".to_string()]);
+        let cfg2 = SubagentConfig::for_role(SubagentRole::Scout)
+            .with_todos(vec!["Second task done".to_string()]);
+
+        let id1 = pool
+            .spawn_background_worker(
+                SubagentRole::Scout,
+                "First scout",
+                Some(cfg1),
+                mock.clone(),
+                false,
+            )
+            .await
+            .unwrap();
+        let id2 = pool
+            .spawn_background_worker(SubagentRole::Scout, "Second scout", Some(cfg2), mock, false)
+            .await
+            .unwrap();
+
+        let any_summary = pool
+            .await_workers(&[id1.clone(), id2.clone()], "any", 5)
+            .await;
+        assert!(any_summary.contains("MiniPub Await Summary (`wait_mode=any`"));
+
+        let all_summary = pool.await_workers(&[], "all", 5).await;
+        assert!(all_summary.contains("MiniPub Await Summary (`wait_mode=all`, Completed: 2/2"));
+        assert!(all_summary.contains(&id1));
+        assert!(all_summary.contains(&id2));
     }
 }
