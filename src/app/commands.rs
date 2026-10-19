@@ -609,16 +609,33 @@ impl<'a> App<'a> {
                 }
                 "workers" | "subagents" => {
                     let list = registry.list_workers().await;
-                    if list.is_empty() {
+                    let minipubs = crate::agent::subagent::try_get_global_subagent_pool()
+                        .map(|p| p.snapshot_subagents())
+                        .unwrap_or_default();
+                    if list.is_empty() && minipubs.is_empty() {
                         self.timeline.add_status(
-                            "ℹ No active autonomous subagents or delegated workers running."
+                            "ℹ No active MiniPub subagents or delegated workers running."
                                 .to_string(),
                         );
                     } else {
                         let mut msg = format!(
-                            "🤖 Active Autonomous Subagents & Workers ({})\n",
-                            list.len()
+                            "🤖 Active Autonomous Subagents & MiniPub Workers ({})\n",
+                            list.len() + minipubs.len()
                         );
+                        for s in &minipubs {
+                            let done_todos = s.todos.iter().filter(|t| t.completed).count();
+                            msg.push_str(&format!(
+                                "• [MiniPub: {}] {} ({}) | State: {:?} | Todos: {}/{} | Elapsed: {}s | Heartbeat: {}s ago\n",
+                                s.id,
+                                s.role.badge(),
+                                s.isolation_badge(),
+                                s.state,
+                                done_todos,
+                                s.todos.len(),
+                                s.elapsed_secs(),
+                                s.last_activity_secs_ago(),
+                            ));
+                        }
                         for p in list {
                             msg.push_str(&format!(
                                 "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
@@ -1527,6 +1544,8 @@ impl<'a> App<'a> {
                         ),
                         max_iterations: Some(15),
                         check_cmd: None,
+                        todos: Vec::new(),
+                        file_boundaries: Vec::new(),
                     };
                     match crate::agent::subagent::fanout::FanoutOrchestrator::execute_fanout(
                         &ws,

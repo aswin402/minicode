@@ -201,16 +201,14 @@ pub async fn dispatch(
     match tool_name {
         "impact_analysis" => Some((|| {
             let target = param::require_str(args, "target", "impact_analysis")?;
-            let mut graph = crate::context::graph::CodeGraph::new();
-            graph.build_graph(workspace_root)?;
+            let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
             let report = graph.get_blast_radius(target, workspace_root)?;
             Ok(report.summary)
         })()),
         "repo_map" => Some((|| {
             let max_tokens =
                 param::opt_usize(args, "max_tokens", crate::constants::DEFAULT_MAP_TOKENS);
-            let mut graph = crate::context::graph::CodeGraph::new();
-            graph.build_graph(workspace_root)?;
+            let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
             Ok(graph.format_repomap(workspace_root, &[], max_tokens))
         })()),
         "graph_visualize" => Some((|| {
@@ -220,8 +218,7 @@ pub async fn dispatch(
 
             let mode = crate::context::graph_visualizer::VisualizeMode::from_str(mode_str);
 
-            let mut graph = crate::context::graph::CodeGraph::new();
-            let _ = graph.build_graph(workspace_root);
+            let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
 
             let diagram = crate::context::graph_visualizer::GraphVisualizer::render(
                 workspace_root,

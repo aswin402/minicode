@@ -21,7 +21,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "update_agent_config".to_string(),
-            description: "Request an update to the agent configuration (active provider, model, auto_approve, thinking budget, theme). Proposes structured modifications requiring explicit user approval.".to_string(),
+            description: "Request an update to the agent configuration (active provider, model, auto_approve, thinking budget, theme, timeouts, or minipub subagent settings).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -44,6 +44,44 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "theme": {
                         "type": "string",
                         "description": "TUI visual theme name (e.g. 'dark', 'light', 'nord', 'monokai', 'cyberpunk')"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Base command execution timeout in seconds (e.g. 30, 60, 120)"
+                    },
+                    "connect_timeout_secs": {
+                        "type": "integer",
+                        "description": "Provider TCP/TLS connect timeout in seconds (default: 30)"
+                    },
+                    "stream_idle_timeout_secs": {
+                        "type": "integer",
+                        "description": "Provider inter-token stream idle timeout in seconds (default: 300)"
+                    },
+                    "max_parallel_minipubs": {
+                        "type": "integer",
+                        "description": "Maximum parallel minipub subagents spawned concurrently by the Orchestrator (1-16, default: 4)"
+                    },
+                    "minipub_timeout_secs": {
+                        "type": "integer",
+                        "description": "Activity-heartbeat inactivity timeout in seconds per minipub worker (default: 90)"
+                    },
+                    "minipub_token_budget": {
+                        "type": "integer",
+                        "description": "Default token budget per minipub worker (default: 50000)"
+                    },
+                    "minipub_max_turns": {
+                        "type": "integer",
+                        "description": "Default maximum tool-calling turns per minipub worker (default: 15)"
+                    },
+                    "minipub_worktree_isolation": {
+                        "type": "string",
+                        "enum": ["auto", "always", "file_leases", "never"],
+                        "description": "Workspace isolation policy for mutating minipub workers ('auto', 'always', 'file_leases', 'never')"
+                    },
+                    "minipub_extra_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Additional tool names granted to minipub workers beyond their role whitelist"
                     },
                     "scope": {
                         "type": "string",
@@ -659,6 +697,20 @@ pub async fn dispatch(
                     "approval_policy": config.agent.approval_policy,
                     "thinking_budget": config.provider.thinking_budget,
                     "theme": config.ui.theme,
+                    "timeouts": {
+                        "exec_timeout_secs": config.agent.timeout,
+                        "connect_timeout_secs": config.provider.effective_connect_timeout_secs(),
+                        "stream_idle_timeout_secs": config.provider.effective_stream_idle_timeout_secs(),
+                        "adaptive_timeout": config.provider.adaptive_timeout,
+                    },
+                    "minipub": {
+                        "max_parallel": config.agent.minipub.max_parallel,
+                        "default_token_budget": config.agent.minipub.default_token_budget,
+                        "default_max_turns": config.agent.minipub.default_max_turns,
+                        "inactivity_timeout_secs": config.agent.minipub.inactivity_timeout_secs,
+                        "worktree_isolation": config.agent.minipub.worktree_isolation,
+                        "extra_allowed_tools": config.agent.minipub.extra_allowed_tools,
+                    },
                     "configured_providers": configured_providers,
                     "masked_keys": masked_keys,
                 });
@@ -675,6 +727,24 @@ pub async fn dispatch(
                 let auto_approve = param::get_bool(args, "auto_approve");
                 let thinking_budget = param::get_usize(args, "thinking_budget");
                 let theme = param::opt_str(args, "theme").map(|s| s.trim().to_string());
+                let timeout = param::get_u64(args, "timeout");
+                let connect_timeout_secs = param::get_u64(args, "connect_timeout_secs");
+                let stream_idle_timeout_secs = param::get_u64(args, "stream_idle_timeout_secs");
+                let max_parallel_minipubs = param::get_usize(args, "max_parallel_minipubs");
+                let minipub_timeout_secs = param::get_u64(args, "minipub_timeout_secs");
+                let minipub_token_budget = param::get_usize(args, "minipub_token_budget");
+                let minipub_max_turns = param::get_usize(args, "minipub_max_turns");
+                let minipub_worktree_isolation = param::opt_str(args, "minipub_worktree_isolation")
+                    .map(|s| s.trim().to_string());
+                let minipub_extra_tools: Option<Vec<String>> = args
+                    .get("minipub_extra_tools")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    });
                 let scope = param::opt_str(args, "scope")
                     .unwrap_or("workspace")
                     .trim()
@@ -688,17 +758,71 @@ pub async fn dispatch(
                     .into());
                 }
 
-                if provider.is_none()
-                    && model.is_none()
-                    && auto_approve.is_none()
-                    && thinking_budget.is_none()
-                    && theme.is_none()
-                {
+                let has_runtime_tuning = timeout.is_some()
+                    || connect_timeout_secs.is_some()
+                    || stream_idle_timeout_secs.is_some()
+                    || max_parallel_minipubs.is_some()
+                    || minipub_timeout_secs.is_some()
+                    || minipub_token_budget.is_some()
+                    || minipub_max_turns.is_some()
+                    || minipub_worktree_isolation.is_some()
+                    || minipub_extra_tools.is_some();
+
+                let has_proposal_fields = provider.is_some()
+                    || model.is_some()
+                    || auto_approve.is_some()
+                    || thinking_budget.is_some()
+                    || theme.is_some();
+
+                if !has_proposal_fields && !has_runtime_tuning {
                     return Err(ToolError::InvalidArguments {
                         name: "update_agent_config".to_string(),
-                        reason: "At least one configuration field (provider, model, auto_approve, thinking_budget, theme) must be specified".to_string(),
+                        reason: "At least one configuration field (provider, model, auto_approve, thinking_budget, theme, timeout, or minipub settings) must be specified".to_string(),
                     }
                     .into());
+                }
+
+                if has_runtime_tuning {
+                    let target_ws = if scope == "global" {
+                        None
+                    } else {
+                        let minicode_dir = workspace_root.join(crate::constants::WORKSPACE_DIR_NAME);
+                        let _ = std::fs::create_dir_all(&minicode_dir);
+                        Some(workspace_root)
+                    };
+                    let mut cfg = Config::load(target_ws, None).unwrap_or_default();
+                    if let Some(t) = timeout {
+                        cfg.agent.timeout = t.max(5);
+                    }
+                    if let Some(ct) = connect_timeout_secs {
+                        cfg.provider.connect_timeout_secs = Some(ct.max(5));
+                    }
+                    if let Some(st) = stream_idle_timeout_secs {
+                        cfg.provider.stream_idle_timeout_secs = Some(st.max(15));
+                    }
+                    if let Some(mp) = max_parallel_minipubs {
+                        cfg.agent.minipub.max_parallel = mp.clamp(
+                            crate::constants::MIN_PARALLEL_MINIPUBS,
+                            crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+                        );
+                    }
+                    if let Some(mto) = minipub_timeout_secs {
+                        cfg.agent.minipub.inactivity_timeout_secs = mto.max(10);
+                    }
+                    if let Some(mbud) = minipub_token_budget {
+                        cfg.agent.minipub.default_token_budget = mbud.max(4_000);
+                    }
+                    if let Some(mturns) = minipub_max_turns {
+                        cfg.agent.minipub.default_max_turns = mturns.clamp(1, 100);
+                    }
+                    if let Some(ref miso) = minipub_worktree_isolation {
+                        cfg.agent.minipub.worktree_isolation = miso.clone();
+                    }
+                    if let Some(ref mtools) = minipub_extra_tools {
+                        cfg.agent.minipub.extra_allowed_tools = mtools.clone();
+                    }
+                    cfg.sync_runtime_timeouts();
+                    cfg.save(target_ws)?;
                 }
 
                 let proposal = ConfigChangeProposal {
@@ -711,11 +835,16 @@ pub async fn dispatch(
                 };
 
                 let response = json!({
-                    "status": "proposal_generated",
-                    "requires_confirmation": true,
+                    "status": if has_proposal_fields { "proposal_generated" } else { "applied" },
+                    "requires_confirmation": has_proposal_fields,
                     "scope": scope,
                     "proposal": proposal,
-                    "message": "Configuration change proposal generated. User confirmation required to persist changes.",
+                    "runtime_tuning_applied": has_runtime_tuning,
+                    "message": if has_proposal_fields {
+                        "Configuration change proposal generated. User confirmation required to persist provider/model/policy changes."
+                    } else {
+                        "MiniPub and timeout configuration updated and synchronized."
+                    },
                 });
 
                 serde_json::to_string_pretty(&response)

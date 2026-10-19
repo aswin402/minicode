@@ -36,6 +36,11 @@ impl Default for SymbolIndex {
     }
 }
 
+type CachedSymbolEntry = (PathBuf, std::time::Instant, std::sync::Arc<SymbolIndex>);
+static GLOBAL_SYMBOL_INDEX_CACHE: std::sync::OnceLock<
+    std::sync::RwLock<Option<CachedSymbolEntry>>,
+> = std::sync::OnceLock::new();
+
 impl SymbolIndex {
     pub fn new() -> Self {
         Self {
@@ -45,6 +50,42 @@ impl SymbolIndex {
             doc_freq: HashMap::new(),
             doc_count: 0,
             avg_doc_len: 1.0,
+        }
+    }
+
+    /// Returns a shared `Arc<SymbolIndex>` for `workspace_root`, reusing the in-memory AST index
+    /// across the Orchestrator and parallel `MiniPub` workers (TTL: 30s or until invalidated by file writes).
+    pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        let cache = GLOBAL_SYMBOL_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        if let Ok(guard) = cache.read() {
+            if let Some((ref cached_root, built_at, ref arc_idx)) = *guard {
+                if cached_root == workspace_root
+                    && built_at.elapsed() < std::time::Duration::from_secs(30)
+                {
+                    return Ok(std::sync::Arc::clone(arc_idx));
+                }
+            }
+        }
+
+        let mut fresh = Self::new();
+        fresh.build_index(workspace_root)?;
+        let arc_fresh = std::sync::Arc::new(fresh);
+        if let Ok(mut guard) = cache.write() {
+            *guard = Some((
+                workspace_root.to_path_buf(),
+                std::time::Instant::now(),
+                std::sync::Arc::clone(&arc_fresh),
+            ));
+        }
+        Ok(arc_fresh)
+    }
+
+    /// Invalidates the shared in-memory `SymbolIndex` cache when workspace source files are mutated.
+    pub fn invalidate_cache() {
+        if let Some(cache) = GLOBAL_SYMBOL_INDEX_CACHE.get() {
+            if let Ok(mut guard) = cache.write() {
+                *guard = None;
+            }
         }
     }
 

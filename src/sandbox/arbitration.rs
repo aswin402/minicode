@@ -445,6 +445,10 @@ fn extract_subagent_id(branch_name: &str) -> String {
         rest.to_string()
     } else if let Some(rest) = branch_name.strip_prefix("minicode/subagent/") {
         rest.to_string()
+    } else if let Some(rest) = branch_name.strip_prefix("minicode/minipub/") {
+        rest.to_string()
+    } else if let Some(rest) = branch_name.strip_prefix("subagent/") {
+        rest.to_string()
     } else {
         branch_name.to_string()
     }

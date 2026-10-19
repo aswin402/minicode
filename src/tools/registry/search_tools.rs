@@ -241,8 +241,7 @@ pub fn dispatch(
             let name = get_str_with_aliases(args, &["name", "symbol", "symbol_name", "query"])
                 .ok_or_else(|| require_str(args, "name", "locate_symbol").unwrap_err())?;
             let limit = opt_limit(args, crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT);
-            let mut index = crate::context::index::SymbolIndex::new();
-            index.build_index(workspace_root)?;
+            let index = crate::context::index::SymbolIndex::get_or_build_cached(workspace_root)?;
             let matches = if name.contains(' ') {
                 index.search_symbols(name, limit)
             } else {

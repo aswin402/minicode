@@ -714,12 +714,13 @@ async fn main() -> anyhow::Result<()> {
         config.logging.level = "debug".to_string();
     }
 
-    // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
+    // Synchronize active model context window and runtime timeouts globally
     let active_limit = config
         .provider
         .context_window
         .unwrap_or_else(|| crate::agent::models::get_model_context_limit(&config.provider.model));
     crate::context::budget::donut::set_active_context_limit(active_limit);
+    config.sync_runtime_timeouts();
 
     // 4. Initialize logging subsystem (strictly project-level .minicode/logs/)
     let project_log_dir = workspace_canonical
@@ -1398,6 +1399,8 @@ async fn handle_power_cli(
                 workspace_mode: Some(crate::agent::subagent::types::WorkspaceMode::Worktree),
                 max_iterations: Some(15),
                 check_cmd: None,
+                todos: Vec::new(),
+                file_boundaries: Vec::new(),
             };
             let report = crate::agent::subagent::fanout::FanoutOrchestrator::execute_fanout(
                 workspace,

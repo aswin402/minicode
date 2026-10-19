@@ -17,7 +17,7 @@ use std::time::Duration;
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: "minitask".to_string(),
-        description: "Unified Task & Process Vault (minitask). Supervises long-running development servers, web apps, background workers, and scheduled tasks. When to use: Call minitask(action='start', script='dev') to launch and supervise the workspace dev server before running browser_navigate or browser_screenshot. Process Lifecycle Invariant: Dev servers MUST remain running across turns — never call action='stop' or action='kill' on dev servers unless explicitly requested.".to_string(),
+        description: "Unified Task, Process & MiniPub Subagent Vault (`minitask`). Supervises long-running development servers, web apps, scheduled tasks, and gives the Orchestrator full CRUD control over `MiniPub` (`minipub`) subagents and dynamic timeouts. When to use: (1) Call `minitask(action='start', script='dev')` to launch and supervise the workspace dev server before running `browser_navigate` or `browser_screenshot` (dev servers MUST remain running across turns). (2) Call `minitask(action='spawn_minipub', role='coder', prompt='...', todos=[...], file_boundaries=[...], timeout_secs=600)` to spawn a background MiniPub worker, `minitask(action='workers')` or `minitask(action='status', id='coder-1')` to inspect live workers, `minitask(action='update_minipub', id='coder-1', timeout_secs=900, steer_prompt='...', append_todos=[...])` to dynamically modify a running MiniPub worker or tune Orchestrator `stream_idle_timeout_secs` / `max_parallel` in-flight, and `minitask(action='kill', id='coder-1')` to terminate a worker.".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -26,9 +26,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "enum": [
                         "start", "scripts", "targets", "schedule", "list", "ps", "status", "logs",
                         "stop", "kill", "restart", "resources", "kill_all", "stop_all",
-                        "probe_port", "check_port", "workers", "swarms", "screenshot", "audit"
+                        "probe_port", "check_port", "workers", "minipubs", "swarms",
+                        "spawn_minipub", "create_minipub", "update_minipub", "modify_minipub", "configure",
+                        "screenshot", "audit"
                     ],
-                    "description": "Lifecycle action: 'start' (launch dev server or script target; auto-discovers 'dev' script from package.json/justfile/Cargo.toml if script/command omitted), 'scripts' (discover runnable targets), 'list'/'status' (inspect active processes and ports), 'logs' (tail output), 'stop'/'kill' (terminate process), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
+                    "description": "Lifecycle / CRUD action: 'start' (launch dev server or script target), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs' (Read active processes & MiniPub workers), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker's timeout, todos, file_boundaries, token_budget, max_turns, or inject a live steer_prompt, or dynamically adjust Orchestrator stream_idle_timeout_secs / max_parallel), 'stop'/'kill'/'kill_all' (Delete/terminate process or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
                 },
                 "script": {
                     "type": "string",
@@ -49,7 +51,64 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "id": {
                     "type": "string",
-                    "description": "Process ID (for 'status', 'logs', 'stop', 'kill', 'restart')"
+                    "description": "Process or MiniPub worker ID (e.g. 'coder-1', 'scout-2', 'dev-1') for 'status', 'logs', 'update_minipub', 'stop', 'kill', 'restart'"
+                },
+                "role": {
+                    "type": "string",
+                    "enum": ["scout", "coder", "tester", "reviewer", "researcher", "code_reviewer", "test_engineer"],
+                    "description": "MiniPub subagent role for 'spawn_minipub' (default: 'coder')"
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Task instructions for 'spawn_minipub' or live in-flight steering prompt for 'update_minipub'"
+                },
+                "steer_prompt": {
+                    "type": "string",
+                    "description": "Live in-flight steering instruction to inject into a running MiniPub worker's next turn without restarting it (for 'update_minipub')"
+                },
+                "todos": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Boomerang todo checklist items assigned to the MiniPub worker (for 'spawn_minipub' or 'update_minipub')"
+                },
+                "append_todos": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Additional todo items to append to a running MiniPub worker's checklist (for 'update_minipub')"
+                },
+                "complete_todo_ids": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "1-indexed todo item IDs to mark completed [x] on a MiniPub worker (for 'update_minipub')"
+                },
+                "file_boundaries": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Allowed relative file/directory paths for cooperative write isolation (for 'spawn_minipub' or 'update_minipub')"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "Dynamic activity-heartbeat timeout in seconds for a MiniPub worker (e.g. 600, 900, 1800) or default MiniPub timeout when called without 'id'"
+                },
+                "stream_idle_timeout_secs": {
+                    "type": "integer",
+                    "description": "Dynamic model stream idle timeout in seconds for the Orchestrator (e.g. 600, 900, 1800) when called with 'update_minipub' or 'configure'"
+                },
+                "max_parallel": {
+                    "type": "integer",
+                    "description": "Dynamic maximum parallel MiniPub workers (1..=16, default: 4) for the SubagentPool"
+                },
+                "token_budget": {
+                    "type": "integer",
+                    "description": "Token budget ceiling for a MiniPub worker (for 'spawn_minipub' or 'update_minipub')"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Maximum tool-calling turns for a MiniPub worker (for 'spawn_minipub' or 'update_minipub')"
+                },
+                "isolate_worktree": {
+                    "type": "boolean",
+                    "description": "Whether to isolate the MiniPub worker in a dedicated .minicode/worktrees/<id> branch"
                 },
                 "port": {
                     "type": "integer",
@@ -422,14 +481,259 @@ pub async fn dispatch(
                     ))
                 }
             }
-            "workers" => {
-                let list = registry.list_workers().await;
-                if list.is_empty() {
-                    return Ok("ℹ No autonomous subagents or delegated workers are currently active.".to_string());
+            "spawn_minipub" | "create_minipub" => {
+                let prompt = opt_str(args, "prompt")
+                    .or_else(|| opt_str(args, "command"))
+                    .ok_or_else(|| {
+                        ToolError::invalid_args(
+                            "minitask",
+                            "Action 'spawn_minipub' requires 'prompt' describing the task for the MiniPub worker",
+                        )
+                    })?;
+                let role_str = opt_str(args, "role")
+                    .or_else(|| opt_str(args, "name"))
+                    .unwrap_or("coder");
+                let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+                let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+
+                let extract_list = |key: &str| -> Vec<String> {
+                    args.get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                                .filter(|s| !s.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let todos = extract_list("todos");
+                let file_boundaries = extract_list("file_boundaries");
+
+                let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+                    role,
+                    &app_cfg.agent.minipub,
+                )
+                .with_todos(todos.clone())
+                .with_file_boundaries(file_boundaries.clone());
+
+                if let Some(t_secs) = opt_u64(args, "timeout_secs").or_else(|| opt_u64(args, "duration_seconds")) {
+                    config.inactivity_timeout_secs = t_secs;
+                }
+                if let Some(budget) = opt_u64(args, "token_budget") {
+                    config.token_budget = budget as usize;
+                }
+                if let Some(turns) = opt_u64(args, "max_turns") {
+                    config.max_turns = turns as usize;
+                }
+                if let Some(stream_secs) = opt_u64(args, "stream_idle_timeout_secs") {
+                    let clamped = stream_secs.clamp(30, 7200);
+                    let conn_secs = crate::config::get_active_connect_timeout_secs();
+                    crate::config::set_active_provider_timeouts_override(conn_secs, clamped);
                 }
 
-                let mut out = format!("🤖 Active Autonomous Subagents & Workers ({} active):\n\n", list.len());
-                for p in list {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                if let Some(max_p) = opt_u64(args, "max_parallel")
+                    .or_else(|| opt_u64(args, "max_parallel_minipubs"))
+                {
+                    pool.set_max_parallel(max_p as usize);
+                }
+
+                let isolate_worktree = args
+                    .get("isolate_worktree")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| {
+                        role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree
+                    });
+
+                let provider = pool.get_or_create_provider().await;
+                let timeout_secs_disp = config.inactivity_timeout_secs;
+                let max_turns_disp = config.max_turns;
+                let budget_disp = config.token_budget;
+                let id = pool
+                    .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
+                    .await?;
+
+                let isolation_label = if isolate_worktree {
+                    format!("Dedicated Git Worktree (`.minicode/worktrees/{}`)", id)
+                } else if !file_boundaries.is_empty() {
+                    format!("Cooperative File Lease (`{}`)", file_boundaries.join(", "))
+                } else {
+                    "Shared Read-Only Context".to_string()
+                };
+
+                Ok(format!(
+                    "🤖 MiniPub worker spawned via minitask:\n\
+                     • Worker ID: `{}` (also registered in `/tasks` as `worker-{}`)\n\
+                     • Role: {}\n\
+                     • Isolation: {}\n\
+                     • Inactivity Timeout: {}s | Max Turns: {} | Token Budget: {}\n\
+                     • Todos Assigned: {}\n\
+                     • Pool Concurrency Cap: {} max parallel\n\
+                     • Live Control: Use `minitask(action=\"update_minipub\", id=\"{}\", ...)` to adjust timeout/todos/steer in-flight, `minitask(action=\"status\", id=\"{}\")` to inspect, or `minitask(action=\"stop\", id=\"{}\")` to terminate.",
+                    id,
+                    id,
+                    role.badge(),
+                    isolation_label,
+                    timeout_secs_disp,
+                    max_turns_disp,
+                    budget_disp,
+                    todos.len(),
+                    pool.max_parallel(),
+                    id,
+                    id,
+                    id
+                ))
+            }
+            "update_minipub" | "modify_minipub" | "modify" | "configure" => {
+                let mut changes = Vec::new();
+
+                if let Some(stream_secs) = opt_u64(args, "stream_idle_timeout_secs") {
+                    let clamped = stream_secs.clamp(30, 7200);
+                    let conn_secs = crate::config::get_active_connect_timeout_secs();
+                    crate::config::set_active_provider_timeouts_override(conn_secs, clamped);
+                    changes.push(format!("• Orchestrator & MiniPub Model Stream Idle Timeout ➔ `{}s`", clamped));
+                }
+
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                if let Some(max_p) = opt_u64(args, "max_parallel")
+                    .or_else(|| opt_u64(args, "max_parallel_minipubs"))
+                {
+                    let applied = pool.set_max_parallel(max_p as usize);
+                    changes.push(format!("• MiniPub Pool Max Parallel Concurrency ➔ `{}`", applied));
+                }
+
+                let id_opt = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"));
+
+                if let Some(id_str) = id_opt {
+                    let minipub_id = id_str.strip_prefix("worker-").unwrap_or(id_str);
+                    let extract_opt_list = |key: &str| -> Option<Vec<String>> {
+                        args.get(key).and_then(|v| v.as_array()).map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                                .filter(|s| !s.is_empty())
+                                .collect()
+                        })
+                    };
+                    let complete_todo_ids = args
+                        .get("complete_todo_ids")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| item.as_u64().map(|n| n as usize))
+                                .collect::<Vec<usize>>()
+                        })
+                        .unwrap_or_default();
+
+                    let update = crate::agent::subagent::MiniPubUpdate {
+                        inactivity_timeout_secs: opt_u64(args, "timeout_secs")
+                            .or_else(|| opt_u64(args, "duration_seconds")),
+                        token_budget: opt_u64(args, "token_budget").map(|n| n as usize),
+                        max_turns: opt_u64(args, "max_turns").map(|n| n as usize),
+                        todos: extract_opt_list("todos"),
+                        append_todos: extract_opt_list("append_todos").unwrap_or_default(),
+                        complete_todo_ids,
+                        file_boundaries: extract_opt_list("file_boundaries"),
+                        steer_prompt: opt_str(args, "steer_prompt")
+                            .or_else(|| opt_str(args, "prompt"))
+                            .map(|s| s.to_string()),
+                    };
+
+                    let info = pool.update_subagent(minipub_id, update).await?;
+                    let done_todos = info.todos.iter().filter(|t| t.completed).count();
+                    changes.push(format!(
+                        "• Updated MiniPub `{}` ({}):\n  - State: {:?}\n  - Inactivity Timeout: `{}s`\n  - Max Turns: `{}` (Executed: `{}`)\n  - Token Budget: `{}` (Used: `{}`)\n  - Todos: `{}/{}` completed\n  - File Boundaries: `{}`\n  - Queued Steer Directives: `{}`",
+                        info.id,
+                        info.role.badge(),
+                        info.state,
+                        info.inactivity_timeout_secs,
+                        info.max_turns,
+                        info.turns_executed,
+                        info.token_budget,
+                        info.tokens_used,
+                        done_todos,
+                        info.todos.len(),
+                        if info.file_boundaries.is_empty() {
+                            "none".to_string()
+                        } else {
+                            info.file_boundaries.join(", ")
+                        },
+                        info.pending_steer_messages.len()
+                    ));
+                }
+
+                if changes.is_empty() {
+                    return Err(ToolError::invalid_args(
+                        "minitask",
+                        "Action 'update_minipub'/'configure' requires at least one of: 'id' (with timeout_secs, token_budget, max_turns, todos, append_todos, complete_todo_ids, file_boundaries, or steer_prompt), 'stream_idle_timeout_secs', or 'max_parallel'.",
+                    )
+                    .into());
+                }
+
+                Ok(format!(
+                    "⚡ MiniPub & Orchestrator Runtime Configuration Updated:\n{}",
+                    changes.join("\n")
+                ))
+            }
+            "workers" | "minipubs" => {
+                let list = registry.list_workers().await;
+                let pool_workers = if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                    pool.list_subagents().await
+                } else {
+                    Vec::new()
+                };
+                let max_p = crate::agent::subagent::try_get_global_subagent_pool()
+                    .map(|p| p.max_parallel())
+                    .unwrap_or(crate::constants::DEFAULT_MAX_PARALLEL_MINIPUBS);
+                let stream_idle = crate::config::get_active_stream_idle_timeout_secs();
+
+                let extra_registry_workers: Vec<_> = list
+                    .into_iter()
+                    .filter(|p| {
+                        let stripped = p.id.as_str().strip_prefix("worker-").unwrap_or(p.id.as_str());
+                        !pool_workers.iter().any(|pw| pw.id == stripped)
+                    })
+                    .collect();
+
+                if extra_registry_workers.is_empty() && pool_workers.is_empty() {
+                    return Ok(format!(
+                        "ℹ No autonomous MiniPub (`minipub`) subagents are currently active. (Pool Max Parallel: {}, Stream Idle Timeout: {}s)",
+                        max_p, stream_idle
+                    ));
+                }
+
+                let mut out = format!(
+                    "🤖 Active MiniPub Subagents & Workers ({} MiniPub pool, {} external | Max Parallel: {} | Stream Idle Timeout: {}s):\n\n",
+                    pool_workers.len(),
+                    extra_registry_workers.len(),
+                    max_p,
+                    stream_idle
+                );
+                for info in &pool_workers {
+                    let todo_str = if info.todos.is_empty() {
+                        String::new()
+                    } else {
+                        let done = info.todos.iter().filter(|t| t.completed).count();
+                        format!(" | Todos: {}/{}", done, info.todos.len())
+                    };
+                    out.push_str(&format!(
+                        "• [minipub:{}] Role: {} | State: {:?} | Turns: {}/{} | Tokens: {}/{} | Timeout: {}s (Idle: {}s){}\n",
+                        info.id,
+                        info.role.badge(),
+                        info.state,
+                        info.turns_executed,
+                        info.max_turns,
+                        info.tokens_used,
+                        info.token_budget,
+                        info.inactivity_timeout_secs,
+                        info.last_activity_secs_ago(),
+                        todo_str
+                    ));
+                }
+                for p in extra_registry_workers {
                     out.push_str(&format!(
                         "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
                         p.id,
@@ -549,6 +853,58 @@ pub async fn dispatch(
                         }
                     }
 
+                    let minipub_id = id_str.strip_prefix("worker-").unwrap_or(id_str);
+                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                        if let Some(info) = pool.get_subagent(minipub_id).await {
+                            let todos_section = if info.todos.is_empty() {
+                                String::new()
+                            } else {
+                                let items = info
+                                    .todos
+                                    .iter()
+                                    .map(|t| {
+                                        format!(
+                                            "  - [{}] (#{}) {}",
+                                            if t.completed { "x" } else { " " },
+                                            t.id,
+                                            t.task
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                format!("\n• Assigned Todos:\n{}", items)
+                            };
+                            let boundaries = if info.file_boundaries.is_empty() {
+                                "none".to_string()
+                            } else {
+                                info.file_boundaries.join(", ")
+                            };
+                            return Ok(format!(
+                                "📊 MiniPub Subagent Status for '{}':\n\
+                                 • Role: {}\n\
+                                 • State: {:?}\n\
+                                 • Turns: {}/{}\n\
+                                 • Tokens: {}/{}\n\
+                                 • Inactivity Timeout: {}s (Last Activity: {}s ago | Elapsed: {}s)\n\
+                                 • Isolation: {}\n\
+                                 • File Boundaries: {}{}",
+                                info.id,
+                                info.role.badge(),
+                                info.state,
+                                info.turns_executed,
+                                info.max_turns,
+                                info.tokens_used,
+                                info.token_budget,
+                                info.inactivity_timeout_secs,
+                                info.last_activity_secs_ago(),
+                                info.elapsed_secs(),
+                                if info.isolate_worktree { "Git Worktree" } else { "Shared / Cooperative" },
+                                boundaries,
+                                todos_section
+                            ));
+                        }
+                    }
+
                     let id = DevProcessId::from(id_str);
                     let summary = registry
                         .get(&id)
@@ -664,16 +1020,18 @@ pub async fn dispatch(
                 }
             }
             "stop" | "kill" => {
-
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
                     .or_else(|| opt_str(args, "process_id"))
                     .or_else(|| opt_str(args, "target"));
 
                 if id_opt == Some("all") {
+                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                        pool.kill_all().await;
+                    }
                     let count = registry.kill_all().await?;
                     let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
-                    return Ok(format!("✔ Terminated all {} active development processes and browser sessions.", count));
+                    return Ok(format!("✔ Terminated all {} active development processes, MiniPub workers, and browser sessions.", count));
                 }
 
                 let id_to_stop = match id_opt {
@@ -704,8 +1062,23 @@ pub async fn dispatch(
                     }
                 }
 
+                // Also check if id_to_stop refers to a MiniPub subagent in SubagentPool
+                let minipub_id = id_to_stop.strip_prefix("worker-").unwrap_or(&id_to_stop);
+                let mut killed_minipub = false;
+                if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                    if pool.kill_subagent(minipub_id).await.is_ok() {
+                        killed_minipub = true;
+                    }
+                }
+
                 let id = DevProcessId::from(id_to_stop.clone());
-                registry.stop(&id).await?;
+                let reg_res = registry.stop(&id).await;
+                if reg_res.is_err() && !killed_minipub {
+                    let worker_prefixed = DevProcessId::from(format!("worker-{}", minipub_id));
+                    if registry.stop(&worker_prefixed).await.is_err() {
+                        reg_res?;
+                    }
+                }
 
                 // If no more frontend/backend servers are active, automatically shut down any paired live browser session
                 let mut browser_msg = String::new();
@@ -720,7 +1093,7 @@ pub async fn dispatch(
                 }
 
                 Ok(format!(
-                    "✔ Process/worker '{}' stopped successfully{}.",
+                    "✔ Process/MiniPub worker '{}' stopped successfully{}.",
                     id_to_stop, browser_msg
                 ))
             }
@@ -749,9 +1122,12 @@ pub async fn dispatch(
                 ))
             }
             "kill_all" | "stop_all" => {
+                if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                    pool.kill_all().await;
+                }
                 let count = registry.kill_all().await?;
                 let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
-                Ok(format!("✔ Terminated {} active development processes and browser sessions.", count))
+                Ok(format!("✔ Terminated {} active development processes, MiniPub workers, and browser sessions.", count))
             }
             "screenshot" => {
                 let explicit_url = opt_str(args, "url");

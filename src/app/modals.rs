@@ -2076,6 +2076,50 @@ impl<'a> App<'a> {
                                             _ => "strict".to_string(),
                                         };
                                 }
+                                3 => {
+                                    state.minipub_max_parallel = match state.minipub_max_parallel {
+                                        1 => 2,
+                                        2 => 4,
+                                        4 => 6,
+                                        6 => 8,
+                                        8 => 12,
+                                        12 => 16,
+                                        _ => 1,
+                                    };
+                                }
+                                4 => {
+                                    state.minipub_inactivity_timeout_secs =
+                                        match state.minipub_inactivity_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
+                                5 => {
+                                    state.minipub_worktree_isolation = match state
+                                        .minipub_worktree_isolation
+                                        .to_lowercase()
+                                        .as_str()
+                                    {
+                                        "auto" => "always".to_string(),
+                                        "always" => "never".to_string(),
+                                        _ => "auto".to_string(),
+                                    };
+                                }
+                                6 => {
+                                    state.stream_idle_timeout_secs =
+                                        match state.stream_idle_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
                                 _ => {}
                             }
                         }
@@ -2193,6 +2237,50 @@ impl<'a> App<'a> {
                                             _ => "strict".to_string(),
                                         };
                                 }
+                                3 => {
+                                    state.minipub_max_parallel = match state.minipub_max_parallel {
+                                        1 => 2,
+                                        2 => 4,
+                                        4 => 6,
+                                        6 => 8,
+                                        8 => 12,
+                                        12 => 16,
+                                        _ => 1,
+                                    };
+                                }
+                                4 => {
+                                    state.minipub_inactivity_timeout_secs =
+                                        match state.minipub_inactivity_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
+                                5 => {
+                                    state.minipub_worktree_isolation = match state
+                                        .minipub_worktree_isolation
+                                        .to_lowercase()
+                                        .as_str()
+                                    {
+                                        "auto" => "always".to_string(),
+                                        "always" => "never".to_string(),
+                                        _ => "auto".to_string(),
+                                    };
+                                }
+                                6 => {
+                                    state.stream_idle_timeout_secs =
+                                        match state.stream_idle_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
                                 _ => {}
                             }
                         }
@@ -2246,6 +2334,8 @@ impl<'a> App<'a> {
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
                         let old_policy = self.config.agent.approval_policy.clone();
+                        let old_minipub = self.config.agent.minipub.clone();
+                        let old_stream_idle = self.config.provider.stream_idle_timeout_secs;
                         let old_browser = self.config.browser.clone();
 
                         self.config.provider.default = state.active_provider.clone();
@@ -2257,6 +2347,14 @@ impl<'a> App<'a> {
                             Some(state.thinking_budget)
                         };
                         self.config.agent.approval_policy = state.approval_policy.clone();
+                        self.config.agent.minipub.max_parallel = state.minipub_max_parallel;
+                        self.config.agent.minipub.inactivity_timeout_secs =
+                            state.minipub_inactivity_timeout_secs;
+                        self.config.agent.minipub.worktree_isolation =
+                            state.minipub_worktree_isolation.clone();
+                        self.config.provider.stream_idle_timeout_secs =
+                            Some(state.stream_idle_timeout_secs);
+                        self.config.sync_runtime_timeouts();
                         self.config.browser.default_engine = state.browser_default_engine.clone();
                         self.config.browser.headless_priority =
                             state.browser_headless_priority.clone();
@@ -2282,6 +2380,8 @@ impl<'a> App<'a> {
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget
                             || old_policy != self.config.agent.approval_policy
+                            || old_minipub != self.config.agent.minipub
+                            || old_stream_idle != self.config.provider.stream_idle_timeout_secs
                             || old_browser != self.config.browser;
 
                         if old_browser != self.config.browser {
@@ -2872,6 +2972,13 @@ impl<'a> App<'a> {
                         };
 
                     if let Some(target_id) = target_id {
+                        let minipub_id = target_id
+                            .as_str()
+                            .strip_prefix("worker-")
+                            .unwrap_or(target_id.as_str());
+                        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                            let _ = pool.kill_subagent(minipub_id).await;
+                        }
                         let registry = crate::dev::registry::get_global_dev_registry();
                         match registry.stop(&target_id).await {
                             Ok(_) => {

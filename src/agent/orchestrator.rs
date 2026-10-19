@@ -24,6 +24,7 @@ pub struct MultiAgentOrchestrator;
 
 impl MultiAgentOrchestrator {
     /// Spawns an autonomous subagent for the given task and returns its structured result.
+    #[allow(dead_code)]
     pub async fn delegate(
         workspace_root: &Path,
         task_prompt: &str,
@@ -40,7 +41,7 @@ impl MultiAgentOrchestrator {
         .await
     }
 
-    /// Spawns an autonomous subagent with custom configuration.
+    /// Spawns an autonomous `minipub` subagent with custom configuration.
     pub async fn delegate_with_config(
         workspace_root: &Path,
         task_prompt: &str,
@@ -50,24 +51,30 @@ impl MultiAgentOrchestrator {
     ) -> Result<SubAgentResult> {
         let pool = get_global_subagent_pool(workspace_root);
         let provider = pool.get_or_create_provider().await;
-        let role = config
-            .as_ref()
-            .map(|c| c.role)
-            .unwrap_or(SubagentRole::Scout);
-        let timeout = timeout_secs.unwrap_or(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS);
+        let role = config.as_ref().map(|c| c.role).unwrap_or(if use_worktree {
+            SubagentRole::Coder
+        } else {
+            SubagentRole::Scout
+        });
 
         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
 
-        match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
-            Ok(res) => res,
-            Err(_) => Err(MinicodeError::Channel(format!(
-                "Subagent task timed out after {} seconds",
-                timeout
-            ))),
+        if let Some(explicit_timeout) = timeout_secs {
+            match tokio::time::timeout(std::time::Duration::from_secs(explicit_timeout), fut).await
+            {
+                Ok(res) => res,
+                Err(_) => Err(MinicodeError::Channel(format!(
+                    "MiniPub subagent task timed out after {} seconds",
+                    explicit_timeout
+                ))),
+            }
+        } else {
+            // Activity-heartbeat watchdog inside SubagentWorker governs timeout dynamically
+            fut.await
         }
     }
 
-    /// Concurrently executes a batch of subagent tasks with optional Git Worktree isolation.
+    /// Concurrently executes a batch of `minipub` subagent tasks with optional Git Worktree isolation.
     #[allow(dead_code)]
     pub async fn fanout_tasks(
         workspace_root: &Path,
@@ -79,6 +86,7 @@ impl MultiAgentOrchestrator {
             return Ok("No subagent tasks specified for fan-out.".to_string());
         }
 
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
         let pool = get_global_subagent_pool(workspace_root);
         let provider = pool.get_or_create_provider().await;
         let mut worker_specs = Vec::new();
@@ -87,13 +95,22 @@ impl MultiAgentOrchestrator {
         for task in tasks {
             let role = task.role;
             let prompt = task.prompt.clone();
-            let timeout = task.timeout_secs.unwrap_or(120);
+            let timeout = task.timeout_secs.unwrap_or(
+                app_cfg
+                    .agent
+                    .minipub
+                    .inactivity_timeout_secs
+                    .saturating_mul(2),
+            );
 
             let isolate_worktree = task.isolate_worktree.unwrap_or(
                 role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
             );
 
-            let mut config = SubagentConfig::for_role(role);
+            let mut config =
+                SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
+                    .with_todos(task.todos)
+                    .with_file_boundaries(task.file_boundaries);
             if let Some(m) = task.model {
                 config.model = Some(m);
             }
@@ -120,7 +137,7 @@ impl MultiAgentOrchestrator {
 
         if !wait_for_completion {
             let mut out = format!(
-                "### Subagent Swarm Fan-Out Launched ({} worker(s) in background)\n\n",
+                "### MiniPub Swarm Fan-Out Launched ({} worker(s) in background)\n\n",
                 launched_descriptions.len()
             );
             for (id, badge, isolate, prompt) in launched_descriptions {
@@ -139,7 +156,7 @@ impl MultiAgentOrchestrator {
             return Ok(out);
         }
 
-        // Wait for all workers to complete
+        // Wait for all workers to complete using event-driven Notify wakeup
         let scratchpad = get_global_scratchpad();
         let mut completed_results = Vec::new();
         let worktree_mgr = WorktreeManager::new(workspace_root);
@@ -161,7 +178,8 @@ impl MultiAgentOrchestrator {
                         break;
                     }
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                pool.wait_for_change(std::time::Duration::from_millis(250))
+                    .await;
             }
 
             let info = match final_info {
@@ -470,10 +488,15 @@ impl WorkflowRouter {
             }
         }
 
-        // 4. Live Runtime Services (Dev servers, timers, browser)
+        // 4. Live Runtime Services (Dev servers, timers, browser) & Reactive MiniPub Workers
         if has_live_runtime {
             if let Some(runtime_block) = Self::enrich_runtime_dev().await {
                 sections.push(runtime_block);
+            }
+        }
+        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            if let Some(minipub_block) = pool.format_orchestrator_context_block().await {
+                sections.push(minipub_block);
             }
         }
 

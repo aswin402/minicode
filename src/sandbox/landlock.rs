@@ -96,6 +96,30 @@ pub fn apply_landlock_sandbox_with_opts(
         current_ancestor = parent.parent();
     }
 
+    // If workspace_root is an isolated `.minicode/worktrees/<id>` directory and not read-only,
+    // allow read/write access to the parent repo's `.git` (for worktree index/refs) and `target` (warm build cache).
+    if !read_only {
+        if let Some(repo_root) =
+            crate::sandbox::env::detect_parent_repo_from_worktree(workspace_root)
+        {
+            for shared_sub in &[".git", "target", "node_modules"] {
+                let shared_dir = repo_root.join(shared_sub);
+                if shared_dir.exists() {
+                    if let Ok(fd) = PathFd::new(&shared_dir) {
+                        ruleset_created = ruleset_created
+                            .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
+                            .map_err(|e| {
+                                SecurityError::Landlock(format!(
+                                    "Failed to add shared worktree rule: {}",
+                                    e
+                                ))
+                            })?;
+                    }
+                }
+            }
+        }
+    }
+
     // Allow read/write access to /tmp and shared memory/terminals for compilers, package managers, and lockfiles
     for rw_path_str in &["/tmp", "/dev/shm", "/dev/pts"] {
         let p = Path::new(rw_path_str);

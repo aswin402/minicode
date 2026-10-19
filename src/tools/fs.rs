@@ -281,6 +281,9 @@ pub fn write_file_with_options(
         }
     })?;
 
+    crate::context::index::SymbolIndex::invalidate_cache();
+    crate::context::graph::CodeGraph::invalidate_cache();
+
     let total_lines = effective_content.lines().count();
     let mut msg = if append {
         format!(

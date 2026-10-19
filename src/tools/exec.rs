@@ -51,19 +51,34 @@ pub fn resolve_context_window(workspace_root: &Path) -> usize {
     0
 }
 
+static CONFIGURED_EXEC_TIMEOUT_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS);
+
+/// Updates the configured base execution timeout from `config.agent.timeout` or CLI `--timeout`.
+pub fn set_configured_exec_timeout(secs: u64) {
+    CONFIGURED_EXEC_TIMEOUT_SECS.store(secs.max(5), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Returns the active configured base execution timeout in seconds.
+pub fn get_configured_exec_timeout() -> u64 {
+    CONFIGURED_EXEC_TIMEOUT_SECS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(5)
+}
+
 /// Determines the optimal execution timeout dynamically based on command characteristics,
 /// environment configurations, and command workload intensity.
 ///
 /// Prevents premature timeout when an LLM echoes schema defaults (e.g. 30s) on heavy build or install tasks,
 /// while dynamically scaling time based on environment settings and hardware concurrency.
 pub fn resolve_smart_exec_timeout(command_str: &str, explicit_timeout: Option<u64>) -> Duration {
-    // 1. Dynamic base timeout from environment or default
+    // 1. Dynamic base timeout from environment, runtime config.toml / CLI (-t), or default
     let env_timeout = std::env::var("MINICODE_CMD_TIMEOUT")
         .or_else(|_| std::env::var("MINICODE_TIMEOUT"))
         .ok()
         .and_then(|v| v.parse::<u64>().ok());
 
-    let base_timeout_secs = env_timeout.unwrap_or(crate::constants::EXEC_DEFAULT_TIMEOUT_SECS);
+    let base_timeout_secs = env_timeout.unwrap_or_else(get_configured_exec_timeout);
 
     // 2. Classify command intensity and compute dynamic duration
     let cmd = command_str.trim().to_lowercase();

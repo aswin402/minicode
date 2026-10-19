@@ -252,7 +252,7 @@ impl SyntaxGuard {
                             stack.push(CssBlock::AtRule);
                         }
                     } else {
-                        let in_layer = stack.iter().any(|b| *b == CssBlock::Layer);
+                        let in_layer = stack.contains(&CssBlock::Layer);
                         stack.push(CssBlock::StyleRule {
                             selector: header,
                             in_layer,

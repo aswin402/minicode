@@ -4,22 +4,19 @@
 //! Git worktrees, wires reactive A2A mailbox channels, and synthesizes structured reports.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
 
 use crate::agent::subagent::mailbox::AgentMailbox;
 use crate::agent::subagent::message::{AgentMessage, MessageIntent};
-use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-use crate::agent::types::AgentEvent;
+use crate::agent::subagent::types::{AgentId, SubagentConfig, SubagentRole, WorkspaceMode};
 use crate::error::ToolError;
 use crate::sandbox::worktree::GitWorktreeManager;
 
-/// Orchestrator for spawning autonomous subagent child processes and routing A2A messages.
+/// Orchestrator for spawning autonomous `minipub` subagents in-process and routing A2A messages.
 pub struct SubagentOrchestrator;
 
 impl SubagentOrchestrator {
-    /// Spawns an autonomous background subagent with a specialized role in an isolated workspace or worktree.
+    /// Spawns an autonomous subagent (`minipub`) with a specialized role in an isolated workspace or worktree.
+    #[allow(dead_code)]
     pub async fn spawn_subagent(
         workspace_root: &Path,
         task: &str,
@@ -27,322 +24,120 @@ impl SubagentOrchestrator {
         workspace_mode: WorkspaceMode,
         max_iterations: Option<usize>,
     ) -> Result<String, ToolError> {
-        // 1. Generate child agent id
-        let agent_id = AgentId::new_subagent(role.as_str());
+        Self::spawn_subagent_with_options(
+            workspace_root,
+            task,
+            role,
+            workspace_mode,
+            max_iterations,
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+    }
 
-        // 2. Determine workspace isolation mode
-        let should_isolate = workspace_mode == WorkspaceMode::Worktree
-            || (workspace_mode == WorkspaceMode::Auto
-                && role.default_workspace_mode() == WorkspaceMode::Worktree);
+    /// Spawns an autonomous `minipub` subagent with optional Boomerang todo items and file boundary leases.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_subagent_with_options(
+        workspace_root: &Path,
+        task: &str,
+        role: SubagentRole,
+        workspace_mode: WorkspaceMode,
+        max_iterations: Option<usize>,
+        todos: Vec<String>,
+        file_boundaries: Vec<String>,
+    ) -> Result<String, ToolError> {
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        let mut config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
+            .with_todos(todos)
+            .with_file_boundaries(file_boundaries);
 
-        let (worktree_handle, target_dir) = if should_isolate {
-            match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
-                Ok(handle) => {
-                    let path = handle.worktree_path.clone();
-                    (Some(handle), path)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        agent_id = %agent_id,
-                        error = %e,
-                        "Worktree creation failed or repository is not Git; falling back to workspace root"
-                    );
-                    (None, workspace_root.to_path_buf())
+        if let Some(max_iter) = max_iterations {
+            config.max_turns = max_iter.max(1);
+        }
+
+        let should_isolate = match workspace_mode {
+            WorkspaceMode::Worktree => true,
+            WorkspaceMode::Shared => false,
+            WorkspaceMode::Auto => {
+                match app_cfg
+                    .agent
+                    .minipub
+                    .worktree_isolation
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "always" | "worktree" | "true" => true,
+                    "never" | "shared" | "false" => false,
+                    _ => role.default_workspace_mode() == WorkspaceMode::Worktree,
                 }
             }
-        } else {
-            (None, workspace_root.to_path_buf())
         };
 
-        // 3. Initialize child agent mailbox directory
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        let provider = pool.get_or_create_provider().await;
+
+        let res = pool
+            .run_subagent_with_options(role, task, Some(config), provider, should_isolate)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        // Initialize child agent mailbox and record task init + completion for A2A auditability
+        let agent_id = AgentId(res.id.clone());
         let child_agent_dir = workspace_root
             .join(".minicode")
             .join("agents")
             .join(&agent_id.0);
-        let child_mailbox = AgentMailbox::new(agent_id.clone(), &child_agent_dir).map_err(|e| {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-            ToolError::ExecutionFailed(format!(
-                "Failed to initialize mailbox for subagent `{}`: {}",
-                agent_id, e
-            ))
-        })?;
+        if let Ok(child_mailbox) = AgentMailbox::new(agent_id.clone(), &child_agent_dir) {
+            let init_msg = AgentMessage::new(
+                AgentId::parent(),
+                agent_id.clone(),
+                MessageIntent::TaskInit,
+                task,
+            );
+            let _ = child_mailbox.post(init_msg);
+        }
 
-        // 4. Post initial task initialization message to child mailbox
-        let init_msg = AgentMessage::new(
-            AgentId::parent(),
-            agent_id.clone(),
-            MessageIntent::TaskInit,
-            task,
-        );
-        if let Err(e) = child_mailbox.post(init_msg) {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
+        if !res.success {
             return Err(ToolError::ExecutionFailed(format!(
-                "Failed to post init message to subagent `{}` mailbox: {}",
-                agent_id, e
+                "MiniPub `{}` failed: {}",
+                res.id, res.final_summary
             )));
         }
 
-        // 5. Spawn headless child minicode process
-        let current_exe = std::env::current_exe().map_err(|e| {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-            ToolError::ExecutionFailed(format!("Failed to determine current executable: {}", e))
-        })?;
-
-        let mut cmd = Command::new(current_exe);
-        cmd.arg("run");
-        cmd.arg("-d").arg(&target_dir);
-        cmd.arg("-y");
-        cmd.arg("--json-stream");
-        cmd.arg("--tools").arg(role.tool_filter_mode());
-
-        if let Some(max_iter) = max_iterations {
-            cmd.arg("--max-iterations").arg(max_iter.to_string());
-        }
-
-        cmd.arg(task);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
-
-        let mut child = cmd.spawn().map_err(|e| {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-            ToolError::ExecutionFailed(format!("Failed to spawn subagent process: {}", e))
-        })?;
-
-        let child_id = child.id().unwrap_or(0);
-        let dev_registry = crate::dev::registry::get_global_dev_registry();
-        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", agent_id));
-        let worker_name = format!(
-            "Worker ({}) - {}",
-            role.badge(),
-            task.chars().take(40).collect::<String>()
-        );
-        let dev_handle = dev_registry
-            .register_worker(
-                dev_id,
-                worker_name,
-                format!(
-                    "minicode run -d {:?} --tools {:?} '{}'",
-                    target_dir,
-                    role.tool_filter_mode(),
-                    task
-                ),
-                target_dir.clone(),
-                child_id,
-                child_id,
-                None,
-            )
-            .await;
-
-        // 6. Asynchronously read lines from child stdout using BufReader
-        let stdout = child.stdout.take().ok_or_else(|| {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-            ToolError::ExecutionFailed("Failed to capture child process stdout".to_string())
-        })?;
-
-        let stderr = child.stderr.take();
-
-        let mut final_response = String::new();
-        let mut files_modified: Vec<String> = Vec::new();
-        let mut tools_executed: Vec<String> = Vec::new();
-        let mut tokens_used = 0;
-        let mut child_success = true;
-        let mut error_msg: Option<String> = None;
-
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        let dev_handle_clone = std::sync::Arc::clone(&dev_handle);
-        let read_stdout = async {
-            while let Ok(Some(line)) = lines.next_line().await {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-                    match event {
-                        AgentEvent::StreamDelta { delta, .. } => {
-                            final_response.push_str(&delta);
-                            dev_handle_clone.append_log(&delta).await;
-                        }
-                        AgentEvent::ToolCall { tool, .. } => {
-                            if !tools_executed.contains(&tool) {
-                                tools_executed.push(tool.clone());
-                            }
-                            dev_handle_clone
-                                .append_log(format!("🔧 Tool: {}", tool))
-                                .await;
-                        }
-                        AgentEvent::FileModified { path, .. } => {
-                            if !files_modified.contains(&path) {
-                                files_modified.push(path.clone());
-                            }
-                            dev_handle_clone
-                                .append_log(format!("📝 File modified: {}", path))
-                                .await;
-                        }
-                        AgentEvent::TurnEnd {
-                            total_tokens_used,
-                            files_modified: modified,
-                            status,
-                            ..
-                        } => {
-                            tokens_used = total_tokens_used;
-                            for f in modified {
-                                if !files_modified.contains(&f) {
-                                    files_modified.push(f);
-                                }
-                            }
-                            dev_handle_clone
-                                .append_log(format!(
-                                    "🏁 Turn ended (tokens: {})",
-                                    total_tokens_used
-                                ))
-                                .await;
-                            if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
-                                || status == crate::constants::TURN_STATUS_CANCELLED
-                            {
-                                child_success = false;
-                            }
-                        }
-                        AgentEvent::Error { message, .. } => {
-                            tracing::error!(message = %message, "Subagent encountered error");
-                            child_success = false;
-                            error_msg = Some(message.clone());
-                            dev_handle_clone
-                                .append_log(format!("❌ Error: {}", message))
-                                .await;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        };
-
-        let mut captured_stderr = String::new();
-        let read_stderr = async {
-            if let Some(mut err_stream) = stderr {
-                let _ = err_stream.read_to_string(&mut captured_stderr).await;
-            }
-        };
-
-        // 7. Await child completion or timeout (120s)
-        let timeout_dur = std::time::Duration::from_secs(120);
-        let run_outcome = tokio::time::timeout(timeout_dur, async {
-            tokio::join!(read_stdout, read_stderr);
-            child.wait().await
-        })
-        .await;
-
-        let exit_status = match run_outcome {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Err(ToolError::ExecutionFailed(format!(
-                    "Subagent `{}` wait error: {}",
-                    agent_id, e
-                )));
-            }
-            Err(_) => {
-                dev_handle
-                    .update_status(crate::dev::models::DevProcessStatus::Stopped)
-                    .await;
-                let _ = child.kill().await;
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Err(ToolError::ExecutionFailed(format!(
-                    "Subagent `{}` timed out after 120 seconds",
-                    agent_id
-                )));
-            }
-        };
-
-        if !exit_status.success() {
-            child_success = false;
-        }
-
-        if !child_success {
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-            let reason = error_msg.unwrap_or_else(|| {
-                let trimmed_stderr = captured_stderr.trim();
-                if !trimmed_stderr.is_empty() {
-                    trimmed_stderr.to_string()
-                } else if !exit_status.success() {
-                    format!("Process exited with status {:?}", exit_status.code())
-                } else {
-                    "Subagent execution failed".to_string()
+        // Capture worktree diff if worktree exists on disk
+        let worktree_opt =
+            GitWorktreeManager::locate_worktree(workspace_root, &agent_id).map(|path| {
+                let branch = GitWorktreeManager::resolve_branch_for(workspace_root, &agent_id);
+                crate::sandbox::WorktreeHandle {
+                    worktree_path: path,
+                    branch_name: branch,
+                    agent_id: agent_id.clone(),
+                    repo_root: workspace_root.to_path_buf(),
                 }
             });
-            dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                    reason.clone(),
-                ))
-                .await;
-            return Err(ToolError::ExecutionFailed(format!(
-                "Subagent `{}` failed: {}",
-                agent_id, reason
-            )));
-        }
 
-        dev_handle
-            .append_log(format!("[{}] Subagent finished successfully", agent_id))
-            .await;
-        dev_handle
-            .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-            .await;
-
-        // Child succeeded: capture diff if worktree was used, and retain worktree for arbitration
-        let diff = if let Some(ref handle) = worktree_handle {
+        let diff = if let Some(ref handle) = worktree_opt {
             GitWorktreeManager::capture_diff(handle).unwrap_or_default()
         } else {
             String::new()
         };
 
-        let summary_text = if final_response.trim().is_empty() {
-            "Task executed successfully without stream output.".to_string()
-        } else {
-            final_response.trim().to_string()
-        };
-
         let mut report = format!(
-            "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Tools Executed: {}\n• Files Modified: {}\n",
-            agent_id,
+            "✔ MiniPub Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Turns Executed: {}\n• Files Modified: {}\n",
+            res.id,
             role.badge(),
-            tokens_used,
-            if tools_executed.is_empty() {
-                "None".to_string()
-            } else {
-                tools_executed.join(", ")
-            },
-            if files_modified.is_empty() {
+            res.tokens_used,
+            res.turns_executed,
+            if res.files_modified.is_empty() {
                 "None (Read-Only)".to_string()
             } else {
-                files_modified.join(", ")
+                res.files_modified.join(", ")
             },
         );
 
-        if let Some(ref handle) = worktree_handle {
+        if let Some(ref handle) = worktree_opt {
             report.push_str(&format!(
                 "\n• Worktree Retained: `{}` (branch `{}` — ready for `merge_subagent_worktree`)\n",
                 handle.worktree_path.display(),
@@ -354,7 +149,10 @@ impl SubagentOrchestrator {
             report.push_str(&format!("\n### Worktree Diff\n```diff\n{}\n```\n", diff));
         }
 
-        report.push_str(&format!("\n### Summary & Findings\n{}", summary_text));
+        report.push_str(&format!(
+            "\n### Summary & Findings\n{}",
+            res.final_summary.trim()
+        ));
 
         Ok(report)
     }

@@ -351,6 +351,8 @@ pub async fn dispatch(
                     workspace_mode: Some(WorkspaceMode::Worktree),
                     max_iterations: Some(15),
                     check_cmd: None,
+                    todos: Vec::new(),
+                    file_boundaries: Vec::new(),
                 };
 
                 FanoutOrchestrator::execute_fanout(

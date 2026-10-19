@@ -6,16 +6,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::{Mutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::agent::subagent::types::AgentId;
+use crate::agent::subagent::types::{AgentId, SubagentConfig, SubagentRole};
+use crate::agent::subagent::worker::SubagentWorker;
 use crate::agent::swarm::arbitrator::SwarmArbitrator;
 use crate::agent::swarm::models::{
     SwarmError, SwarmExecutionState, SwarmPlan, SwarmTaskOutcome, SwarmTaskSpec, SwarmTaskStatus,
@@ -394,70 +392,21 @@ impl SwarmScheduler {
             "\n\nConstraint: Do NOT modify shared project documentation, task trackers, or scaffolding manifests (e.g. minikit.json, onpkg.json, AGENTS.md, minikit_docs/). Confine all changes strictly to your assigned code and test files to guarantee clean mergeability.",
         );
 
-        // 5. Spawn child minicode process
-        let current_exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Self::failed_outcome(
-                    &task,
-                    0,
-                    format!("Failed to find current executable: {}", e),
-                );
-            }
-        };
-
-        let mut cmd = Command::new(current_exe);
-        cmd.arg("run");
-        cmd.arg("-d").arg(&target_dir);
-        cmd.arg("-y");
-        cmd.arg("--json-stream");
+        let _ = swarm_dir;
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        let role = SubagentRole::from_str_loose(&task.role_title);
+        let mut config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
+            .with_file_boundaries(task.file_boundaries.clone())
+            .with_todos(task.expected_artifacts.clone());
 
         if let Some(ref m) = options.model {
-            cmd.arg("-m").arg(m);
+            config.model = Some(m.clone());
         }
-        if let Some(ref p) = options.provider {
-            cmd.arg("-p").arg(p);
-        }
-
         if let Some(max_iter) = task.max_iterations {
-            cmd.arg("--max-iterations").arg(max_iter.to_string());
+            config.max_turns = max_iter.max(1);
         }
 
-        cmd.env("MINICODE_SWARM_ID", &plan.id);
-        cmd.env("MINICODE_SWARM_DIR", swarm_dir);
-        cmd.env("MINICODE_SWARM_TASK_ID", &task.id);
-        cmd.env("MINICODE_SWARM_PEERS", &peers_str);
-
-        cmd.arg(&enriched_prompt);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Self::failed_outcome(
-                    &task,
-                    0,
-                    format!("Failed to spawn child worker: {}", e),
-                );
-            }
-        };
-
-        let child_id = child.id().unwrap_or(0);
-
+        let pid_val = std::process::id();
         // Register in MiniDevRegistry so it appears in F7 /tasks and Activity Drawer
         let dev_registry = crate::dev::registry::get_global_dev_registry();
         let dev_id = crate::dev::models::DevProcessId::from(format!("swarm-worker-{}", task.id));
@@ -468,65 +417,89 @@ impl SwarmScheduler {
             .register_swarm_process(
                 dev_id,
                 worker_label,
-                format!("minicode swarm worker: {}", task.id),
+                format!("minipub:swarm:{} ({})", task.id, role.badge()),
                 target_dir.clone(),
-                child_id,
-                child_id,
+                pid_val,
+                pid_val,
                 Some(Arc::new(move || {
                     token_cancel_hook.cancel();
                 })),
             )
             .await;
 
-        // Stream and capture output
-        let stdout = match child.stdout.take() {
-            Some(out) => out,
-            None => {
-                dev_handle
-                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(1)))
-                    .await;
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Self::failed_outcome(
-                    &task,
-                    0,
-                    "Failed to capture child stdout".to_string(),
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        let provider: Arc<dyn crate::agent::providers::Provider> =
+            if let Some(ref prov_name) = options.provider {
+                let api_key_res = app_cfg.get_api_key(prov_name);
+                let custom_url = app_cfg.get_provider_base_url(prov_name);
+                let (prov, _) = crate::agent::providers::create_provider_or_fallback(
+                    prov_name,
+                    api_key_res,
+                    custom_url.as_deref(),
                 );
-            }
-        };
+                Arc::from(prov)
+            } else {
+                pool.get_or_create_provider().await
+            };
 
-        let mut reader = BufReader::new(stdout).lines();
-        let mut full_output = String::new();
-
-        while let Ok(Some(line)) = reader.next_line().await {
-            dev_handle.append_log(&line).await;
-            if let Some(ref parent) = parent_handle {
-                parent.append_log(format!("[{}] {}", task.id, &line)).await;
-            }
-            full_output.push_str(&line);
-            full_output.push('\n');
+        let worker = SubagentWorker::new(agent_id.0.clone(), enriched_prompt, config, &target_dir);
+        {
+            let mut info_lock = worker.info.write().await;
+            info_lock.isolate_worktree = worktree_handle.is_some();
         }
+        pool.register_worker_handle(
+            agent_id.0.clone(),
+            Arc::clone(&worker.info),
+            Arc::clone(&worker.cancel_flag),
+        )
+        .await;
 
-        let status = match child.wait().await {
-            Ok(s) => s,
-            Err(e) => {
+        let exec_res = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                worker.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 dev_handle
                     .update_status(crate::dev::models::DevProcessStatus::Killed)
                     .await;
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
                 }
-                return Self::failed_outcome(
-                    &task,
-                    task_start.elapsed().as_millis() as u64,
-                    e.to_string(),
-                );
+                pool.notify_completion();
+                return Self::cancelled_outcome(&task);
             }
+            res = worker.run(provider) => res,
         };
+        pool.notify_completion();
 
         let duration_ms = task_start.elapsed().as_millis() as u64;
-        let worker_success = status.success();
+        let (worker_success, tokens_used, full_output, worker_files_modified) = match exec_res {
+            Ok(sub_res) => {
+                if let Some(ref parent) = parent_handle {
+                    parent
+                        .append_log(format!(
+                            "[{}] Completed (tokens: {}): {}",
+                            task.id, sub_res.tokens_used, sub_res.final_summary
+                        ))
+                        .await;
+                }
+                dev_handle.append_log(&sub_res.final_summary).await;
+                (
+                    sub_res.success,
+                    sub_res.tokens_used,
+                    sub_res.final_summary,
+                    sub_res.files_modified,
+                )
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                dev_handle.append_log(&err_str).await;
+                if let Some(ref parent) = parent_handle {
+                    parent
+                        .append_log(format!("[{}] Error: {}", task.id, err_str))
+                        .await;
+                }
+                (false, 0, err_str, Vec::new())
+            }
+        };
 
         if worker_success {
             dev_handle
@@ -534,7 +507,7 @@ impl SwarmScheduler {
                 .await;
         } else {
             dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Exited(status.code()))
+                .update_status(crate::dev::models::DevProcessStatus::Exited(Some(1)))
                 .await;
         }
 
@@ -566,7 +539,7 @@ impl SwarmScheduler {
             let _ = fs::write(&gitignore_path, ignore_rules);
         }
 
-        let modified_files = match std::process::Command::new("git")
+        let mut modified_files: Vec<String> = match std::process::Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&target_dir)
             .output()
@@ -584,20 +557,14 @@ impl SwarmScheduler {
                 .collect(),
             _ => Vec::new(),
         };
+        for f in worker_files_modified {
+            if !modified_files.contains(&f) {
+                modified_files.push(f);
+            }
+        }
 
         if !modified_files.is_empty() && worktree_handle.is_some() {
-            let _ = std::process::Command::new("git")
-                .args(["add", "-A"])
-                .current_dir(&target_dir)
-                .output();
-            let commit_msg = format!(
-                "feat(swarm/{}): worker `{}` ({})",
-                plan.id, task.id, task.title
-            );
-            let _ = std::process::Command::new("git")
-                .args(["commit", "-m", &commit_msg])
-                .current_dir(&target_dir)
-                .output();
+            let _ = GitWorktreeManager::commit_uncommitted_changes(&target_dir, &agent_id);
         }
 
         // 8. Publish expected artifacts to artifacts root
@@ -629,7 +596,7 @@ impl SwarmScheduler {
             role_title: task.role_title,
             status: overall_status,
             duration_ms,
-            tokens_used: 0,
+            tokens_used,
             files_modified: modified_files,
             worktree_path: Some(target_dir),
             branch_name: active_branch,

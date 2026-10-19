@@ -1,359 +1,341 @@
 use crate::tools::category::ToolCategory;
 use std::collections::HashSet;
 
-/// High-speed, zero-allocation intent classifier for dynamic tool gating.
+/// Declarative rule mapping semantic tokens and phrases to one or more `ToolCategory` targets.
+struct IntentRule {
+    categories: &'static [ToolCategory],
+    exact_words: &'static [&'static str],
+    phrases: &'static [&'static str],
+}
+
+const INTENT_RULES: &[IntentRule] = &[
+    // 1. Git
+    IntentRule {
+        categories: &[ToolCategory::Git],
+        exact_words: &["git", "commit", "branch", "diff", "stash", "merge", "pr"],
+        phrases: &["pull request"],
+    },
+    // 2. Web & Browser
+    IntentRule {
+        categories: &[ToolCategory::Web],
+        exact_words: &["browser", "browse", "crawl", "screenshot", "website"],
+        phrases: &[
+            "http://",
+            "https://",
+            "search web",
+            "web search",
+            "online docs",
+            "latest docs",
+            "documentation for",
+        ],
+    },
+    // 3. MiniKit Architecture Stacks, Dependencies & Skills
+    IntentRule {
+        categories: &[ToolCategory::MiniKit],
+        exact_words: &[
+            "minikit",
+            "onpkg",
+            "scaffold",
+            "template",
+            "bootstrap",
+            "drift",
+            "stack",
+            "skill",
+            "skills",
+            "package",
+            "pkg",
+            "dependency",
+            "dependencies",
+            "npm",
+            "pnpm",
+        ],
+        phrases: &[
+            "kit ",
+            "kit_",
+            "self-heal",
+            "add dep",
+            "install dep",
+            "librar",
+            "yarn add",
+            "bun add",
+            "cargo add",
+            "pip install",
+            "uv add",
+            "flutter pub",
+        ],
+    },
+    // 4. CodeGraph & Architecture
+    IntentRule {
+        categories: &[
+            ToolCategory::Codegraph,
+            ToolCategory::Memory,
+            ToolCategory::Search,
+        ],
+        exact_words: &[
+            "architecture",
+            "codegraph",
+            "repo_map",
+            "repomap",
+            "code_explore",
+            "diff_impact",
+            "code_explain",
+            "code_trace",
+            "code_impact",
+            "callers",
+            "callees",
+        ],
+        phrases: &[
+            "blast radius",
+            "call hierarchy",
+            "dependency graph",
+            "impact analysis",
+            "impact of",
+            "code graph",
+            "who calls",
+            "explain symbol",
+            "call trace",
+            "trace flow",
+            "trace execution",
+            "where is",
+            "how does",
+        ],
+    },
+    // 5. Multi-Agent & MiniPub Swarm
+    IntentRule {
+        categories: &[ToolCategory::Agent],
+        exact_words: &[
+            "minipub",
+            "subagent",
+            "subagents",
+            "swarm",
+            "council",
+            "consensus",
+            "delegate",
+            "fanout",
+            "scratchpad",
+            "send_worker_message",
+            "worker_message",
+            "peer",
+            "coordination",
+            "publish_contract",
+            "query_interface",
+        ],
+        phrases: &["hypothes"],
+    },
+    // 6. AST & Deep Search
+    IntentRule {
+        categories: &[ToolCategory::Search],
+        exact_words: &[
+            "ast",
+            "lsp",
+            "hybrid_search",
+            "semantic_search",
+            "locate_fault",
+            "fault",
+        ],
+        phrases: &[
+            "syntax tree",
+            "goto definition",
+            "find references",
+            "hybrid search",
+            "semantic search",
+        ],
+    },
+    // 7. Context, Memory, Architecture & Analysis
+    IntentRule {
+        categories: &[ToolCategory::Memory],
+        exact_words: &[
+            "wiki",
+            "remember",
+            "memory",
+            "plan",
+            "progress",
+            "repo_map",
+            "repomap",
+            "skeleton",
+            "smell",
+            "code_smells",
+            "dead_code",
+            "invariant",
+            "prune",
+            "skill",
+            "skills",
+        ],
+        phrases: &[
+            "forget fact",
+            "code map",
+            "dead code",
+            "coverage gap",
+            "token budget",
+        ],
+    },
+    // 8. MiniPower Autonomous Methodology & Verification
+    IntentRule {
+        categories: &[ToolCategory::MiniPower, ToolCategory::Memory],
+        exact_words: &[
+            "power",
+            "minipower",
+            "superpower",
+            "verify",
+            "verification",
+            "barrier",
+            "review",
+            "brainstorm",
+            "socratic",
+            "tdd",
+            "worktree",
+            "compliance",
+            "implement",
+            "refactor",
+            "feature",
+            "milestone",
+        ],
+        phrases: &["red flag", "acceptance criteria", "end-to-end"],
+    },
+    // 9. MiniBlocks UI Component & Design Warehouse
+    IntentRule {
+        categories: &[ToolCategory::Blocks, ToolCategory::MiniKit],
+        exact_words: &[
+            "block",
+            "blocks",
+            "miniblocks",
+            "component",
+            "components",
+            "palette",
+            "palettes",
+            "gradient",
+            "navbar",
+            "hero",
+            "landing",
+            "dashboard",
+            "sidebar",
+            "pricing",
+            "modal",
+            "dialog",
+            "tailwind",
+            "responsive",
+            "ui",
+            "frontend",
+            "css",
+            "styling",
+            "button",
+            "card",
+            "table",
+            "footer",
+            "header",
+            "wireframe",
+        ],
+        phrases: &["ui design", "design token", "dark mode", "light mode"],
+    },
+    // 10. MiniTask Process Vault & Resource Telemetry
+    IntentRule {
+        categories: &[ToolCategory::Dev, ToolCategory::Exec],
+        exact_words: &[
+            "minitask",
+            "daemon",
+            "vite",
+            "serve",
+            "resource",
+            "telemetry",
+            "ram",
+            "cpu",
+        ],
+        phrases: &[
+            "dev server",
+            "task manager",
+            "background process",
+            "background task",
+            "scheduled task",
+            "one-shot timer",
+            "periodic check",
+            "listen on port",
+            "port ",
+            "memory usage",
+            "whats happening",
+            "what's happening",
+            "what is happening",
+            "what is running",
+            "what's running",
+            "whats running",
+            "status of task",
+            "task status",
+            "process status",
+            "is the server running",
+            "is server running",
+            "active processes",
+            "active tasks",
+            "check tasks",
+            "check processes",
+            "check background",
+            "stop that",
+            "kill that",
+            "manage task",
+        ],
+    },
+];
+
+const MCP_DOMAIN_RULES: &[(&[&str], &[&str])] = &[
+    (
+        &["figma"],
+        &["frame", "component", "canvas", "design system", "ui design"],
+    ),
+    (
+        &["github", "gh"],
+        &["pull request", " pr ", "issue", "repo"],
+    ),
+    (
+        &["postgres", "mysql", "sqlite", "database", "db", "sql"],
+        &["sql", "query", "database", "migration", "schema"],
+    ),
+    (&["docker"], &["container", "dockerfile", "compose"]),
+];
+
+/// High-speed, declarative intent classifier for dynamic tool gating.
 pub struct IntentClassifier;
 
 #[inline]
-fn contains_any(text: &str, phrases: &[&str]) -> bool {
-    phrases.iter().any(|&p| text.contains(p))
-}
-
-#[inline]
-fn has_any_word(text: &str, words: &[&str]) -> bool {
-    words.iter().any(|&w| crate::utils::has_word(text, w))
+fn tokenize_words(lower: &str) -> HashSet<&str> {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 impl IntentClassifier {
-    /// Detects relevant tool categories from user prompt text.
-    /// Runs in < 0.1ms using structured semantic intent signals.
+    /// Detects relevant tool categories from user prompt text in a single tokenized pass.
     pub fn detect(prompt: &str) -> HashSet<ToolCategory> {
         let mut categories = HashSet::new();
         let lower = prompt.to_ascii_lowercase();
+        let words = tokenize_words(&lower);
 
-        // 1. Git Intent
-        let has_git_term = lower.starts_with("git")
-            || lower.contains("git ")
-            || lower.contains("pull request")
-            || has_any_word(
-                &lower,
-                &["git", "commit", "branch", "diff", "stash", "merge", "pr"],
-            );
-
-        if has_git_term {
-            categories.insert(ToolCategory::Git);
+        for rule in INTENT_RULES {
+            let matched = rule.exact_words.iter().any(|w| words.contains(w))
+                || rule.phrases.iter().any(|p| lower.contains(p));
+            if matched {
+                categories.extend(rule.categories.iter().copied());
+            }
         }
 
-        // 2. Web & Browser Intent
-        let has_web_url = contains_any(&lower, &["http://", "https://"]);
-        let has_web_search = contains_any(
-            &lower,
-            &[
-                "search web",
-                "web search",
-                "online docs",
-                "latest docs",
-                "documentation for",
-            ],
-        );
-        let has_browser_action =
-            contains_any(&lower, &["browser", "browse", "crawl", "screenshot"])
-                || crate::utils::has_word(&lower, "website");
-
-        if has_web_url || has_web_search || has_browser_action {
-            categories.insert(ToolCategory::Web);
-        }
-
-        // 3. MiniKit Architecture Stacks, Dependencies & Skills Intent
-        let has_minikit_term = contains_any(
-            &lower,
-            &[
-                "minikit",
-                "kit ",
-                "kit_",
-                "onpkg",
-                "scaffold",
-                "template",
-                "bootstrap",
-                "drift",
-                "self-heal",
-            ],
-        );
-        let has_package_management = contains_any(
-            &lower,
-            &[
-                "package",
-                "pkg",
-                "dependency",
-                "dependencies",
-                "add dep",
-                "install dep",
-                "librar",
-                "npm",
-                "yarn add",
-                "pnpm",
-                "bun add",
-                "cargo add",
-                "pip install",
-                "uv add",
-                "flutter pub",
-            ],
-        );
-        let has_kit_word = has_any_word(&lower, &["stack", "skill", "skills"]);
-
-        if has_minikit_term || has_package_management || has_kit_word {
-            categories.insert(ToolCategory::MiniKit);
-        }
-
-        // 4. CodeGraph & Architecture Intent
-        let has_graph_term = contains_any(
-            &lower,
-            &[
-                "architecture",
-                "blast radius",
-                "call hierarchy",
-                "dependency graph",
-                "impact analysis",
-                "impact of",
-                "code graph",
-                "codegraph",
-                "repo_map",
-                "repomap",
-                "code_explore",
-                "diff_impact",
-                "code_explain",
-                "code_trace",
-                "code_impact",
-            ],
-        );
-        let has_ast_query = contains_any(
-            &lower,
-            &[
-                "who calls",
-                "callers",
-                "callees",
-                "explain symbol",
-                "call trace",
-                "trace flow",
-                "trace execution",
-                "where is",
-                "how does",
-            ],
-        );
-        let has_trace_flow = crate::utils::has_word(&lower, "trace")
-            && (crate::utils::has_word(&lower, "call")
-                || crate::utils::has_word(&lower, "function")
-                || crate::utils::has_word(&lower, "symbol")
-                || crate::utils::has_word(&lower, "flow"));
-
-        if has_graph_term || has_ast_query || has_trace_flow {
+        // Compound structural signals (co-occurrence of two tokens)
+        if words.contains("trace")
+            && ["call", "function", "symbol", "flow"]
+                .iter()
+                .any(|w| words.contains(w))
+        {
             categories.insert(ToolCategory::Codegraph);
             categories.insert(ToolCategory::Memory);
             categories.insert(ToolCategory::Search);
         }
 
-        // 5. Multi-Agent & Swarm Intent
-        if contains_any(
-            &lower,
-            &[
-                "subagent",
-                "swarm",
-                "council",
-                "consensus",
-                "hypothes",
-                "delegate",
-                "fanout",
-                "scratchpad",
-                "send_worker_message",
-                "worker_message",
-                "peer",
-                "coordination",
-                "publish_contract",
-                "query_interface",
-            ],
-        ) {
-            categories.insert(ToolCategory::Agent);
-        }
-
-        // 6. AST & Deep Search Intent
-        let has_search_term = contains_any(
-            &lower,
-            &[
-                "syntax tree",
-                "goto definition",
-                "find references",
-                "hybrid search",
-                "hybrid_search",
-                "semantic search",
-                "semantic_search",
-                "locate_fault",
-                "fault",
-            ],
-        );
-        let has_search_word = has_any_word(&lower, &["ast", "lsp"]);
-
-        if has_search_term || has_search_word {
-            categories.insert(ToolCategory::Search);
-        }
-
-        // 7. Context, Memory, Architecture & Analysis Intent
-        let has_memory_term = contains_any(
-            &lower,
-            &[
-                "wiki",
-                "remember",
-                "forget fact",
-                "memory",
-                "plan",
-                "progress",
-                "repo_map",
-                "repomap",
-                "code map",
-                "skeleton",
-                "smell",
-                "code_smells",
-                "dead code",
-                "dead_code",
-                "invariant",
-                "coverage gap",
-                "prune",
-                "token budget",
-            ],
-        );
-        let has_memory_word = has_any_word(&lower, &["skill", "skills"]);
-
-        if has_memory_term || has_memory_word {
-            categories.insert(ToolCategory::Memory);
-        }
-
-        // 8. MiniPower Autonomous Methodology & Verification Intent
-        let has_power_term = contains_any(
-            &lower,
-            &[
-                "power",
-                "minipower",
-                "superpower",
-                "verify",
-                "verification",
-                "barrier",
-                "review",
-                "brainstorm",
-                "socratic",
-                "tdd",
-                "red flag",
-                "worktree",
-                "compliance",
-                "acceptance criteria",
-                "end-to-end",
-            ],
-        );
-        let has_engineering_word =
-            has_any_word(&lower, &["implement", "refactor", "feature", "milestone"]);
-
-        if has_power_term || has_engineering_word {
-            categories.insert(ToolCategory::MiniPower);
-            categories.insert(ToolCategory::Memory);
-        }
-
-        // 9. MiniBlocks UI Component & Design Warehouse Intent
-        let has_block_term = contains_any(
-            &lower,
-            &[
-                "block",
-                "component",
-                "palette",
-                "gradient",
-                "navbar",
-                "hero",
-                "ui design",
-                "design token",
-                "landing",
-                "dashboard",
-                "sidebar",
-                "pricing",
-                "modal",
-                "dialog",
-                "tailwind",
-                "dark mode",
-                "light mode",
-                "responsive",
-            ],
-        );
-        let has_ui_word = has_any_word(
-            &lower,
-            &[
-                "ui",
-                "frontend",
-                "css",
-                "styling",
-                "button",
-                "card",
-                "table",
-                "footer",
-                "header",
-                "wireframe",
-            ],
-        );
-
-        if has_block_term || has_ui_word {
-            categories.insert(ToolCategory::Blocks);
-            categories.insert(ToolCategory::MiniKit);
-        }
-
-        // 10. MiniTask Process Vault Intent
-        let has_process_term = contains_any(
-            &lower,
-            &[
-                "dev server",
-                "minitask",
-                "task manager",
-                "background process",
-                "background task",
-                "scheduled task",
-                "one-shot timer",
-                "periodic check",
-                "listen on port",
-            ],
-        ) || crate::utils::has_word(&lower, "daemon")
-            || crate::utils::has_word(&lower, "vite")
-            || lower.starts_with("serve")
-            || lower.contains(" serve ")
-            || lower.contains("port ");
-
-        let has_server_action = crate::utils::has_word(&lower, "server")
-            && has_any_word(
-                &lower,
-                &[
-                    "start", "run", "launch", "serve", "status", "logs", "kill", "stop", "restart",
-                ],
-            );
-
-        let has_resource_telemetry = contains_any(
-            &lower,
-            &["resource", "telemetry", "memory usage", "ram", "cpu"],
-        );
-
-        let has_status_inspection = contains_any(
-            &lower,
-            &[
-                "whats happening",
-                "what's happening",
-                "what is happening",
-                "what is running",
-                "what's running",
-                "whats running",
-                "status of task",
-                "task status",
-                "process status",
-                "is the server running",
-                "is server running",
-                "active processes",
-                "active tasks",
-                "check tasks",
-                "check processes",
-                "check background",
-            ],
-        ) || (contains_any(&lower, &["how are", "what are"])
-            && contains_any(&lower, &["tasks", "background processes"]));
-
-        let has_teardown_command = matches!(lower.trim(), "stop" | "kill" | "stop it" | "kill it")
-            || contains_any(&lower, &["stop that", "kill that", "manage task"]);
-
-        if has_process_term
-            || has_server_action
-            || has_resource_telemetry
-            || has_status_inspection
-            || has_teardown_command
+        if (words.contains("server")
+            && [
+                "start", "run", "launch", "serve", "status", "logs", "kill", "stop", "restart",
+            ]
+            .iter()
+            .any(|w| words.contains(w)))
+            || matches!(lower.trim(), "stop" | "kill" | "stop it" | "kill it")
+            || ((lower.contains("how are") || lower.contains("what are"))
+                && (words.contains("tasks") || lower.contains("background processes")))
         {
             categories.insert(ToolCategory::Dev);
             categories.insert(ToolCategory::Exec);
@@ -363,12 +345,6 @@ impl IntentClassifier {
     }
 
     /// Detects relevant MCP server names from user prompt text and available servers.
-    ///
-    /// Matches explicit server names as tokens or substrings, as well as common domain keywords:
-    /// - Figma: "figma", "frame", "component", "canvas", "design system"
-    /// - GitHub: "github", "gh", "issue", "pull request", "pr"
-    /// - Database / Postgres / MySQL: "postgres", "mysql", "sqlite", "database", "query", "sql"
-    /// - Docker: "docker", "container", "compose", "image"
     #[must_use]
     pub fn detect_mcp_servers<I, S>(prompt: &str, available_servers: I) -> HashSet<String>
     where
@@ -377,42 +353,25 @@ impl IntentClassifier {
     {
         let mut matched = HashSet::new();
         let lower = prompt.to_ascii_lowercase();
+        let words = tokenize_words(&lower);
 
         for server in available_servers {
             let s_ref = server.as_ref();
             let s_lower = s_ref.to_ascii_lowercase();
-            // 1. Direct name match in prompt
-            if lower.contains(&s_lower) {
+            if words.contains(s_lower.as_str()) || lower.contains(&s_lower) {
                 matched.insert(s_ref.to_string());
                 continue;
             }
 
-            // 2. Domain keyword matching
-            match s_lower.as_str() {
-                "figma" => {
-                    if contains_any(
-                        &lower,
-                        &["frame", "component", "canvas", "design system", "ui design"],
-                    ) {
-                        matched.insert(s_ref.to_string());
-                    }
+            for (server_names, domain_terms) in MCP_DOMAIN_RULES {
+                if server_names.contains(&s_lower.as_str())
+                    && domain_terms
+                        .iter()
+                        .any(|term| words.contains(term) || lower.contains(term))
+                {
+                    matched.insert(s_ref.to_string());
+                    break;
                 }
-                "github" | "gh" => {
-                    if contains_any(&lower, &["pull request", " pr ", "issue", "repo"]) {
-                        matched.insert(s_ref.to_string());
-                    }
-                }
-                "postgres" | "mysql" | "sqlite" | "database" | "db" | "sql" => {
-                    if contains_any(&lower, &["sql", "query", "database", "migration", "schema"]) {
-                        matched.insert(s_ref.to_string());
-                    }
-                }
-                "docker" => {
-                    if contains_any(&lower, &["container", "dockerfile", "compose"]) {
-                        matched.insert(s_ref.to_string());
-                    }
-                }
-                _ => {}
             }
         }
 

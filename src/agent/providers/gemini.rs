@@ -16,10 +16,10 @@ impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS,
+                crate::config::get_active_connect_timeout_secs(),
             ))
             .read_timeout(std::time::Duration::from_secs(
-                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+                crate::config::get_active_stream_idle_timeout_secs(),
             ))
             .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
             .build()

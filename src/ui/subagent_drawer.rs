@@ -100,9 +100,15 @@ impl SubagentDrawer {
         let drawer_area = chunks[1];
         frame.render_widget(Clear, drawer_area);
 
-        let workers = crate::agent::subagent::try_get_global_subagent_pool()
+        let pool_opt = crate::agent::subagent::try_get_global_subagent_pool();
+        let workers = pool_opt
+            .as_ref()
             .map(|p| p.snapshot_subagents())
             .unwrap_or_default();
+        let max_parallel = pool_opt
+            .as_ref()
+            .map(|p| p.max_parallel())
+            .unwrap_or(crate::constants::DEFAULT_MAX_PARALLEL_MINIPUBS);
 
         let running_count = workers
             .iter()
@@ -111,8 +117,8 @@ impl SubagentDrawer {
         let total_count = workers.len();
 
         let title = format!(
-            " 🤖 Subagent Swarm Activity Drawer [{} Running | {} Total] (Ctrl+S to hide) ",
-            running_count, total_count
+            " 🤖 MiniPub Subagent Activity Drawer [{} Running / {} Max Parallel | {} Total] (Ctrl+S to hide) ",
+            running_count, max_parallel, total_count
         );
 
         let block = Block::default()
@@ -137,7 +143,7 @@ impl SubagentDrawer {
                         Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        "No subagents currently active in this session.",
+                        "No MiniPub subagents currently active in this session.",
                         Style::default().fg(theme.text_primary),
                     ),
                 ]),
@@ -145,20 +151,20 @@ impl SubagentDrawer {
                 Line::from(vec![
                     Span::styled("  • Use tool ", Style::default().fg(theme.muted)),
                     Span::styled(
-                        "dispatch_subagent(role, prompt)",
+                        "spawn_subagent(role, task, todos, file_boundaries)",
                         Style::default()
                             .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        " to spawn concurrent background workers.",
+                        " to launch lightweight in-process MiniPub workers.",
                         Style::default().fg(theme.muted),
                     ),
                 ]),
                 Line::from(vec![
                     Span::styled("  • Supported roles: ", Style::default().fg(theme.muted)),
                     Span::styled(
-                        "Researcher, CodeReviewer, TestEngineer, SecurityAuditor, Custom",
+                        "Scout, Coder, Reviewer, Tester",
                         Style::default().fg(theme.info),
                     ),
                 ]),
@@ -171,6 +177,8 @@ impl SubagentDrawer {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" or type ", Style::default().fg(theme.muted)),
+                    Span::styled("/minipub", Style::default().fg(theme.brand_accent)),
+                    Span::styled(" / ", Style::default().fg(theme.muted)),
                     Span::styled("/swarm", Style::default().fg(theme.brand_accent)),
                     Span::styled(
                         " anytime to toggle this drawer.",
@@ -181,6 +189,11 @@ impl SubagentDrawer {
             frame.render_widget(Paragraph::new(empty_text), inner);
             return;
         }
+
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
         // Clamp selection to valid range
         let selected_idx = self.selected_index.min(workers.len().saturating_sub(1));
@@ -213,8 +226,10 @@ impl SubagentDrawer {
             let prefix = if is_selected { "▶ " } else { "  " };
             let isolation = if worker.isolate_worktree {
                 " [Worktree]"
+            } else if !worker.file_boundaries.is_empty() {
+                " [File-Lease]"
             } else {
-                " [Read-Only]"
+                " [Shared]"
             };
 
             let item_style = if is_selected {
@@ -225,7 +240,7 @@ impl SubagentDrawer {
                 Style::default().fg(theme.text_primary)
             };
 
-            list_lines.push(Line::from(vec![
+            let mut header_spans = vec![
                 Span::styled(
                     prefix,
                     Style::default()
@@ -244,7 +259,17 @@ impl SubagentDrawer {
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(isolation, Style::default().fg(theme.info)),
-            ]));
+            ];
+
+            if !worker.todos.is_empty() {
+                let done_todos = worker.todos.iter().filter(|t| t.completed).count();
+                header_spans.push(Span::styled(
+                    format!(" [Todos {}/{}]", done_todos, worker.todos.len()),
+                    Style::default().fg(theme.success),
+                ));
+            }
+
+            list_lines.push(Line::from(header_spans));
 
             // Sub-line: active tool or status
             let detail = if let Some(ref t) = worker.current_tool {
@@ -263,11 +288,23 @@ impl SubagentDrawer {
                 }),
             )]));
 
-            // Sub-line: turns and tokens
-            let metrics = format!(
-                "    Turns: {} | Tokens: {} | Status: {}",
-                worker.turns_executed, worker.tokens_used, status_text
-            );
+            // Sub-line: turns, tokens, and heartbeat
+            let hb_age = if worker.last_activity_secs > 0 {
+                now_secs.saturating_sub(worker.last_activity_secs)
+            } else {
+                0
+            };
+            let metrics = if worker.state.is_active() {
+                format!(
+                    "    Turns: {} | Tokens: {} | Heartbeat: {}s ago | {}",
+                    worker.turns_executed, worker.tokens_used, hb_age, status_text
+                )
+            } else {
+                format!(
+                    "    Turns: {} | Tokens: {} | Status: {}",
+                    worker.turns_executed, worker.tokens_used, status_text
+                )
+            };
             list_lines.push(Line::from(vec![Span::styled(
                 metrics,
                 Style::default().fg(theme.muted),
@@ -289,7 +326,7 @@ impl SubagentDrawer {
         let selected_worker = &workers[selected_idx];
         let mut detail_lines = Vec::new();
         detail_lines.push(Line::from(vec![
-            Span::styled("Worker: ", Style::default().fg(theme.muted)),
+            Span::styled("MiniPub: ", Style::default().fg(theme.muted)),
             Span::styled(
                 &selected_worker.id,
                 Style::default()
@@ -305,19 +342,45 @@ impl SubagentDrawer {
             ),
         ]));
 
+        let isolation_desc = if selected_worker.isolate_worktree {
+            format!(".minicode/worktrees/subagent-{}", selected_worker.id)
+        } else if !selected_worker.file_boundaries.is_empty() {
+            "Cooperative File-Lease (.minicode/minipub/leases.json)".to_string()
+        } else {
+            "Shared Workspace".to_string()
+        };
+
         detail_lines.push(Line::from(vec![
             Span::styled("State: ", Style::default().fg(theme.muted)),
             Span::styled(
                 format!("{:?}", selected_worker.state),
                 Style::default().fg(theme.info),
             ),
-            Span::styled(" | Worktree: ", Style::default().fg(theme.muted)),
+            Span::styled(" | Isolation: ", Style::default().fg(theme.muted)),
+            Span::styled(isolation_desc, Style::default().fg(theme.text_primary)),
+        ]));
+
+        let end_ts = selected_worker.finished_at_secs.unwrap_or(now_secs);
+        let elapsed_s = end_ts.saturating_sub(selected_worker.started_at_secs);
+        let hb_s = if selected_worker.last_activity_secs > 0 {
+            now_secs.saturating_sub(selected_worker.last_activity_secs)
+        } else {
+            0
+        };
+        detail_lines.push(Line::from(vec![
+            Span::styled("Elapsed: ", Style::default().fg(theme.muted)),
             Span::styled(
-                if selected_worker.isolate_worktree {
-                    format!("subagent/{}", selected_worker.id)
-                } else {
-                    "None (Main / Read-only)".to_string()
-                },
+                format!("{}s", elapsed_s),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" | Last Activity: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{}s ago", hb_s),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(" | Tokens: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{}", selected_worker.tokens_used),
                 Style::default().fg(theme.text_primary),
             ),
         ]));
@@ -346,18 +409,62 @@ impl SubagentDrawer {
             ]));
         }
 
+        if !selected_worker.file_boundaries.is_empty() {
+            detail_lines.push(Line::from(vec![
+                Span::styled("File Boundaries: ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    selected_worker.file_boundaries.join(", "),
+                    Style::default().fg(theme.info),
+                ),
+            ]));
+        }
+
+        if !selected_worker.todos.is_empty() {
+            let done_cnt = selected_worker.todos.iter().filter(|t| t.completed).count();
+            detail_lines.push(Line::from(""));
+            detail_lines.push(Line::from(Span::styled(
+                format!(
+                    "─── Assigned MiniPub Todos ({}/{}) ───",
+                    done_cnt,
+                    selected_worker.todos.len()
+                ),
+                Style::default().fg(theme.brand_accent),
+            )));
+            for item in selected_worker.todos.iter().take(6) {
+                let (check_glyph, check_color) = if item.completed {
+                    ("✔ [x]", theme.success)
+                } else {
+                    ("○ [ ]", theme.muted)
+                };
+                detail_lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", check_glyph),
+                        Style::default().fg(check_color),
+                    ),
+                    Span::styled(
+                        format!("{}. {}", item.id, item.task),
+                        Style::default().fg(if item.completed {
+                            theme.muted
+                        } else {
+                            theme.text_primary
+                        }),
+                    ),
+                ]));
+            }
+        }
+
         detail_lines.push(Line::from(""));
         detail_lines.push(Line::from(Span::styled(
             "─── Task Prompt ───",
             Style::default().fg(theme.muted),
         )));
-        for p_line in selected_worker.prompt.lines().take(5) {
+        for p_line in selected_worker.prompt.lines().take(4) {
             detail_lines.push(Line::from(Span::styled(
                 format!("  {}", p_line),
                 Style::default().fg(theme.text_primary),
             )));
         }
-        if selected_worker.prompt.lines().count() > 5 {
+        if selected_worker.prompt.lines().count() > 4 {
             detail_lines.push(Line::from(Span::styled(
                 "  ...",
                 Style::default().fg(theme.muted),
@@ -368,16 +475,16 @@ impl SubagentDrawer {
         if let Some(ref summary) = selected_worker.final_summary {
             detail_lines.push(Line::from(""));
             detail_lines.push(Line::from(Span::styled(
-                "─── Final Findings / Report ───",
+                "─── Boomerang Summary / Report ───",
                 Style::default().fg(theme.brand_accent),
             )));
-            for s_line in summary.lines().take(8) {
+            for s_line in summary.lines().take(6) {
                 detail_lines.push(Line::from(Span::styled(
                     format!("  {}", s_line),
                     Style::default().fg(theme.text_primary),
                 )));
             }
-            if summary.lines().count() > 8 {
+            if summary.lines().count() > 6 {
                 detail_lines.push(Line::from(Span::styled(
                     "  ... (view full report via scratchpad_read)",
                     Style::default().fg(theme.muted),

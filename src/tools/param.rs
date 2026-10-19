@@ -322,6 +322,20 @@ pub fn opt_f64(args: &Value, key: &str, default: f64) -> f64 {
     get_f64(args, key).unwrap_or(default)
 }
 
+/// Extracts an optional `u64` parameter (accepts JSON integer or string)
+#[allow(dead_code)]
+pub fn get_u64(args: &Value, key: &str) -> Option<u64> {
+    args.get(key).and_then(|v| {
+        if let Some(n) = v.as_u64() {
+            Some(n)
+        } else if let Some(s) = v.as_str() {
+            s.trim().parse::<u64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

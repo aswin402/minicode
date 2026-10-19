@@ -7,20 +7,17 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::subagent::mailbox::AgentMailbox;
 use crate::agent::subagent::message::{AgentMessage, MessageIntent};
-use crate::agent::subagent::types::{AgentId, SubagentRole, WorkspaceMode};
-use crate::agent::types::AgentEvent;
+use crate::agent::subagent::types::{AgentId, SubagentConfig, SubagentRole, WorkspaceMode};
+use crate::agent::subagent::worker::SubagentWorker;
 use crate::error::ToolError;
 use crate::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator, WorktreeHandle};
 
-/// Specification for an individual worker in a fanout swarm.
+/// Specification for an individual `minipub` worker in a fanout swarm.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanoutTaskItem {
@@ -33,6 +30,10 @@ pub struct FanoutTaskItem {
     pub max_iterations: Option<usize>,
     #[serde(default)]
     pub check_cmd: Option<String>,
+    #[serde(default)]
+    pub todos: Vec<String>,
+    #[serde(default)]
+    pub file_boundaries: Vec<String>,
 }
 
 /// Completion mode for the swarm.
@@ -139,7 +140,10 @@ impl FanoutOrchestrator {
 
         let start_time = std::time::Instant::now();
         let total_tasks = tasks.len();
-        let concurrency = max_concurrency.clamp(1, 16);
+        let concurrency = max_concurrency.clamp(
+            crate::constants::MIN_PARALLEL_MINIPUBS,
+            crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+        );
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let cancel_token = CancellationToken::new();
 
@@ -210,7 +214,7 @@ impl FanoutOrchestrator {
         Ok(report)
     }
 
-    /// Executes an individual subagent worker under semaphore bounds and cancellation control.
+    /// Executes an individual `minipub` worker in-process under semaphore bounds and cancellation control.
     pub async fn run_single_worker(
         workspace_root: &Path,
         task_item: FanoutTaskItem,
@@ -269,14 +273,47 @@ impl FanoutOrchestrator {
             });
         }
 
-        // 3. Determine workspace isolation mode
-        let should_isolate = match task_item.workspace_mode {
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        let mut config =
+            SubagentConfig::for_role_with_minipub_config(task_item.role, &app_cfg.agent.minipub)
+                .with_todos(task_item.todos.clone())
+                .with_file_boundaries(task_item.file_boundaries.clone());
+
+        if let Some(max_iter) = task_item.max_iterations {
+            config.max_turns = max_iter.max(1);
+        }
+
+        // 3. Determine workspace isolation mode (with cooperative file-boundary lease support)
+        let mut should_isolate = match task_item.workspace_mode {
             Some(WorkspaceMode::Worktree) => true,
             Some(WorkspaceMode::Shared) => false,
             Some(WorkspaceMode::Auto) | None => {
-                task_item.role.default_workspace_mode() == WorkspaceMode::Worktree
+                match app_cfg
+                    .agent
+                    .minipub
+                    .worktree_isolation
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "always" | "worktree" | "true" => true,
+                    "never" | "shared" | "false" => false,
+                    _ => task_item.role.default_workspace_mode() == WorkspaceMode::Worktree,
+                }
             }
         };
+
+        let mut acquired_lease = false;
+        if !config.file_boundaries.is_empty() && !should_isolate {
+            match crate::sandbox::worktree::FileLeaseManager::acquire_leases(
+                workspace_root,
+                &agent_id.0,
+                &config.file_boundaries,
+            ) {
+                Ok(()) => acquired_lease = true,
+                Err(_) => should_isolate = true,
+            }
+        }
 
         let (worktree_handle, target_dir) = if should_isolate {
             match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
@@ -312,76 +349,22 @@ impl FanoutOrchestrator {
             let _ = child_mailbox.post(init_msg);
         }
 
-        // 5. Spawn child minicode process
-        let current_exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Err(ToolError::ExecutionFailed(format!(
-                    "Failed to determine current executable: {}",
-                    e
-                )));
-            }
-        };
-
-        let mut cmd = Command::new(current_exe);
-        cmd.arg("run");
-        cmd.arg("-d").arg(&target_dir);
-        cmd.arg("-y");
-        cmd.arg("--json-stream");
-        cmd.arg("--tools").arg(task_item.role.tool_filter_mode());
-
-        if let Some(max_iter) = task_item.max_iterations {
-            cmd.arg("--max-iterations").arg(max_iter.to_string());
-        }
-
-        cmd.arg(&task_item.task);
-        cmd.stdin(Stdio::null());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Err(ToolError::ExecutionFailed(format!(
-                    "Failed to spawn subagent process: {}",
-                    e
-                )));
-            }
-        };
-
-        let child_id = child.id();
+        // 5. Register in MiniTask dev registry for live telemetry & supervision
         let dev_registry = crate::dev::registry::get_global_dev_registry();
         let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", agent_id));
         let worker_name = format!(
-            "Worker ({:?}) - {}",
-            task_item.role,
+            "MiniPub ({}) - {}",
+            task_item.role.badge(),
             task_item.task.chars().take(40).collect::<String>()
         );
         let token_cancel_hook = cancel_token.clone();
-        let pid_val = child_id.unwrap_or(0);
+        let pid_val = std::process::id();
 
         let dev_handle = dev_registry
             .register_worker(
                 dev_id,
                 worker_name,
-                format!(
-                    "minicode run -d {:?} --tools {:?} '{}'",
-                    target_dir,
-                    task_item.role.tool_filter_mode(),
-                    task_item.task
-                ),
+                format!("minipub:{} ({})", agent_id, task_item.role.badge()),
                 target_dir.clone(),
                 pid_val,
                 pid_val,
@@ -391,125 +374,43 @@ impl FanoutOrchestrator {
             )
             .await;
 
-        let stdout = match child.stdout.take() {
-            Some(out) => out,
-            None => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                return Err(ToolError::ExecutionFailed(
-                    "Failed to capture child process stdout".to_string(),
-                ));
-            }
-        };
-        let stderr = child.stderr.take();
-        let stderr_task = tokio::spawn(async move {
-            let mut buf = String::new();
-            if let Some(mut err_stream) = stderr {
-                let _ = err_stream.read_to_string(&mut buf).await;
-            }
-            buf
-        });
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        let provider = pool.get_or_create_provider().await;
+
+        let worker = SubagentWorker::new(
+            agent_id.0.clone(),
+            task_item.task.clone(),
+            config,
+            &target_dir,
+        );
+        {
+            let mut info_lock = worker.info.write().await;
+            info_lock.isolate_worktree = worktree_handle.is_some();
+        }
+        pool.register_worker_handle(
+            agent_id.0.clone(),
+            Arc::clone(&worker.info),
+            Arc::clone(&worker.cancel_flag),
+        )
+        .await;
 
         let start_time = std::time::Instant::now();
-        let mut final_response = String::new();
-        let mut files_modified: Vec<String> = Vec::new();
-        let mut tokens_used = 0;
-        let mut child_success = true;
-        let mut error_msg: Option<String> = None;
-
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        let dev_handle_clone = Arc::clone(&dev_handle);
-        let execution_future = async {
-            while let Ok(Some(line)) = lines.next_line().await {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if let Ok(event) = serde_json::from_str::<AgentEvent>(trimmed) {
-                    match event {
-                        AgentEvent::StreamDelta { delta, .. } => {
-                            final_response.push_str(&delta);
-                            dev_handle_clone.append_log(&delta).await;
-                        }
-                        AgentEvent::ToolCall { tool, .. } => {
-                            dev_handle_clone
-                                .append_log(format!("🔧 Executing tool: {}", tool))
-                                .await;
-                        }
-                        AgentEvent::FileModified { path, .. } => {
-                            if !files_modified.contains(&path) {
-                                files_modified.push(path.clone());
-                            }
-                            dev_handle_clone
-                                .append_log(format!("📝 File modified: {}", path))
-                                .await;
-                        }
-                        AgentEvent::TurnEnd {
-                            total_tokens_used,
-                            files_modified: modified,
-                            status,
-                            ..
-                        } => {
-                            tokens_used = total_tokens_used;
-                            for f in modified {
-                                if !files_modified.contains(&f) {
-                                    files_modified.push(f);
-                                }
-                            }
-                            dev_handle_clone
-                                .append_log(format!(
-                                    "🏁 Turn ended (tokens: {})",
-                                    total_tokens_used
-                                ))
-                                .await;
-                            if status == crate::constants::TURN_STATUS_CIRCUIT_TRIPPED
-                                || status == crate::constants::TURN_STATUS_CANCELLED
-                            {
-                                child_success = false;
-                            }
-                        }
-                        AgentEvent::Error { message, .. } => {
-                            tracing::error!(agent_id = %agent_id, message = %message, "Subagent encountered error");
-                            child_success = false;
-                            error_msg = Some(message.clone());
-                            dev_handle_clone
-                                .append_log(format!("❌ Subagent error: {}", message))
-                                .await;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            let wait_res = child.wait().await;
-            let captured_err = stderr_task.await.unwrap_or_default();
-            (wait_res, captured_err)
-        };
-
-        let (exit_status, captured_stderr) = tokio::select! {
+        let exec_outcome = tokio::select! {
             _ = cancel_token.cancelled() => {
+                worker.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 dev_handle
                     .update_status(crate::dev::models::DevProcessStatus::Stopped)
                     .await;
-                let _ = child.kill().await;
-                #[cfg(unix)]
-                if let Some(pid) = child_id {
-                    if pid > 0 {
-                        // SAFETY: `pid` is verified positive and was spawned with `process_group(0)`.
-                        // Sending SIGKILL to -pid terminates the entire subagent process group,
-                        // and sending to pid guarantees the child leader is reaped even if pgid differs.
-                        unsafe {
-                            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-                        }
-                    }
+                if acquired_lease {
+                    crate::sandbox::worktree::FileLeaseManager::release_leases(
+                        workspace_root,
+                        &agent_id.0,
+                    );
                 }
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
                 }
+                pool.notify_completion();
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 return Ok(WorkerResult {
                     agent_id,
@@ -517,8 +418,8 @@ impl FanoutOrchestrator {
                     task: task_item.task,
                     success: false,
                     duration_ms,
-                    tokens_used,
-                    files_modified,
+                    tokens_used: 0,
+                    files_modified: Vec::new(),
                     worktree_path: None,
                     branch_name: None,
                     merge_status: MergeStatus::SkippedCancelled,
@@ -527,149 +428,131 @@ impl FanoutOrchestrator {
                     check_cmd: task_item.check_cmd,
                 });
             }
-            (wait_res, err_output) = execution_future => {
-                let status = match wait_res {
-                    Ok(status) => status,
-                    Err(e) => {
-                        if let Some(ref handle) = worktree_handle {
-                            let _ = GitWorktreeManager::remove_worktree(handle);
-                        }
-                        let duration_ms = start_time.elapsed().as_millis() as u64;
-                        return Ok(WorkerResult {
-                            agent_id,
-                            role: task_item.role,
-                            task: task_item.task,
-                            success: false,
-                            duration_ms,
-                            tokens_used,
-                            files_modified,
-                            worktree_path: None,
-                            branch_name: None,
-                            merge_status: MergeStatus::NotApplicable,
-                            summary: format!("Subagent child wait error: {}", e),
-                            error: Some(e.to_string()),
-                            check_cmd: task_item.check_cmd,
-                        });
-                    }
-                };
-                (status, err_output)
-            }
+            res = worker.run(provider) => res,
         };
+
+        if acquired_lease {
+            crate::sandbox::worktree::FileLeaseManager::release_leases(workspace_root, &agent_id.0);
+        }
+        pool.notify_completion();
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
-        if !exit_status.success() {
-            child_success = false;
-        }
-
-        if final_response.trim().is_empty() {
-            if child_success {
-                final_response = "Task executed successfully without stream output.".to_string();
-            } else {
-                final_response = error_msg.clone().unwrap_or_else(|| {
-                    let trimmed_err = captured_stderr.trim();
-                    if !trimmed_err.is_empty() {
-                        trimmed_err.to_string()
-                    } else {
-                        format!(
-                            "Subagent process failed with exit code {:?}",
-                            exit_status.code()
-                        )
-                    }
-                });
-            }
-        }
-
-        if child_success {
-            dev_handle
-                .append_log(format!(
-                    "[{}] Worker finished successfully (tokens: {})",
-                    agent_id, tokens_used
-                ))
-                .await;
-            dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                .await;
-        } else {
-            dev_handle
-                .append_log(format!("[{}] Worker failed: {}", agent_id, final_response))
-                .await;
-            dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                    final_response.clone(),
-                ))
-                .await;
-        }
-
-        if child_success {
-            let (wt_path, br_name) = if let Some(ref handle) = worktree_handle {
-                let diff = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
-                if !diff.is_empty() {
-                    final_response
-                        .push_str(&format!("\n\n### Worktree Diff\n```diff\n{}\n```", diff));
-                }
-                (
-                    Some(handle.worktree_path.clone()),
-                    Some(handle.branch_name.clone()),
-                )
-            } else {
-                (None, None)
-            };
-
-            let merge_status = if wt_path.is_some() {
-                MergeStatus::RetainedUnmerged
-            } else {
-                MergeStatus::NotApplicable
-            };
-
-            Ok(WorkerResult {
-                agent_id,
-                role: task_item.role,
-                task: task_item.task,
-                success: true,
-                duration_ms,
-                tokens_used,
-                files_modified,
-                worktree_path: wt_path,
-                branch_name: br_name,
-                merge_status,
-                summary: final_response.trim().to_string(),
-                error: None,
-                check_cmd: task_item.check_cmd,
-            })
-        } else {
-            // Clean up worktree on failure
-            if let Some(ref handle) = worktree_handle {
-                let _ = GitWorktreeManager::remove_worktree(handle);
-            }
-
-            let error_detail = error_msg.or_else(|| {
-                let trimmed_err = captured_stderr.trim();
-                if !trimmed_err.is_empty() {
-                    Some(trimmed_err.to_string())
-                } else {
-                    Some(format!(
-                        "Process exited with status {:?}",
-                        exit_status.code()
+        match exec_outcome {
+            Ok(sub_res) if sub_res.success => {
+                dev_handle
+                    .append_log(format!(
+                        "[{}] MiniPub finished successfully (tokens: {})",
+                        agent_id, sub_res.tokens_used
                     ))
-                }
-            });
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                    .await;
 
-            Ok(WorkerResult {
-                agent_id,
-                role: task_item.role,
-                task: task_item.task,
-                success: false,
-                duration_ms,
-                tokens_used,
-                files_modified,
-                worktree_path: None,
-                branch_name: None,
-                merge_status: MergeStatus::NotApplicable,
-                summary: final_response.trim().to_string(),
-                error: error_detail,
-                check_cmd: task_item.check_cmd,
-            })
+                let mut final_response = sub_res.final_summary.clone();
+                let (wt_path, br_name) = if let Some(ref handle) = worktree_handle {
+                    let diff = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
+                    if !diff.is_empty() {
+                        final_response
+                            .push_str(&format!("\n\n### Worktree Diff\n```diff\n{}\n```", diff));
+                    }
+                    let _ = GitWorktreeManager::commit_uncommitted_changes(
+                        &handle.worktree_path,
+                        &agent_id,
+                    );
+                    (
+                        Some(handle.worktree_path.clone()),
+                        Some(handle.branch_name.clone()),
+                    )
+                } else {
+                    (None, None)
+                };
+
+                let merge_status = if wt_path.is_some() {
+                    MergeStatus::RetainedUnmerged
+                } else {
+                    MergeStatus::NotApplicable
+                };
+
+                Ok(WorkerResult {
+                    agent_id,
+                    role: task_item.role,
+                    task: task_item.task,
+                    success: true,
+                    duration_ms,
+                    tokens_used: sub_res.tokens_used,
+                    files_modified: sub_res.files_modified,
+                    worktree_path: wt_path,
+                    branch_name: br_name,
+                    merge_status,
+                    summary: final_response.trim().to_string(),
+                    error: None,
+                    check_cmd: task_item.check_cmd,
+                })
+            }
+            Ok(sub_res) => {
+                if let Some(ref handle) = worktree_handle {
+                    let _ = GitWorktreeManager::remove_worktree(handle);
+                }
+                dev_handle
+                    .append_log(format!(
+                        "[{}] MiniPub failed: {}",
+                        agent_id, sub_res.final_summary
+                    ))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                        sub_res.final_summary.clone(),
+                    ))
+                    .await;
+
+                Ok(WorkerResult {
+                    agent_id,
+                    role: task_item.role,
+                    task: task_item.task,
+                    success: false,
+                    duration_ms,
+                    tokens_used: sub_res.tokens_used,
+                    files_modified: sub_res.files_modified,
+                    worktree_path: None,
+                    branch_name: None,
+                    merge_status: MergeStatus::NotApplicable,
+                    summary: sub_res.final_summary.trim().to_string(),
+                    error: Some(sub_res.final_summary),
+                    check_cmd: task_item.check_cmd,
+                })
+            }
+            Err(e) => {
+                if let Some(ref handle) = worktree_handle {
+                    let _ = GitWorktreeManager::remove_worktree(handle);
+                }
+                let err_str = e.to_string();
+                dev_handle
+                    .append_log(format!("[{}] MiniPub error: {}", agent_id, err_str))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                        err_str.clone(),
+                    ))
+                    .await;
+
+                Ok(WorkerResult {
+                    agent_id,
+                    role: task_item.role,
+                    task: task_item.task,
+                    success: false,
+                    duration_ms,
+                    tokens_used: 0,
+                    files_modified: Vec::new(),
+                    worktree_path: None,
+                    branch_name: None,
+                    merge_status: MergeStatus::NotApplicable,
+                    summary: err_str.clone(),
+                    error: Some(err_str),
+                    check_cmd: task_item.check_cmd,
+                })
+            }
         }
     }
 
@@ -721,6 +604,9 @@ impl FanoutOrchestrator {
                     continue;
                 }
             }
+
+            // Ensure any uncommitted write_file/patch_file edits in the worktree are committed onto branch_name
+            let _ = GitWorktreeManager::commit_uncommitted_changes(&worktree_path, &res.agent_id);
 
             // 2. In-memory 3-way mergeability check against current HEAD
             let m_res = MergeArbitrator::check_mergeability(workspace_root, &branch_name);
@@ -1154,6 +1040,8 @@ pub mod tests {
             workspace_mode: Some(WorkspaceMode::Shared),
             max_iterations: None,
             check_cmd: None,
+            todos: Vec::new(),
+            file_boundaries: Vec::new(),
         };
 
         let res =
@@ -1278,6 +1166,8 @@ pub mod tests {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            todos: Vec::new(),
+            file_boundaries: Vec::new(),
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
@@ -1395,6 +1285,8 @@ pub mod tests {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            todos: Vec::new(),
+            file_boundaries: Vec::new(),
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
@@ -1498,6 +1390,8 @@ pub mod tests {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("false".to_string()),
+            todos: Vec::new(),
+            file_boundaries: Vec::new(),
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;

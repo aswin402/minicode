@@ -20,6 +20,14 @@ pub struct GraphSnapshot {
 
 pub struct GraphStore;
 
+type SnapshotCacheMap = HashMap<PathBuf, (u64, u128, GraphSnapshot)>;
+
+fn snapshot_memory_cache() -> &'static std::sync::Mutex<SnapshotCacheMap> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<SnapshotCacheMap>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
 impl GraphStore {
     pub const SCHEMA_VERSION: u32 = 1;
     pub const GRAPH_FILE_NAME: &'static str = "graph.json";
@@ -65,22 +73,38 @@ impl GraphStore {
         }
     }
 
-    /// Loads a GraphSnapshot from disk if it exists and matches schema version
+    /// Loads a GraphSnapshot from in-memory cache (if mtime + file size match) or disk
     pub fn load_snapshot(workspace_root: &Path) -> Result<Option<GraphSnapshot>> {
         let path = Self::graph_file_path(workspace_root);
-        if !path.exists() {
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+
+        let file_len = meta.len();
+        if file_len > Self::MAX_GRAPH_FILE_SIZE_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                size = file_len,
+                "Cached graph file exceeds maximum size threshold; skipping cache"
+            );
             return Ok(None);
         }
 
-        // Check file size to avoid loading corrupted huge files
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.len() > Self::MAX_GRAPH_FILE_SIZE_BYTES {
-                tracing::warn!(
-                    path = %path.display(),
-                    size = meta.len(),
-                    "Cached graph file exceeds maximum size threshold; skipping cache"
-                );
-                return Ok(None);
+        let mtime_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+
+        if mtime_nanos > 0 {
+            if let Ok(guard) = snapshot_memory_cache().lock() {
+                if let Some((cached_len, cached_mtime, cached_snap)) = guard.get(&path) {
+                    if *cached_len == file_len && *cached_mtime == mtime_nanos {
+                        return Ok(Some(cached_snap.clone()));
+                    }
+                }
             }
         }
 
@@ -107,6 +131,16 @@ impl GraphStore {
                 "Graph cache schema version mismatch; invalidating"
             );
             return Ok(None);
+        }
+
+        if mtime_nanos > 0 {
+            if let Ok(mut guard) = snapshot_memory_cache().lock() {
+                // Cap cache entries to prevent unbounded growth across many workspaces
+                if guard.len() >= 16 && !guard.contains_key(&path) {
+                    guard.clear();
+                }
+                guard.insert(path, (file_len, mtime_nanos, snapshot.clone()));
+            }
         }
 
         Ok(Some(snapshot))

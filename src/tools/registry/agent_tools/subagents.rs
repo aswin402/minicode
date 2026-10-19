@@ -8,21 +8,31 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "delegate_task".to_string(),
-            description: "Delegate a subtask to an autonomous child AI agent in an isolated Git Worktree. Use for parallel research, refactoring, or independent tasks without corrupting current workspace files.".to_string(),
+            description: "Delegate a subtask to an autonomous MiniPub child AI agent (`minipub`) in an isolated Git Worktree or shared workspace. Supports assigning a Boomerang todo checklist (`todos`) and cooperative file boundaries (`file_boundaries`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Clear and detailed task instructions for the subagent"
+                        "description": "Clear and detailed task instructions for the MiniPub subagent"
                     },
                     "isolate_branch": {
                         "type": "boolean",
-                        "description": "If true (default), creates a dedicated Git Worktree branch for isolation"
+                        "description": "If true (default), creates a dedicated Git Worktree branch under .minicode/worktrees/ for isolation"
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Maximum seconds to wait for subagent to complete (default: 120)"
+                        "description": "Optional explicit wall-clock timeout in seconds (otherwise governed by dynamic activity heartbeat)"
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator for the MiniPub worker to follow and report on"
+                    },
+                    "file_boundaries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
                     }
                 },
                 "required": ["task"]
@@ -30,18 +40,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "invoke_subagent".to_string(),
-            description: "Invoke a specialized, capability-sandboxed subagent worker (Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped subtask without polluting parent agent context.".to_string(),
+            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped subtask with an optional Boomerang todo checklist without polluting parent agent context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom", "scout", "coder", "tester", "reviewer"],
                         "description": "Specialized role preset defining the tool capability whitelist and system prompt"
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Clear and detailed task instructions for the subagent worker"
+                        "description": "Clear and detailed task instructions for the MiniPub subagent worker"
                     },
                     "model": {
                         "type": "string",
@@ -62,6 +72,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "isolate_worktree": {
                         "type": "boolean",
                         "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for modifying roles (test_engineer, custom)."
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
+                    },
+                    "file_boundaries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -69,18 +89,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "dispatch_subagent".to_string(),
-            description: "Dispatch an autonomous background subagent worker (Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped task concurrently in the background without blocking the primary agent. Returns immediately with the assigned worker ID and live tracking status.".to_string(),
+            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped task concurrently in the background (up to max_parallel=4 by default) without blocking the primary Orchestrator. Returns immediately with the assigned MiniPub worker ID.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"],
+                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom", "scout", "coder", "tester", "reviewer"],
                         "description": "Specialized role preset defining the tool capability whitelist and system prompt"
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Clear and detailed task instructions for the subagent worker"
+                        "description": "Clear and detailed task instructions for the MiniPub subagent worker"
                     },
                     "model": {
                         "type": "string",
@@ -101,6 +121,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "isolate_worktree": {
                         "type": "boolean",
                         "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for mutating roles (test_engineer, custom)."
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
+                    },
+                    "file_boundaries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -108,7 +138,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "spawn_subagent".to_string(),
-            description: "Spawn an autonomous background subagent with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask in an isolated workspace or worktree.".to_string(),
+            description: "Spawn an autonomous background subagent (`minipub`) with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask and optional Boomerang todo checklist in an isolated workspace or worktree.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -129,6 +159,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "max_iterations": {
                         "type": "integer",
                         "description": "Maximum tool loop iterations for the subagent before terminating"
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
+                    },
+                    "file_boundaries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
                     }
                 },
                 "required": ["task", "role"]
@@ -136,7 +176,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "send_message".to_string(),
-            description: "Send a typed message or follow-up instruction to an agent or subagent via durable mailbox.".to_string(),
+            description: "Send a typed message or follow-up instruction to a MiniPub subagent or parent Orchestrator via durable mailbox.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -171,18 +211,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "manage_subagents".to_string(),
-            description: "Inspect, list, monitor, await completion, or terminate active subagent workers in the swarm pool.".to_string(),
+            description: "Inspect, list, monitor Boomerang todo progress, dynamically modify timeouts/budgets/todos/steer directives in-flight, await completion, or terminate active MiniPub (`minipub`) subagent workers in the swarm pool.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
-                        "description": "Management action: 'list' all subagents, 'status' of specific subagent, 'await' / 'wait' for completion of a subagent with report return, 'transcript' / 'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "update", "modify", "configure", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
+                        "description": "Management action: 'list' all MiniPub subagents, 'status' of specific subagent, 'update'/'modify'/'configure' a MiniPub worker or pool/stream timeouts in-flight, 'await'/'wait' for completion, 'transcript'/'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
-                        "description": "Identifier of the target subagent (required for 'status', 'kill', 'await', and 'transcript')"
+                        "description": "Identifier of the target MiniPub subagent (required for 'status', 'kill', 'await', 'transcript'; optional for 'update'/'configure')"
                     },
                     "step_index": {
                         "type": "integer",
@@ -190,7 +230,47 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Maximum seconds to wait when action is 'await' (default: 60)"
+                        "description": "Maximum seconds to wait when action is 'await', or new inactivity timeout (in seconds) when action is 'update'/'modify'/'configure'"
+                    },
+                    "stream_idle_timeout_secs": {
+                        "type": "integer",
+                        "description": "Dynamic model stream idle timeout in seconds (30-7200) for Orchestrator and MiniPub workers when action is 'update'/'modify'/'configure'"
+                    },
+                    "max_parallel": {
+                        "type": "integer",
+                        "description": "Dynamic MiniPub pool concurrency limit (1-16) when action is 'update'/'modify'/'configure'"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "New token budget when action is 'update'/'modify'"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "New maximum turns when action is 'update'/'modify'"
+                    },
+                    "todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Replace the MiniPub worker's todo checklist in-flight"
+                    },
+                    "append_todos": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Append additional todo checklist items to the MiniPub worker in-flight"
+                    },
+                    "complete_todo_ids": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Mark specific 1-indexed todo item IDs as completed"
+                    },
+                    "file_boundaries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Update cooperative file/directory boundary leases for the MiniPub worker"
+                    },
+                    "steer_prompt": {
+                        "type": "string",
+                        "description": "Live steering instruction injected into the running MiniPub worker on its next turn"
                     }
                 },
                 "required": ["action"]
@@ -300,6 +380,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn extract_string_list(args: &serde_json::Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -310,12 +402,28 @@ pub async fn dispatch(
             let task = param::require_str(args, "task", "delegate_task")?;
             let isolate = param::opt_bool(args, "isolate_branch", true);
             let timeout_secs = param::opt_u64(args, "timeout_secs");
+            let todos = extract_string_list(args, "todos");
+            let file_boundaries = extract_string_list(args, "file_boundaries");
 
-            let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate(
+            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+            let default_role = if isolate {
+                crate::agent::subagent::SubagentRole::Coder
+            } else {
+                crate::agent::subagent::SubagentRole::Scout
+            };
+            let config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+                default_role,
+                &app_cfg.agent.minipub,
+            )
+            .with_todos(todos)
+            .with_file_boundaries(file_boundaries);
+
+            let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                 workspace_root,
                 task,
                 isolate,
                 timeout_secs,
+                Some(config),
             )
             .await?;
             Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
@@ -324,16 +432,18 @@ pub async fn dispatch(
             let role_str = param::require_str(args, "role", "invoke_subagent")?;
             let prompt = param::require_str(args, "prompt", "invoke_subagent")?;
 
-            let role = match role_str.to_lowercase().as_str() {
-                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
-                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
-                    crate::agent::subagent::SubagentRole::Reviewer
-                }
-                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
-                _ => crate::agent::subagent::SubagentRole::Coder,
-            };
+            let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+            let todos = extract_string_list(args, "todos");
+            let file_boundaries = extract_string_list(args, "file_boundaries");
 
-            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
+            let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+                role,
+                &app_cfg.agent.minipub,
+            )
+            .with_todos(todos)
+            .with_file_boundaries(file_boundaries);
+
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
             }
@@ -351,13 +461,12 @@ pub async fn dispatch(
                 role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
             );
 
-
             let res =
                 crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                     workspace_root,
                     prompt,
                     isolate_worktree,
-                    Some(crate::constants::DEFAULT_SUBAGENT_TIMEOUT_SECS),
+                    None,
                     Some(config),
                 )
                 .await?;
@@ -366,7 +475,7 @@ pub async fn dispatch(
                 Ok(res.final_summary)
             } else {
                 let report = format!(
-                    "✔ Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
+                    "✔ MiniPub Subagent `[ID: {} | Role: {}]` completed task successfully!\n• Tokens Used: {}\n• Files Modified: {}\n\n### Findings & Response Summary\n{}",
                     res.id,
                     role.badge(),
                     res.tokens_used,
@@ -380,16 +489,18 @@ pub async fn dispatch(
             let role_str = param::require_str(args, "role", "dispatch_subagent")?;
             let prompt = param::require_str(args, "prompt", "dispatch_subagent")?;
 
-            let role = match role_str.to_lowercase().as_str() {
-                "researcher" | "scout" => crate::agent::subagent::SubagentRole::Scout,
-                "code_reviewer" | "reviewer" | "security_auditor" | "security" => {
-                    crate::agent::subagent::SubagentRole::Reviewer
-                }
-                "test_engineer" | "tester" => crate::agent::subagent::SubagentRole::Tester,
-                _ => crate::agent::subagent::SubagentRole::Coder,
-            };
+            let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+            let todos = extract_string_list(args, "todos");
+            let file_boundaries = extract_string_list(args, "file_boundaries");
 
-            let mut config = crate::agent::subagent::SubagentConfig::for_role(role);
+            let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+                role,
+                &app_cfg.agent.minipub,
+            )
+            .with_todos(todos.clone())
+            .with_file_boundaries(file_boundaries.clone());
+
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
             }
@@ -408,30 +519,38 @@ pub async fn dispatch(
                 role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
             );
 
-
             let provider = pool.get_or_create_provider().await;
             let id = pool
                 .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                 .await?;
 
-
             let isolation_label = if isolate_worktree {
                 format!("Dedicated Git Worktree (`subagent/{}`)", id)
+            } else if !file_boundaries.is_empty() {
+                format!("Cooperative File Lease (`{}`)", file_boundaries.join(", "))
             } else {
                 "Shared Read-Only Context".to_string()
             };
 
+            let todos_line = if todos.is_empty() {
+                String::new()
+            } else {
+                format!("\n• **Assigned Todos**: {} item(s)", todos.len())
+            };
+
             let out = format!(
-                "✔ Background subagent spawned successfully!\n\
+                "✔ Background MiniPub subagent (`minipub`) spawned successfully!\n\
                  • **Worker ID**: `{}`\n\
                  • **Role**: {}\n\
-                 • **Isolation Mode**: {}\n\
-                 • **Status**: ◉ Running in background\n\
+                 • **Isolation Mode**: {}{}\n\
+                 • **Status**: ◉ Running in background (max parallel: {})\n\
                  • **Live Telemetry**: Press `Ctrl+S` in TUI or run `/swarm` to open the Activity Drawer.\n\
-                 • **Await Completion**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")` when ready to inspect results, or `manage_subagents(action=\"status\", subagent_id=\"{}\")` for intermediate updates.",
+                 • **Await / Supervise**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")`, `manage_subagents(action=\"status\", subagent_id=\"{}\")`, or `minitask(action=\"workers\")`.",
                 id,
                 role.badge(),
                 isolation_label,
+                todos_line,
+                pool.max_parallel(),
                 id,
                 id
             );
@@ -467,13 +586,17 @@ pub async fn dispatch(
             };
 
             let max_iterations = param::opt_u64(args, "max_iterations").map(|n| n as usize);
+            let todos = extract_string_list(args, "todos");
+            let file_boundaries = extract_string_list(args, "file_boundaries");
 
-            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent(
+            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent_with_options(
                 workspace_root,
                 task,
                 role,
                 workspace_mode,
                 max_iterations,
+                todos,
+                file_boundaries,
             )
             .await?;
 
@@ -522,15 +645,40 @@ pub async fn dispatch(
                 "status" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
                     if let Some(info) = pool.get_subagent(id).await {
+                        let todos_section = if info.todos.is_empty() {
+                            String::new()
+                        } else {
+                            let list_str = info
+                                .todos
+                                .iter()
+                                .map(|t| {
+                                    format!(
+                                        "  - [{}] {}",
+                                        if t.completed { "x" } else { " " },
+                                        t.task
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            format!("\n• Assigned Todos:\n{}", list_str)
+                        };
+                        let boundaries_section = if info.file_boundaries.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n• File Boundaries: `{}`", info.file_boundaries.join(", "))
+                        };
                         Ok(format!(
-                            "### Subagent `{}` Details\n• Role: {}\n• State: {:?}\n• Turns Executed: {}\n• Tokens Used: {}\n• Initial Prompt: {}\n• Started At: {}s",
+                            "### MiniPub Subagent `{}` Details\n• Role: {}\n• State: {:?}\n• Turns Executed: {}\n• Tokens Used: {}\n• Initial Prompt: {}\n• Started At: {}s\n• Last Activity: {}s{}{}",
                             info.id,
                             info.role.badge(),
                             info.state,
                             info.turns_executed,
                             info.tokens_used,
                             info.prompt,
-                            info.started_at_secs
+                            info.started_at_secs,
+                            info.last_activity_secs,
+                            boundaries_section,
+                            todos_section
                         ))
                     } else {
                         Ok(format!("ℹ No subagent found with ID '{}'", id))
@@ -538,7 +686,9 @@ pub async fn dispatch(
                 }
                 "await" | "wait" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
-                    let timeout_secs = param::opt_u64(args, "timeout_secs").unwrap_or(60);
+                    let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                    let timeout_secs = param::opt_u64(args, "timeout_secs")
+                        .unwrap_or(app_cfg.agent.minipub.inactivity_timeout_secs);
                     let start = std::time::Instant::now();
                     let max_dur = std::time::Duration::from_secs(timeout_secs);
 
@@ -551,14 +701,13 @@ pub async fn dispatch(
                                     | crate::agent::subagent::types::SubagentState::Starting
                                     | crate::agent::subagent::types::SubagentState::WaitingForInput
                             ) {
-
                                 final_info = Some(info);
                                 break;
                             }
                         } else {
                             return Ok(format!("ℹ No subagent found with ID '{}'", id));
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        pool.wait_for_change(std::time::Duration::from_millis(250)).await;
                     }
 
                     if let Some(info) = final_info {
@@ -574,7 +723,7 @@ pub async fn dispatch(
                             Ok(scratchpad_content)
                         } else {
                             Ok(format!(
-                                "✔ Subagent `{}` has finished execution (State: {:?})!\n\
+                                "✔ MiniPub Subagent `{}` has finished execution (State: {:?})!\n\
                                  • **Role**: {}\n\
                                  • **Turns Executed**: {}\n\
                                  • **Tokens Used**: {}\n\
@@ -597,7 +746,7 @@ pub async fn dispatch(
                             .and_then(|i| i.status_message.clone())
                             .unwrap_or_else(|| "Running".to_string());
                         Ok(format!(
-                            "⏳ Subagent `{}` is still executing after {}s timeout.\n• Current Status: {}\n• Use 'manage_subagents(action=\"await\", subagent_id=\"{}\")' to continue waiting, or press Ctrl+S to monitor live telemetry in the TUI drawer.",
+                            "⏳ MiniPub Subagent `{}` is still executing after {}s wait window.\n• Current Status: {}\n• Use 'manage_subagents(action=\"await\", subagent_id=\"{}\")' to continue waiting, or press Ctrl+S to monitor live telemetry in the TUI drawer.",
                             id, timeout_secs, detail, id
                         ))
                     }
@@ -632,18 +781,109 @@ pub async fn dispatch(
                         ))
                     }
                 }
+                "update" | "modify" | "configure" => {
+                    let mut changes = Vec::new();
+
+                    if let Some(stream_secs) = param::opt_u64(args, "stream_idle_timeout_secs") {
+                        let clamped = stream_secs.clamp(30, 7200);
+                        let conn_secs = crate::config::get_active_connect_timeout_secs();
+                        crate::config::set_active_provider_timeouts_override(conn_secs, clamped);
+                        changes.push(format!(
+                            "• Orchestrator & MiniPub Model Stream Idle Timeout ➔ `{}s`",
+                            clamped
+                        ));
+                    }
+
+                    if let Some(max_p) = param::opt_u64(args, "max_parallel")
+                        .or_else(|| param::opt_u64(args, "max_parallel_minipubs"))
+                    {
+                        let applied = pool.set_max_parallel(max_p as usize);
+                        changes.push(format!("• MiniPub Pool Max Parallel Concurrency ➔ `{}`", applied));
+                    }
+
+                    if let Some(id_raw) = param::opt_str(args, "subagent_id")
+                        .or_else(|| param::opt_str(args, "id"))
+                    {
+                        let minipub_id = id_raw.strip_prefix("worker-").unwrap_or(id_raw);
+                        let extract_opt_list = |key: &str| -> Option<Vec<String>> {
+                            args.get(key).and_then(|v| v.as_array()).map(|arr| {
+                                arr.iter()
+                                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                                    .filter(|s| !s.is_empty())
+                                    .collect()
+                            })
+                        };
+                        let complete_todo_ids = args
+                            .get("complete_todo_ids")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|item| item.as_u64().map(|n| n as usize))
+                                    .collect::<Vec<usize>>()
+                            })
+                            .unwrap_or_default();
+
+                        let update = crate::agent::subagent::MiniPubUpdate {
+                            inactivity_timeout_secs: param::opt_u64(args, "timeout_secs"),
+                            token_budget: param::opt_u64(args, "token_budget").map(|n| n as usize),
+                            max_turns: param::opt_u64(args, "max_turns").map(|n| n as usize),
+                            todos: extract_opt_list("todos"),
+                            append_todos: extract_opt_list("append_todos").unwrap_or_default(),
+                            complete_todo_ids,
+                            file_boundaries: extract_opt_list("file_boundaries"),
+                            steer_prompt: param::opt_str(args, "steer_prompt")
+                                .or_else(|| param::opt_str(args, "prompt"))
+                                .map(|s| s.to_string()),
+                        };
+
+                        let info = pool.update_subagent(minipub_id, update).await?;
+                        let done_todos = info.todos.iter().filter(|t| t.completed).count();
+                        changes.push(format!(
+                            "• Updated MiniPub `{}` ({}): State={:?} | Timeout={}s | Turns={}/{} | Tokens={}/{} | Todos={}/{} | Queued Steer={}",
+                            info.id,
+                            info.role.badge(),
+                            info.state,
+                            info.inactivity_timeout_secs,
+                            info.turns_executed,
+                            info.max_turns,
+                            info.tokens_used,
+                            info.token_budget,
+                            done_todos,
+                            info.todos.len(),
+                            info.pending_steer_messages.len()
+                        ));
+                    }
+
+                    if changes.is_empty() {
+                        return Err(ToolError::InvalidArguments {
+                            name: "manage_subagents".to_string(),
+                            reason: "Action 'update'/'modify'/'configure' requires at least one of 'subagent_id' (with timeout_secs, token_budget, max_turns, todos, append_todos, complete_todo_ids, file_boundaries, or steer_prompt), 'stream_idle_timeout_secs', or 'max_parallel'.".to_string(),
+                        }
+                        .into());
+                    }
+
+                    Ok(format!(
+                        "⚡ MiniPub & Orchestrator Runtime Updated:\n{}",
+                        changes.join("\n")
+                    ))
+                }
                 "kill" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
-                    pool.kill_subagent(id).await?;
-                    Ok(format!("✔ Subagent `{}` successfully terminated", id))
+                    let minipub_id = id.strip_prefix("worker-").unwrap_or(id);
+                    pool.kill_subagent(minipub_id).await?;
+                    let reg = crate::dev::registry::get_global_dev_registry();
+                    let _ = reg
+                        .stop(&crate::dev::models::DevProcessId::from(format!("worker-{}", minipub_id)))
+                        .await;
+                    Ok(format!("✔ MiniPub subagent `{}` successfully terminated", minipub_id))
                 }
                 "kill_all" => {
                     pool.kill_all().await;
-                    Ok("✔ All active subagents in swarm pool have been terminated".to_string())
+                    Ok("✔ All active MiniPub subagents in swarm pool have been terminated".to_string())
                 }
                 other => Err(ToolError::InvalidArguments {
                     name: "manage_subagents".to_string(),
-                    reason: format!("Unknown action '{}'. Valid actions: list, status, await, wait, transcript, drilldown, kill, kill_all", other),
+                    reason: format!("Unknown action '{}'. Valid actions: list, status, update, modify, configure, await, wait, transcript, drilldown, kill, kill_all", other),
                 }.into()),
             }
         }.await),

@@ -59,13 +59,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "fanout_subagents".to_string(),
-            description: "Concurrently dispatch a batch of specialized subagents across isolated Git Worktrees or shared repository threads. Supports race-to-first-success or all-worker join policies, sequential conflict-free merge arbitration, and executive map-reduce reporting.".to_string(),
+            description: "Concurrently dispatch a batch of specialized MiniPub subagents (`minipub`) across isolated Git Worktrees or shared repository threads (default max_concurrency = 4). Supports Boomerang todo checklists (`todos`), cooperative file boundaries (`file_boundaries`), race-to-first-success or all-worker join policies, sequential conflict-free merge arbitration, and executive map-reduce reporting.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "tasks": {
                         "type": "array",
-                        "description": "List of subagent task specifications to execute concurrently",
+                        "description": "List of MiniPub subagent task specifications to execute concurrently",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -106,6 +106,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "check_cmd": {
                                     "type": "string",
                                     "description": "Custom validation command to run before merge (e.g. 'cargo check', or 'skip')"
+                                },
+                                "todos": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "Optional Boomerang todo checklist items assigned by the Orchestrator for this MiniPub worker"
+                                },
+                                "file_boundaries": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
                                 }
                             },
                             "required": ["task"]
@@ -122,7 +132,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "max_concurrency": {
                         "type": "integer",
-                        "description": "Maximum concurrent workers running simultaneously (default: 4, min: 1, max: 16)"
+                        "description": "Maximum concurrent MiniPub workers running simultaneously (defaults to config.agent.minipub.max_parallel = 4, min: 1, max: 16)"
                     }
                 },
                 "required": ["tasks"]
@@ -258,7 +268,15 @@ pub async fn dispatch(
         ),
         "fanout_subagents" => Some(
             async {
-                let (task_items, join_mode, auto_merge, max_concurrency) = parse_fanout_args(args)?;
+                let (task_items, join_mode, auto_merge, mut max_concurrency) =
+                    parse_fanout_args(args)?;
+                if args.get("max_concurrency").is_none() {
+                    let cfg = crate::config::Config::load_for_workspace(workspace_root);
+                    max_concurrency = cfg.agent.minipub.max_parallel.clamp(
+                        crate::constants::MIN_PARALLEL_MINIPUBS,
+                        crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+                    );
+                }
 
                 FanoutOrchestrator::execute_fanout(
                     workspace_root,
@@ -315,6 +333,26 @@ pub fn parse_fanout_args(
 
         let max_iterations = param::opt_u64(t, "max_iterations").map(|n| n as usize);
         let check_cmd = param::opt_str(t, "check_cmd").map(|s| s.to_string());
+        let todos = t
+            .get("todos")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let file_boundaries = t
+            .get("file_boundaries")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         task_items.push(FanoutTaskItem {
             task: task_text.to_string(),
@@ -322,6 +360,8 @@ pub fn parse_fanout_args(
             workspace_mode,
             max_iterations,
             check_cmd,
+            todos,
+            file_boundaries,
         });
     }
 
@@ -332,8 +372,11 @@ pub fn parse_fanout_args(
 
     let auto_merge = param::opt_bool(args, "auto_merge", false);
     let max_concurrency = param::opt_u64(args, "max_concurrency")
-        .unwrap_or(4)
-        .clamp(1, 16) as usize;
+        .unwrap_or(crate::constants::DEFAULT_MAX_PARALLEL_MINIPUBS as u64)
+        .clamp(
+            crate::constants::MIN_PARALLEL_MINIPUBS as u64,
+            crate::constants::MAX_PARALLEL_MINIPUBS_CAP as u64,
+        ) as usize;
 
     Ok((task_items, join_mode, auto_merge, max_concurrency))
 }

@@ -82,6 +82,7 @@ pub struct ToastItem {
 
 impl ToastItem {
     /// Returns the remaining lifetime ratio in `[0.0, 1.0]`.
+    #[allow(dead_code)]
     #[must_use]
     pub fn remaining_ratio(&self, now: Instant) -> f64 {
         let elapsed = now.saturating_duration_since(self.created_at).as_secs_f64();

@@ -18,7 +18,7 @@ pub use message::{AgentMessage, MessageIntent};
 #[allow(unused_imports)]
 pub use orchestrator::SubagentOrchestrator;
 #[allow(unused_imports)]
-pub use pool::SubagentPool;
+pub use pool::{MiniPubPool, SubagentPool};
 #[allow(unused_imports)]
 pub use reducer::{
     AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
@@ -33,17 +33,15 @@ pub use transcript::{
 pub use types::SubagentResult as SubAgentResult;
 #[allow(unused_imports)]
 pub use types::{
-    AgentId, SubagentConfig, SubagentInfo, SubagentResult, SubagentRole, SubagentState,
-    SubagentTaskSpec, WorkspaceMode,
+    AgentId, MiniPubConfig, MiniPubInfo, MiniPubResult, MiniPubRole, MiniPubState, MiniPubTaskSpec,
+    MiniPubTodoItem, MiniPubUpdate, SubagentConfig, SubagentInfo, SubagentResult, SubagentRole,
+    SubagentState, SubagentTaskSpec, WorkspaceMode,
 };
 #[allow(unused_imports)]
-pub use worker::SubagentWorker;
+pub use worker::{MiniPubWorker, SubagentWorker};
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::OnceLock;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 static GLOBAL_POOL: OnceLock<SubagentPool> = OnceLock::new();
 static GLOBAL_SCRATCHPAD: OnceLock<SharedScratchpad> = OnceLock::new();
@@ -69,11 +67,9 @@ pub fn try_get_global_subagent_pool() -> Option<&'static SubagentPool> {
     GLOBAL_POOL.get()
 }
 
-use crate::agent::types::AgentEvent;
-use crate::error::{MinicodeError, Result};
-use crate::git::worktree::WorktreeManager;
+use crate::error::Result;
 
-/// Executes an autonomous subagent in an isolated Git Worktree using machine-readable NDJSON streaming.
+/// Executes an autonomous `minipub` subagent in-process using the shared `SubagentPool`.
 #[allow(dead_code)]
 pub struct SubAgent {
     pub task_id: String,
@@ -119,190 +115,30 @@ impl SubAgent {
         }
     }
 
-    /// Executes the subagent task prompt and yields the final outcome.
+    /// Executes the subagent task prompt in-process via `SubagentPool` and yields the final outcome.
     pub async fn run_task(&self, task_prompt: &str) -> Result<SubagentResult> {
-        let worktree_manager = WorktreeManager::new(&self.workspace_root);
-        let target_dir = if self.use_worktree {
-            worktree_manager
-                .create_worktree(&self.task_id)
-                .await
-                .unwrap_or_else(|_| self.workspace_root.clone())
-        } else {
-            self.workspace_root.clone()
-        };
-
-        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("minicode"));
-
-        let mut cmd = Command::new(current_exe);
-        cmd.args(["--json-stream", "--yes", "--dir"])
-            .arg(&target_dir);
-
-        if let Some(ref cfg) = self.config {
-            if let Some(ref m) = cfg.model {
-                cmd.arg("--model").arg(m);
-            }
-        }
-
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                MinicodeError::Channel(format!("Failed to spawn subagent process: {}", e))
-            })?;
-
-        let child_id = child.id().unwrap_or(0);
-        let dev_registry = crate::dev::registry::get_global_dev_registry();
-        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", self.task_id));
-        let worker_name = format!("Subagent Task - {}", self.task_id);
-        let dev_handle = dev_registry
-            .register_worker(
-                dev_id,
-                worker_name,
-                format!("minicode --json-stream --yes --dir {:?}", target_dir),
-                target_dir.clone(),
-                child_id,
-                child_id,
-                None,
-            )
-            .await;
-
-        // Write prompt to subagent stdin via StdinCommand protocol
-        if let Some(mut stdin) = child.stdin.take() {
-            let cmd_obj = crate::agent::types::StdinCommand::UserInput {
-                text: task_prompt.to_string(),
-            };
-            if let Ok(mut prompt_json) = serde_json::to_string(&cmd_obj) {
-                prompt_json.push('\n');
-                let _ = stdin.write_all(prompt_json.as_bytes()).await;
-            }
-        }
-
-        let mut final_response = String::new();
-        let mut files_modified = Vec::new();
-        let mut tokens_used = 0;
-        let mut success = true;
-
-        if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-
-            let dev_handle_clone = std::sync::Arc::clone(&dev_handle);
-            let run_future = async {
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if let Ok(event) = serde_json::from_str::<AgentEvent>(&line) {
-                        match event {
-                            AgentEvent::StreamDelta { delta, .. } => {
-                                final_response.push_str(&delta);
-                                dev_handle_clone.append_log(&delta).await;
-                            }
-                            AgentEvent::FileModified { path, .. } => {
-                                if !files_modified.contains(&path) {
-                                    files_modified.push(path.clone());
-                                }
-                                dev_handle_clone
-                                    .append_log(format!("📝 File modified: {}", path))
-                                    .await;
-                            }
-                            AgentEvent::TurnEnd {
-                                total_tokens_used,
-                                files_modified: modified,
-                                ..
-                            } => {
-                                tokens_used = total_tokens_used;
-                                for f in modified {
-                                    if !files_modified.contains(&f) {
-                                        files_modified.push(f);
-                                    }
-                                }
-                                break;
-                            }
-                            AgentEvent::Error { message, .. } => {
-                                tracing::error!(message = %message, "Subagent encountered error");
-                                success = false;
-                                if final_response.is_empty() {
-                                    final_response =
-                                        format!("Subagent execution error: {}", message);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            };
-
-            let timeout_res = tokio::time::timeout(
-                std::time::Duration::from_secs(self.timeout_secs),
-                run_future,
-            )
-            .await;
-
-            if timeout_res.is_err() {
-                tracing::warn!(task_id = %self.task_id, timeout_secs = self.timeout_secs, "Subagent process timed out");
-                success = false;
-                if final_response.is_empty() {
-                    final_response = "Subagent process timed out before completion.".to_string();
-                }
-            }
-        }
-
-        if final_response.trim().is_empty() {
-            success = false;
-            final_response =
-                "Subagent process exited without producing a response summary.".to_string();
-        }
-
-        let _ = child.kill().await;
-
-        if success {
-            dev_handle
-                .append_log(format!(
-                    "[{}] Subagent task completed successfully (tokens: {})",
-                    self.task_id, tokens_used
-                ))
-                .await;
-            dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                .await;
-        } else {
-            dev_handle
-                .append_log(format!(
-                    "[{}] Subagent task failed: {}",
-                    self.task_id, final_response
-                ))
-                .await;
-            dev_handle
-                .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                    final_response.clone(),
-                ))
-                .await;
-        }
-
-        let worktree_branch = if self.use_worktree {
-            Some(format!("subagent/{}", self.task_id))
-        } else {
-            None
-        };
-
+        let pool = get_global_subagent_pool(&self.workspace_root);
+        let provider = pool.get_or_create_provider().await;
         let assigned_role = self
             .config
             .as_ref()
             .map(|c| c.role)
             .unwrap_or(SubagentRole::Coder);
-
-        Ok(SubagentResult {
-            id: self.task_id.clone(),
-            task_id: self.task_id.clone(),
-            role: assigned_role,
-            success,
-            final_summary: final_response,
-            tokens_used,
-            turns_executed: 1,
-            files_inspected: Vec::new(),
-            files_modified,
-            worktree_branch,
-        })
+        let mut cfg = self.config.clone().unwrap_or_else(|| {
+            let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
+            SubagentConfig::for_role_with_minipub_config(assigned_role, &app_cfg.agent.minipub)
+        });
+        if self.timeout_secs > 0 {
+            cfg.inactivity_timeout_secs = self.timeout_secs;
+        }
+        pool.run_subagent_with_options(
+            assigned_role,
+            task_prompt,
+            Some(cfg),
+            provider,
+            self.use_worktree,
+        )
+        .await
     }
 }
 

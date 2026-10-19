@@ -252,6 +252,11 @@ pub struct CodeGraph {
     extractor: RepoMapExtractor,
 }
 
+type CachedCodeGraphEntry = Option<(PathBuf, std::time::Instant, std::sync::Arc<CodeGraph>)>;
+
+static GLOBAL_CODE_GRAPH_CACHE: std::sync::OnceLock<std::sync::RwLock<CachedCodeGraphEntry>> =
+    std::sync::OnceLock::new();
+
 impl Default for CodeGraph {
     fn default() -> Self {
         Self::new()
@@ -273,14 +278,53 @@ impl CodeGraph {
         }
     }
 
+    /// Returns a shared in-memory `Arc<CodeGraph>` across the Orchestrator and `MiniPub` workers,
+    /// avoiding repeated disk deserialization or full workspace AST rebuilds within a 15-second window.
+    pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
+        let cache_lock = GLOBAL_CODE_GRAPH_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        let canonical = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+        if let Ok(guard) = cache_lock.read() {
+            if let Some((ref cached_root, built_at, ref arc_graph)) = *guard {
+                if cached_root == &canonical && built_at.elapsed().as_secs() < 15 {
+                    return Ok(std::sync::Arc::clone(arc_graph));
+                }
+            }
+        }
+
+        let mut graph = Self::new();
+        graph.build_graph(workspace_root)?;
+        let arc_graph = std::sync::Arc::new(graph);
+        if let Ok(mut guard) = cache_lock.write() {
+            *guard = Some((
+                canonical,
+                std::time::Instant::now(),
+                std::sync::Arc::clone(&arc_graph),
+            ));
+        }
+        Ok(arc_graph)
+    }
+
+    /// Invalidates the shared in-memory `CodeGraph` cache (called on file writes/merges).
+    pub fn invalidate_cache() {
+        if let Some(cache_lock) = GLOBAL_CODE_GRAPH_CACHE.get() {
+            if let Ok(mut guard) = cache_lock.write() {
+                *guard = None;
+            }
+        }
+    }
+
     /// Builds or incrementally updates the symbol-level dependency graph, leveraging disk cache if available.
     pub fn build_graph(&mut self, workspace_root: &Path) -> Result<()> {
         if self.load_cached(workspace_root) {
-            tracing::debug!(
-                "Loaded cached code graph snapshot from disk; running incremental update"
-            );
-            let _ = self.incremental_update(workspace_root);
-            let _ = self.save_to_disk(workspace_root);
+            tracing::debug!("Loaded cached code graph snapshot; running incremental update");
+            if let Ok(stats) = self.incremental_update(workspace_root) {
+                if stats.files_reparsed > 0 || stats.files_removed > 0 {
+                    let _ = self.save_to_disk(workspace_root);
+                }
+            }
             return Ok(());
         }
 
@@ -1199,7 +1243,7 @@ impl CodeGraph {
 
     /// Formats the top-ranked repository symbols into a compact Repo-Map skeleton outline.
     pub fn format_repomap(
-        &mut self,
+        &self,
         workspace_root: &Path,
         active_files: &[PathBuf],
         max_symbols: usize,

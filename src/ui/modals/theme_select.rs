@@ -390,50 +390,15 @@ pub fn render_theme_select(
 
     let tab_line = Line::from(vec![
         Span::raw(" "),
-        Span::styled(
-            if is_themes_tab {
-                " [ 1. Themes ] "
-            } else {
-                " [ 1. Themes ] "
-            },
-            tab1_style,
-        ),
+        Span::styled(" [ 1. Themes ] ", tab1_style),
         Span::raw("  "),
-        Span::styled(
-            if is_anim_tab {
-                " [ 2. Animations ] "
-            } else {
-                " [ 2. Animations ] "
-            },
-            tab2_style,
-        ),
+        Span::styled(" [ 2. Animations ] ", tab2_style),
         Span::raw("  "),
-        Span::styled(
-            if is_todo_tab {
-                " [ 3. Todo Styles ] "
-            } else {
-                " [ 3. Todo Styles ] "
-            },
-            tab3_style,
-        ),
+        Span::styled(" [ 3. Todo Styles ] ", tab3_style),
         Span::raw("  "),
-        Span::styled(
-            if is_swarm_tab {
-                " [ 4. Swarm Styles ] "
-            } else {
-                " [ 4. Swarm Styles ] "
-            },
-            tab4_style,
-        ),
+        Span::styled(" [ 4. Swarm Styles ] ", tab4_style),
         Span::raw("  "),
-        Span::styled(
-            if is_toast_tab {
-                " [ 5. Toast Styles ] "
-            } else {
-                " [ 5. Toast Styles ] "
-            },
-            tab5_style,
-        ),
+        Span::styled(" [ 5. Toast Styles ] ", tab5_style),
         Span::raw("   "),
         Span::styled("Tab/1-5", Style::default().fg(theme.muted)),
     ]);

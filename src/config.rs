@@ -69,6 +69,55 @@ pub struct ProviderConfig {
 
     #[serde(default)]
     pub default_models: std::collections::HashMap<String, String>,
+
+    /// Explicit TCP/TLS connect timeout in seconds (overrides default 30s)
+    #[serde(default)]
+    pub connect_timeout_secs: Option<u64>,
+
+    /// Explicit inter-token stream idle timeout in seconds (overrides default 300s)
+    #[serde(default)]
+    pub stream_idle_timeout_secs: Option<u64>,
+
+    /// Enable adaptive TTFT and stream idle timeout scaling based on prompt size, thinking budget, and local vs cloud provider
+    #[serde(default = "default_true")]
+    pub adaptive_timeout: bool,
+}
+
+static RUNTIME_CONNECT_TIMEOUT_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS);
+static RUNTIME_STREAM_IDLE_TIMEOUT_SECS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS);
+static RUNTIME_TIMEOUTS_OVERRIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Returns the active provider TCP/TLS connect timeout in seconds (configurable via config.toml / env / runtime).
+pub fn get_active_connect_timeout_secs() -> u64 {
+    RUNTIME_CONNECT_TIMEOUT_SECS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(5)
+}
+
+/// Returns the active provider stream idle timeout in seconds (configurable via config.toml / env / runtime).
+pub fn get_active_stream_idle_timeout_secs() -> u64 {
+    RUNTIME_STREAM_IDLE_TIMEOUT_SECS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(15)
+}
+
+/// Updates the active provider timeouts at runtime.
+pub fn set_active_provider_timeouts(connect_secs: u64, stream_idle_secs: u64) {
+    RUNTIME_CONNECT_TIMEOUT_SECS.store(connect_secs.max(5), std::sync::atomic::Ordering::Relaxed);
+    RUNTIME_STREAM_IDLE_TIMEOUT_SECS.store(
+        stream_idle_secs.max(15),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Explicitly overrides the active provider timeouts at runtime (e.g. by the Orchestrator or Settings modal)
+/// so subsequent `Config::load_for_workspace` calls preserve the live dynamic override.
+pub fn set_active_provider_timeouts_override(connect_secs: u64, stream_idle_secs: u64) {
+    RUNTIME_TIMEOUTS_OVERRIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    set_active_provider_timeouts(connect_secs, stream_idle_secs);
 }
 
 impl Default for ProviderConfig {
@@ -87,6 +136,9 @@ impl Default for ProviderConfig {
             context_window: None,
             prompt_cost_per_m: None,
             completion_cost_per_m: None,
+            connect_timeout_secs: None,
+            stream_idle_timeout_secs: None,
+            adaptive_timeout: true,
         }
     }
 }
@@ -104,6 +156,53 @@ impl ProviderConfig {
     pub fn effective_thinking_budget(&self) -> Option<usize> {
         self.thinking_budget
             .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS)
+    }
+
+    /// Effective TCP/TLS connect timeout in seconds
+    pub fn effective_connect_timeout_secs(&self) -> u64 {
+        self.connect_timeout_secs
+            .unwrap_or(crate::constants::PROVIDER_CONNECT_TIMEOUT_SECS)
+            .max(5)
+    }
+
+    /// Effective inter-token stream idle timeout in seconds, scaled adaptively when thinking/reasoning is enabled
+    pub fn effective_stream_idle_timeout_secs(&self) -> u64 {
+        if let Some(explicit) = self.stream_idle_timeout_secs {
+            return explicit.max(15);
+        }
+        let base = crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS;
+        if !self.adaptive_timeout {
+            return base;
+        }
+        let thinking_bonus = self
+            .effective_thinking_budget()
+            .map(|b| (b as u64 / 256).min(300))
+            .unwrap_or(0);
+        base.saturating_add(thinking_bonus)
+    }
+
+    /// Computes an adaptive Time-To-First-Token (TTFT) deadline in seconds based on:
+    /// `base_connect + (prompt_tokens / prefill_speed) + thinking_headroom`
+    pub fn compute_adaptive_ttft_secs(&self, prompt_tokens: usize, is_local: bool) -> u64 {
+        let base = self.effective_connect_timeout_secs();
+        if !self.adaptive_timeout {
+            return base.max(60);
+        }
+        let prefill_tps: u64 = if is_local { 150 } else { 1500 };
+        let prefill_allowance = (prompt_tokens as u64 / prefill_tps).min(300);
+        let thinking_allowance = if self.is_thinking_enabled()
+            || self
+                .reasoning_effort
+                .as_deref()
+                .map(|r| !r.is_empty() && r != "none")
+                .unwrap_or(false)
+        {
+            120
+        } else {
+            30
+        };
+        base.saturating_add(prefill_allowance)
+            .saturating_add(thinking_allowance)
     }
 }
 
@@ -194,6 +293,75 @@ pub struct AgentConfig {
     /// plan (see `agent::plan_gate`).
     #[serde(default = "default_true")]
     pub plan_approval: bool,
+
+    /// MiniPub subagent orchestration, concurrency, budget, timeout, and isolation settings
+    #[serde(default, alias = "subagent", alias = "subagents")]
+    pub minipub: MiniPubConfig,
+}
+
+/// Configuration for `minipub` (MiniPub) subagent workers managed by the `minicode` Orchestrator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MiniPubConfig {
+    /// Maximum parallel `minipub` workers allowed concurrently (default: 4)
+    #[serde(default = "default_max_parallel_minipubs")]
+    pub max_parallel: usize,
+
+    /// Default token budget per `minipub` worker (default: 50,000)
+    #[serde(default = "default_minipub_token_budget")]
+    pub default_token_budget: usize,
+
+    /// Default maximum tool-calling turns per `minipub` worker (default: 15)
+    #[serde(default = "default_minipub_max_turns")]
+    pub default_max_turns: usize,
+
+    /// Activity-heartbeat stall timeout in seconds (resets on every token or tool output; default: 90s)
+    #[serde(default = "default_minipub_inactivity_timeout_secs")]
+    pub inactivity_timeout_secs: u64,
+
+    /// Workspace isolation strategy for mutating `minipub` workers:
+    /// "auto" (file leases for disjoint boundaries, git worktree for overlapping/unbounded),
+    /// "always" (always create `.minicode/worktrees/`),
+    /// "file_leases" (in-place cooperative file leases),
+    /// "never" (shared workspace without worktree).
+    #[serde(default = "default_minipub_worktree_isolation")]
+    pub worktree_isolation: String,
+
+    /// Additional tool names granted to all `minipub` workers beyond their role whitelist
+    #[serde(default)]
+    pub extra_allowed_tools: Vec<String>,
+}
+
+impl Default for MiniPubConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel: default_max_parallel_minipubs(),
+            default_token_budget: default_minipub_token_budget(),
+            default_max_turns: default_minipub_max_turns(),
+            inactivity_timeout_secs: default_minipub_inactivity_timeout_secs(),
+            worktree_isolation: default_minipub_worktree_isolation(),
+            extra_allowed_tools: Vec::new(),
+        }
+    }
+}
+
+fn default_max_parallel_minipubs() -> usize {
+    crate::constants::DEFAULT_MAX_PARALLEL_MINIPUBS
+}
+
+fn default_minipub_token_budget() -> usize {
+    crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET
+}
+
+fn default_minipub_max_turns() -> usize {
+    crate::constants::DEFAULT_MINIPUB_MAX_TURNS
+}
+
+fn default_minipub_inactivity_timeout_secs() -> u64 {
+    crate::constants::DEFAULT_MINIPUB_INACTIVITY_TIMEOUT_SECS
+}
+
+fn default_minipub_worktree_isolation() -> String {
+    crate::constants::DEFAULT_MINIPUB_WORKTREE_ISOLATION.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -266,6 +434,7 @@ impl Default for AgentConfig {
             max_auto_continues: default_max_auto_continues(),
             intent: IntentConfig::default(),
             plan_approval: true,
+            minipub: MiniPubConfig::default(),
         }
     }
 }
@@ -758,6 +927,19 @@ pub struct RawProviderConfig {
     pub completion_cost_per_m: Option<f64>,
     pub thinking_budget: Option<usize>,
     pub default_models: Option<std::collections::HashMap<String, String>>,
+    pub connect_timeout_secs: Option<u64>,
+    pub stream_idle_timeout_secs: Option<u64>,
+    pub adaptive_timeout: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RawMiniPubConfig {
+    pub max_parallel: Option<usize>,
+    pub default_token_budget: Option<usize>,
+    pub default_max_turns: Option<usize>,
+    pub inactivity_timeout_secs: Option<u64>,
+    pub worktree_isolation: Option<String>,
+    pub extra_allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -780,6 +962,9 @@ pub struct RawAgentConfig {
     pub auto_continue: Option<bool>,
     pub max_auto_continues: Option<usize>,
     pub intent: Option<IntentConfig>,
+    pub plan_approval: Option<bool>,
+    #[serde(alias = "subagent", alias = "subagents")]
+    pub minipub: Option<RawMiniPubConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -819,6 +1004,22 @@ pub struct RawConfig {
 }
 
 impl Config {
+    /// Synchronizes configured provider and command execution timeouts into the process-wide runtime atomics.
+    pub fn sync_runtime_timeouts(&self) {
+        if !RUNTIME_TIMEOUTS_OVERRIDDEN.load(std::sync::atomic::Ordering::Relaxed) {
+            set_active_provider_timeouts(
+                self.provider.effective_connect_timeout_secs(),
+                self.provider.effective_stream_idle_timeout_secs(),
+            );
+        }
+        crate::tools::exec::set_configured_exec_timeout(self.agent.timeout);
+    }
+
+    /// Convenience helper that loads configuration for `workspace_dir` or falls back to defaults.
+    pub fn load_for_workspace(workspace_dir: &Path) -> Self {
+        Self::load(Some(workspace_dir), None).unwrap_or_default()
+    }
+
     /// Loads configuration respecting the hierarchy:
     /// 1. Project-local `.minicode/config.toml` (if present)
     /// 2. Global `~/.config/minicode/config.toml` (if present)
@@ -914,6 +1115,9 @@ impl Config {
             config.resolve_active_provider_and_model(workspace_dir);
         config.provider.default = resolved_provider;
         config.provider.model = resolved_model;
+
+        // 7. Sync runtime timeouts for providers and command execution
+        config.sync_runtime_timeouts();
 
         Ok(config)
     }
@@ -1026,6 +1230,15 @@ impl Config {
         if let Some(thinking_budget) = other.provider.thinking_budget {
             self.provider.thinking_budget = Some(thinking_budget);
         }
+        if let Some(connect_timeout) = other.provider.connect_timeout_secs {
+            self.provider.connect_timeout_secs = Some(connect_timeout.max(5));
+        }
+        if let Some(stream_idle) = other.provider.stream_idle_timeout_secs {
+            self.provider.stream_idle_timeout_secs = Some(stream_idle.max(15));
+        }
+        if let Some(adaptive) = other.provider.adaptive_timeout {
+            self.provider.adaptive_timeout = adaptive;
+        }
         if let Some(auto_approve) = other.agent.auto_approve {
             self.agent.auto_approve = auto_approve;
         }
@@ -1082,6 +1295,32 @@ impl Config {
         }
         if let Some(intent) = other.agent.intent {
             self.agent.intent = intent;
+        }
+        if let Some(plan_approval) = other.agent.plan_approval {
+            self.agent.plan_approval = plan_approval;
+        }
+        if let Some(mp) = other.agent.minipub {
+            if let Some(max_parallel) = mp.max_parallel {
+                self.agent.minipub.max_parallel = max_parallel.clamp(
+                    crate::constants::MIN_PARALLEL_MINIPUBS,
+                    crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+                );
+            }
+            if let Some(budget) = mp.default_token_budget {
+                self.agent.minipub.default_token_budget = budget.max(4_000);
+            }
+            if let Some(turns) = mp.default_max_turns {
+                self.agent.minipub.default_max_turns = turns.clamp(1, 100);
+            }
+            if let Some(inact) = mp.inactivity_timeout_secs {
+                self.agent.minipub.inactivity_timeout_secs = inact.max(10);
+            }
+            if let Some(iso) = mp.worktree_isolation {
+                self.agent.minipub.worktree_isolation = iso;
+            }
+            if let Some(extra) = mp.extra_allowed_tools {
+                self.agent.minipub.extra_allowed_tools = extra;
+            }
         }
         if let Some(plain) = other.ui.plain {
             self.ui.plain = plain;
@@ -1189,6 +1428,16 @@ impl Config {
                 self.agent.timeout = timeout;
             }
         }
+        if let Ok(conn_str) = std::env::var(env_vars::MINICODE_CONNECT_TIMEOUT) {
+            if let Ok(conn) = conn_str.parse::<u64>() {
+                self.provider.connect_timeout_secs = Some(conn.max(5));
+            }
+        }
+        if let Ok(idle_str) = std::env::var(env_vars::MINICODE_STREAM_IDLE_TIMEOUT) {
+            if let Ok(idle) = idle_str.parse::<u64>() {
+                self.provider.stream_idle_timeout_secs = Some(idle.max(15));
+            }
+        }
         if let Ok(plain) = std::env::var(env_vars::MINICODE_PLAIN) {
             self.ui.plain = plain == "1" || plain.eq_ignore_ascii_case("true");
         }
@@ -1217,6 +1466,32 @@ impl Config {
                     crate::constants::MAX_PARALLEL_TOOLS_CAP,
                 );
             }
+        }
+        if let Ok(max_mp_str) = std::env::var(env_vars::MINICODE_MAX_MINIPUBS) {
+            if let Ok(val) = max_mp_str.parse::<usize>() {
+                self.agent.minipub.max_parallel = val.clamp(
+                    crate::constants::MIN_PARALLEL_MINIPUBS,
+                    crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+                );
+            }
+        }
+        if let Ok(mp_to_str) = std::env::var(env_vars::MINICODE_MINIPUB_TIMEOUT) {
+            if let Ok(val) = mp_to_str.parse::<u64>() {
+                self.agent.minipub.inactivity_timeout_secs = val.max(10);
+            }
+        }
+        if let Ok(mp_bud_str) = std::env::var(env_vars::MINICODE_MINIPUB_TOKEN_BUDGET) {
+            if let Ok(val) = mp_bud_str.parse::<usize>() {
+                self.agent.minipub.default_token_budget = val.max(4_000);
+            }
+        }
+        if let Ok(mp_turns_str) = std::env::var(env_vars::MINICODE_MINIPUB_MAX_TURNS) {
+            if let Ok(val) = mp_turns_str.parse::<usize>() {
+                self.agent.minipub.default_max_turns = val.clamp(1, 100);
+            }
+        }
+        if let Ok(mp_iso) = std::env::var(env_vars::MINICODE_MINIPUB_ISOLATION) {
+            self.agent.minipub.worktree_isolation = mp_iso;
         }
         if let Ok(compact) = std::env::var(env_vars::MINICODE_COMPACT_TOOL_SCHEMAS) {
             self.agent.compact_tool_schemas =

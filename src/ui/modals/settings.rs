@@ -109,6 +109,10 @@ pub struct SettingsModalState {
     pub auto_approve: bool,
     pub thinking_budget: usize,
     pub approval_policy: String,
+    pub minipub_max_parallel: usize,
+    pub minipub_inactivity_timeout_secs: u64,
+    pub minipub_worktree_isolation: String,
+    pub stream_idle_timeout_secs: u64,
     pub probe_results: Option<Vec<ConnectionTestResult>>,
     pub probing: bool,
 
@@ -160,6 +164,10 @@ impl SettingsModalState {
             auto_approve: config.agent.auto_approve,
             thinking_budget: config.provider.thinking_budget.unwrap_or(0),
             approval_policy: config.agent.approval_policy.clone(),
+            minipub_max_parallel: config.agent.minipub.max_parallel,
+            minipub_inactivity_timeout_secs: config.agent.minipub.inactivity_timeout_secs,
+            minipub_worktree_isolation: config.agent.minipub.worktree_isolation.clone(),
+            stream_idle_timeout_secs: config.provider.effective_stream_idle_timeout_secs(),
             probe_results: None,
             probing: false,
             browser_default_engine: config.browser.default_engine.clone(),
@@ -197,7 +205,7 @@ impl SettingsModalState {
         match self.active_tab {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
             SettingsTab::Workspace => 3,
-            SettingsTab::Autonomy => 3,
+            SettingsTab::Autonomy => 7,
             SettingsTab::Probes => 1,
             SettingsTab::Browser => 4,
         }
@@ -826,10 +834,150 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 ),
             ]));
             content_lines.push(Line::from(""));
+
+            // Item 3: MiniPub Max Parallel Workers
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 3 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "🤖 MiniPub Max Parallel: ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {} workers ]", state.minipub_max_parallel),
+                    if state.selected_index == 3 {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — Max concurrent in-process MiniPub subagents (default: 4)",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 4: MiniPub Inactivity Timeout
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 4 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "⏱️ MiniPub Inactivity Timeout: ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {}s ]", state.minipub_inactivity_timeout_secs),
+                    if state.selected_index == 4 {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — Auto-terminates stalled MiniPub worker if silent (resets on heartbeat)",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 5: MiniPub Worktree Isolation Mode
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 5 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "🌿 MiniPub Isolation Mode: ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {} ]", state.minipub_worktree_isolation),
+                    if state.selected_index == 5 {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — (auto: leases/shared first | always: git worktree | never: shared only)",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
+            // Item 6: Model Stream Idle Timeout
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    if state.selected_index == 6 {
+                        "  ❯ "
+                    } else {
+                        "    "
+                    },
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "📡 Model Stream Idle Timeout: ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("[ {}s ]", state.stream_idle_timeout_secs),
+                    if state.selected_index == 6 {
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text_primary)
+                    },
+                ),
+                Span::styled(
+                    "  — Adaptive SSE inter-chunk idle timeout for LLM streaming",
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            content_lines.push(Line::from(""));
             content_lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(
-                    "Press [Enter] or [Space] to toggle auto-approve or cycle budget/policy",
+                    "Press [Enter] or [Space] to toggle/cycle autonomy, MiniPub & timeout settings",
                     Style::default().fg(theme.muted),
                 ),
             ]));

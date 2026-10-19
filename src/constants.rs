@@ -72,6 +72,10 @@ pub const LOGS_DIR_NAME: &str = "logs";
 pub const EXPORTS_DIR_NAME: &str = "exports";
 /// Subdirectory storing isolated git worktrees (.minicode/worktrees)
 pub const WORKTREES_DIR_NAME: &str = "worktrees";
+/// Subdirectory storing MiniPub subagent state and cooperative file leases (.minicode/minipub)
+pub const MINIPUB_DIR_NAME: &str = "minipub";
+/// Cooperative file-boundary lease registry filename (.minicode/minipub/leases.json)
+pub const MINIPUB_LEASES_FILE: &str = "leases.json";
 /// Subdirectory storing crawled web documentation (.minicode/crawled)
 pub const CRAWLED_CACHE_DIR: &str = "crawled";
 /// Subdirectory storing local workspace wiki (.minicode/wiki)
@@ -573,6 +577,22 @@ pub const MIN_PARALLEL_TOOLS: usize = 1;
 /// Maximum ceiling for parallel tool execution concurrency
 pub const MAX_PARALLEL_TOOLS_CAP: usize = 16;
 
+// === MiniPub (Subagent) Orchestration & Resource Defaults ===
+/// Default maximum number of parallel MiniPub subagents spawned concurrently by the Orchestrator
+pub const DEFAULT_MAX_PARALLEL_MINIPUBS: usize = 4;
+/// Minimum bound for parallel MiniPub workers
+pub const MIN_PARALLEL_MINIPUBS: usize = 1;
+/// Maximum ceiling for parallel MiniPub workers
+pub const MAX_PARALLEL_MINIPUBS_CAP: usize = 16;
+/// Default token budget per MiniPub worker
+pub const DEFAULT_MINIPUB_TOKEN_BUDGET: usize = 50_000;
+/// Default maximum tool-calling turns per MiniPub worker
+pub const DEFAULT_MINIPUB_MAX_TURNS: usize = 15;
+/// Default activity-heartbeat timeout in seconds per MiniPub worker before stall abort (600s = 10 mins)
+pub const DEFAULT_MINIPUB_INACTIVITY_TIMEOUT_SECS: u64 = 600;
+/// Default worktree isolation policy for MiniPub workers ("auto", "always", "file_leases", "never")
+pub const DEFAULT_MINIPUB_WORKTREE_ISOLATION: &str = "auto";
+
 // === Approval Enforcement ===
 /// Tools that require user approval before dispatch when running in strict mode
 pub const APPROVAL_REQUIRED_TOOLS: &[&str] =
@@ -598,14 +618,14 @@ pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
 /// Default provider connect timeout for establishing TCP/TLS connection (seconds)
 pub const PROVIDER_CONNECT_TIMEOUT_SECS: u64 = 30;
-/// Default provider idle read timeout between received chunks/tokens (seconds).
-/// Prevents premature disconnection during complex reasoning and large generation
-/// while still detecting hung/dead connections.
-pub const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 300;
-/// Default provider timeout for streaming completions (seconds)
-pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 300;
-/// Default provider timeout for non-streaming requests (seconds)
-pub const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 180;
+/// Default provider idle read timeout between received chunks/tokens (600s = 10 mins).
+/// Prevents premature disconnection during deep reasoning and large multi-file generation
+/// while still detecting hung/dead connections. Dynamically adjustable by the Orchestrator.
+pub const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Default provider timeout for streaming completions (600s = 10 mins)
+pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 600;
+/// Default provider timeout for non-streaming requests (600s = 10 mins)
+pub const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 600;
 /// Gemini API base URL (without trailing path)
 pub const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 /// OpenRouter API base URL
@@ -811,6 +831,13 @@ pub mod env_vars {
     pub const MINICODE_BROWSER: &str = "MINICODE_BROWSER";
     pub const MINICODE_MAX_TOOL_ITERATIONS: &str = "MINICODE_MAX_TOOL_ITERATIONS";
     pub const MINICODE_AUTO_CONTINUE: &str = "MINICODE_AUTO_CONTINUE";
+    pub const MINICODE_MAX_MINIPUBS: &str = "MINICODE_MAX_MINIPUBS";
+    pub const MINICODE_MINIPUB_TIMEOUT: &str = "MINICODE_MINIPUB_TIMEOUT";
+    pub const MINICODE_MINIPUB_TOKEN_BUDGET: &str = "MINICODE_MINIPUB_TOKEN_BUDGET";
+    pub const MINICODE_MINIPUB_MAX_TURNS: &str = "MINICODE_MINIPUB_MAX_TURNS";
+    pub const MINICODE_MINIPUB_ISOLATION: &str = "MINICODE_MINIPUB_ISOLATION";
+    pub const MINICODE_CONNECT_TIMEOUT: &str = "MINICODE_CONNECT_TIMEOUT";
+    pub const MINICODE_STREAM_IDLE_TIMEOUT: &str = "MINICODE_STREAM_IDLE_TIMEOUT";
 
     pub const OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
     pub const HOME: &str = "HOME";
@@ -1085,8 +1112,8 @@ pub const MODAL_SEARCH_INPUT_HEIGHT: u16 = 3;
 pub const PTY_DRAWER_HEIGHT_PERCENT: u16 = 40;
 /// Percentage of screen height allocated to the subagent swarm activity drawer overlay
 pub const SUBAGENT_DRAWER_HEIGHT_PERCENT: u16 = 45;
-/// Default subagent task execution timeout in seconds
-pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 120;
+/// Default subagent task execution timeout in seconds (600s = 10 mins, dynamically adjustable by Orchestrator)
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 /// Width in columns for right-aligned token metrics, KV cache stats, and dollar spend in bottom status bar
 pub const STATUS_BAR_RIGHT_METRICS_WIDTH: u16 = 48;
 /// Maximum lines of diff preview shown in interactive approval modal

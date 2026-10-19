@@ -47,7 +47,33 @@ pub fn build_sanitized_command(program: &str, workspace: &Path) -> Command {
         }
     }
 
+    // 5. If running inside an isolated `.minicode/worktrees/<id>` directory, share the parent
+    // repository's `target/` directory so Rust/Cargo subagents reuse warm build artifacts
+    // instead of triggering multi-GB cold rebuilds.
+    if std::env::var("CARGO_TARGET_DIR").is_err() {
+        if let Some(repo_root) = detect_parent_repo_from_worktree(workspace) {
+            if repo_root.join("Cargo.toml").exists() || repo_root.join("target").exists() {
+                let shared_target = repo_root.join("target");
+                let _ = std::fs::create_dir_all(&shared_target);
+                cmd.env("CARGO_TARGET_DIR", shared_target);
+            }
+        }
+    }
+
     cmd
+}
+
+/// If `workspace` is `<repo_root>/.minicode/worktrees/<worktree_name>`, returns `Some(<repo_root>)`.
+pub fn detect_parent_repo_from_worktree(workspace: &Path) -> Option<std::path::PathBuf> {
+    let worktrees_dir = workspace.parent()?;
+    if worktrees_dir.file_name()?.to_str()? != crate::constants::WORKTREES_DIR_NAME {
+        return None;
+    }
+    let minicode_dir = worktrees_dir.parent()?;
+    if minicode_dir.file_name()?.to_str()? != crate::constants::WORKSPACE_DIR_NAME {
+        return None;
+    }
+    minicode_dir.parent().map(|p| p.to_path_buf())
 }
 
 #[cfg(test)]

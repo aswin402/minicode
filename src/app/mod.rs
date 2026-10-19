@@ -77,6 +77,8 @@ pub struct App<'a> {
     pub active_plan: Option<crate::ui::view::LivePlanBlock>,
     pub toasts: crate::ui::ToastManager,
     last_bg_task_count: usize,
+    last_minipub_states:
+        std::collections::HashMap<String, crate::agent::subagent::types::SubagentState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +177,7 @@ impl<'a> App<'a> {
             active_plan: initial_active_plan,
             toasts: crate::ui::ToastManager::new(),
             last_bg_task_count: initial_bg_tasks,
+            last_minipub_states: std::collections::HashMap::new(),
         }
     }
 
@@ -632,6 +635,67 @@ impl<'a> App<'a> {
                                 );
                             }
                             self.last_bg_task_count = active_bg;
+                        }
+
+                        // Monitor MiniPub subagent pool lifecycle transitions for live Toast notifications
+                        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                            let snapshots = pool.snapshot_subagents();
+                            for snap in snapshots {
+                                let prev = self.last_minipub_states.get(&snap.id).cloned();
+                                if prev.as_ref() != Some(&snap.state) {
+                                    use crate::agent::subagent::types::SubagentState;
+                                    let task_preview: String = snap.prompt.chars().take(48).collect();
+                                    let dedup_key = format!("minipub_{}", snap.id);
+                                    match &snap.state {
+                                        SubagentState::Starting | SubagentState::Running | SubagentState::WaitingForInput => {
+                                            if prev.is_none() {
+                                                self.toasts.push(
+                                                    crate::ui::ToastKind::Subagent,
+                                                    format!("MiniPub Spawned ({})", snap.role.badge()),
+                                                    format!("{}: {}", snap.id, task_preview),
+                                                    Some(snap.isolation_badge().to_string()),
+                                                    Some(dedup_key),
+                                                );
+                                            }
+                                        }
+                                        SubagentState::Completed => {
+                                            let done_todos = snap.todos.iter().filter(|t| t.completed).count();
+                                            let badge = if !snap.todos.is_empty() {
+                                                format!("{}/{} todos", done_todos, snap.todos.len())
+                                            } else {
+                                                format!("{}s", snap.elapsed_secs())
+                                            };
+                                            self.toasts.push(
+                                                crate::ui::ToastKind::Subagent,
+                                                format!("MiniPub Completed ({})", snap.role.badge()),
+                                                format!("✔ {}: {}", snap.id, task_preview),
+                                                Some(badge),
+                                                Some(dedup_key),
+                                            );
+                                        }
+                                        SubagentState::Failed(err) => {
+                                            let err_preview: String = err.chars().take(48).collect();
+                                            self.toasts.push(
+                                                crate::ui::ToastKind::Error,
+                                                format!("MiniPub Failed ({})", snap.role.badge()),
+                                                format!("✗ {}: {}", snap.id, err_preview),
+                                                Some(format!("{}s", snap.elapsed_secs())),
+                                                Some(dedup_key),
+                                            );
+                                        }
+                                        SubagentState::Terminated => {
+                                            self.toasts.push(
+                                                crate::ui::ToastKind::Warning,
+                                                format!("MiniPub Terminated ({})", snap.role.badge()),
+                                                format!("⊘ {}: {}", snap.id, task_preview),
+                                                Some("killed".to_string()),
+                                                Some(dedup_key),
+                                            );
+                                        }
+                                    }
+                                    self.last_minipub_states.insert(snap.id, snap.state);
+                                }
+                            }
                         }
                     }
 

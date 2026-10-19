@@ -322,13 +322,19 @@ impl JsonPathResolver {
     /// Interpolates embedded references within a larger string template.
     fn interpolate_template(s: &str, outputs: &HashMap<String, Value>) -> Result<Value> {
         // Match either ${var.path} or $var.path
-        let re = Regex::new(
-            r"\$\{([a-zA-Z0-9_\.\[\]]+)\}|\$([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+|\[\d+\])*)",
-        )
-        .map_err(|e| ToolError::InvalidArguments {
-            name: "execute_dag".to_string(),
-            reason: format!("Failed to compile JSONPath interpolation regex: {}", e),
-        })?;
+        static INTERPOLATE_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+        let re = INTERPOLATE_RE
+            .get_or_init(|| {
+                Regex::new(
+                    r"\$\{([a-zA-Z0-9_\.\[\]]+)\}|\$([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+|\[\d+\])*)",
+                )
+                .ok()
+            })
+            .as_ref()
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "execute_dag".to_string(),
+                reason: "Failed to compile JSONPath interpolation regex".to_string(),
+            })?;
 
         let mut result = String::new();
         let mut last_idx = 0;
